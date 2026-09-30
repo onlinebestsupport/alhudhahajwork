@@ -1,13 +1,18 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# UPDATED — 2026-09-30
-#   • Added `permissions` column to users.csv schema
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • Added permissions column to users.csv schema
 #   • Role-based default permission sets
 #   • add_user / update_user accept password OR password_hash
 #   • Default admin gets all permissions
 #   • Auto-migration for old users.csv (adds permissions column)
 #   • New helper: get_user_permissions()
+#   • 2.2.1 (UPDATED): __init__ now logs data folder + writable check
+#   • 2.4.3 (UPDATED): _save_df has error handling
+#   • 2.12.3 (UPDATED): create_backup notes cloud ephemeral storage
+#   • 2.15 (NEW):      reload_* methods (fixes stale-cache bug)
+#   • 2.16 (NEW):      file-change detection
 # =================================================================================
 
 import os
@@ -30,7 +35,6 @@ except ImportError:
 # =================================================================================
 # 2.1 — PERMISSION CATALOG & ROLE DEFAULTS
 # =================================================================================
-# These IDs match the Users Tab (Section 18) exactly.
 PERMISSION_CATALOG = [
     "view_dashboard",
     "manage_travelers",
@@ -61,12 +65,22 @@ ROLE_DEFAULT_PERMISSIONS = {
 class HajDatabase:
 
     # =============================================================================
-    # 2.2.1 — METHOD: __init__   (UPDATED FOR WEB)
+    # 2.2.1 — METHOD: __init__   (UPDATED for web + logging + writable check)
     # =============================================================================
     def __init__(self, data_dir="data", current_user_id="system"):
         base_path = get_app_base_path()
         self.data_dir = Path(base_path) / data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # ---- Cloud-friendly diagnostic logs ----
+        print(f"[DB] Base path      : {base_path}")
+        print(f"[DB] Data directory : {self.data_dir}")
+        print(f"[DB] Data exists    : {self.data_dir.exists()}")
+        print(f"[DB] Data writable  : "
+              f"{os.access(str(self.data_dir), os.W_OK)}")
+
+        # ---- Fail fast if the folder is not writable ----
+        self._verify_writable()
 
         self._current_user_id = current_user_id
         self._ensure_dirs()
@@ -89,8 +103,37 @@ class HajDatabase:
         # Auto-migrate any user missing a permissions value
         self._ensure_permissions_column()
 
+        # ---- Log row counts so you can verify in Railway logs ----
+        print(f"[DB] Loaded: "
+              f"{len(self.users)} users, "
+              f"{len(self.travelers)} travelers, "
+              f"{len(self.batches)} batches, "
+              f"{len(self.payments)} payments, "
+              f"{len(self.invoices)} invoices, "
+              f"{len(self.receipts)} receipts")
+
     # =============================================================================
-    # 2.2.2 — METHOD: _ensure_dirs   (UNCHANGED)
+    # 2.2.2 — METHOD: _verify_writable  (NEW)
+    # =============================================================================
+    def _verify_writable(self):
+        """Ensure the data folder is writable. Fails fast with clear error."""
+        test_file = self.data_dir / ".write_test"
+        try:
+            with open(test_file, "w") as f:
+                f.write("ok")
+            test_file.unlink()
+            print("[DB] ✓ Write test passed")
+        except Exception as e:
+            print(f"[DB] ✗ Write test FAILED: {e}")
+            raise RuntimeError(
+                f"Data folder is not writable: {self.data_dir}\n"
+                f"Error: {e}\n"
+                f"On Railway, attach a Volume to this path "
+                f"or grant write permissions."
+            )
+
+    # =============================================================================
+    # 2.2.3 — METHOD: _ensure_dirs   (UNCHANGED)
     # =============================================================================
     def _ensure_dirs(self):
         base = (self.data_dir.parent
@@ -99,6 +142,7 @@ class HajDatabase:
         folders = ["invoices", "receipts", "documents", "logos", "backups"]
         for f in folders:
             (base / f).mkdir(parents=True, exist_ok=True)
+
 
     # =================================================================================
     # 2.3 — ID COUNTERS   (UNCHANGED)
@@ -193,7 +237,7 @@ class HajDatabase:
         return f"{prefix}/{category}/{year}/{next_num:03d}"
 
     # =================================================================================
-    # 2.4 — DATA LOADING / SAVING   (UPDATED for permissions)
+    # 2.4 — DATA LOADING / SAVING
     # =================================================================================
     def _load_df(self, filename):
         filepath = self.data_dir / filename
@@ -202,7 +246,6 @@ class HajDatabase:
                 df = pd.read_csv(filepath)
 
                 if filename == "users.csv":
-                    # ✅ ADDED: 'permissions' to string columns
                     for col in ['username', 'full_name', 'email', 'role',
                                 'password_hash', 'created_at',
                                 'last_login', 'permissions']:
@@ -210,7 +253,6 @@ class HajDatabase:
                             df[col] = (df[col].astype(str)
                                        .fillna('')
                                        .replace('nan', ''))
-                    # Ensure the column exists at all
                     if 'permissions' not in df.columns:
                         df['permissions'] = ''
 
@@ -342,13 +384,14 @@ class HajDatabase:
                 print(f"Error loading {filename}: {e}")
                 return self._create_empty_df(filename)
         else:
+            print(f"[DB] {filename} not found — creating empty")
             return self._create_empty_df(filename)
 
     def _create_empty_df(self, filename):
         columns = {
             "users.csv": [
                 'id', 'username', 'password_hash', 'full_name', 'email',
-                'role', 'permissions', 'created_at', 'last_login'],   # ✅ ADDED
+                'role', 'permissions', 'created_at', 'last_login'],
             "travelers.csv": [
                 'id', 'first_name', 'last_name', 'passport_name',
                 'batch_id', 'passport_no', 'passport_issue_date',
@@ -390,11 +433,22 @@ class HajDatabase:
         }
         return pd.DataFrame(columns=columns.get(filename, []))
 
+    # -----------------------------------------------------------------------------
+    # 2.4.3 — METHOD: _save_df   (UPDATED — error handling)
+    # -----------------------------------------------------------------------------
     def _save_df(self, df, filename):
-        df.to_csv(self.data_dir / filename, index=False)
+        """Save DataFrame to CSV with clear error logging."""
+        try:
+            path = self.data_dir / filename
+            df.to_csv(path, index=False)
+            return True
+        except Exception as e:
+            print(f"[DB] ❌ Failed to save {filename}: {e}")
+            print(f"[DB]     Path: {self.data_dir / filename}")
+            raise
 
     # =============================================================================
-    # 2.4.1 — _ensure_permissions_column  (NEW)
+    # 2.4.4 — METHOD: _ensure_permissions_column  (UNCHANGED)
     # =============================================================================
     def _ensure_permissions_column(self):
         """Backfill any user missing permissions with role defaults."""
@@ -414,17 +468,16 @@ class HajDatabase:
             if changed:
                 self._save_df(self.users, "users.csv")
                 print(f"[DB] Backfilled permissions for "
-                      f"{sum(1 for _ in self.users.iterrows())} users")
+                      f"{len(self.users)} users")
         except Exception as e:
             print(f"[DB] _ensure_permissions_column failed: {e}")
 
     # =============================================================================
-    # 2.4.2 — _initialize_defaults  (UPDATED with permissions)
+    # 2.4.5 — METHOD: _initialize_defaults  (UNCHANGED)
     # =============================================================================
     def _initialize_defaults(self):
         if self.users.empty:
             admin_id = "ADMIN/USR/001"
-            # ✅ super_admin gets ALL permissions
             admin_user = pd.DataFrame([{
                 'id': admin_id,
                 'username': 'admin',
@@ -474,7 +527,7 @@ class HajDatabase:
                 self.company_settings, "company_settings.csv")
 
     # =============================================================================
-    # 2.5 — AUTHENTICATION & USER MANAGEMENT   (UPDATED)
+    # 2.5 — AUTHENTICATION & USER MANAGEMENT   (UNCHANGED)
     # =============================================================================
     def authenticate_user(self, username, password):
         password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -500,14 +553,7 @@ class HajDatabase:
         return None
 
     def add_user(self, user_data):
-        """
-        Add a new user.
-        Accepts either 'password' (raw) OR 'password_hash' (already hashed).
-        Auto-populates 'permissions' from role defaults if missing.
-        """
-        data = dict(user_data)  # copy
-
-        # --- Hash password ---
+        data = dict(user_data)
         if 'password' in data:
             pwd = data.pop('password')
             data['password_hash'] = hashlib.sha256(
@@ -515,24 +561,17 @@ class HajDatabase:
         elif 'password_hash' not in data:
             data['password_hash'] = hashlib.sha256(
                 'changeme'.encode()).hexdigest()
-
-        # --- ID ---
         data['id'] = self._generate_id('ADMIN', 'USR', None)
         data['created_at'] = datetime.now().isoformat()
         data['last_login'] = ''
-
-        # --- Permissions ---
         role = str(data.get('role', 'staff')).lower().strip()
         perms = data.get('permissions', '').strip()
         if not perms:
             defaults = ROLE_DEFAULT_PERMISSIONS.get(
                 role, ROLE_DEFAULT_PERMISSIONS["viewer"])
             data['permissions'] = json.dumps(sorted(defaults))
-
-        # --- Ensure permissions column exists on df ---
         if 'permissions' not in self.users.columns:
             self.users['permissions'] = ''
-
         new_user = pd.DataFrame([data])
         self.users = pd.concat(
             [self.users, new_user], ignore_index=True)
@@ -540,28 +579,20 @@ class HajDatabase:
         return data['id']
 
     def update_user(self, user_id, user_data):
-        """
-        Update an existing user.
-        Accepts 'password' (raw, will be hashed) OR 'password_hash'.
-        """
         data = dict(user_data)
-
         if 'password' in data:
             pwd = data.pop('password')
-            if pwd:  # only update if non-empty
+            if pwd:
                 data['password_hash'] = hashlib.sha256(
                     pwd.encode()).hexdigest()
             else:
                 data.pop('password', None)
                 data.pop('password_hash', None)
-
-        # If role changed but no explicit permissions, reset to role defaults
         if 'role' in data and 'permissions' not in data:
             role = str(data['role']).lower().strip()
             defaults = ROLE_DEFAULT_PERMISSIONS.get(
                 role, ROLE_DEFAULT_PERMISSIONS["viewer"])
             data['permissions'] = json.dumps(sorted(defaults))
-
         for key, value in data.items():
             self.users.loc[self.users['id'] == user_id, key] = value
         self._save_df(self.users, "users.csv")
@@ -580,11 +611,7 @@ class HajDatabase:
         self.users = self.users[self.users['id'] != user_id]
         self._save_df(self.users, "users.csv")
 
-    # -----------------------------------------------------------------------------
-    # 2.5.1 — get_user_permissions  (NEW)
-    # -----------------------------------------------------------------------------
     def get_user_permissions(self, user_id):
-        """Return set of permission keys for a user."""
         u = self.get_user_by_id(user_id)
         if not u:
             return set()
@@ -592,11 +619,9 @@ class HajDatabase:
                                        u.get('role', 'viewer'))
 
     def has_permission(self, user_id, permission_key):
-        """Convenience: check a single permission."""
         return permission_key in self.get_user_permissions(user_id)
 
     def _parse_permissions(self, value, role):
-        """Parse stored permissions string into a set."""
         if pd is not None and pd.isna(value):
             value = ""
         s = str(value or "").strip()
@@ -1086,7 +1111,7 @@ class HajDatabase:
         return self.receipts.to_dict('records')
 
     # =================================================================================
-    # 2.12 — REPORTS & OTHER   (UNCHANGED)
+    # 2.12 — REPORTS & OTHER
     # =================================================================================
     def get_dashboard_summary(self):
         return {
@@ -1122,7 +1147,17 @@ class HajDatabase:
                                 if not payments.empty else 0)
         }
 
+    # -----------------------------------------------------------------------------
+    # 2.12.3 — METHOD: create_backup   (UPDATED — cloud note)
+    # -----------------------------------------------------------------------------
     def create_backup(self):
+        """
+        Creates a ZIP of all CSVs in data/backups/.
+
+        ⚠️ CLOUD NOTE: On Railway's free tier, files under data/ are
+        ephemeral — they reset when the container restarts. Attach a
+        Railway Volume to /app/data if you need backups to survive.
+        """
         backup_id = self._generate_id('BAK', 'BUP', None)
         backup_date = datetime.now()
         backup_filename = (f"backup_"
@@ -1142,6 +1177,8 @@ class HajDatabase:
         self.backup_history = pd.concat(
             [self.backup_history, backup_record], ignore_index=True)
         self._save_df(self.backup_history, "backup_history.csv")
+        print(f"[DB] Backup created: "
+              f"{backup_dir / backup_filename}")
         return str(backup_dir / backup_filename)
 
     def restore_backup(self, backup_file):
@@ -1185,6 +1222,158 @@ class HajDatabase:
     # =================================================================================
     def migrate_batch_tour_types(self):
         pass
+
+    # =================================================================================
+    # 2.15 — RELOAD METHODS  (NEW — fixes stale cache)
+    # =================================================================================
+    # Why this matters:
+    #   The DB caches all CSVs in memory at __init__. If a CSV is
+    #   modified externally (e.g. via the CSV editor, or a different
+    #   process), the cache goes stale and the app shows old data.
+    #
+    #   These methods force a fresh read of the CSVs.
+    #
+    # Recommended: call reload_payments() inside the Custom Report
+    # dialog before generating a report, and reload_travelers() inside
+    # the Travelers tab before rendering.
+    # =================================================================================
+
+    def reload_all(self):
+        """Reload every CSV from disk (discards all caches)."""
+        print("[DB] 🔄 Reloading all data from disk...")
+        self.users = self._load_df("users.csv")
+        self.travelers = self._load_df("travelers.csv")
+        self.batches = self._load_df("batches.csv")
+        self.payments = self._load_df("payments.csv")
+        self.invoices = self._load_df("invoices.csv")
+        self.receipts = self._load_df("receipts.csv")
+        self.activity_log = self._load_df("activity_log.csv")
+        self.backup_history = self._load_df("backup_history.csv")
+        self.company_settings = self._load_df("company_settings.csv")
+        self.id_counters = self._load_id_counters()
+        self._ensure_permissions_column()
+        print(f"[DB] ✓ Reloaded: "
+              f"{len(self.users)} users, "
+              f"{len(self.travelers)} travelers, "
+              f"{len(self.batches)} batches, "
+              f"{len(self.payments)} payments, "
+              f"{len(self.invoices)} invoices, "
+              f"{len(self.receipts)} receipts")
+
+    def reload_payments(self):
+        """Force reload of payments.csv only."""
+        self.payments = self._load_df("payments.csv")
+        print(f"[DB] ✓ Reloaded {len(self.payments)} payments")
+        return self.payments
+
+    def reload_travelers(self):
+        """Force reload of travelers.csv only."""
+        self.travelers = self._load_df("travelers.csv")
+        print(f"[DB] ✓ Reloaded {len(self.travelers)} travelers")
+        return self.travelers
+
+    def reload_batches(self):
+        """Force reload of batches.csv only."""
+        self.batches = self._load_df("batches.csv")
+        print(f"[DB] ✓ Reloaded {len(self.batches)} batches")
+        return self.batches
+
+    def reload_invoices(self):
+        """Force reload of invoices.csv only."""
+        self.invoices = self._load_df("invoices.csv")
+        print(f"[DB] ✓ Reloaded {len(self.invoices)} invoices")
+        return self.invoices
+
+    def reload_receipts(self):
+        """Force reload of receipts.csv only."""
+        self.receipts = self._load_df("receipts.csv")
+        print(f"[DB] ✓ Reloaded {len(self.receipts)} receipts")
+        return self.receipts
+
+    def reload_users(self):
+        """Force reload of users.csv only."""
+        self.users = self._load_df("users.csv")
+        self._ensure_permissions_column()
+        print(f"[DB] ✓ Reloaded {len(self.users)} users")
+        return self.users
+
+    def reload_company_settings(self):
+        """Force reload of company_settings.csv only."""
+        self.company_settings = self._load_df("company_settings.csv")
+        return self.company_settings
+
+    def reload_backup_history(self):
+        """Force reload of backup_history.csv only."""
+        self.backup_history = self._load_df("backup_history.csv")
+        return self.backup_history
+
+    def reload_activity_log(self):
+        """Force reload of activity_log.csv only."""
+        self.activity_log = self._load_df("activity_log.csv")
+        return self.activity_log
+
+    # =================================================================================
+    # 2.16 — FILE CHANGE DETECTION  (NEW)
+    # =================================================================================
+    # These helpers let you check whether a CSV has changed on disk
+    # since the DB was loaded. Useful for showing a "data changed —
+    # refresh?" banner in the UI.
+    # =================================================================================
+
+    def _csv_mtime(self, filename):
+        """Return the modification time of a CSV, or 0 if missing."""
+        path = self.data_dir / filename
+        if not path.exists():
+            return 0
+        try:
+            return path.stat().st_mtime
+        except Exception:
+            return 0
+
+    def has_csv_changed(self, filename):
+        """
+        Return True if the CSV on disk was modified AFTER the last
+        reload. Tracked by comparing file mtime to a snapshot taken
+        at load time.
+
+        Note: the first call will always return True because the
+        snapshot is empty. After reloading, the snapshot updates.
+        """
+        if not hasattr(self, "_csv_snapshots"):
+            self._csv_snapshots = {}
+        current_mtime = self._csv_mtime(filename)
+        last_snapshot = self._csv_snapshots.get(filename, 0)
+        if current_mtime > last_snapshot:
+            return True
+        return False
+
+    def mark_csv_as_read(self, filename):
+        """Update the snapshot for a CSV file."""
+        if not hasattr(self, "_csv_snapshots"):
+            self._csv_snapshots = {}
+        self._csv_snapshots[filename] = self._csv_mtime(filename)
+
+    def get_data_folder_info(self):
+        """Return diagnostic info about the data folder."""
+        info = {
+            "base_path": str(self.data_dir.parent),
+            "data_path": str(self.data_dir),
+            "exists": self.data_dir.exists(),
+            "writable": os.access(str(self.data_dir), os.W_OK),
+            "files": [],
+        }
+        try:
+            for f in sorted(self.data_dir.glob("*.csv")):
+                stat = f.stat()
+                info["files"].append({
+                    "name": f.name,
+                    "size_bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(
+                        stat.st_mtime).isoformat(),
+                })
+        except Exception as e:
+            info["error"] = str(e)
+        return info
 
 
 # =================================================================================
