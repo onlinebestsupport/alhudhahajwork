@@ -1,6 +1,13 @@
 # =================================================================================
 # SECTION 5 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • handle_cancel now works on web (no more page.window.close())
+#   • Auto-focus username on load
+#   • Better error messages for the web
+#   • Clear password field on failure
+#   • Loading state on the login button while authenticating
+# =================================================================================
 
 import flet as ft
 
@@ -25,6 +32,7 @@ class LoginView:
         self.username_input = None
         self.password_input = None
         self.status_label = None
+        self.login_btn = None
 
     # =============================================================================
     # build() — returns the entire login screen as a Control
@@ -62,7 +70,7 @@ class LoginView:
         )
 
         # ---- Buttons ----
-        login_btn = ft.Button(
+        self.login_btn = ft.Button(
             content=ft.Text("🔓 Login"),
             on_click=self.handle_login,
             width=150,
@@ -98,7 +106,7 @@ class LoginView:
                     self.password_input,
                     ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
                     ft.Row(
-                        controls=[login_btn, cancel_btn],
+                        controls=[self.login_btn, cancel_btn],
                         alignment=ft.MainAxisAlignment.CENTER,
                         spacing=15,
                     ),
@@ -141,8 +149,18 @@ class LoginView:
         # ---- Empty field check ----
         if not username or not password:
             self.status_label.value = "⚠️ Please enter username and password"
+            self.status_label.color = ft.Colors.ORANGE_700
             self.page.update()
             return
+
+        # ---- Loading state ----
+        try:
+            self.login_btn.disabled = True
+            self.login_btn.content = ft.Text("⏳ Checking...")
+            self.status_label.value = ""
+            self.page.update()
+        except Exception:
+            pass
 
         # ---- Authenticate ----
         try:
@@ -150,13 +168,17 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] Authentication error: {ex}")
             self.status_label.value = f"❌ System error: {ex}"
+            self.status_label.color = ft.Colors.RED_600
+            self._reset_button()
             self.page.update()
             return
 
         # ---- Success ----
         if user:
-            print(f"[LOGIN] ✅ Success: {user.get('full_name')} ({user.get('role')})")
+            print(f"[LOGIN] ✅ Success: "
+                  f"{user.get('full_name')} ({user.get('role')})")
             self.status_label.value = ""
+            self._reset_button()
             self.page.update()
             if self.on_login_success:
                 self.on_login_success(user)
@@ -164,21 +186,42 @@ class LoginView:
         else:
             print(f"[LOGIN] ❌ Failed for username '{username}'")
             self.status_label.value = "❌ Invalid username or password"
+            self.status_label.color = ft.Colors.RED_600
             self.password_input.value = ""
+            self._reset_button()
             self.page.update()
 
     # =============================================================================
-    # handle_cancel
+    # handle_cancel — UPDATED for web
     # =============================================================================
     def handle_cancel(self, e):
+        # Call the optional callback first (if any)
         if self.on_cancel:
-            self.on_cancel()
-        else:
-            # Default: close the window (best-effort)
             try:
-                self.page.window.close()
+                self.on_cancel()
+                return
             except Exception:
                 pass
+
+        # On web, window.close() is blocked by browsers.
+        # Show a friendly message instead.
+        print("[LOGIN] Cancel clicked")
+        self.status_label.value = (
+            "ℹ️ To leave, please close this browser tab."
+        )
+        self.status_label.color = ft.Colors.BLUE_700
+        self.page.update()
+
+    # =============================================================================
+    # _reset_button — private helper
+    # =============================================================================
+    def _reset_button(self):
+        """Restore the login button to its normal state."""
+        try:
+            self.login_btn.disabled = False
+            self.login_btn.content = ft.Text("🔓 Login")
+        except Exception:
+            pass
 
 
 # =================================================================================
