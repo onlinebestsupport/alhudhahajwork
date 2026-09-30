@@ -4,6 +4,10 @@
 # 12.2 — PaymentEditDialog   (edit existing payment)
 # 12.3 — PaymentsTab         (main tab)
 # 13.1 — PaymentDialog       (add new payment — FULL Section 13 features)
+#
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • refresh() reloads all CSVs from disk before rendering
+#   • All exports already use send_file_to_user (no changes)
 # =================================================================================
 
 import flet as ft
@@ -17,6 +21,7 @@ from core.helpers import (
     get_app_base_path,
     number_to_words_indian,
     format_currency_indian,
+    send_file_to_user,
 )
 from core.settings_manager import SettingsManager
 
@@ -189,6 +194,18 @@ class PaymentEditDialog:
                         f"Amount: ₹{amount:,.2f}")
                 except Exception:
                     pass
+
+                # ✅ Reload from disk
+                try:
+                    if hasattr(self.db, "reload_payments"):
+                        self.db.reload_payments()
+                    if hasattr(self.db, "reload_receipts"):
+                        self.db.reload_receipts()
+                    if hasattr(self.db, "reload_invoices"):
+                        self.db.reload_invoices()
+                except Exception:
+                    pass
+
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
                 if self.on_save:
@@ -294,7 +311,6 @@ class PaymentsTab:
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
-        # FIX: on_change set AFTER construction (Flet 1.0.0)
         self.status_filter = ft.Dropdown(
             label="Status",
             options=[
@@ -394,8 +410,21 @@ class PaymentsTab:
             "#e74c3c": "#c0392b", "#e67e22": "#ca6f1e",
         }.get(color, color)
 
+    # -----------------------------------------------------------------------------
+    # refresh — UPDATED: reload all CSVs from disk first
+    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
+            # ✅ Force reload from disk (fixes stale cache)
+            for mn in ("reload_payments", "reload_receipts",
+                       "reload_invoices", "reload_travelers",
+                       "reload_batches"):
+                if hasattr(self.db, mn):
+                    try:
+                        getattr(self.db, mn)()
+                    except Exception as ex:
+                        print(f"[PAYMENTS] {mn} failed: {ex}")
+
             self.payments = self.db.get_payments()
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
@@ -677,7 +706,6 @@ class PaymentsTab:
                 getSampleStyleSheet, ParagraphStyle)
             from reportlab.lib.enums import TA_CENTER, TA_LEFT
             from reportlab.lib.units import cm
-            from core.helpers import send_file_to_user
 
             company_name = "Alhudha Haj Travel"
             try:
@@ -910,7 +938,6 @@ class PaymentDialog:
         self.settings_manager = SettingsManager(db)
         self.payment_data = {}
 
-        # UI refs
         self.traveler_dropdown = None
         self.batch_label = None
         self.total_amount_label = None
@@ -925,7 +952,6 @@ class PaymentDialog:
         self.save_btn = None
         self.dialog = None
 
-        # State
         self._current_traveler_id = None
         self._batch_price = 0.0
         self._total_paid = 0.0
@@ -934,11 +960,7 @@ class PaymentDialog:
         if traveler:
             self.select_traveler(traveler.get('id'))
 
-    # =============================================================================
-    # 13.1.2 — setup_ui
-    # =============================================================================
     def setup_ui(self):
-        # Traveler dropdown
         traveler_options = []
         try:
             for t in self.db.get_travelers():
@@ -956,10 +978,8 @@ class PaymentDialog:
             options=traveler_options or [ft.dropdown.Option(
                 key="", text="No travelers available")],
             value="", height=48, text_size=12)
-        # FIX: on_change after construction
         self.traveler_dropdown.on_change = self.on_traveler_change
 
-        # Info labels
         self.batch_label = ft.Text("Not assigned", size=12,
                                    color="#2c3e50")
         self.total_amount_label = ft.Text("₹0", size=13,
@@ -979,7 +999,6 @@ class PaymentDialog:
                 control,
             ], spacing=8)
 
-        # Amount
         self.amount_field = ft.TextField(
             label="💵 Payment Amount (₹) *",
             value="0", height=48, text_size=13)
@@ -989,7 +1008,6 @@ class PaymentDialog:
                                        weight=ft.FontWeight.BOLD,
                                        color="#3498db")
 
-        # Method
         self.method_dropdown = ft.Dropdown(
             label="Payment Method",
             options=[
@@ -1002,23 +1020,19 @@ class PaymentDialog:
             ],
             value="Cash", height=48, text_size=12)
 
-        # Transaction ID
         self.trans_field = ft.TextField(
             label="Transaction ID (optional)",
             hint_text="Leave blank to auto-generate",
             height=48, text_size=12)
 
-        # Generate invoice
         self.generate_invoice_check = ft.Checkbox(
             label="Generate Invoice (GST/TCS will be applied)",
             value=False)
 
-        # Notes
         self.notes_field = ft.TextField(
             label="Notes", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
 
-        # Save / Cancel
         self.save_btn = ft.Button(
             content=ft.Text("💾 Record Payment"),
             on_click=self.save_payment,
@@ -1058,20 +1072,13 @@ class PaymentDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # =============================================================================
-    # 13.1.3 — select traveler
-    # =============================================================================
     def select_traveler(self, traveler_id):
-        """Programmatically select a traveler in the dropdown."""
         try:
             self.traveler_dropdown.value = str(traveler_id)
         except Exception:
             pass
         self.update_traveler_info()
 
-    # =============================================================================
-    # 13.1.4 — update_traveler_info
-    # =============================================================================
     def on_traveler_change(self, e):
         self.update_traveler_info()
 
@@ -1117,7 +1124,6 @@ class PaymentDialog:
                 pass
             return
 
-        # Find batch
         batch = None
         try:
             for b in self.db.get_batches():
@@ -1135,7 +1141,6 @@ class PaymentDialog:
         batch_name = batch.get('batch_name', 'Unknown')
         self._batch_price = batch_price
 
-        # Total paid
         try:
             payments = self.db.get_payments(traveler_id=tid)
             total_paid = sum(float(p.get('amount', 0) or 0)
@@ -1148,7 +1153,6 @@ class PaymentDialog:
         if pending < 0:
             pending = 0
 
-        # Update labels
         self.batch_label.value = f"{batch_name} (₹{batch_price:,.2f})"
         self.total_amount_label.value = f"₹{batch_price:,.2f}"
         self.total_paid_label.value = f"₹{total_paid:,.2f}"
@@ -1156,7 +1160,6 @@ class PaymentDialog:
         self.pending_amount_label.color = (
             "#27ae60" if pending <= 0 else "#e74c3c")
 
-        # Enable/disable save
         if pending <= 0:
             self.save_btn.disabled = True
             self.amount_field.disabled = True
@@ -1164,7 +1167,6 @@ class PaymentDialog:
         else:
             self.save_btn.disabled = False
             self.amount_field.disabled = False
-            # Default to pending amount
             self.amount_field.value = f"{pending:.2f}"
 
         self.on_amount_changed(None)
@@ -1174,9 +1176,6 @@ class PaymentDialog:
         except Exception:
             pass
 
-    # =============================================================================
-    # 13.1.5 — on_amount_changed
-    # =============================================================================
     def on_amount_changed(self, e):
         pending = self._batch_price - self._total_paid
         if pending < 0:
@@ -1202,9 +1201,6 @@ class PaymentDialog:
         except Exception:
             pass
 
-    # =============================================================================
-    # 13.1.6 — save_payment
-    # =============================================================================
     def save_payment(self, e):
         try:
             tid = self.traveler_dropdown.value
@@ -1220,7 +1216,6 @@ class PaymentDialog:
                 self._snack("⚠️ Please enter a valid amount")
                 return
 
-            # Recheck pending
             traveler = self.db.get_traveler_by_id(tid)
             batch_id = traveler.get('batch_id') if traveler else None
 
@@ -1248,7 +1243,6 @@ class PaymentDialog:
                     f"(₹{pending_before:,.2f})")
                 return
 
-            # Optional invoice
             invoice_id = ''
             if self.generate_invoice_check.value and batch_id:
                 tax = self.settings_manager.get_tax_settings()
@@ -1264,7 +1258,6 @@ class PaymentDialog:
                 except Exception as inv_ex:
                     print(f"[INVOICE] failed: {inv_ex}")
 
-            # Build payment data
             trans_id = (self.trans_field.value or '').strip()
             if not trans_id:
                 trans_id = str(uuid.uuid4())[:8]
@@ -1288,7 +1281,17 @@ class PaymentDialog:
             except Exception:
                 pass
 
-            # Summary
+            # ✅ Reload from disk after adding
+            try:
+                if hasattr(self.db, "reload_payments"):
+                    self.db.reload_payments()
+                if hasattr(self.db, "reload_receipts"):
+                    self.db.reload_receipts()
+                if hasattr(self.db, "reload_invoices"):
+                    self.db.reload_invoices()
+            except Exception:
+                pass
+
             new_total = total_paid + amount
             new_pending = batch_price - new_total
             if new_pending < 0:
