@@ -2,6 +2,14 @@
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
 # Actions use a single compact ⋮ popup menu (always visible)
+#
+# PATCHES APPLIED (v1.1):
+#   14.1.A — refresh()   : force DB reload before reading (fresh cache)
+#   14.1.B — display_invoices(): action menu captures invoice ID, re-fetches
+#                                latest row before every handler (no stale dict)
+#   14.3.A — InvoiceModifyDialog.save() : prefer db.update_invoice()
+#   14.3.B — Cascade: status → paid creates/syncs payment record
+#   14.3.C — Cascade: status leaves paid → deletes auto-created payment
 # =================================================================================
 
 import flet as ft
@@ -55,7 +63,7 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # setup_ui
+    # 14.1.1 — setup_ui
     # =============================================================================
     def setup_ui(self):
         # ---- TAX INFO BAR ----
@@ -251,7 +259,7 @@ class InvoicesTab:
         }.get(color, color)
 
     # =============================================================================
-    # Helpers
+    # 14.1.2 — Helpers
     # =============================================================================
     def safe_float(self, value, default=0.0):
         if value is None:
@@ -309,10 +317,22 @@ class InvoicesTab:
             pass
 
     # =============================================================================
-    # refresh
+    # 14.1.3 — refresh  (PATCH 14.1.A: force DB reload before reading)
     # =============================================================================
     def refresh(self, e=None):
         try:
+            # ---- PATCH 14.1.A: fresh cache reload ----
+            # Other tabs (payments, receipts, batches) may have written to
+            # disk since our last read. Re-hydrate the DB so every get_*
+            # call below returns current data — not a stale in-memory snapshot.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _reload_err:
+                print(f"[InvoicesTab.refresh] reload skipped: {_reload_err}")
+
             self.invoices = self.db.get_invoices()
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
@@ -358,7 +378,9 @@ class InvoicesTab:
             traceback.print_exc()
 
     # =============================================================================
-    # display_invoices  (compact ⋮ menu per row)
+    # 14.1.4 — display_invoices
+    #   (compact ⋮ menu; PATCH 14.1.B: capture invoice ID, re-fetch latest
+    #    dict on every action so no stale snapshot is ever passed to a dialog)
     # =============================================================================
     def display_invoices(self, invoices=None):
         if invoices is None:
@@ -408,8 +430,29 @@ class InvoicesTab:
                 pkg_txt = "N/A"
                 pkg_color = "#95a5a6"
 
-            # ---- COMPACT ACTIONS MENU ----
-            def _make_actions_menu(ii):
+            # ------------------------------------------------------------
+            # PATCH 14.1.B — capture ID (not dict), re-fetch before dispatch
+            # ------------------------------------------------------------
+            inv_id = inv.get('id')
+
+            def _make_actions_menu(_inv_id=inv_id):
+                def _fresh():
+                    """Return the latest in-memory version of this invoice."""
+                    return next(
+                        (x for x in self.invoices
+                         if x.get('id') == _inv_id), None)
+
+                def _wrap(handler):
+                    def h(e, _h=handler, _f=_fresh):
+                        fresh = _f()
+                        if fresh is None:
+                            self._snack("⚠️ Invoice no longer exists — "
+                                        "refreshing…")
+                            self.refresh()
+                            return
+                        _h(fresh)
+                    return h
+
                 return ft.PopupMenuButton(
                     icon=ft.Icons.MORE_VERT,
                     icon_color="#3498db",
@@ -418,36 +461,30 @@ class InvoicesTab:
                     items=[
                         ft.PopupMenuItem(
                             content=ft.Text("👁️  View Details"),
-                            on_click=(lambda e, x=ii:
-                                      self.view_invoice_details(x))),
+                            on_click=_wrap(self.view_invoice_details)),
                         ft.PopupMenuItem(
                             content=ft.Text("✏️  Modify Invoice"),
-                            on_click=(lambda e, x=ii:
-                                      self.modify_invoice(x))),
+                            on_click=_wrap(self.modify_invoice)),
                         ft.PopupMenuItem(),
                         ft.PopupMenuItem(
                             content=ft.Text("📄  Export PDF"),
-                            on_click=(lambda e, x=ii:
-                                      self.export_invoice_to_pdf(x))),
+                            on_click=_wrap(self.export_invoice_to_pdf)),
                         ft.PopupMenuItem(
                             content=ft.Text("📊  Export Excel"),
-                            on_click=(lambda e, x=ii:
-                                      self.export_invoice_to_excel(x))),
+                            on_click=_wrap(self.export_invoice_to_excel)),
                         ft.PopupMenuItem(
                             content=ft.Text("🖨️  Print Invoice"),
-                            on_click=(lambda e, x=ii:
-                                      self.print_invoice(x))),
+                            on_click=_wrap(self.print_invoice)),
                         ft.PopupMenuItem(),
                         ft.PopupMenuItem(
                             content=ft.Text("🗑️  Delete"),
-                            on_click=(lambda e, x=ii:
-                                      self.delete_invoice(x))),
+                            on_click=_wrap(self.delete_invoice)),
                     ],
                 )
 
             self.table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(_make_actions_menu(inv)),      # ← MENU
+                    ft.DataCell(_make_actions_menu()),         # ← MENU
                     ft.DataCell(ft.Text(inv_no, size=10,
                                         weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(date_str, size=10)),
@@ -480,7 +517,7 @@ class InvoicesTab:
                 ]))
 
     # =============================================================================
-    # Stats
+    # 14.1.5 — Stats
     # =============================================================================
     def update_summary_stats(self):
         total_inv = len(self.invoices)
@@ -512,7 +549,7 @@ class InvoicesTab:
             pkg_pending)
 
     # =============================================================================
-    # Filter
+    # 14.1.6 — Filter
     # =============================================================================
     def apply_filters(self, e=None):
         status = self.status_filter.value or "All"
@@ -534,7 +571,7 @@ class InvoicesTab:
             pass
 
     # =============================================================================
-    # CRUD
+    # 14.1.7 — CRUD
     # =============================================================================
     def generate_invoice(self, e):
         dlg = InvoiceDialog(self.page, self.db, self.current_user,
@@ -594,7 +631,7 @@ class InvoicesTab:
         dlg.show()
 
     # =============================================================================
-    # Export PDF
+    # 14.1.8 — Export PDF
     # =============================================================================
     def export_invoice_to_pdf(self, invoice):
         try:
@@ -1073,7 +1110,7 @@ class InvoicesTab:
         }
 
     # =============================================================================
-    # Export Excel
+    # 14.1.9 — Export Excel
     # =============================================================================
     def export_invoice_to_excel(self, invoice):
         try:
@@ -1321,6 +1358,9 @@ class InvoiceDialog:
         self.setup_ui()
         self.load_tax_rates()
 
+    # -----------------------------------------------------------------------------
+    # 14.2.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         traveler_opts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
@@ -1439,6 +1479,9 @@ class InvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+    # -----------------------------------------------------------------------------
+    # 14.2.2 — load_tax_rates
+    # -----------------------------------------------------------------------------
     def load_tax_rates(self):
         tax = self.settings_manager.get_tax_settings()
         try:
@@ -1452,6 +1495,9 @@ class InvoiceDialog:
         self.tcs_field.value = str(tcs)
         self.recalculate(None)
 
+    # -----------------------------------------------------------------------------
+    # 14.2.3 — on_traveler_change
+    # -----------------------------------------------------------------------------
     def on_traveler_change(self, e):
         tid = self.traveler_dd.value
         if not tid:
@@ -1486,6 +1532,9 @@ class InvoiceDialog:
             self.generate_btn.disabled = True
         self.recalculate(None)
 
+    # -----------------------------------------------------------------------------
+    # 14.2.4 — on_disc_type_change
+    # -----------------------------------------------------------------------------
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
             self.discount_value.label = "🎁 Discount Amount (₹)"
@@ -1498,6 +1547,9 @@ class InvoiceDialog:
             pass
         self.recalculate(None)
 
+    # -----------------------------------------------------------------------------
+    # 14.2.5 — recalculate
+    # -----------------------------------------------------------------------------
     def recalculate(self, e):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1551,6 +1603,9 @@ class InvoiceDialog:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # 14.2.6 — save
+    # -----------------------------------------------------------------------------
     def save(self, e):
         tid = self.traveler_dd.value
         if not tid:
@@ -1615,6 +1670,7 @@ class InvoiceDialog:
 
 # =================================================================================
 # 14.3 — CLASS: InvoiceModifyDialog
+#   PATCHES 14.3.A / B / C — prefer db.update_invoice(), cascade paid status
 # =================================================================================
 class InvoiceModifyDialog:
 
@@ -1637,10 +1693,14 @@ class InvoiceModifyDialog:
         self.taxable_lbl = None
         self.rounded_lbl = None
         self.dialog = None
+        self._computed = {}
 
         self.setup_ui()
         self.load_data()
 
+    # -----------------------------------------------------------------------------
+    # 14.3.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         self.amount_field = ft.TextField(
             label="Base Amount (₹)", height=48, text_size=12)
@@ -1727,6 +1787,9 @@ class InvoiceModifyDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+    # -----------------------------------------------------------------------------
+    # 14.3.2 — load_data
+    # -----------------------------------------------------------------------------
     def load_data(self):
         inv = self.invoice
         self.amount_field.value = f"{self._f(inv.get('amount', 0)):.2f}"
@@ -1757,6 +1820,9 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             return d
 
+    # -----------------------------------------------------------------------------
+    # 14.3.3 — recalc
+    # -----------------------------------------------------------------------------
     def recalc(self, e=None):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1808,9 +1874,20 @@ class InvoiceModifyDialog:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # 14.3.4 — save  (PATCH 14.3.A: prefer db.update_invoice)
+    # -----------------------------------------------------------------------------
     def save(self, e):
         try:
             c = self._computed
+            if not c:
+                # ensure recalc ran at least once
+                self.recalc(None)
+                c = self._computed
+
+            new_status = (self.status_dd.value or 'pending').lower()
+            old_status = str(self.invoice.get('status', 'pending')).lower()
+
             update = {
                 'amount': float(self.amount_field.value or 0),
                 'discount_percentage': c['discount_pct'],
@@ -1822,19 +1899,39 @@ class InvoiceModifyDialog:
                 'tcs_amount': c['tcs_amt'],
                 'total_amount': c['total'],
                 'rounded_total': c['rounded'],
-                'status': self.status_dd.value or 'pending',
+                'status': new_status,
                 'notes': (self.notes_field.value or '').strip(),
             }
-            for k, v in update.items():
-                self.db.invoices.loc[
-                    self.db.invoices['id'] == self.invoice['id'], k] = v
-            self.db._save_df(self.db.invoices, "invoices.csv")
+
+            # ---- PATCH 14.3.A: use DB method when available so cascade
+            #      hooks / audit fields fire consistently ----
+            if hasattr(self.db, "update_invoice"):
+                self.db.update_invoice(self.invoice['id'], **update)
+            else:
+                for k, v in update.items():
+                    self.db.invoices.loc[
+                        self.db.invoices['id'] == self.invoice['id'], k] = v
+                self.db._save_df(self.db.invoices, "invoices.csv")
+
+            # ---- PATCH 14.3.B / 14.3.C: cascade status change ----
+            tid = self.invoice.get('traveler_id', '')
+            inv_id = self.invoice.get('id')
+            try:
+                if new_status == 'paid' and old_status != 'paid':
+                    self._cascade_mark_paid(tid, inv_id, c['rounded'])
+                elif new_status != 'paid' and old_status == 'paid':
+                    self._cascade_unmark_paid(tid, inv_id)
+            except Exception as _ce:
+                print(f"[InvoiceModifyDialog] cascade error: {_ce}")
+
             try:
                 self.db.log_activity(
                     self.current_user['id'], "modify_invoice",
-                    f"Modified invoice {self.invoice.get('invoice_no', '')}")
+                    f"Modified invoice {self.invoice.get('invoice_no', '')} "
+                    f"({old_status} → {new_status})")
             except Exception:
                 pass
+
             self.page.pop_dialog()
             self._snack("✅ Invoice updated")
             if self.on_save:
@@ -1843,6 +1940,105 @@ class InvoiceModifyDialog:
             import traceback
             traceback.print_exc()
             self._snack(f"❌ {ex}")
+
+    # -----------------------------------------------------------------------------
+    # 14.3.5 — _cascade_mark_paid  (PATCH 14.3.B)
+    #   When invoice status flips to 'paid', create/sync the payment record
+    #   so traveler_paid + Pkg-Pending stay consistent across tabs.
+    # -----------------------------------------------------------------------------
+    def _cascade_mark_paid(self, traveler_id, invoice_id, amount):
+        if not traveler_id or amount is None or amount <= 0:
+            return
+        try:
+            # Look for an existing payment linked to this invoice
+            existing = None
+            try:
+                payments = self.db.get_payments(traveler_id) or []
+            except Exception:
+                payments = []
+            for p in payments:
+                if str(p.get('invoice_id', '')) == str(invoice_id):
+                    existing = p
+                    break
+
+            if existing:
+                # Sync amount if drifted
+                try:
+                    cur = float(existing.get('amount', 0) or 0)
+                except Exception:
+                    cur = 0.0
+                if abs(cur - float(amount)) > 0.01:
+                    if hasattr(self.db, "update_payment"):
+                        self.db.update_payment(
+                            existing['id'],
+                            amount=float(amount),
+                            notes="Auto-synced via invoice status")
+                    else:
+                        self.db.payments.loc[
+                            self.db.payments['id'] == existing['id'],
+                            'amount'] = float(amount)
+                        self.db._save_df(self.db.payments, "payments.csv")
+            else:
+                payload = {
+                    'traveler_id': traveler_id,
+                    'invoice_id': invoice_id,
+                    'amount': float(amount),
+                    'payment_date': datetime.now().strftime("%Y-%m-%d"),
+                    'method': 'Auto (invoice status)',
+                    'notes': 'Auto-created when invoice marked paid',
+                }
+                if hasattr(self.db, "add_payment"):
+                    try:
+                        # Support both signatures: add_payment(dict) or
+                        # add_payment(**kwargs)
+                        self.db.add_payment(payload)
+                    except TypeError:
+                        self.db.add_payment(**payload)
+                else:
+                    # Very old schema — append to DataFrame directly
+                    try:
+                        self.db.payments = pd.concat(
+                            [self.db.payments,
+                             pd.DataFrame([payload])],
+                            ignore_index=True)
+                        self.db._save_df(self.db.payments, "payments.csv")
+                    except Exception as _e:
+                        print(f"[cascade_mark_paid fallback] {_e}")
+        except Exception as ex:
+            print(f"[cascade_mark_paid] {ex}")
+
+    # -----------------------------------------------------------------------------
+    # 14.3.6 — _cascade_unmark_paid  (PATCH 14.3.C)
+    #   Status moved OUT of 'paid' → delete only auto-generated payments
+    #   (never delete a real payment the user entered manually).
+    # -----------------------------------------------------------------------------
+    def _cascade_unmark_paid(self, traveler_id, invoice_id):
+        if not traveler_id:
+            return
+        try:
+            try:
+                payments = self.db.get_payments(traveler_id) or []
+            except Exception:
+                payments = []
+
+            target = None
+            for p in payments:
+                if (str(p.get('invoice_id', '')) == str(invoice_id)
+                        and 'auto' in str(p.get('method', '')).lower()):
+                    target = p
+                    break
+
+            if not target:
+                return
+
+            if hasattr(self.db, "delete_payment"):
+                self.db.delete_payment(target['id'])
+            else:
+                self.db.payments = self.db.payments[
+                    self.db.payments['id'] != target['id']]
+                self.db._save_df(self.db.payments, "payments.csv")
+        except Exception as ex:
+            print(f"[cascade_unmark_paid] {ex}")
 
     def show(self):
         self.page.show_dialog(self.dialog)
@@ -1885,6 +2081,9 @@ class InvoiceDetailsDialog:
         except (ValueError, TypeError):
             return d
 
+    # -----------------------------------------------------------------------------
+    # 14.4.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         inv = self.invoice
         tid = inv.get('traveler_id', '')
@@ -2004,6 +2203,9 @@ class ManualInvoiceDialog:
         self.dialog = None
         self.setup_ui()
 
+    # -----------------------------------------------------------------------------
+    # 14.5.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         topts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
@@ -2147,6 +2349,9 @@ class ManualInvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+    # -----------------------------------------------------------------------------
+    # 14.5.2 — refresh_items
+    # -----------------------------------------------------------------------------
     def refresh_items(self):
         self.items_table.rows.clear()
         for i, item in enumerate(self.item_rows):
@@ -2211,6 +2416,9 @@ class ManualInvoiceDialog:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # 14.5.3 — generate_invoice
+    # -----------------------------------------------------------------------------
     def generate_invoice(self):
         if not self.item_rows:
             self._snack("⚠️ Add at least one item")
