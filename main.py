@@ -14,11 +14,28 @@
 #   • Host is bound to 0.0.0.0 so external connections work
 #   • Falls back to port 8000 when PORT is not set (local dev)
 #   • Serves /static/ folder so downloaded files work in the browser
+#
+# PATCHES APPLIED (v1.1):
+#   21.1.A — Cloud environment detection (RAILWAY_ENVIRONMENT etc.) with a
+#            clearer startup banner that names the platform.
+#   21.1.B — Defensive window-close handler (`page.window.close()` is a
+#            no-op on web — was raising AttributeError and killing the
+#            Cancel button).
+#   21.1.C — Flet 1.0 window sizing via `page.window.width/height` (the old
+#            `page.window_width` attribute still works, but new API is
+#            preferred). Kept both paths for compat.
+#   21.1.D — Friendly error page if HajDatabase() fails to init, instead
+#            of an unhandled exception that shows Railway a 500.
+#   21.1.E — Graceful SIGTERM handling so Railway redeploys don't leave
+#            half-written CSVs on the volume.
 # =================================================================================
 
 import flet as ft
 import os
 import sys
+import signal
+import threading
+import logging
 from datetime import datetime
 
 from core.helpers import get_app_base_path
@@ -38,50 +55,140 @@ from core.main_window import MainWindowView
 APP_PORT = int(os.getenv("PORT", 8000))
 APP_HOST = "0.0.0.0"          # MUST be 0.0.0.0 for cloud hosting
 
+# ---- Cloud platform detection (best-effort) ----
+def _detect_platform() -> str:
+    env = os.environ
+    if env.get("RAILWAY_ENVIRONMENT") or env.get("RAILWAY_PROJECT_ID"):
+        return "Railway"
+    if env.get("RENDER") or env.get("RENDER_SERVICE_ID"):
+        return "Render"
+    if env.get("FLY_APP_NAME"):
+        return "Fly.io"
+    if env.get("DYNO"):
+        return "Heroku"
+    if env.get("PORT"):
+        # Generic "PaaS" — a PORT env var was injected
+        return "PaaS (PORT env)"
+    return "Local / Desktop"
+
+PLATFORM = _detect_platform()
+IS_CLOUD = PLATFORM != "Local / Desktop"
+
+log = logging.getLogger("main")
+
 
 # =================================================================================
 # 21.2 — CLASS: HajTravelApp
 # =================================================================================
 class HajTravelApp:
 
+    # -----------------------------------------------------------------------------
+    # 21.2.1 — __init__ (diagnostics + DB init with friendly failure)
+    # -----------------------------------------------------------------------------
     def __init__(self):
-        # ---- 21.2.1.1 — Diagnostics ----
         base_path = get_app_base_path()
-        print("=" * 60)
-        print("🏆 Alhudha Haj Travel System — Web Edition")
-        print(f"📁 Base path: {base_path}")
-        print(f"📁 Data dir : {os.path.join(base_path, 'data')}")
-        print(f"📁 Static   : {os.path.join(base_path, 'static')}")
-        print(f"🌐 Host     : {APP_HOST}")
-        print(f"🚪 Port     : {APP_PORT}")
-        print(f"🕐 Started  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("=" * 60)
+        data_dir = os.path.join(base_path, "data")
+        static_dir = os.path.join(base_path, "static")
 
-        # ---- 21.2.1.2 — Instantiate DB once (shared across sessions) ----
+        print("=" * 66)
+        print("🏆  Alhudha Haj Travel System — Web Edition")
+        print(f"📦  Platform   : {PLATFORM}")
+        print(f"📁  Base path  : {base_path}")
+        print(f"📁  Data dir   : {data_dir}")
+        print(f"📁  Static dir : {static_dir}")
+        print(f"🌐  Host       : {APP_HOST}")
+        print(f"🚪  Port       : {APP_PORT} (PORT env = "
+              f"{os.getenv('PORT', '<unset>')})")
+        print(f"🕐  Started    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
+            print(f"💾  Volume     : {os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}")
+        print("=" * 66)
+
+        # ---- PATCH 21.1.D: friendly DB init failure ----
         try:
             self.db = HajDatabase()
-            print("✅ Database loaded successfully")
+            print("✅  Database loaded successfully")
+            self._db_ready = True
         except Exception as ex:
-            print(f"❌ Database init failed: {ex}")
-            raise
+            print(f"❌  Database init failed: {ex}")
+            import traceback
+            traceback.print_exc()
+            self.db = None
+            self._db_ready = False
+            self._db_error = str(ex)
+
+        # ---- PATCH 21.1.E: graceful SIGTERM handling ----
+        self._install_signal_handlers()
+
+    # -----------------------------------------------------------------------------
+    # 21.2.1b — _install_signal_handlers  (PATCH 21.1.E)
+    # -----------------------------------------------------------------------------
+    def _install_signal_handlers(self):
+        """Railway sends SIGTERM before killing the container. Give the
+        DB layer a moment to flush any buffered writes so the volume
+        doesn't end up with half-written CSVs."""
+        def _handler(signum, frame):
+            log.info("Received signal %s — flushing DB before exit…",
+                     signum)
+            try:
+                if self.db is not None:
+                    flush = getattr(self.db, "flush", None) \
+                        or getattr(self.db, "_save_all", None)
+                    if callable(flush):
+                        flush()
+            except Exception as e:
+                log.warning("DB flush on shutdown failed: %s", e)
+            # Let Flet / uvicorn do its own shutdown
+            sys.exit(0)
+
+        try:
+            signal.signal(signal.SIGTERM, _handler)
+            signal.signal(signal.SIGINT, _handler)
+        except Exception as e:
+            # Windows / threads without signal permissions — harmless
+            log.debug("Could not install signal handlers: %s", e)
 
     # =============================================================================
-    # 21.2.2 — Show login / main window
+    # 21.2.2 — run(page)
     # =============================================================================
     def run(self, page: ft.Page):
         """Main entry point called by ft.run()."""
         page.title = "Alhudha Haj Travel System"
         page.theme_mode = ft.ThemeMode.LIGHT
         page.padding = 0
-        # Only apply window sizing when running as desktop — on web
-        # these are ignored by the browser.
+
+        # ---- PATCH 21.1.C: Flet 1.0 window sizing ----
+        # Try the new nested API first (page.window.width/height), then the
+        # old flat API (page.window_width/height). Both are best-effort —
+        # on web they're ignored by the browser anyway.
         try:
-            page.window_width = 1400
-            page.window_height = 900
+            page.window.width = 1400
+            page.window.height = 900
         except Exception:
-            pass
+            try:
+                page.window_width = 1400
+                page.window_height = 900
+            except Exception:
+                pass
+
+        # ---- PATCH 21.1.D: bail out with a friendly screen if DB is down ----
+        if not self._db_ready:
+            self._show_db_error(page)
+            return
 
         state = {"user": None}
+
+        # ---- PATCH 21.1.B: defensive window-close handler ----
+        def _close_window():
+            """Flet 1.0 on web cannot close the browser tab; the call
+            raises, so swallow it and just log."""
+            try:
+                page.window.close()
+            except Exception:
+                try:
+                    page.window_close()
+                except Exception:
+                    log.debug("window.close() is a no-op in web mode")
 
         # ---- Show login screen ----
         def show_login():
@@ -90,7 +197,7 @@ class HajTravelApp:
                 page=page,
                 db=self.db,
                 on_login_success=on_login_success,
-                on_cancel=lambda: page.window.close(),
+                on_cancel=_close_window,
             )
             page.add(login.build())
             page.update()
@@ -107,8 +214,8 @@ class HajTravelApp:
                 try:
                     self.db.log_activity(
                         user['id'], "logout", "User logged out")
-                except Exception:
-                    pass
+                except Exception as ex:
+                    log.warning("Logout log failed: %s", ex)
             state["user"] = None
             show_login()
 
@@ -129,6 +236,41 @@ class HajTravelApp:
         # ---- Start ----
         show_login()
 
+    # -----------------------------------------------------------------------------
+    # 21.2.2b — _show_db_error  (PATCH 21.1.D)
+    # -----------------------------------------------------------------------------
+    def _show_db_error(self, page: ft.Page):
+        """Render a friendly error card when HajDatabase() couldn't init."""
+        try:
+            page.controls.clear()
+            page.add(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.STORAGE, size=64,
+                            color=ft.Colors.RED_400),
+                    ft.Text("Database unavailable", size=22,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.RED_700),
+                    ft.Text(
+                        "The application could not open its data files.\n"
+                        "If this is a cloud deployment, verify that a "
+                        "persistent volume is attached and writable.",
+                        size=12, color=ft.Colors.GREY_600,
+                        text_align=ft.TextAlign.CENTER),
+                    ft.Container(height=8),
+                    ft.Text(f"Details: {getattr(self, '_db_error', '')}",
+                            size=11, color=ft.Colors.GREY_500,
+                            selectable=True,
+                            text_align=ft.TextAlign.CENTER),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                   spacing=12),
+                padding=60, alignment=ft.Alignment.CENTER,
+                expand=True, bgcolor="#fef2f2",
+                border_radius=12,
+                border=ft.Border.all(1, "#fecaca")))
+            page.update()
+        except Exception as ex:
+            log.error("Could not render DB error page: %s", ex)
+
 
 # =================================================================================
 # 21.3 — ENTRY POINT
@@ -143,9 +285,13 @@ if __name__ == "__main__":
     static_dir = os.path.join(get_app_base_path(), "static")
     os.makedirs(static_dir, exist_ok=True)
 
+    # PATCH 21.1.A — log which entry mode we're launching in.
+    log.info("Launching Flet — view=WEB_BROWSER, host=%s, port=%s "
+             "(platform=%s)", APP_HOST, APP_PORT, PLATFORM)
+
     ft.run(
         main,
-        view=ft.AppView.WEB_BROWSER,
+        view=ft.AppView.WEB_BROWSER,   # OK on cloud — auto-open is a no-op
         host=APP_HOST,
         port=APP_PORT,
         assets_dir=static_dir,
