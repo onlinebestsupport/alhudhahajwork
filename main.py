@@ -13,6 +13,7 @@
 #   • Port is read from the PORT environment variable
 #   • Host is bound to 0.0.0.0 so external connections work
 #   • Falls back to port 8000 when PORT is not set (local dev)
+#   • Serves /static/ folder so downloaded files work in the browser
 # =================================================================================
 
 import flet as ft
@@ -50,6 +51,7 @@ class HajTravelApp:
         print("🏆 Alhudha Haj Travel System — Web Edition")
         print(f"📁 Base path: {base_path}")
         print(f"📁 Data dir : {os.path.join(base_path, 'data')}")
+        print(f"📁 Static   : {os.path.join(base_path, 'static')}")
         print(f"🌐 Host     : {APP_HOST}")
         print(f"🚪 Port     : {APP_PORT}")
         print(f"🕐 Started  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -137,9 +139,14 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
+    # Determine the static folder path (used for /static/ URL serving)
+    static_dir = os.path.join(get_app_base_path(), "static")
+    os.makedirs(static_dir, exist_ok=True)
+
     ft.run(
         main,
         view=ft.AppView.WEB_BROWSER,
         host=APP_HOST,
         port=APP_PORT,
+        assets_dir=static_dir,
     )

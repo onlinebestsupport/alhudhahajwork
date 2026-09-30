@@ -5,6 +5,7 @@
 import os
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 
 # =================================================================================
@@ -125,22 +126,49 @@ def format_currency_indian(amount):
 
 
 # =================================================================================
-# 1.4 — FUNCTION: get_app_base_path   (UPDATED FOR WEB)
+# 1.4 — FUNCTION: get_app_base_path   (UPDATED — with diagnostic log)
 # =================================================================================
 # In the desktop app, this pointed to the folder containing the .exe or script.
 # In the Flet web app, this always points to the FLET_HAJ root folder on the SERVER.
+#
+# On Railway, this resolves to: /app
+# On your local PC, this resolves to: C:\Users\Masood\Desktop\FLET_HAJ
+_BASE_PATH_CACHE = None
+
+
 def get_app_base_path():
     """Returns the base directory of the app (server-side)."""
-    # helpers.py is inside FLET_HAJ/core/
-    # .parent → core/
-    # .parent.parent → FLET_HAJ/
-    return str(Path(__file__).resolve().parent.parent)
+    global _BASE_PATH_CACHE
+    if _BASE_PATH_CACHE is None:
+        _BASE_PATH_CACHE = str(Path(__file__).resolve().parent.parent)
+        print(f"[HELPERS] Base path resolved to: {_BASE_PATH_CACHE}")
+    return _BASE_PATH_CACHE
 
 
 # =================================================================================
-# 1.5 — FUNCTION: open_file_with_default_app   (REPLACED FOR WEB)
+# 1.4b — FUNCTION: get_data_path   (NEW)
 # =================================================================================
-# NOTE: On the web, you CANNOT open files on the user's PC from the server.
+def get_data_path():
+    """Returns the data folder path (creates it if missing)."""
+    p = Path(get_app_base_path()) / "data"
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+
+# =================================================================================
+# 1.4c — FUNCTION: get_static_path   (NEW)
+# =================================================================================
+def get_static_path():
+    """Returns the static folder path (for browser-downloadable files)."""
+    p = Path(get_app_base_path()) / "static"
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+
+# =================================================================================
+# 1.5 — FUNCTION: open_file_with_default_app   (WEB STUB)
+# =================================================================================
+# On the web, you CANNOT open files on the user's PC from the server.
 # Instead, when a user clicks "Open PDF", we trigger a browser DOWNLOAD.
 #
 # The function below is kept as a NO-OP fallback so any old code that calls
@@ -149,14 +177,14 @@ def get_app_base_path():
 def open_file_with_default_app(path):
     """
     Desktop-only helper. On web this does nothing and returns False.
-    Use ft.FilePicker + page.launch_url() to download files instead.
+    Use send_file_to_user() + page.launch_url() to download files instead.
     """
     print(f"[WEB] open_file_with_default_app is disabled on web. File: {path}")
     return False
 
 
 # =================================================================================
-# 1.6 — NEW HELPER: send_file_to_user   (FLET-SPECIFIC)
+# 1.6 — FUNCTION: send_file_to_user   (FLET-SPECIFIC)
 # =================================================================================
 def send_file_to_user(page, file_path: str, label: str = "Download"):
     """
@@ -164,8 +192,8 @@ def send_file_to_user(page, file_path: str, label: str = "Download"):
 
     HOW IT WORKS:
       1. Copies the file to the app's static folder (so the browser can reach it).
-      2. Returns a download URL that you can attach to an ft.ElevatedButton
-         (or open with page.launch_url()).
+      2. Returns a download URL that you can attach to a button or open with
+         page.launch_url().
 
     USAGE EXAMPLE (inside a Flet event handler):
 
@@ -175,24 +203,21 @@ def send_file_to_user(page, file_path: str, label: str = "Download"):
             page.launch_url(url)
 
     IMPORTANT:
-      - The `FLET_HAJ/static/` folder must exist and be registered with ft.app().
-      - Never expose your real DB folder as static — only use the exports folder.
+      - The `FLET_HAJ/static/` folder must exist and be registered with
+        ft.run(..., assets_dir="static").
     """
-    import shutil
-    from pathlib import Path
-
-    # Ensure static folder exists
-    base = Path(get_app_base_path())
-    static_dir = base / "static"
-    static_dir.mkdir(exist_ok=True)
-
     src = Path(file_path)
     if not src.exists():
         print(f"[WEB] File not found: {file_path}")
         return None
 
+    static_dir = Path(get_static_path())
     dst = static_dir / src.name
-    shutil.copy2(src, dst)
+    try:
+        shutil.copy2(src, dst)
+    except Exception as e:
+        print(f"[WEB] Failed to copy to static: {e}")
+        return None
 
     # Build a relative URL. Flet serves /static/ from the root.
     return f"/static/{src.name}"
@@ -205,24 +230,21 @@ def send_file_to_user(page, file_path: str, label: str = "Download"):
 #   Unchanged — they are pure Python and work identically on web.
 #
 # • get_app_base_path:
-#   Now points to FLET_HAJ/ (the root of your web project) instead of the
-#   folder containing the .exe. All folder paths (data, uploads, exports,
-#   static) are built relative to this.
+#   Points to FLET_HAJ/ (root of your web project).
+#   Prints the resolved path once on first call — check Railway logs to verify.
+#
+# • get_data_path (NEW):
+#   Returns the data folder — use this in database.py instead of hardcoding.
+#
+# • get_static_path (NEW):
+#   Returns the static folder — used by send_file_to_user().
 #
 # • open_file_with_default_app:
 #   Kept as a stub to avoid breaking any code that still calls it.
-#   On the web you must download files through the browser instead.
 #
-# • send_file_to_user (NEW):
+# • send_file_to_user:
 #   The web-equivalent of "open file". Copies the file into /static/ and
 #   returns a URL the browser can download from.
-#
-# • test_check (recommended):
-#   After every section migration, run this in a Python shell:
-#       from core.helpers import format_currency_indian
-#       print(format_currency_indian(1234567))  # → ₹12,34,567
-#   If it prints correctly, Section 1 is OK.
-
 # =================================================================================
 # SECTION 1 END (FLET VERSION)
 # =================================================================================
