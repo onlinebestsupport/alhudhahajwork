@@ -1,0 +1,740 @@
+# =================================================================================
+# SECTION 15 (FLET 1.0.0 VERSION) — RECEIPTS TAB
+# =================================================================================
+
+import flet as ft
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+import pandas as pd
+
+from core.helpers import (
+    get_app_base_path,
+    number_to_words_indian,
+    format_currency_indian,
+    send_file_to_user,
+)
+
+
+# =================================================================================
+# 15.1 — CLASS: ReceiptsTab
+# =================================================================================
+class ReceiptsTab:
+
+    def __init__(self, page: ft.Page, db, current_user):
+        self.page = page
+        self.db = db
+        self.current_user = current_user
+
+        self.receipts = []
+        self.travelers = {}          # id -> {name, passport, batch_id}
+        self.payments = {}           # id -> payment
+        self.invoices = {}           # id -> invoice
+        self.batches = {}            # id -> batch
+
+        self.stat_labels = {}
+        self.traveler_filter = None
+        self.search_input = None
+        self.date_from = None
+        self.date_to = None
+        self.table = None
+        self.filtered_count_label = None
+        self.root = None
+
+        self.setup_ui()
+        self.refresh()
+
+    def build(self):
+        return self.root
+
+    # =============================================================================
+    # setup_ui
+    # =============================================================================
+    def setup_ui(self):
+        # ---- TOOLBAR ----
+        def _tb(label, color, handler):
+            return ft.Button(
+                content=ft.Text(label, size=11,
+                                weight=ft.FontWeight.BOLD),
+                on_click=handler, height=38,
+                bgcolor=color, color=ft.Colors.WHITE,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=8)),
+            )
+
+        toolbar = ft.Row(
+            controls=[
+                _tb("🔄 Refresh", "#3498db", self.refresh),
+            ], spacing=8, wrap=True,
+        )
+
+        # ---- FILTER BAR ----
+        self.traveler_filter = ft.Dropdown(
+            label="Traveler", options=[
+                ft.dropdown.Option(key="", text="All Travelers")],
+            value="", width=240, height=48, text_size=12)
+        self.traveler_filter.on_change = self.apply_filters
+
+        self.search_input = ft.TextField(
+            hint_text="🔍 Search receipt no, amount, or invoice...",
+            width=280, height=48,
+            content_padding=ft.Padding.symmetric(horizontal=12, vertical=8))
+        self.search_input.on_change = self.apply_filters
+
+        self.date_from = ft.TextField(
+            label="From (YYYY-MM-DD)",
+            value=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
+            width=170, height=48, text_size=12)
+        self.date_from.on_change = self.apply_filters
+
+        self.date_to = ft.TextField(
+            label="To (YYYY-MM-DD)",
+            value=datetime.now().strftime("%Y-%m-%d"),
+            width=170, height=48, text_size=12)
+        self.date_to.on_change = self.apply_filters
+
+        filter_bar = ft.Row(
+            controls=[
+                self.traveler_filter,
+                self.search_input,
+                self.date_from,
+                self.date_to,
+            ], spacing=10, wrap=True)
+
+        # ---- STAT CARDS ----
+        stat_configs = [
+            ("total_receipts",  "📊 Total Receipts",  "#3498db"),
+            ("total_amount",    "💰 Total Amount",    "#27ae60"),
+            ("today",           "📅 Today's Receipts", "#f39c12"),
+            ("package_pending", "📦 Package Pending", "#e74c3c"),
+            ("invoice_pending", "📄 Invoice Pending", "#e67e22"),
+        ]
+
+        stat_cards = []
+        for key, label, color in stat_configs:
+            value_label = ft.Text("0", size=15,
+                                  weight=ft.FontWeight.BOLD,
+                                  color=ft.Colors.WHITE)
+            self.stat_labels[key] = value_label
+            card = ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Text(label, size=10, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD),
+                        value_label,
+                    ],
+                    spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=10,
+                gradient=ft.LinearGradient(
+                    begin=ft.Alignment.TOP_CENTER,
+                    end=ft.Alignment.BOTTOM_CENTER,
+                    colors=[color, self._darken(color)]),
+                border_radius=10, expand=True, height=72,
+            )
+            stat_cards.append(card)
+
+        stats_row = ft.Row(controls=stat_cards, spacing=8)
+
+        self.filtered_count_label = ft.Text(
+            "🔍 Showing: 0 receipts", size=12,
+            weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_800)
+
+        # ---- TABLE ----
+        self.table = ft.DataTable(
+            columns=[
+                ft.DataColumn(ft.Text("Receipt No")),
+                ft.DataColumn(ft.Text("Date")),
+                ft.DataColumn(ft.Text("Traveler")),
+                ft.DataColumn(ft.Text("Passport")),
+                ft.DataColumn(ft.Text("Method")),
+                ft.DataColumn(ft.Text("Amount")),
+                ft.DataColumn(ft.Text("Invoice No")),
+                ft.DataColumn(ft.Text("Status")),
+                ft.DataColumn(ft.Text("Pkg Pending")),
+                ft.DataColumn(ft.Text("Inv Pending")),
+                ft.DataColumn(ft.Text("Actions")),
+            ],
+            rows=[], column_spacing=12,
+            heading_row_color=ft.Colors.BLUE_GREY_800,
+            heading_row_height=42,
+            data_row_min_height=48,
+            data_row_max_height=60,
+            border=ft.Border.all(1, ft.Colors.GREY_300),
+            border_radius=10,
+            vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
+            horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
+        )
+
+        # ---- ROOT ----
+        self.root = ft.Container(
+            content=ft.Column(
+                controls=[
+                    ft.Container(content=toolbar, padding=10,
+                                 bgcolor=ft.Colors.WHITE,
+                                 border_radius=10),
+                    ft.Container(content=filter_bar, padding=10,
+                                 bgcolor=ft.Colors.WHITE,
+                                 border_radius=10),
+                    stats_row,
+                    self.filtered_count_label,
+                    ft.Container(
+                        content=ft.Column(
+                            controls=[self.table],
+                            scroll=ft.ScrollMode.ADAPTIVE),
+                        bgcolor=ft.Colors.WHITE,
+                        border_radius=10, padding=10),
+                ],
+                spacing=12, scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=15, bgcolor="#f0f2f5", expand=True,
+        )
+
+    def _darken(self, color):
+        return {
+            "#3498db": "#2471a3", "#27ae60": "#1e8449",
+            "#f39c12": "#d68910", "#e74c3c": "#c0392b",
+            "#e67e22": "#ca6f1e",
+        }.get(color, color)
+
+    def safe_str(self, value, default=''):
+        if value is None:
+            return default
+        if isinstance(value, float):
+            if value != value or str(value) == 'nan':
+                return default
+            if value.is_integer():
+                return str(int(value))
+        return str(value)
+
+    def _f(self, v, d=0.0):
+        try:
+            f = float(v)
+            return d if f != f else f
+        except (ValueError, TypeError):
+            return d
+
+    # =============================================================================
+    # refresh
+    # =============================================================================
+    def refresh(self, e=None):
+        try:
+            self.receipts = self.db.get_receipts()
+
+            self.travelers = {}
+            for t in self.db.get_travelers():
+                tid = t.get('id', '')
+                self.travelers[tid] = {
+                    'name': (f"{t.get('first_name', '')} "
+                             f"{t.get('last_name', '')}").strip() or "Unnamed",
+                    'passport': t.get('passport_no', '') or '',
+                    'batch_id': t.get('batch_id', '') or '',
+                }
+
+            self.payments = {p['id']: p for p in self.db.get_payments()}
+            self.invoices = {i['id']: i for i in self.db.get_invoices()}
+            self.batches = {b['id']: b for b in self.db.get_batches()}
+
+            # Traveler filter options
+            opts = [ft.dropdown.Option(key="", text="All Travelers")]
+            for tid, info in self.travelers.items():
+                label = (f"{info['name']} ({info['passport']})"
+                         if info['passport'] else info['name'])
+                opts.append(ft.dropdown.Option(key=tid, text=label))
+            self.traveler_filter.options = opts
+
+            self.display_receipts()
+            self.update_summary_stats()
+            self.page.update()
+        except Exception as ex:
+            print(f"Receipts refresh error: {ex}")
+            import traceback
+            traceback.print_exc()
+
+    # =============================================================================
+    # display_receipts
+    # =============================================================================
+    def display_receipts(self, receipts=None):
+        if receipts is None:
+            receipts = self.receipts
+
+        # Sum receipts per traveler
+        traveler_paid = {}
+        for r in receipts:
+            p = self.payments.get(r.get('payment_id', ''), {})
+            tid = p.get('traveler_id', '')
+            if tid:
+                traveler_paid[tid] = (traveler_paid.get(tid, 0)
+                                      + self._f(r.get('amount', 0)))
+
+        self.table.rows.clear()
+        for r in receipts:
+            p = self.payments.get(r.get('payment_id', ''), {})
+            tid = p.get('traveler_id', '')
+            info = self.travelers.get(tid, {
+                'name': 'Unknown', 'passport': '', 'batch_id': ''})
+            tname = info['name']
+            tpassport = info['passport']
+            bid = info['batch_id']
+
+            batch_price = 0
+            if bid and bid in self.batches:
+                batch_price = self._f(self.batches[bid].get('price', 0))
+
+            total_paid = traveler_paid.get(tid, 0)
+            pkg_pending = batch_price - total_paid
+
+            inv_id = r.get('invoice_id', '')
+            inv_pending = 0
+            inv_no = ''
+            if inv_id and inv_id in self.invoices:
+                inv = self.invoices[inv_id]
+                inv_no = inv.get('invoice_no', '')
+                if inv.get('status') == 'pending':
+                    inv_pending = self._f(
+                        inv.get('rounded_total', inv.get('total_amount', 0)))
+
+            date_str = (str(r.get('receipt_date', ''))[:10]
+                        if r.get('receipt_date') else '')
+            amount = self._f(r.get('amount', 0))
+            method = str(p.get('payment_method', 'N/A'))
+            status = str(p.get('status', 'completed'))
+            status_color = ("#27ae60" if status == "completed"
+                            else "#f39c12" if status == "pending"
+                            else "#e74c3c")
+
+            if batch_price > 0:
+                if pkg_pending <= 0:
+                    pkg_txt = "✅ Fully Paid"
+                    pkg_color = "#27ae60"
+                else:
+                    pkg_txt = f"₹{pkg_pending:,.0f}"
+                    pkg_color = ("#e67e22" if pkg_pending < batch_price * 0.5
+                                 else "#e74c3c")
+            else:
+                pkg_txt = "N/A"
+                pkg_color = "#95a5a6"
+
+            if inv_pending > 0:
+                inv_txt = f"₹{inv_pending:,.0f}"
+                inv_color = "#f39c12"
+            elif inv_id and inv_id in self.invoices:
+                inv_txt = "✅ Paid"
+                inv_color = "#27ae60"
+            else:
+                inv_txt = "N/A"
+                inv_color = "#95a5a6"
+
+            actions = ft.Row(
+                controls=[
+                    ft.IconButton(
+                        icon=ft.Icons.VISIBILITY,
+                        icon_color="#3498db", icon_size=18,
+                        tooltip="View",
+                        on_click=lambda e, rr=r:
+                            self.view_receipt_details(rr)),
+                    ft.IconButton(
+                        icon=ft.Icons.PICTURE_AS_PDF,
+                        icon_color="#e74c3c", icon_size=18,
+                        tooltip="Export PDF",
+                        on_click=lambda e, rr=r:
+                            self.export_single_receipt_pdf(rr)),
+                    ft.IconButton(
+                        icon=ft.Icons.PRINT,
+                        icon_color="#9b59b6", icon_size=18,
+                        tooltip="Print",
+                        on_click=lambda e, rr=r:
+                            self.print_single_receipt(rr)),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE,
+                        icon_color="#95a5a6", icon_size=18,
+                        tooltip="Delete",
+                        on_click=lambda e, rr=r:
+                            self.delete_receipt(rr)),
+                ], spacing=0,
+            )
+
+            self.table.rows.append(
+                ft.DataRow(cells=[
+                    ft.DataCell(ft.Text(
+                        self.safe_str(r.get('receipt_no', '')),
+                        size=11, weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(date_str, size=10)),
+                    ft.DataCell(ft.Text(tname, size=11)),
+                    ft.DataCell(ft.Text(tpassport, size=10)),
+                    ft.DataCell(ft.Text(method, size=10)),
+                    ft.DataCell(ft.Text(
+                        f"₹{amount:,.2f}", size=11,
+                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(inv_no, size=10)),
+                    ft.DataCell(ft.Text(status, size=10,
+                                        color=status_color,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(pkg_txt, size=10,
+                                        color=pkg_color)),
+                    ft.DataCell(ft.Text(inv_txt, size=10,
+                                        color=inv_color)),
+                    ft.DataCell(actions),
+                ]))
+
+        self.filtered_count_label.value = (
+            f"🔍 Showing: {len(receipts)} receipts")
+
+    # =============================================================================
+    # Stats
+    # =============================================================================
+    def update_summary_stats(self):
+        total = len(self.receipts)
+        total_amount = sum(self._f(r.get('amount', 0))
+                           for r in self.receipts)
+
+        today = datetime.now().strftime('%Y-%m-%d')
+        today_amount = sum(
+            self._f(r.get('amount', 0)) for r in self.receipts
+            if str(r.get('receipt_date', '')).startswith(today))
+
+        # Package pending
+        traveler_paid = {}
+        for r in self.receipts:
+            p = self.payments.get(r.get('payment_id', ''), {})
+            tid = p.get('traveler_id', '')
+            if tid:
+                traveler_paid[tid] = (traveler_paid.get(tid, 0)
+                                      + self._f(r.get('amount', 0)))
+
+        pkg_pending_total = 0
+        for tid, paid in traveler_paid.items():
+            info = self.travelers.get(tid, {})
+            bid = info.get('batch_id', '')
+            if bid and bid in self.batches:
+                bp = self._f(self.batches[bid].get('price', 0))
+                pending = bp - paid
+                if pending > 0:
+                    pkg_pending_total += pending
+
+        inv_pending_total = 0
+        for inv in self.invoices.values():
+            if inv.get('status') == 'pending':
+                inv_pending_total += self._f(
+                    inv.get('rounded_total', inv.get('total_amount', 0)))
+
+        self.stat_labels['total_receipts'].value = str(total)
+        self.stat_labels['total_amount'].value = format_currency_indian(
+            total_amount)
+        self.stat_labels['today'].value = format_currency_indian(today_amount)
+        self.stat_labels['package_pending'].value = format_currency_indian(
+            pkg_pending_total)
+        self.stat_labels['invoice_pending'].value = format_currency_indian(
+            inv_pending_total)
+
+    # =============================================================================
+    # Filter
+    # =============================================================================
+    def apply_filters(self, e=None):
+        tid_filter = self.traveler_filter.value or ""
+        search = (self.search_input.value or "").lower().strip()
+        date_from = (self.date_from.value or "").strip()
+        date_to = (self.date_to.value or "").strip()
+
+        filtered = []
+        for r in self.receipts:
+            p = self.payments.get(r.get('payment_id', ''), {})
+            p_tid = p.get('traveler_id', '')
+
+            if tid_filter and str(p_tid) != str(tid_filter):
+                continue
+
+            info = self.travelers.get(p_tid,
+                                      {'name': '', 'passport': ''})
+            receipt_no = str(r.get('receipt_no', '')).lower()
+            amount_str = f"{self._f(r.get('amount', 0)):.2f}"
+            inv_id = r.get('invoice_id', '')
+            inv_no = ''
+            if inv_id and inv_id in self.invoices:
+                inv_no = str(self.invoices[inv_id].get(
+                    'invoice_no', '')).lower()
+
+            if search:
+                haystack = ' '.join([
+                    receipt_no, info['name'].lower(),
+                    info['passport'].lower(), amount_str, inv_no])
+                if search not in haystack:
+                    continue
+
+            rdate = str(r.get('receipt_date', ''))[:10]
+            if date_from and rdate and rdate < date_from:
+                continue
+            if date_to and rdate and rdate > date_to:
+                continue
+
+            filtered.append(r)
+
+        self.display_receipts(filtered)
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    # =============================================================================
+    # View details
+    # =============================================================================
+    def view_receipt_details(self, receipt):
+        p = self.payments.get(receipt.get('payment_id', ''), {})
+        tid = p.get('traveler_id', '')
+        info = self.travelers.get(tid,
+                                  {'name': 'Unknown', 'passport': '',
+                                   'batch_id': ''})
+        tname = info['name']
+        tpassport = info['passport']
+        bid = info['batch_id']
+
+        batch_price = 0
+        batch_name = 'No Batch'
+        if bid and bid in self.batches:
+            b = self.batches[bid]
+            batch_price = self._f(b.get('price', 0))
+            batch_name = b.get('batch_name', 'No Batch')
+
+        total_paid = 0
+        for r in self.receipts:
+            pr = self.payments.get(r.get('payment_id', ''), {})
+            if pr.get('traveler_id') == tid:
+                total_paid += self._f(r.get('amount', 0))
+        pkg_pending = batch_price - total_paid
+
+        inv_id = receipt.get('invoice_id', '')
+        inv_pending = 0
+        inv_no = 'N/A'
+        if inv_id and inv_id in self.invoices:
+            inv = self.invoices[inv_id]
+            inv_no = inv.get('invoice_no', 'N/A')
+            if inv.get('status') == 'pending':
+                inv_pending = self._f(
+                    inv.get('rounded_total', inv.get('total_amount', 0)))
+
+        company_name = "Alhudha Haj Travel"
+        try:
+            if not self.db.company_settings.empty:
+                company_name = str(
+                    self.db.company_settings.iloc[0].get(
+                        'company_name', company_name))
+        except Exception:
+            pass
+
+        try:
+            words = number_to_words_indian(int(self._f(
+                receipt.get('amount', 0))))
+        except Exception:
+            words = ''
+
+        details = (
+            f"Company: {company_name}\n"
+            f"Receipt No: {receipt.get('receipt_no', '')}\n"
+            f"Date: {str(receipt.get('receipt_date', ''))[:10]}\n"
+            f"{'-' * 60}\n"
+            f"Traveler: {tname}\n"
+            f"Passport: {tpassport}\n"
+            f"Batch: {batch_name}\n"
+            f"{'-' * 60}\n"
+            f"Amount: ₹{self._f(receipt.get('amount', 0)):,.2f}\n"
+            f"Amount in Words: {words}\n"
+            f"{'-' * 60}\n"
+            f"Method: {p.get('payment_method', 'N/A')}\n"
+            f"Transaction ID: {p.get('transaction_id', 'N/A')}\n"
+            f"Invoice No: {inv_no}\n"
+            f"Status: {p.get('status', 'completed')}\n"
+            f"{'-' * 60}\n"
+            f"PAYMENT SUMMARY\n"
+            f"  Total Package:     ₹{batch_price:>14,.2f}\n"
+            f"  Total Paid:        ₹{total_paid:>14,.2f}\n"
+            f"  Package Pending:   ₹{pkg_pending:>14,.2f}  (without GST)\n"
+            f"  Invoice Pending:   ₹{inv_pending:>14,.2f}  (with GST)"
+        )
+
+        dialog = ft.AlertDialog(
+            title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
+                          weight=ft.FontWeight.BOLD),
+            content=ft.Container(
+                content=ft.Text(details, size=12,
+                                font_family="Consolas", selectable=True),
+                width=620, height=480, padding=10),
+            actions=[
+                ft.Button(content=ft.Text("Close"),
+                          on_click=lambda e: self.page.pop_dialog(),
+                          bgcolor="#3498db", color=ft.Colors.WHITE),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialog)
+
+    # =============================================================================
+    # PDF export
+    # =============================================================================
+    def export_single_receipt_pdf(self, receipt):
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import (
+                SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer)
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.styles import (
+                getSampleStyleSheet, ParagraphStyle)
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            from reportlab.lib.units import cm
+
+            p = self.payments.get(receipt.get('payment_id', ''), {})
+            tid = p.get('traveler_id', '')
+            info = self.travelers.get(tid, {'name': 'Unknown'})
+            tname = info['name']
+
+            company_name = "Alhudha Haj Travel"
+            try:
+                if not self.db.company_settings.empty:
+                    company_name = str(
+                        self.db.company_settings.iloc[0].get(
+                            'company_name', company_name))
+            except Exception:
+                pass
+
+            amount_in_words = number_to_words_indian(
+                int(self._f(receipt.get('amount', 0))))
+
+            base = get_app_base_path()
+            out_dir = Path(base) / "receipts"
+            out_dir.mkdir(exist_ok=True)
+            fname = (f"receipt_{receipt.get('receipt_no', 'NA')}_"
+                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+            filepath = out_dir / fname
+
+            doc = SimpleDocTemplate(
+                str(filepath), pagesize=A4,
+                topMargin=2 * cm, bottomMargin=2.5 * cm,
+                leftMargin=1.5 * cm, rightMargin=1.5 * cm)
+            elements = []
+            styles = getSampleStyleSheet()
+
+            title_style = ParagraphStyle(
+                'T', parent=styles['Heading1'], fontSize=20,
+                alignment=TA_CENTER, spaceAfter=10)
+            subtitle_style = ParagraphStyle(
+                'S', parent=styles['Heading2'], fontSize=14,
+                alignment=TA_CENTER, spaceAfter=20)
+            label_style = ParagraphStyle(
+                'L', parent=styles['Normal'], fontSize=11,
+                alignment=TA_LEFT, fontName='Helvetica-Bold')
+            value_style = ParagraphStyle(
+                'V', parent=styles['Normal'], fontSize=11,
+                alignment=TA_LEFT)
+            footer_style = ParagraphStyle(
+                'F', parent=styles['Normal'], fontSize=10,
+                alignment=TA_CENTER, fontName='Helvetica',
+                italic=True, textColor=rl_colors.HexColor('#7f8c8d'),
+                spaceBefore=20)
+
+            elements.append(Paragraph(company_name, title_style))
+            elements.append(Paragraph("PAYMENT RECEIPT", subtitle_style))
+            elements.append(Spacer(1, 10))
+
+            data = [
+                ["Receipt No:", receipt.get('receipt_no', '')],
+                ["Date:", str(receipt.get('receipt_date', ''))[:10]],
+                ["Received from:", tname],
+                ["Amount:",
+                 f"₹{self._f(receipt.get('amount', 0)):,.2f}"],
+                ["Amount in Words:", amount_in_words],
+                ["Payment Method:", p.get('payment_method', 'N/A')],
+                ["Transaction ID:", p.get('transaction_id', 'N/A')],
+                ["Status:", p.get('status', 'completed')],
+            ]
+
+            tbl_data = []
+            for label, val in data:
+                tbl_data.append([
+                    Paragraph(f"<b>{label}</b>", label_style),
+                    Paragraph(str(val), value_style)])
+
+            t = Table(tbl_data, colWidths=[4.5 * cm, 8 * cm])
+            t.setStyle(TableStyle([
+                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('LEFTPADDING', (0, 0), (-1, -1), 5),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 5),
+                ('TOPPADDING', (0, 0), (-1, -1), 3),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ]))
+
+            elements.append(t)
+            elements.append(Spacer(1, 20))
+            elements.append(Paragraph(
+                "Thank you for your payment!", footer_style))
+            doc.build(elements)
+
+            url = send_file_to_user(self.page, str(filepath), "Receipt PDF")
+            self._snack(f"✅ PDF saved: {filepath.name}")
+            if url:
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    pass
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            self._snack(f"❌ PDF error: {ex}")
+
+    # =============================================================================
+    # Print
+    # =============================================================================
+    def print_single_receipt(self, receipt):
+        self._snack(
+            "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
+
+    # =============================================================================
+    # Delete
+    # =============================================================================
+    def delete_receipt(self, receipt):
+        def confirm(ev):
+            try:
+                self.db.receipts = self.db.receipts[
+                    self.db.receipts['id'] != receipt['id']]
+                self.db._save_df(self.db.receipts, "receipts.csv")
+                try:
+                    self.db.log_activity(
+                        self.current_user['id'], "delete_receipt",
+                        f"Deleted receipt {receipt.get('receipt_no', '')}")
+                except Exception:
+                    pass
+                self.page.pop_dialog()
+                self.refresh()
+                self._snack("✅ Receipt deleted")
+            except Exception as ex:
+                self._snack(f"❌ {ex}")
+
+        dialog = ft.AlertDialog(
+            title=ft.Text("Delete Receipt?"),
+            content=ft.Text(
+                f"Delete receipt {receipt.get('receipt_no', '')}?"),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"),
+                              on_click=lambda e: self.page.pop_dialog()),
+                ft.Button(content=ft.Text("Delete"), on_click=confirm,
+                          bgcolor=ft.Colors.RED_600,
+                          color=ft.Colors.WHITE),
+            ],
+        )
+        self.page.show_dialog(dialog)
+
+    def _snack(self, msg):
+        try:
+            self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
+        except Exception:
+            pass
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+
+# =================================================================================
+# SECTION 15 END (FLET 1.0.0 VERSION)
+# =================================================================================

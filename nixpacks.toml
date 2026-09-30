@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311", "libgtk-3", "gstreamer", "gst-plugins-base"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python main.py"

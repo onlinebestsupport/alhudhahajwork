@@ -1,0 +1,1273 @@
+# =================================================================================
+# core/custom_report_dialog.py — CustomReportDialog (Flet 1.0 — all fixes applied)
+# =================================================================================
+import os
+import sys
+import re
+import io
+import csv
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import flet as ft
+import pandas as pd
+
+try:
+    from core.settings_manager import SettingsManager
+except ImportError:
+    SettingsManager = None
+
+
+# =================================================================================
+# Helpers
+# =================================================================================
+def _app_base():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _fmt_inr(value):
+    try:
+        v = float(value or 0)
+    except (TypeError, ValueError):
+        return "0.00"
+    if v != v:
+        return "0.00"
+    negative = v < 0
+    v = abs(v)
+    v = round(v, 2)
+    int_part = int(v)
+    dec_part = int(round((v - int_part) * 100))
+    if dec_part >= 100:
+        int_part += 1
+        dec_part = 0
+    s = str(int_part)
+    if len(s) <= 3:
+        grouped = s
+    else:
+        last3 = s[-3:]
+        rest = s[:-3]
+        groups = []
+        while len(rest) > 2:
+            groups.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            groups.insert(0, rest)
+        grouped = ",".join(groups) + "," + last3
+    out = f"{grouped}.{dec_part:02d}"
+    return f"-{out}" if negative else out
+
+
+def _fmt_date_ddmmyyyy(dv):
+    if dv is None:
+        return ""
+    s = str(dv).strip()
+    if not s or s.lower() in ("nan", "none", "nat"):
+        return ""
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s[:19], fmt).strftime("%d/%m/%Y")
+        except Exception:
+            continue
+    return s[:10]
+
+
+# =================================================================================
+# Field catalogs
+# =================================================================================
+TRAVELER_FIELDS = [
+    ("id", "ID"), ("first_name", "First Name"),
+    ("last_name", "Last Name"),
+    ("passport_name", "Passport Name"), ("gender", "Gender"),
+    ("dob", "Date of Birth"), ("batch_id", "Batch ID"),
+    ("batch_name", "Batch Name"),
+    ("passport_no", "Passport Number"),
+    ("passport_issue_date", "Passport Issue Date"),
+    ("passport_expiry_date", "Passport Expiry Date"),
+    ("passport_status", "Passport Status"),
+    ("mobile", "Mobile Number"), ("email", "Email"),
+    ("aadhaar", "Aadhaar Number"), ("pan", "PAN Number"),
+    ("aadhaar_pan_linked", "Aadhaar-PAN Linked"),
+    ("vaccine_status", "Vaccine Status"),
+    ("wheelchair", "Wheelchair Required"),
+    ("place_of_birth", "Place of Birth"),
+    ("place_of_issue", "Place of Issue"),
+    ("passport_address", "Passport Address"),
+    ("mailing_address", "Mailing Address"),
+    ("father_name", "Father's Name"),
+    ("mother_name", "Mother's Name"),
+    ("spouse_name", "Spouse's Name"),
+    ("expected_return_date", "Expected Return Date"),
+    ("file_reference", "File Reference"), ("pin", "PIN"),
+    ("emergency_contact", "Emergency Contact"),
+    ("emergency_phone", "Emergency Phone"),
+    ("medical_notes", "Medical Notes"),
+    ("passport_scan", "Passport Scan"),
+    ("aadhaar_scan", "Aadhaar Scan"),
+    ("pan_scan", "PAN Scan"),
+    ("vaccine_scan", "Vaccine Certificate"),
+    ("photo", "Photo"),
+    ("registration_date", "Registration Date"),
+    ("status", "Traveler Status"),
+]
+
+BATCH_FIELDS = [
+    ("id", "Batch ID"), ("batch_name", "Batch Name"),
+    ("tour_type_name", "Tour Type"), ("year", "Year"),
+    ("departure_date", "Departure Date"),
+    ("return_date", "Return Date"),
+    ("total_seats", "Total Seats"),
+    ("available_seats", "Available Seats"),
+    ("price", "Price per Seat"), ("status", "Batch Status"),
+    ("description", "Description"),
+]
+
+PAYMENT_FIELDS = [
+    ("id", "Payment ID"),
+    ("traveler_id", "Traveler ID"),
+    ("batch_id", "Batch ID"),
+    ("amount", "Payment Amount"),
+    ("payment_date", "Payment Date"),
+    ("payment_method", "Payment Method"),
+    ("status", "Payment Status"),
+    ("transaction_id", "Transaction ID"),
+    ("invoice_id", "Invoice ID"),
+    ("notes", "Payment Notes"),
+    ("passport_name", "Passport Name"),
+    ("passport_no", "Passport Number"),
+    ("mobile", "Mobile Number"),
+    ("gst_amount", "GST Amount"),
+    ("tcs_amount", "TCS Amount"),
+    ("total_with_tax", "Total (with GST/TCS)"),
+    ("payment_with_tax", "Payment (with GST/TCS)"),
+    ("payment_without_tax", "Payment (without GST/TCS)"),
+    ("invoice_base_amount", "Invoice Base Amount"),
+    ("invoice_discount_pct", "Invoice Discount %"),
+    ("invoice_discount_amount", "Invoice Discount Amount"),
+    ("invoice_taxable_value", "Invoice Taxable Value"),
+    ("invoice_rounded_total", "Invoice Total"),
+    ("__sum_total_paid",       "Total Paid"),
+    ("__sum_payment_count",    "Payment Count"),
+    ("__sum_total_gst",        "Total GST"),
+    ("__sum_total_tcs",        "Total TCS"),
+    ("__sum_total_with_tax",   "Total (with GST/TCS)"),
+    ("__sum_pending_with_tax", "Pending Payment (with GST/TCS)"),
+    ("__sum_outstanding_balance", "Outstanding Balance"),
+]
+
+MONEY_FIELDS = {
+    "Amount", "Price", "Total", "Payment Amount",
+    "Total Paid", "GST Amount", "TCS Amount",
+    "Total GST", "Total TCS", "Total (with GST/TCS)",
+    "Invoice Base Amount", "Invoice Discount Amount",
+    "Invoice Taxable Value", "Invoice Total",
+    "Pending Payment (with GST/TCS)",
+    "Payment (without GST/TCS)", "Payment (with GST/TCS)",
+    "Outstanding Balance",
+}
+
+
+# =================================================================================
+# CustomReportDialog
+# =================================================================================
+class CustomReportDialog:
+
+    def __init__(self, page: ft.Page, db, current_user):
+        self.page = page
+        self.db = db
+        self.current_user = current_user
+
+        self.gst_rate = 0.0
+        self.tcs_rate = 0.0
+
+        self.traveler_cbs = {}
+        self.batch_cbs = {}
+        self.payment_cbs = {}
+
+        self.report_data = []
+        self.selected_columns = []
+
+        self.invoice_by_id = {}
+        self.invoice_by_no = {}
+        self.default_invoice_by_traveler = {}
+        self.traveler_invoice_data = {}
+
+        self.preview_table = None
+        self.status_label = None
+        self.record_count_label = None
+
+        self.report_format = None
+        self.reg_from = None
+        self.reg_to = None
+        self.batch_filter = None
+        self.status_filter = None
+        self.payment_method_filter = None
+        self.payment_status_filter = None
+        self.min_amount_input = None
+        self.max_amount_input = None
+
+        self.dialog = None
+
+        self._load_tax_rates()
+        self._refresh_invoice_caches()
+        self._build()
+
+    # =============================================================================
+    # Tax + Invoice caches
+    # =============================================================================
+    def _load_tax_rates(self):
+        try:
+            if SettingsManager is not None:
+                tax = SettingsManager(self.db).get_tax_settings()
+                self.gst_rate = float(tax.get("gst_percentage", 18) or 0)
+                self.tcs_rate = float(tax.get("tcs_percentage", 0.1) or 0)
+        except Exception as e:
+            print(f"_load_tax_rates: {e}")
+            self.gst_rate = 0.0
+            self.tcs_rate = 0.0
+
+    def _refresh_invoice_caches(self):
+        self.traveler_invoice_data = {}
+        self.invoice_by_id = {}
+        self.invoice_by_no = {}
+        self.default_invoice_by_traveler = {}
+
+        def _f(v):
+            try:
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        try:
+            for inv in self.db.get_invoices():
+                tid = inv.get("traveler_id")
+                if not tid:
+                    continue
+                entry = {
+                    "base":            _f(inv.get("amount", 0)),
+                    "discount_amount": _f(inv.get("discount_amount", 0)),
+                    "discount_pct":    _f(inv.get("discount_percentage", 0)),
+                    "taxable":         _f(inv.get("taxable_value", 0)),
+                    "gst":             _f(inv.get("gst_amount", 0)),
+                    "gst_pct":         _f(inv.get("gst_percentage", 0)),
+                    "tcs":             _f(inv.get("tcs_amount", 0)),
+                    "tcs_pct":         _f(inv.get("tcs_percentage", 0)),
+                    "total_amount":    _f(inv.get("total_amount", 0)),
+                    "rounded_total":   _f(inv.get("rounded_total", 0)),
+                    "status":          str(inv.get("status", "")).lower(),
+                    "is_paid":         str(inv.get("status", "")).lower()
+                                       == "paid",
+                }
+                if entry["total_amount"] <= 0:
+                    entry["total_amount"] = (
+                        entry["taxable"] + entry["gst"] + entry["tcs"])
+                if entry["rounded_total"] <= 0:
+                    entry["rounded_total"] = entry["total_amount"]
+
+                iid = str(inv.get("id", "") or "").strip()
+                ino = str(inv.get("invoice_no", "") or "").strip()
+                if iid:
+                    self.invoice_by_id[iid] = entry
+                if ino:
+                    self.invoice_by_no[ino] = entry
+                if (entry["status"] != "cancelled"
+                        and tid not in self.default_invoice_by_traveler):
+                    self.default_invoice_by_traveler[tid] = entry
+
+                agg = self.traveler_invoice_data.setdefault(tid, {
+                    "base": 0.0, "discount_amount": 0.0,
+                    "taxable": 0.0, "gst": 0.0, "tcs": 0.0,
+                    "total_amount": 0.0, "rounded_total": 0.0,
+                    "has_paid_invoice": False,
+                })
+                agg["base"]            += entry["base"]
+                agg["discount_amount"] += entry["discount_amount"]
+                agg["taxable"]         += entry["taxable"]
+                agg["gst"]             += entry["gst"]
+                agg["tcs"]             += entry["tcs"]
+                agg["total_amount"]    += entry["total_amount"]
+                agg["rounded_total"]   += entry["rounded_total"]
+                if entry["is_paid"]:
+                    agg["has_paid_invoice"] = True
+        except Exception as e:
+            print(f"_refresh_invoice_caches: {e}")
+
+    def _resolve_invoice_for_payment(self, payment, tid):
+        iid = str(payment.get("invoice_id", "") or "").strip()
+        if iid:
+            if iid in self.invoice_by_id:
+                return self.invoice_by_id[iid]
+            if iid in self.invoice_by_no:
+                return self.invoice_by_no[iid]
+        if tid and tid in self.default_invoice_by_traveler:
+            return self.default_invoice_by_traveler[tid]
+        return None
+
+    def _get_payment_share(self, payment, tid):
+        try:
+            amt = float(payment.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        inv = self._resolve_invoice_for_payment(payment, tid)
+        if not inv:
+            return {
+                "base": 0.0, "discount_amount": 0.0,
+                "taxable": 0.0, "gst": 0.0, "tcs": 0.0,
+                "total": 0.0, "ratio": 0.0,
+                "discount_pct": 0.0, "gst_pct": 0.0, "tcs_pct": 0.0,
+            }
+        denom = inv["base"] or inv["total_amount"] or inv["rounded_total"]
+        if denom <= 0:
+            return {
+                "base": 0.0, "discount_amount": 0.0,
+                "taxable": 0.0, "gst": 0.0, "tcs": 0.0,
+                "total": 0.0, "ratio": 0.0,
+                "discount_pct": 0.0, "gst_pct": 0.0, "tcs_pct": 0.0,
+            }
+        ratio = min(amt / denom, 1.0)
+        return {
+            "base":            inv["base"] * ratio,
+            "discount_amount": inv["discount_amount"] * ratio,
+            "taxable":         inv["taxable"] * ratio,
+            "gst":             inv["gst"] * ratio,
+            "tcs":             inv["tcs"] * ratio,
+            "total":           inv["total_amount"] * ratio,
+            "ratio":           ratio,
+            "discount_pct":    inv["discount_pct"],
+            "gst_pct":         inv["gst_pct"],
+            "tcs_pct":         inv["tcs_pct"],
+        }
+
+    # =============================================================================
+    # Build UI
+    # =============================================================================
+    def _build(self):
+        header = ft.Container(
+            content=ft.Row([
+                ft.Text("📊", size=28),
+                ft.Column([
+                    ft.Text("Custom Report Generator", size=16,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE),
+                    ft.Text(
+                        "Pick columns, filters and format — "
+                        "export to Excel / CSV / PDF",
+                        size=10, color=ft.Colors.BLUE_100),
+                ], spacing=2, expand=True),
+            ], spacing=10),
+            padding=ft.Padding.symmetric(horizontal=20, vertical=14),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.CENTER_LEFT,
+                end=ft.Alignment.CENTER_RIGHT,
+                colors=["#1e40af", "#2563eb", "#7c3aed"],
+            ),
+            border_radius=12,
+        )
+
+        # -------- Filters Row --------
+        self.report_format = ft.Dropdown(
+            label="Report Format",
+            options=[
+                ft.dropdown.Option("summary",
+                                   "📋  Traveler Summary (wide)"),
+                ft.dropdown.Option("ledger",
+                                   "🧾  Payment Ledger (long)"),
+            ],
+            value="summary",
+            width=260,
+        )
+        # ✅ FIX: on_change set AFTER construction (Flet 1.0)
+        self.report_format.on_change = self._on_format_change
+
+        self.reg_from = ft.TextField(
+            label="Reg. From (YYYY-MM-DD)",
+            value=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
+            width=180,
+        )
+        self.reg_to = ft.TextField(
+            label="Reg. To (YYYY-MM-DD)",
+            value=datetime.now().strftime("%Y-%m-%d"),
+            width=180,
+        )
+        self.batch_filter = ft.Dropdown(
+            label="Batch",
+            options=[ft.dropdown.Option("", "All Batches")],
+            value="",
+            width=200,
+        )
+        try:
+            for b in self.db.get_batches():
+                self.batch_filter.options.append(
+                    ft.dropdown.Option(b["id"],
+                                       b.get("batch_name", "Unknown")))
+        except Exception:
+            pass
+
+        self.status_filter = ft.Dropdown(
+            label="Traveler Status",
+            options=[ft.dropdown.Option(x) for x in
+                     ["All", "Active", "Inactive", "Completed"]],
+            value="All", width=160,
+        )
+        self.payment_method_filter = ft.Dropdown(
+            label="Payment Method",
+            options=[ft.dropdown.Option(x) for x in
+                     ["All", "Bank Transfer", "Cash", "Card", "UPI",
+                      "Cheque", "NEFT", "RTGS", "IMPS"]],
+            value="All", width=160,
+        )
+        self.payment_status_filter = ft.Dropdown(
+            label="Payment Status",
+            options=[ft.dropdown.Option(x) for x in
+                     ["All", "completed", "pending", "failed", "refunded"]],
+            value="All", width=160,
+        )
+        self.min_amount_input = ft.TextField(
+            label="Min Amount (₹)", width=140)
+        self.max_amount_input = ft.TextField(
+            label="Max Amount (₹)", width=140)
+
+        def quick(days):
+            def _h(e):
+                self.reg_from.value = (
+                    datetime.now() - timedelta(days=days)
+                ).strftime("%Y-%m-%d")
+                self.reg_to.value = datetime.now().strftime("%Y-%m-%d")
+                self.generate_preview(None)
+            return _h
+
+        filters_card = ft.Container(
+            content=ft.Column([
+                ft.Text("🔍  Report Format & Filters", size=13,
+                        weight=ft.FontWeight.BOLD, color="#1e40af"),
+                ft.Row([
+                    self.report_format,
+                    self.reg_from,
+                    self.reg_to,
+                    ft.Button(content=ft.Text("Today"),
+                              on_click=quick(0), height=40),
+                    ft.Button(content=ft.Text("Week"),
+                              on_click=quick(7), height=40),
+                    ft.Button(content=ft.Text("Month"),
+                              on_click=quick(30), height=40),
+                    ft.Button(content=ft.Text("3M"),
+                              on_click=quick(90), height=40),
+                ], spacing=8, wrap=True),
+                ft.Row([
+                    self.batch_filter,
+                    self.status_filter,
+                    self.payment_method_filter,
+                    self.payment_status_filter,
+                    self.min_amount_input,
+                    self.max_amount_input,
+                ], spacing=8, wrap=True),
+            ], spacing=10),
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.all(1, ft.Colors.GREY_300),
+        )
+
+        # -------- Column Picker (3 tabs) --------
+        self._traveler_column_list = ft.ListView(expand=True, spacing=2)
+        self._batch_column_list = ft.ListView(expand=True, spacing=2)
+        self._payment_column_list = ft.ListView(expand=True, spacing=2)
+
+        for key, label in TRAVELER_FIELDS:
+            cb = ft.Checkbox(label=label, value=False)
+            self.traveler_cbs[key] = cb
+            self._traveler_column_list.controls.append(cb)
+
+        for key, label in BATCH_FIELDS:
+            cb = ft.Checkbox(label=label, value=False)
+            self.batch_cbs[key] = cb
+            self._batch_column_list.controls.append(cb)
+
+        for key, label in PAYMENT_FIELDS:
+            cb = ft.Checkbox(label=label, value=False)
+            self.payment_cbs[key] = cb
+            self._payment_column_list.controls.append(cb)
+
+        def _select_traveler_all(v):
+            for cb in self.traveler_cbs.values():
+                cb.value = True
+            self.page.update()
+
+        def _clear_traveler_all(v):
+            for cb in self.traveler_cbs.values():
+                cb.value = False
+            self.page.update()
+
+        picker_tab_labels = ["👥 Travelers", "📦 Batches", "💰 Payments"]
+        picker_tab_bar = [ft.Tab(label=l) for l in picker_tab_labels]
+        picker_views = [
+            ft.Container(content=self._traveler_column_list,
+                         padding=6, expand=True),
+            ft.Container(content=self._batch_column_list,
+                         padding=6, expand=True),
+            ft.Container(content=self._payment_column_list,
+                         padding=6, expand=True),
+        ]
+
+        col_picker = ft.Container(
+            content=ft.Column([
+                ft.Text("📋  Select Columns", size=13,
+                        weight=ft.FontWeight.BOLD, color="#1e40af"),
+                ft.Row([
+                    ft.TextButton(
+                        content=ft.Text("✓ Select All"),
+                        on_click=_select_traveler_all),
+                    ft.TextButton(
+                        content=ft.Text("✗ Clear All"),
+                        on_click=_clear_traveler_all),
+                ]),
+                ft.Tabs(
+                    selected_index=0,
+                    length=len(picker_tab_labels),
+                    expand=True,
+                    content=ft.Column([
+                        ft.TabBar(tabs=picker_tab_bar),
+                        ft.TabBarView(
+                            expand=True,
+                            controls=picker_views),
+                    ], expand=True),
+                ),
+            ], spacing=6, expand=True),
+            padding=12, bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.all(1, ft.Colors.GREY_300),
+            height=430,
+        )
+
+        # -------- Preview table --------
+        self.preview_table = ft.DataTable(
+            columns=[],
+            ft.DataColumn(ft.Text(
+            "Preview", size=11,
+            weight=ft.FontWeight.BOLD,
+            color=ft.Colors.WHITE))
+    ],
+    rows=[],
+    heading_row_color="#1e293b",
+    column_spacing=14,
+    data_row_min_height=30,
+    data_row_max_height=60,
+)
+        self.status_label = ft.Text("Ready.", size=11,
+                                    color=ft.Colors.GREEN_700, italic=True)
+        self.record_count_label = ft.Text("", size=11,
+                                          color=ft.Colors.GREY_600)
+
+        preview_card = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("📄  Report Preview", size=13,
+                            weight=ft.FontWeight.BOLD, color="#1e40af"),
+                    ft.Container(expand=True),
+                    self.record_count_label,
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                ft.Container(
+                    content=ft.Column(
+                        [self.preview_table],
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                    height=380,
+                    bgcolor=ft.Colors.WHITE,
+                    border_radius=10,
+                    border=ft.Border.all(1, ft.Colors.GREY_300),
+                    padding=4,
+                ),
+                self.status_label,
+            ], spacing=8),
+            padding=12, bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.all(1, ft.Colors.GREY_300),
+        )
+
+        # -------- Buttons --------
+        buttons_row = ft.Row([
+            ft.Button(
+                content=ft.Text("🔄  Generate Preview", size=12,
+                                weight=ft.FontWeight.BOLD),
+                on_click=self.generate_preview,
+                bgcolor="#2563eb", color=ft.Colors.WHITE, height=46,
+            ),
+            ft.Button(
+                content=ft.Text("📊  Export Excel", size=12,
+                                weight=ft.FontWeight.BOLD),
+                on_click=self.export_excel,
+                bgcolor="#059669", color=ft.Colors.WHITE, height=46,
+            ),
+            ft.Button(
+                content=ft.Text("📄  Export CSV", size=12,
+                                weight=ft.FontWeight.BOLD),
+                on_click=self.export_csv,
+                bgcolor="#0891b2", color=ft.Colors.WHITE, height=46,
+            ),
+            ft.Button(
+                content=ft.Text("📕  Export PDF", size=12,
+                                weight=ft.FontWeight.BOLD),
+                on_click=self.export_pdf,
+                bgcolor="#dc2626", color=ft.Colors.WHITE, height=46,
+            ),
+            ft.Container(expand=True),
+            ft.Button(
+                content=ft.Text("Close", size=12,
+                                weight=ft.FontWeight.BOLD),
+                on_click=lambda e: self.close(),
+                bgcolor="#6b7280", color=ft.Colors.WHITE, height=46,
+            ),
+        ], spacing=10, wrap=True)
+
+        # -------- Dialog Content --------
+        content = ft.Container(
+            content=ft.Column([
+                header,
+                filters_card,
+                ft.Row([
+                    ft.Container(
+                        content=col_picker,
+                        width=340,
+                        expand=False,
+                    ),
+                    ft.Container(
+                        content=preview_card,
+                        expand=True,
+                    ),
+                ], spacing=12,
+                   vertical_alignment=ft.CrossAxisAlignment.START),
+                buttons_row,
+            ], spacing=12, scroll=ft.ScrollMode.AUTO),
+            width=1250, height=800, padding=4,
+        )
+
+        self.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("📊  Custom Report Generator",
+                          weight=ft.FontWeight.BOLD),
+            content=content,
+            actions=[],
+        )
+
+    # =============================================================================
+    # Show / close
+    # =============================================================================
+    def show(self):
+        self.page.show_dialog(self.dialog)
+        try:
+            self.page.run_task(self._auto_preview)
+        except Exception:
+            self.generate_preview(None)
+
+    async def _auto_preview(self):
+        import asyncio
+        await asyncio.sleep(0.2)
+        self.generate_preview(None)
+
+    def close(self):
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+
+    # =============================================================================
+    # Format change
+    # =============================================================================
+    def _on_format_change(self, e=None):
+        try:
+            mode = self.report_format.value
+            if mode == "ledger":
+                self.status_label.value = (
+                    "Ledger mode: columns managed automatically.")
+                self.status_label.color = ft.Colors.BLUE_700
+            else:
+                self.status_label.value = (
+                    "Summary mode: pick columns from the left.")
+                self.status_label.color = ft.Colors.GREEN_700
+            self.page.update()
+        except Exception:
+            pass
+
+    # =============================================================================
+    # Column extraction
+    # =============================================================================
+    def _get_selected_columns(self):
+        selected = []
+        for key, cb in self.traveler_cbs.items():
+            if cb.value:
+                label = next(l for k, l in TRAVELER_FIELDS if k == key)
+                selected.append({"key": key, "label": label,
+                                 "source": "traveler"})
+        for key, cb in self.batch_cbs.items():
+            if cb.value:
+                label = next(l for k, l in BATCH_FIELDS if k == key)
+                selected.append({"key": key, "label": label,
+                                 "source": "batch"})
+        for key, cb in self.payment_cbs.items():
+            if cb.value:
+                label = next(l for k, l in PAYMENT_FIELDS if k == key)
+                selected.append({"key": key, "label": label,
+                                 "source": "payment"})
+        return selected
+
+    # =============================================================================
+    # Generate preview
+    # =============================================================================
+    def generate_preview(self, e=None):
+        try:
+            self._load_tax_rates()
+            self._refresh_invoice_caches()
+
+            mode = self.report_format.value or "summary"
+
+            if mode == "ledger":
+                self._generate_ledger_preview()
+            else:
+                self._generate_summary_preview()
+
+            self.page.update()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            self.status_label.value = f"❌ Error: {ex}"
+            self.status_label.color = ft.Colors.RED_500
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+    def _passes_filters(self, traveler, payments):
+        try:
+            date_from = self.reg_from.value.strip()
+            date_to = self.reg_to.value.strip()
+            batch_filter = self.batch_filter.value
+            status_filter = self.status_filter.value
+            method_filter = self.payment_method_filter.value
+            pay_status_filter = self.payment_status_filter.value
+
+            try:
+                min_amt = float(self.min_amount_input.value or 0)
+            except ValueError:
+                min_amt = 0.0
+            try:
+                max_amt = (float(self.max_amount_input.value or 0)
+                           or float("inf"))
+            except ValueError:
+                max_amt = float("inf")
+
+            rdate = str(traveler.get("registration_date", ""))[:10]
+            if rdate and date_from and date_to:
+                if rdate < date_from or rdate > date_to:
+                    return False
+            if batch_filter and traveler.get("batch_id") != batch_filter:
+                return False
+            if status_filter != "All":
+                if traveler.get("status", "Active") != status_filter:
+                    return False
+
+            if payments is not None:
+                pays = payments
+                if pay_status_filter != "All":
+                    pays = [p for p in pays
+                            if p.get("status") == pay_status_filter]
+                if method_filter != "All":
+                    pays = [p for p in pays
+                            if p.get("payment_method") == method_filter]
+                pays = [p for p in pays
+                        if min_amt <= float(p.get("amount", 0) or 0)
+                        <= max_amt]
+                return len(pays) > 0
+            return True
+        except Exception:
+            return True
+
+    def _filter_payments(self, payments):
+        try:
+            method_filter = self.payment_method_filter.value
+            pay_status_filter = self.payment_status_filter.value
+            try:
+                min_amt = float(self.min_amount_input.value or 0)
+            except ValueError:
+                min_amt = 0.0
+            try:
+                max_amt = (float(self.max_amount_input.value or 0)
+                           or float("inf"))
+            except ValueError:
+                max_amt = float("inf")
+
+            pays = payments
+            if pay_status_filter != "All":
+                pays = [p for p in pays
+                        if p.get("status") == pay_status_filter]
+            if method_filter != "All":
+                pays = [p for p in pays
+                        if p.get("payment_method") == method_filter]
+            pays = [p for p in pays
+                    if min_amt <= float(p.get("amount", 0) or 0) <= max_amt]
+            return pays
+        except Exception:
+            return payments
+
+    def _generate_summary_preview(self):
+        selected = self._get_selected_columns()
+        if not selected:
+            self.status_label.value = "⚠️ Select at least one column."
+            self.status_label.color = ft.Colors.ORANGE_700
+            return
+
+        travelers = self.db.get_travelers()
+        payment_index = {}
+        for p in self.db.get_payments():
+            tid = p.get("traveler_id")
+            payment_index.setdefault(tid, []).append(p)
+
+        selected_traveler_cols = [c for c in selected
+                                  if c["source"] == "traveler"]
+        selected_batch_cols = [c for c in selected
+                               if c["source"] == "batch"]
+        selected_payment_cols = [c for c in selected
+                                 if c["source"] == "payment"]
+        has_payment_cols = len(selected_payment_cols) > 0
+
+        filtered = []
+        for t in travelers:
+            pays = payment_index.get(t.get("id"), [])
+            if has_payment_cols:
+                if not self._passes_filters(t, pays):
+                    continue
+                pays = self._filter_payments(pays)
+            else:
+                if not self._passes_filters(t, None):
+                    continue
+            filtered.append((t, pays))
+
+        final_columns = (selected_traveler_cols
+                         + selected_batch_cols
+                         + selected_payment_cols)
+        self.selected_columns = final_columns
+
+        rows = []
+        for t, pays in filtered:
+            batch = (self.db.get_batch_by_id(t.get("batch_id"))
+                     if t.get("batch_id") else None)
+            row = {}
+            for col in selected_traveler_cols:
+                row[col["label"]] = self._format_traveler_cell(
+                    t, col["key"], batch)
+            for col in selected_batch_cols:
+                row[col["label"]] = self._format_batch_cell(
+                    batch, col["key"])
+            for col in selected_payment_cols:
+                row[col["label"]] = self._format_payment_summary_cell(
+                    t, pays, col["key"])
+            rows.append(row)
+
+        self.report_data = rows
+        self._render_preview_table(final_columns, rows)
+        self.status_label.value = (
+            f"✅ Traveler Summary generated — {len(rows)} travelers"
+        )
+        self.status_label.color = ft.Colors.GREEN_700
+        self.record_count_label.value = (
+            f"📊 {len(rows)} travelers | {len(final_columns)} columns"
+        )
+
+    def _generate_ledger_preview(self):
+        payments = self.db.get_payments()
+        travelers = {t["id"]: t for t in self.db.get_travelers()}
+        batches = {b["id"]: b for b in self.db.get_batches()}
+
+        date_from = self.reg_from.value.strip()
+        date_to = self.reg_to.value.strip()
+
+        filtered = []
+        for p in payments:
+            pdate = str(p.get("payment_date", ""))[:10]
+            if date_from and date_to and pdate:
+                if pdate < date_from or pdate > date_to:
+                    continue
+            t = travelers.get(p.get("traveler_id"))
+            if not t:
+                continue
+            if not self._passes_filters(t, [p]):
+                continue
+            filtered.append(p)
+
+        filtered.sort(key=lambda p: str(p.get("payment_date", "")))
+
+        columns = [
+            {"key": "payment_date", "label": "Payment Date",
+             "source": "payment"},
+            {"key": "id", "label": "Receipt No", "source": "payment"},
+            {"key": "traveler", "label": "Traveler",
+             "source": "traveler"},
+            {"key": "batch", "label": "Batch", "source": "batch"},
+            {"key": "invoice_id", "label": "Invoice No",
+             "source": "payment"},
+            {"key": "payment_method", "label": "Method",
+             "source": "payment"},
+            {"key": "transaction_id", "label": "Txn ID",
+             "source": "payment"},
+            {"key": "status", "label": "Status", "source": "payment"},
+            {"key": "amount", "label": "Payment Amount",
+             "source": "payment"},
+            {"key": "gst_amount", "label": "GST Amount",
+             "source": "payment"},
+            {"key": "tcs_amount", "label": "TCS Amount",
+             "source": "payment"},
+            {"key": "total_with_tax", "label": "Total (with Tax)",
+             "source": "payment"},
+            {"key": "outstanding", "label": "Outstanding",
+             "source": "payment"},
+        ]
+        self.selected_columns = columns
+
+        rows = []
+        for p in filtered:
+            t = travelers.get(p.get("traveler_id"), {})
+            b = batches.get(t.get("batch_id"), {})
+            share = self._get_payment_share(p, t.get("id"))
+            try:
+                amt = float(p.get("amount", 0) or 0)
+            except (TypeError, ValueError):
+                amt = 0.0
+
+            agg = self.traveler_invoice_data.get(t.get("id"), {})
+            has_paid = bool(agg.get("has_paid_invoice", False))
+            total_inv = float(agg.get("total_amount", 0) or 0)
+            total_paid = sum(
+                float(pp.get("amount", 0) or 0)
+                for pp in payments
+                if pp.get("traveler_id") == t.get("id"))
+            outstanding = (0.0 if has_paid
+                           else max(0.0, total_inv - total_paid))
+
+            rows.append({
+                "Payment Date": _fmt_date_ddmmyyyy(p.get("payment_date")),
+                "Receipt No": str(p.get("id", "") or ""),
+                "Traveler": (
+                    t.get("passport_name")
+                    or f"{t.get('first_name','')} "
+                       f"{t.get('last_name','')}".strip()
+                    or "—"
+                ),
+                "Batch": b.get("batch_name", "—") if b else "—",
+                "Invoice No": str(p.get("invoice_id", "") or ""),
+                "Method": str(p.get("payment_method", "") or ""),
+                "Txn ID": str(p.get("transaction_id", "") or ""),
+                "Status": str(p.get("status", "") or ""),
+                "Payment Amount": f"₹{_fmt_inr(amt)}",
+                "GST Amount": f"₹{_fmt_inr(share['gst'])}",
+                "TCS Amount": f"₹{_fmt_inr(share['tcs'])}",
+                "Total (with Tax)": (
+                    f"₹{_fmt_inr(share['taxable'] + share['gst'] + share['tcs'])}"
+                ),
+                "Outstanding": f"₹{_fmt_inr(outstanding)}",
+            })
+
+        self.report_data = rows
+        self._render_preview_table(columns, rows)
+        self.status_label.value = (
+            f"✅ Payment Ledger generated — {len(rows)} rows"
+        )
+        self.status_label.color = ft.Colors.GREEN_700
+        self.record_count_label.value = (
+            f"🧾 {len(rows)} payments | {len(columns)} columns"
+        )
+
+    # =============================================================================
+    # Cell formatters
+    # =============================================================================
+    def _format_traveler_cell(self, t, key, batch):
+        if key == "batch_name":
+            return (batch.get("batch_name") if batch
+                    else t.get("batch_name", "") or "—")
+        val = t.get(key, "")
+        if key in ("dob", "registration_date", "passport_issue_date",
+                   "passport_expiry_date", "expected_return_date"):
+            return _fmt_date_ddmmyyyy(val)
+        if key == "aadhaar":
+            s = str(val or "").strip()
+            digits = "".join(c for c in s if c.isdigit())
+            if len(digits) == 12:
+                return f"{digits[:4]} {digits[4:8]} {digits[8:]}"
+            return s
+        return str(val) if val not in (None, "") else ""
+
+    def _format_batch_cell(self, batch, key):
+        if not batch:
+            return "No Batch"
+        if key in ("departure_date", "return_date"):
+            return _fmt_date_ddmmyyyy(batch.get(key))
+        if key == "price":
+            try:
+                return f"₹{_fmt_inr(float(batch.get('price', 0) or 0))}"
+            except Exception:
+                return f"₹{batch.get('price', 0)}"
+        return str(batch.get(key, "") or "")
+
+    def _format_payment_summary_cell(self, t, pays, key):
+        tid = t.get("id")
+        if key == "amount":
+            total = sum(float(p.get("amount", 0) or 0) for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "payment_date":
+            return "; ".join(
+                _fmt_date_ddmmyyyy(p.get("payment_date")) for p in pays)
+        if key == "payment_method":
+            return ", ".join(
+                str(p.get("payment_method", "")) for p in pays)
+        if key == "status":
+            return ", ".join(str(p.get("status", "")) for p in pays)
+
+        share = self._get_payment_share(pays[-1] if pays else {}, tid)
+
+        if key == "gst_amount":
+            return f"₹{_fmt_inr(share['gst'])}"
+        if key == "tcs_amount":
+            return f"₹{_fmt_inr(share['tcs'])}"
+        if key == "total_with_tax":
+            return f"₹{_fmt_inr(share['taxable'] + share['gst'] + share['tcs'])}"
+        if key == "payment_with_tax":
+            return f"₹{_fmt_inr(share['taxable'] + share['gst'] + share['tcs'])}"
+        if key == "payment_without_tax":
+            total = sum(float(p.get("amount", 0) or 0) for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "invoice_base_amount":
+            return f"₹{_fmt_inr(share['base'])}"
+        if key == "invoice_discount_pct":
+            return f"{share['discount_pct']:.1f}%"
+        if key == "invoice_discount_amount":
+            return f"₹{_fmt_inr(share['discount_amount'])}"
+        if key == "invoice_taxable_value":
+            return f"₹{_fmt_inr(share['taxable'])}"
+        if key == "invoice_rounded_total":
+            return f"₹{_fmt_inr(share['total'])}"
+
+        if key == "__sum_total_paid":
+            total = sum(float(p.get("amount", 0) or 0) for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "__sum_payment_count":
+            return str(len(pays))
+        if key == "__sum_total_gst":
+            total = sum(
+                self._get_payment_share(p, tid)["gst"] for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "__sum_total_tcs":
+            total = sum(
+                self._get_payment_share(p, tid)["tcs"] for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "__sum_total_with_tax":
+            total = sum(
+                self._get_payment_share(p, tid)["taxable"]
+                + self._get_payment_share(p, tid)["gst"]
+                + self._get_payment_share(p, tid)["tcs"]
+                for p in pays)
+            return f"₹{_fmt_inr(total)}"
+        if key == "__sum_pending_with_tax":
+            total = sum(
+                self._get_payment_share(p, tid)["taxable"]
+                + self._get_payment_share(p, tid)["gst"]
+                + self._get_payment_share(p, tid)["tcs"]
+                for p in pays
+                if str(p.get("status", "")).lower() == "pending")
+            return f"₹{_fmt_inr(total)}"
+        if key == "__sum_outstanding_balance":
+            agg = self.traveler_invoice_data.get(tid, {})
+            if agg.get("has_paid_invoice"):
+                return "₹0.00"
+            total_inv = float(agg.get("total_amount", 0) or 0)
+            total_paid = sum(
+                float(p.get("amount", 0) or 0) for p in pays)
+            return f"₹{_fmt_inr(max(0.0, total_inv - total_paid))}"
+
+        val = t.get(key, "")
+        return str(val) if val not in (None, "") else ""
+
+    # =============================================================================
+    # Render preview table
+    # =============================================================================
+    def _render_preview_table(self, columns, rows):
+        try:
+            self.preview_table.columns.clear()
+            self.preview_table.rows.clear()
+
+            for col in columns:
+                self.preview_table.columns.append(
+                    ft.DataColumn(ft.Text(
+                        col["label"], size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.WHITE)))
+
+            for row in rows:
+                cells = []
+                for col in columns:
+                    val = row.get(col["label"], "")
+                    is_money = col["label"] in MONEY_FIELDS
+                    cells.append(ft.DataCell(ft.Text(
+                        str(val), size=11,
+                        color="#0f172a" if not is_money else "#1e40af",
+                        weight=ft.FontWeight.BOLD if is_money else None,
+                        text_align=(ft.TextAlign.RIGHT if is_money
+                                    else ft.TextAlign.LEFT),
+                    )))
+                self.preview_table.rows.append(ft.DataRow(cells=cells))
+        except Exception as e:
+            print(f"_render_preview_table: {e}")
+
+    # =============================================================================
+    # Exports
+    # =============================================================================
+    def _export_rows(self, filepath, format_type):
+        try:
+            if not self.report_data or not self.selected_columns:
+                self.status_label.value = "⚠️ Generate a preview first."
+                self.status_label.color = ft.Colors.ORANGE_700
+                self.page.update()
+                return False
+
+            labels = [c["label"] for c in self.selected_columns]
+            df = pd.DataFrame(
+                [{l: r.get(l, "") for l in labels}
+                 for r in self.report_data])
+
+            if format_type == "csv":
+                with open(filepath, "w", newline="",
+                          encoding="utf-8-sig") as f:
+                    f.write(
+                        f"# Custom Report — "
+                        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"# Format: {self.report_format.value}\n")
+                    f.write(
+                        f"# GST%: {self.gst_rate} | "
+                        f"TCS%: {self.tcs_rate}\n")
+                    f.write("\n")
+                    df.to_csv(f, index=False)
+                return True
+
+            if format_type == "excel":
+                df.to_excel(filepath, index=False)
+                return True
+
+            if format_type == "pdf":
+                from reportlab.lib.pagesizes import landscape, A4
+                from reportlab.platypus import (
+                    SimpleDocTemplate, Table, TableStyle, Paragraph,
+                    Spacer)
+                from reportlab.lib import colors as rl_colors
+                from reportlab.lib.styles import getSampleStyleSheet
+                from reportlab.lib.units import cm
+
+                doc = SimpleDocTemplate(
+                    filepath, pagesize=landscape(A4),
+                    leftMargin=1.5 * cm, rightMargin=1.5 * cm,
+                    topMargin=2 * cm, bottomMargin=2 * cm)
+                styles = getSampleStyleSheet()
+                elements = []
+                elements.append(Paragraph("Custom Report",
+                                          styles["Heading1"]))
+                elements.append(Paragraph(
+                    f"Generated: "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                    styles["Normal"]))
+                elements.append(Spacer(1, 0.5 * cm))
+
+                data = [labels]
+                for r in self.report_data:
+                    data.append([str(r.get(l, "")) for l in labels])
+
+                table = Table(data, repeatRows=1)
+                table.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0),
+                     rl_colors.HexColor("#1e40af")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0),
+                     rl_colors.whitesmoke),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("GRID", (0, 0), (-1, -1), 0.25,
+                     rl_colors.HexColor("#e5e7eb")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]))
+                elements.append(table)
+                doc.build(elements)
+                return True
+
+            return False
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            self.status_label.value = f"❌ Export failed: {ex}"
+            self.status_label.color = ft.Colors.RED_500
+            try:
+                self.page.update()
+            except Exception:
+                pass
+            return False
+
+    def export_excel(self, e=None):
+        try:
+            base = _app_base()
+            export_dir = Path(base) / "exports"
+            export_dir.mkdir(exist_ok=True)
+            path = export_dir / (
+                f"custom_report_"
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
+            if self._export_rows(str(path), "excel"):
+                self.status_label.value = f"✅ Excel saved: {path.name}"
+                self.status_label.color = ft.Colors.GREEN_700
+                try:
+                    self.page.launch_url(f"/exports/{path.name}")
+                except Exception:
+                    pass
+            self.page.update()
+        except Exception as ex:
+            self.status_label.value = f"❌ {ex}"
+            self.status_label.color = ft.Colors.RED_500
+            self.page.update()
+
+    def export_csv(self, e=None):
+        try:
+            base = _app_base()
+            export_dir = Path(base) / "exports"
+            export_dir.mkdir(exist_ok=True)
+            path = export_dir / (
+                f"custom_report_"
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            if self._export_rows(str(path), "csv"):
+                self.status_label.value = f"✅ CSV saved: {path.name}"
+                self.status_label.color = ft.Colors.GREEN_700
+                try:
+                    self.page.launch_url(f"/exports/{path.name}")
+                except Exception:
+                    pass
+            self.page.update()
+        except Exception as ex:
+            self.status_label.value = f"❌ {ex}"
+            self.status_label.color = ft.Colors.RED_500
+            self.page.update()
+
+    def export_pdf(self, e=None):
+        try:
+            base = _app_base()
+            export_dir = Path(base) / "exports"
+            export_dir.mkdir(exist_ok=True)
+            path = export_dir / (
+                f"custom_report_"
+                f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+            if self._export_rows(str(path), "pdf"):
+                self.status_label.value = f"✅ PDF saved: {path.name}"
+                self.status_label.color = ft.Colors.GREEN_700
+                try:
+                    self.page.launch_url(f"/exports/{path.name}")
+                except Exception:
+                    pass
+            self.page.update()
+        except Exception as ex:
+            self.status_label.value = f"❌ {ex}"
+            self.status_label.color = ft.Colors.RED_500
+            self.page.update()
+
+
+# =================================================================================
+# END — core/custom_report_dialog.py
+# =================================================================================

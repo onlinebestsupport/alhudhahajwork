@@ -1,0 +1,12 @@
+id,backup_date,backup_file,size,status
+BAK/BUP/2026/001,2026-08-13T17:38:17.274424,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260813_173817.zip,5139,success
+BAK/BUP/2026/002,2026-08-29T16:26:18.234445,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260829_162618.zip,24353,success
+BAK/BUP/2026/003,2026-09-01T15:48:49.718807,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260901_154849.zip,26323,success
+BAK/BUP/2026/004,2026-09-03T18:32:31.473774,data\backups\backup_20260903_183231.zip,32748,success
+BAK/BUP/2026/007,2026-09-03T20:11:04.724703,data\backups\backup_20260903_201104.zip,37628,success
+BAK/BUP/2026/011,2026-09-05T17:09:46.596190,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260905_170946.zip,62939,success
+BAK/BUP/2026/012,2026-09-08T18:01:22.492912,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260908_180122.zip,64490,success
+BAK/BUP/2026/013,2026-09-11T19:38:16.914943,data\backups\backup_20260911_193816.zip,82542,success
+BAK/BUP/2026/014,2026-09-11T19:48:06.164488,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260911_194806.zip,82911,success
+BAK/BUP/2026/015,2026-09-12T17:09:35.315777,C:\Users\Al-Hudha\OneDrive\Desktop\HajTravelSystem_Portable\dist\data\backups\backup_20260912_170935.zip,86451,success
+BAK/BUP/2026/016,2026-09-18T18:51:41.626019,data\backups\backup_20260918_185141.zip,98772,success

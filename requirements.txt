@@ -1,0 +1,6 @@
+flet>=0.24.0
+pandas
+reportlab
+openpyxl
+Pillow
+numpy

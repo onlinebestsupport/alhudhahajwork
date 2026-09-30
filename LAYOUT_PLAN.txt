@@ -1,0 +1,553 @@
+# Full Navigation Structure — Flet Web App
+
+Here's the complete navigation flow of your app, from startup to every screen.
+
+---
+
+## 🗺️ High-Level Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         STARTUP (main.py)                           │
+│                                                                     │
+│  1. ft.run(main)  →  creates page                                   │
+│  2. Register FilePicker as page.service                             │
+│  3. HajDatabase() loads all CSVs                                    │
+│  4. show_login()                                                    │
+└─────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                    ┌────────────────────────┐
+                    │   🔐 LOGIN SCREEN      │
+                    │   LoginView            │
+                    │                        │
+                    │  [Username]            │
+                    │  [Password]            │
+                    │  [🔓 Login] [Cancel]   │
+                    └────────────────────────┘
+                                 │
+              ┌──────────────────┴──────────────────┐
+              │                                     │
+     ✅ Valid credentials               ❌ Invalid / Cancel
+              │                                     │
+              ▼                                     ▼
+       Show Main Window                    Show error / exit
+```
+
+---
+
+## 🏠 Main Window Structure
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  ⚙️ HEADER (Blue bar)                                                   │
+│                                                                         │
+│  🏆 Alhudha Haj Travel System          [🔄] [⚙️ Settings] [👤] [🚪]     │
+│  AL HUDHA HAJ SERVICE PRIVATE LIMITED                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  📑 TAB BAR (Top navigation)                                            │
+│                                                                         │
+│  📊 Dashboard | 👥 Travelers | 📦 Batches | 💰 Payments | 🧾 Receipts  │
+│  📄 Invoices  | 📈 Reports   | 👤 Users   | 💾 Backup                  │
+└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│                                                                         │
+│                    TAB CONTENT AREA                                     │
+│                                                                         │
+│            (Changes based on selected tab)                              │
+│                                                                         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Ready                                         🕐 20:22:13              │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 📊 Tab-by-Tab Navigation
+
+### 1️⃣ 📊 Dashboard Tab
+
+```
+Dashboard
+   │
+   ├─ 🕋 Header (Company name, live clock, GST/TCS badges)
+   │
+   ├─ 📈 8 Stat Cards
+   │     Total Travelers | Active Batches | Total Seats | Available Seats
+   │     Total Collections | Pending (Package) | Pending (Invoice) | Receipts
+   │
+   ├─ ⚡ Quick Actions
+   │     ➕ Add Traveler  ──► TravelerDialog (add mode)
+   │     💰 Record Payment ──► PaymentDialog
+   │     📄 Create Invoice ──► InvoiceDialog
+   │     📊 Generate Report ──► CustomReportDialog (full page)
+   │
+   ├─ 📈 Sales Chart (last 7 days)
+   │
+   ├─ 🏆 Top Batches Table (with medals)
+   │
+   ├─ 📊 Batch Summary Table
+   │
+   └─ 📋 Recent Activity Table
+```
+
+---
+
+### 2️⃣ 👥 Travelers Tab
+
+```
+Travelers
+   │
+   ├─ 📊 4 Stat Cards
+   │     Total | Active Passports | Vaccinated | Docs Complete
+   │
+   ├─ 🔍 Search Box + Toolbar
+   │     ➕ Add Traveler    ──► TravelerDialog (add mode)
+   │     📊 Excel Export    ──► Browser download
+   │     📄 PDF Export      ──► Browser download
+   │     🖨️ Print           ──► Snackbar hint
+   │     📂 Bulk Upload     ──► Snackbar (coming soon)
+   │     📥 Template        ──► Browser download
+   │
+   ├─ 📋 Table (10 rows/page)
+   │     Each row has:
+   │       👁️ View    ──► TravelerViewDialog
+   │       ✏️ Edit    ──► TravelerDialog (edit mode)
+   │       🗑️ Delete  ──► Confirm dialog
+   │       📎 Doc icons (clickable to open file)
+   │
+   └─ ⬅️ ➡️ Pagination
+```
+
+---
+
+### 3️⃣ 📦 Batches Tab
+
+```
+Batches
+   │
+   ├─ 📊 6 Stat Cards
+   │     Total Batches | Open | Total Seats | Booked | Value | With Return Date
+   │
+   ├─ 🔍 Filters (Year, Tour Type, Search) + Toolbar
+   │     ➕ Create New Batch ──► BatchFormDialog (add mode)
+   │     📊 Export           ──► Browser download
+   │     🖨️ Print            ──► Snackbar hint
+   │
+   ├─ 📋 Table (10 rows/page)
+   │     Each row has:
+   │       👁️ View    ──► BatchViewDialog
+   │       ✏️ Edit    ──► BatchFormDialog (edit mode)
+   │       🗑️ Delete  ──► Confirm dialog
+   │
+   └─ ⬅️ ➡️ Pagination
+```
+
+---
+
+### 4️⃣ 💰 Payments Tab
+
+```
+Payments
+   │
+   ├─ 📊 6 Stat Cards
+   │     Total | Completed | Pending | Receipts | Pkg Pending | Inv Pending
+   │
+   ├─ 🔍 Filters (Status, Method, Search) + Toolbar
+   │     ➕ Record Payment ──► PaymentDialog
+   │
+   ├─ 📋 Table
+   │     Each row has:
+   │       ✏️ Edit Payment   ──► PaymentEditDialog
+   │       🧾 View Receipt   ──► Receipt preview dialog
+   │       📄 Export PDF     ──► Browser download
+   │       🖨️ Print          ──► Snackbar hint
+   │
+   └─ Filtered count label
+```
+
+---
+
+### 5️⃣ 🧾 Receipts Tab
+
+```
+Receipts
+   │
+   ├─ 📊 5 Stat Cards
+   │     Total | Amount | Today | Pkg Pending | Inv Pending
+   │
+   ├─ 🔍 Filters (Traveler, Search, Date From/To) + Refresh
+   │
+   ├─ 📋 Table
+   │     Each row has:
+   │       👁️ View    ──► Receipt details dialog
+   │       📄 PDF     ──► Browser download
+   │       🖨️ Print   ──► Snackbar hint
+   │       🗑️ Delete  ──► Confirm dialog
+   │
+   └─ Filtered count label
+```
+
+---
+
+### 6️⃣ 📄 Invoices Tab
+
+```
+Invoices
+   │
+   ├─ 💰 Tax Info Bar
+   │     CURRENT TAX RATES: GST 5% | TCS 2% | Rounding rule
+   │     [🔄 Refresh Tax Rates] [⚙️ Tax Settings]
+   │                              └─► CompanySettingsDialog (Tax tab)
+   │
+   ├─ 📊 6 Stat Cards
+   │     Total | Pending | Paid | Discount | TCS | Package Pending
+   │
+   ├─ 🔍 Filters (Status, Search) + Toolbar
+   │     ➕ Generate Invoice ──► InvoiceDialog
+   │     🧾 Manual Create    ──► ManualInvoiceDialog
+   │
+   ├─ 📋 Table (17 columns, Actions at left)
+   │     Each row has ⋮ menu with:
+   │       👁️ View Details    ──► InvoiceDetailsDialog
+   │       ✏️ Modify Invoice  ──► InvoiceModifyDialog
+   │       📄 Export PDF       ──► Browser download
+   │       📊 Export Excel     ──► Browser download
+   │       🖨️ Print Invoice    ──► Snackbar hint
+   │       🗑️ Delete           ──► Confirm dialog
+   │
+   └─ (no pagination — all invoices shown)
+```
+
+---
+
+### 7️⃣ 📈 Reports Tab (with 5 sub-tabs)
+
+```
+Reports
+   │
+   ├─── 🏠 Reports Hub
+   │        │
+   │        ├─ Welcome banner (user name + time)
+   │        ├─ Live stats bar (5 stats)
+   │        └─ 4 Report Cards
+   │              🎯 Custom Report   ──► switches to sub-tab 1
+   │              🔎 Single Traveler ──► switches to sub-tab 2
+   │              📈 Standard Reports──► switches to sub-tab 3
+   │              📸 Photo Viewer    ──► switches to sub-tab 4
+   │
+   ├─── 🎯 Custom Reports
+   │        │
+   │        └─ [🚀 Open Custom Report] ──► CustomReportDialog (FULL PAGE)
+   │                                              │
+   │                                              ├─ Column selection (3 groups)
+   │                                              ├─ Filters (Batch/Status/Payment)
+   │                                              ├─ 📌 Reorder Columns ──► Reorder dialog
+   │                                              ├─ 🔄 Generate Preview
+   │                                              ├─ 📊 Excel / 📄 CSV / 📕 PDF
+   │                                              └─ ✕ Close ──► back to Reports
+   │
+   ├─── 🔎 Single Traveler
+   │        │
+   │        ├─ Dropdown (search traveler)
+   │        ├─ [📥 Load Selected]
+   │        ├─ [👁️ View Full Report] ──► Traveler report (FULL PAGE)
+   │        │                                 │
+   │        │                                 └─ [← Back arrow] ──► back
+   │        ├─ [📄 Export PDF] ──► Browser download
+   │        ├─ [📊 Export Excel] ──► Browser download
+   │        ├─ Photo preview (180x180)
+   │        ├─ Summary card
+   │        └─ Documents row (click to open)
+   │
+   ├─── 📈 Standard Reports
+   │        │
+   │        ├─ Report Type dropdown
+   │        │     Financial Summary / Traveler Statistics
+   │        │     Batch Utilization / Payment Analysis
+   │        ├─ Date range (From / To)
+   │        ├─ Quick filters (Today / Week / Month / 3 Months)
+   │        ├─ [🔄 Generate]    ──► renders report text
+   │        ├─ [📝 TXT]  ──► Browser download
+   │        ├─ [📊 CSV]  ──► Browser download
+   │        ├─ [📄 PDF]  ──► Browser download
+   │        └─ Report display area (scrollable)
+   │
+   └─── 📸 Photo Viewer
+            │
+            ├─ Traveler list (left, 300px)
+            └─ [🔄 Refresh]
+                     │
+                     └─ Click traveler ──► Photo preview (500x500)
+```
+
+---
+
+### 8️⃣ 👤 Users Tab (admin only)
+
+```
+Users
+   │
+   ├─ Header banner
+   │
+   ├─ 🔍 Search + Toolbar
+   │     ➕ Add User   ──► UserDialog (add mode)
+   │     🔄 Refresh
+   │
+   ├─ 📋 Table
+   │     Each row has:
+   │       ✏️ Edit   ──► UserDialog (edit mode)
+   │       🗑️ Delete ──► Confirm dialog
+   │                     (self-delete + last super_admin protection)
+   │
+   └─ User count label
+```
+
+---
+
+### 9️⃣ 💾 Backup Tab
+
+```
+Backup
+   │
+   ├─ Header banner
+   │
+   ├─ Toolbar
+   │     💾 Create New Backup  ──► Confirm dialog ──► creates ZIP
+   │     🔄 Restore Selected   ──► Snackbar hint
+   │     📂 Import External    ──► FilePicker ──► ZIP upload
+   │     🔄 Refresh
+   │     📂 Open Backup Folder ──► Opens OS folder
+   │
+   ├─ 📋 Backup table
+   │     Each row has ⋮ menu with:
+   │       🔄 Restore This Backup ──► Confirm (with safety backup)
+   │       🗑️ Delete               ──► Confirm
+   │
+   └─ Backup count label
+```
+
+---
+
+## 🔐 Logout Flow
+
+```
+Click [🚪 Logout] in header
+        │
+        ▼
+   ┌─────────────────┐
+   │ Confirm dialog  │
+   │ "Are you sure?" │
+   └─────────────────┘
+        │
+        ├─ Yes ──► on_logout() ──► Clear page ──► Show Login
+        │
+        └─ No ──► Stay
+```
+
+---
+
+## 🌐 URL / Route Structure
+
+Flet runs as a **single-page app** — no URL routing by default. Everything happens in one URL.
+
+```
+http://127.0.0.1:5000/          ← Everything lives here
+```
+
+**But internally, these "views" replace the page**:
+
+| View | How it's shown | How to exit |
+|---|---|---|
+| Login | `page.controls.clear()` + `page.add(login_view.build())` | On success → Main Window |
+| Main Window | `page.controls.clear()` + `page.add(main_window.build())` | Logout → Login |
+| Custom Report | Saves `page.controls`, clears, adds full-page | **✕ Close** or **← Back** |
+| Traveler Full Report | Same as above | **← Back** |
+| Reorder Columns | Dialog (overlays current page) | **Cancel** / **Apply** |
+| All Add/Edit dialogs | `ft.AlertDialog` overlay | **Cancel** / **Save** |
+| Confirm Deletes | `ft.AlertDialog` overlay | **Cancel** / **Delete** |
+| Snackbar messages | `ft.SnackBar` (auto-dismiss) | auto or swipe |
+
+---
+
+## 🗂️ File-to-View Mapping
+
+```
+main.py                          → LoginView → MainWindowView
+
+core/login_view.py               → 🔐 Login screen
+
+core/main_window.py              → 🏠 Main shell + Tab bar
+
+core/dashboard_tab.py            → 📊 Dashboard tab
+
+core/travelers_tab.py            → 👥 Travelers tab + TravelerDialog + TravelerViewDialog
+
+core/batches_tab.py              → 📦 Batches tab + BatchFormDialog + BatchViewDialog
+
+core/payments_tab.py             → 💰 Payments tab + PaymentDialog + PaymentEditDialog
+
+core/receipts_tab.py             → 🧾 Receipts tab
+
+core/invoices_tab.py             → 📄 Invoices tab + InvoiceDialog + InvoiceModifyDialog
+                                                       + InvoiceDetailsDialog
+                                                       + ManualInvoiceDialog
+
+core/reports_tab.py              → 📈 Reports tab (5 sub-tabs)
+
+core/custom_report_dialog.py     → 🎯 Custom Report (full page) + ColumnReorderDialog
+
+core/users_tab.py                → 👤 Users tab + UserDialog
+
+core/backups_tab.py              → 💾 Backup tab
+
+core/company_settings_dialog.py  → ⚙️ Settings dialog (4 tabs)
+
+core/database.py                 → Backend (HajDatabase)
+
+core/helpers.py                  → Utilities (path, format, currency)
+```
+
+---
+
+## 🎯 User Journey Examples
+
+### Journey 1: Add a new traveler
+```
+Login → Dashboard
+   └─ Quick Action "➕ Add Traveler"
+        └─ TravelerDialog opens (overlay)
+             └─ Fill form → Save
+                  └─ Snackbar "✅ Traveler added"
+                       └─ Dialog closes → Dashboard refreshes
+```
+
+### Journey 2: Create a custom report
+```
+Login → Reports tab
+   └─ Custom Reports sub-tab
+        └─ [🚀 Open Custom Report]
+             └─ Full-page view opens (hides main window)
+                  ├─ Select columns
+                  ├─ [🔄 Generate Preview]
+                  ├─ [📌 Reorder Columns] → dialog → apply
+                  ├─ [📊 Excel] → browser download
+                  └─ [✕ Close] → returns to Reports tab
+```
+
+### Journey 3: View a traveler's photo
+```
+Login → Reports tab
+   └─ Single Traveler sub-tab
+        ├─ Select traveler from dropdown
+        ├─ [📥 Load Selected]
+        │    └─ Photo + summary + documents appear
+        └─ [👁️ View Full Report]
+             └─ Full-page report (hides main window)
+                  └─ [← Back] → returns to Reports tab
+```
+
+### Journey 4: Restore a backup
+```
+Login → Backup tab
+   └─ Click ⋮ on a backup row
+        └─ 🔄 Restore This Backup
+             └─ Confirm dialog
+                  ├─ Yes → safety backup created → restore → snackbar
+                  └─ No → cancel
+```
+
+### Journey 5: Change company logo
+```
+Login → Settings menu (⚙️ top-right)
+   └─ Company
+        └─ CompanySettingsDialog opens
+             ├─ Upload Logo → FilePicker → base64 preview
+             ├─ Fill fields
+             └─ [💾 Save All Settings]
+                  └─ Snackbar "✅ Settings saved"
+                       └─ Dialog closes
+```
+
+---
+
+## 📊 Screen Inventory
+
+| # | Screen | Type | Back button |
+|---|---|---|---|
+| 1 | Login | Full page | — |
+| 2 | Main Window | Full page + Tabs | Logout button |
+| 3 | Dashboard | Tab | Tab bar |
+| 4 | Travelers | Tab | Tab bar |
+| 5 | Batches | Tab | Tab bar |
+| 6 | Payments | Tab | Tab bar |
+| 7 | Receipts | Tab | Tab bar |
+| 8 | Invoices | Tab | Tab bar |
+| 9 | Reports (Hub) | Sub-tab | Tab bar |
+| 10 | Reports (Custom) | Sub-tab | Tab bar |
+| 11 | Reports (Single Traveler) | Sub-tab | Tab bar |
+| 12 | Reports (Standard) | Sub-tab | Tab bar |
+| 13 | Reports (Photo Viewer) | Sub-tab | Tab bar |
+| 14 | Users | Tab (admin) | Tab bar |
+| 15 | Backup | Tab | Tab bar |
+| 16 | Custom Report (full) | Full page | ← Back / ✕ Close |
+| 17 | Traveler Full Report | Full page | ← Back |
+| 18 | All Add/Edit dialogs | Overlay | Cancel / Save |
+| 19 | All Confirm dialogs | Overlay | Cancel / Yes |
+| 20 | Reorder Columns | Overlay | Cancel / Apply |
+| 21 | Settings dialog | Overlay | Cancel / Save |
+
+---
+
+## 🔑 Key Navigation Patterns
+
+| Pattern | Purpose | Implementation |
+|---|---|---|
+| **Tab switch** | Move between major sections | `tabs.selected_index = N` |
+| **Sub-tab switch** | Move within Reports | `reports_tabs.selected_index = N` |
+| **Full-page navigation** | Custom Report, Full Report | Save `page.controls`, clear, add new |
+| **Full-page return** | Back button | Restore saved `page.controls` |
+| **Modal dialog** | All forms (Add/Edit/Settings) | `page.show_dialog(ft.AlertDialog(...))` |
+| **Popup menu** | ⋮ actions in tables | `ft.PopupMenuButton(items=[...])` |
+| **Snackbar** | Success/error messages | `page.show_dialog(ft.SnackBar(...))` |
+| **File download** | Exports | `await file_picker.save_file(src_bytes=...)` |
+| **File upload** | Logo, Import backup | `await file_picker.pick_files(with_data=True)` |
+
+---
+
+## 🎨 Visual Hierarchy
+
+```
+Level 1: AppBar (blue, company name, user, logout, settings)
+   │
+   └─ Level 2: Tab Bar (9 main tabs)
+         │
+         └─ Level 3: Tab content
+               │
+               ├─ Sub-tabs (Reports only)
+               │
+               ├─ Stat cards (top of each tab)
+               │
+               ├─ Toolbar (actions)
+               │
+               ├─ Filters
+               │
+               ├─ Table (data)
+               │
+               └─ Pagination (where applicable)
+
+Level 4: Overlays (stacked on top)
+   ├─ AlertDialog (forms, confirms)
+   ├─ SnackBar (brief messages)
+   └─ Full page (replaces Level 2-3 entirely)
+```
+
+---
+
+This is your complete navigation structure. **Only Level 4 (Custom Report / Full Report) replaces the entire screen** — everything else lives inside the tab system.
+
+Want me to also diagram the **data flow** (which DB calls happen when) or the **state management** (how user/logout/etc. is tracked)? 🚀
