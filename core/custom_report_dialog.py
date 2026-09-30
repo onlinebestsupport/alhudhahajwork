@@ -3,24 +3,13 @@
 # =================================================================================
 # 17.0 — SECTION OVERVIEW
 # ---------------------------------------------------------------------------------
-# This file mirrors the PyQt6 source 1:1. Same section numbers, same method
-# names, same business logic. Only the UI layer uses Flet (AlertDialog,
-# DataTable, Checkbox, Tabs) instead of PyQt (QDialog, QTableWidget, QCheckBox,
-# QTabWidget).
-#
-# Fixes preserved from PyQt6 source:
-#   FIX-PAID-CASCADE, FIX-PER-INVOICE-SHARE, FIX-TAX-INVOICE-SOURCE,
-#   FIX-TAX-RATIO-DENOM, FIX-TAX-CUMULATIVE-CAP, FIX-NEW-PAY-COLUMNS,
-#   FIX-INR-FORMAT, FIX-EXACT-PCT, FIX-SLOT-PAY-COLUMNS,
-#   FIX-PAYMENT-LEDGER, FIX-ADV-FILTERS, FIX-OUTSTANDING-BAL, FIX-PRO-UI.
-#
-# NEW in this Flet port:
-#   FIX-DYNAMIC-PAY-DYNAMIC — max_slots = max payments across FILTERED
-#                              travelers, capped at HARD_CAP = 10.
-#   FIX-CSV-AUTHORITY       — _load_data() prints every CSV path & row
-#                              count and picks the source with the MOST
-#                              rows (DB vs. all candidate CSVs). Prevents
-#                              stale-cache missing-payments bugs.
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • Exports now serve files via HTTP (send_file_to_user) instead of
+#     file:/// URLs which break on the web.
+#   • _open_local_file() calls removed from exports — replaced with
+#     browser-friendly URLs.
+#   • generate_preview() forces a reload of payments.csv, invoices.csv,
+#     travelers.csv from disk so reports always show fresh data.
 # =================================================================================
 
 # =================================================================================
@@ -45,13 +34,18 @@ try:
 except ImportError:
     SettingsManager = None
 
+try:
+    from core.helpers import send_file_to_user
+except ImportError:
+    def send_file_to_user(page, path, label="Download"):
+        return None
+
 
 # =================================================================================
 # 17.1b — MODULE HELPER: _fmt_inr_
 # =================================================================================
 if '_fmt_inr_' not in globals():
     def _fmt_inr_(value):
-        """Indian-format currency string."""
         try:
             v = float(value or 0)
         except (TypeError, ValueError):
@@ -120,15 +114,9 @@ def _assets_export_dir(sub):
 
 
 def _open_local_file(path):
-    try:
-        if sys.platform == "win32":
-            os.startfile(path); return True
-        if sys.platform.startswith("darwin"):
-            subprocess.run(["open", path], check=False); return True
-        subprocess.run(["xdg-open", path], check=False); return True
-    except Exception as e:
-        print(f"[open_local_file] {e}")
-        return False
+    """Desktop-only. On web this does nothing."""
+    print(f"[WEB] _open_local_file is disabled on web. File: {path}")
+    return False
 
 
 # =================================================================================
@@ -244,8 +232,6 @@ def _is_money_label(label):
 # =================================================================================
 # 17.1h — FIELD CATALOGS
 # =================================================================================
-
-# 17.1h.1 — Traveler fields (mirrors PyQt6 setup_traveler_tab)
 TRAVELER_FIELDS = [
     ("id", "ID"), ("first_name", "First Name"),
     ("last_name", "Last Name"), ("passport_name", "Passport Name"),
@@ -278,7 +264,6 @@ TRAVELER_FIELDS = [
     ("vaccine_scan", "Vaccine Certificate"),
 ]
 
-# 17.1h.2 — Batch fields
 BATCH_FIELDS = [
     ("id", "Batch ID"), ("batch_name", "Batch Name"),
     ("tour_type_name", "Tour Type"), ("year", "Year"),
@@ -289,7 +274,6 @@ BATCH_FIELDS = [
     ("description", "Description"),
 ]
 
-# 17.1h.3 — Payment fields (mirrors PyQt6 setup_payment_tab)
 PAYMENT_FIELDS = [
     ("id", "Payment ID / Receipt No"),
     ("traveler_id", "Traveler ID"),
@@ -346,7 +330,6 @@ PAYMENT_FIELDS = [
     ("__inv_paid_total", "Invoice Total (paid)"),
 ]
 
-# 17.1h.4 — Money field labels (mirrors PyQt6 _MONEY_FIELDS)
 MONEY_FIELDS = {
     "Payment Amount", "Payment Amount (without GST/TCS)",
     "Invoice Base Amount", "Invoice Discount Amount",
@@ -368,7 +351,7 @@ MONEY_FIELDS = {
     "Invoice TCS (paid)", "Invoice Total (paid)",
 }
 
-# 17.1h.5 — Dynamic label builder
+
 def _dyn_label(key, n):
     return {
         "__dyn_amount":    f"Payment {n} Amount",
@@ -384,10 +367,9 @@ def _dyn_label(key, n):
 
 
 # =================================================================================
-# 17.2 — CLASS: ColumnOrderDialog  (mirrors PyQt6 ColumnOrderDialog)
+# 17.2 — CLASS: ColumnOrderDialog
 # =================================================================================
 class ColumnOrderDialog:
-    """17.2.0 — Reorder columns dialog."""
 
     def __init__(self, page, columns, on_apply):
         self.page = page
@@ -399,7 +381,6 @@ class ColumnOrderDialog:
         self._rebuild_list()
         self.setup_ui()
 
-    # 17.2.1 — _rebuild_list
     def _rebuild_list(self):
         self._list.controls.clear()
         for i, col in enumerate(self.columns):
@@ -430,7 +411,6 @@ class ColumnOrderDialog:
                 else ft.Border.all(1, ft.Colors.GREY_200),
                 border_radius=6, on_click=_click, ink=True))
 
-    # 17.2.2 — setup_ui
     def setup_ui(self):
         header = ft.Container(
             content=ft.Row([
@@ -524,25 +504,20 @@ class ColumnOrderDialog:
             ],
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
-    # 17.2.3 — show
     def show(self):
         self.page.show_dialog(self.dialog)
 
 
 # =================================================================================
-# 17.3 — CLASS: CustomReportDialog  (mirrors PyQt6 CustomReportDialog)
+# 17.3 — CLASS: CustomReportDialog
 # =================================================================================
 class CustomReportDialog:
-    """17.3.0 — Main Custom Report Generator Dialog."""
 
-    # Mirrors PyQt6 `_MONEY_FIELDS` (module-level MONEY_FIELDS reused)
     _MONEY_FIELDS = MONEY_FIELDS
-
-    # 17.3.1 — HARD_CAP
     HARD_CAP = 10
 
     # =============================================================================
-    # 17.3.1 — METHOD: __init__
+    # 17.3.1 — __init__
     # =============================================================================
     def __init__(self, page, db, current_user):
         self.page = page
@@ -569,8 +544,8 @@ class CustomReportDialog:
         self._column_order = {}
         self._last_payment_source = "(not loaded)"
 
-        # UI refs
         self.column_group = None
+        self.column_group_title = None
         self.column_tabs = None
         self.report_format_dropdown = None
         self.reg_date_from = None
@@ -596,13 +571,13 @@ class CustomReportDialog:
         self.setup_ui()
 
     # =============================================================================
-    # 17.3.1b — METHOD: _fmt_money_inr
+    # 17.3.1b — _fmt_money_inr
     # =============================================================================
     def _fmt_money_inr(self, value):
         return _fmt_inr_(value)
 
     # =============================================================================
-    # 17.3.1c — METHOD: _load_live_tax_rates
+    # 17.3.1c — _load_live_tax_rates
     # =============================================================================
     def _load_live_tax_rates(self):
         try:
@@ -617,8 +592,7 @@ class CustomReportDialog:
             self.tcs_rate = 0.0
 
     # =============================================================================
-    # 17.3.1d — METHOD: _refresh_invoice_caches   (FIX-PAID-CASCADE)
-    #              Stores 'status' and 'is_paid' per invoice.
+    # 17.3.1d — _refresh_invoice_caches   (FIX-PAID-CASCADE)
     # =============================================================================
     def _refresh_invoice_caches(self):
         self.traveler_invoice_data = {}
@@ -714,7 +688,7 @@ class CustomReportDialog:
             print(f"[CR] _refresh_invoice_caches failed: {e}")
 
     # =============================================================================
-    # 17.3.1e — METHOD: _resolve_invoice_for_payment
+    # 17.3.1e — _resolve_invoice_for_payment
     # =============================================================================
     def _resolve_invoice_for_payment(self, payment, traveler_id):
         inv_id = str(payment.get('invoice_id', '') or '').strip()
@@ -732,7 +706,7 @@ class CustomReportDialog:
         return None
 
     # =============================================================================
-    # 17.3.1f — METHOD: _is_invoice_paid_for_payment   (FIX-PAID-CASCADE)
+    # 17.3.1f — _is_invoice_paid_for_payment   (FIX-PAID-CASCADE)
     # =============================================================================
     def _is_invoice_paid_for_payment(self, payment, traveler_id):
         try:
@@ -752,7 +726,7 @@ class CustomReportDialog:
         return False
 
     # =============================================================================
-    # 17.3.1g — METHOD: _get_payment_share   (FIX-PER-INVOICE-SHARE)
+    # 17.3.1g — _get_payment_share   (FIX-PER-INVOICE-SHARE)
     # =============================================================================
     def _get_payment_share(self, payment, traveler_id):
         amt = 0.0
@@ -793,7 +767,7 @@ class CustomReportDialog:
         }
 
     # =============================================================================
-    # 17.3.1h — METHOD: _get_invoice_share   (aggregate fallback)
+    # 17.3.1h — _get_invoice_share   (aggregate fallback)
     # =============================================================================
     def _get_invoice_share(self, traveler_id, payment_amount):
         data = self.traveler_invoice_data.get(traveler_id)
@@ -848,15 +822,10 @@ class CustomReportDialog:
         }
 
     # =============================================================================
-    # 17.3.2 — PATH HELPERS (mirrors PyQt6 17.3.2)
+    # 17.3.2 — PATH HELPERS
     # =============================================================================
     def get_app_base_path(self):
-        if getattr(sys, 'frozen', False):
-            return os.path.dirname(sys.executable)
-        here = os.path.dirname(os.path.abspath(__file__))
-        if os.path.basename(here).lower() == "core":
-            return os.path.dirname(here)
-        return here
+        return _app_base()
 
     def get_photo_path(self, traveler):
         photo_path = traveler.get('photo', '')
@@ -891,7 +860,7 @@ class CustomReportDialog:
                 if value.is_integer():
                     return str(int(value))
                 return str(value)
-            if isinstance(value, (int,)):
+            if isinstance(value, int):
                 val_str = str(int(value))
                 if len(val_str) == 12 and val_str.isdigit():
                     return f"{val_str[:4]} {val_str[4:8]} {val_str[8:]}"
@@ -933,31 +902,7 @@ class CustomReportDialog:
             return str(value) if value else ''
 
     def format_date_to_ddmmyyyy(self, date_str):
-        if not date_str:
-            return ''
-        try:
-            date_str = str(date_str).strip()
-            # Already dd/mm/yyyy
-            if len(date_str) >= 10 and date_str[2] == '/' and date_str[5] == '/':
-                return date_str[:10]
-            # yyyy/mm/dd
-            if len(date_str) >= 10 and date_str[4] == '/' and date_str[7] == '/':
-                return f"{date_str[8:10]}/{date_str[5:7]}/{date_str[0:4]}"
-            # yyyy-mm-dd
-            if len(date_str) >= 10 and date_str[4] == '-' and date_str[7] == '-':
-                return f"{date_str[8:10]}/{date_str[5:7]}/{date_str[0:4]}"
-            formats = ['%Y-%m-%d', '%d-%m-%Y', '%d/%m/%Y',
-                       '%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M:%S',
-                       '%d-%m-%y', '%d/%m/%y']
-            for fmt in formats:
-                try:
-                    return datetime.strptime(
-                        date_str[:19], fmt).strftime('%d/%m/%Y')
-                except Exception:
-                    continue
-            return date_str[:10] if len(date_str) > 10 else date_str
-        except Exception:
-            return date_str if date_str else ''
+        return _fmt_date_ddmmyyyy(date_str)
 
     def convert_scientific_to_number(self, value):
         if value is None or value == '':
@@ -1018,10 +963,9 @@ class CustomReportDialog:
         return '\n'.join(lines)
 
     # =============================================================================
-    # 17.3.3 — METHOD: setup_ui   (mirrors PyQt6 setup_ui)
+    # 17.3.3 — setup_ui
     # =============================================================================
     def setup_ui(self):
-        # ---- Header ----
         header = ft.Container(
             content=ft.Row([
                 ft.Text("📊", size=26),
@@ -1045,13 +989,8 @@ class CustomReportDialog:
                 colors=["#1e40af", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # ---- Left panel (column picker) ----
         left_panel = self.setup_left_panel()
-
-        # ---- Right panel (filters + preview) ----
         right_panel = self.setup_right_panel()
-
-        # ---- Layout: two columns ----
         body = ft.Container(
             content=ft.Row(
                 [left_panel, right_panel],
@@ -1060,12 +999,10 @@ class CustomReportDialog:
                 expand=True),
             expand=True)
 
-        # ---- Filter card + buttons + status ----
         filters_card = self.setup_filters()
         buttons = self.setup_buttons()
         status = self.setup_status()
 
-        # ---- Assemble dialog ----
         pw = self.page.width or 1400
         ph = self.page.height or 900
         init_w = max(900, min(1400, pw - 40))
@@ -1090,7 +1027,7 @@ class CustomReportDialog:
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
     # =============================================================================
-    # 17.3.4 — METHOD: setup_left_panel
+    # 17.3.4 — setup_left_panel
     # =============================================================================
     def setup_left_panel(self):
         column_group_title = ft.Text(
@@ -1098,7 +1035,6 @@ class CustomReportDialog:
             size=13, weight=ft.FontWeight.BOLD, color="#1e3a8a")
         self.column_group_title = column_group_title
 
-        # Tabs: Travelers / Batches / Payments
         self.column_tabs = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -1133,7 +1069,7 @@ class CustomReportDialog:
             height=560)
 
     # =============================================================================
-    # 17.3.5 — METHOD: setup_traveler_tab
+    # 17.3.5 — setup_traveler_tab
     # =============================================================================
     def setup_traveler_tab(self):
         for k, l in TRAVELER_FIELDS:
@@ -1172,7 +1108,7 @@ class CustomReportDialog:
             padding=10, expand=True)
 
     # =============================================================================
-    # 17.3.6 — METHOD: setup_batch_tab
+    # 17.3.6 — setup_batch_tab
     # =============================================================================
     def setup_batch_tab(self):
         for k, l in BATCH_FIELDS:
@@ -1211,7 +1147,7 @@ class CustomReportDialog:
             padding=10, expand=True)
 
     # =============================================================================
-    # 17.3.7 — METHOD: setup_payment_tab
+    # 17.3.7 — setup_payment_tab
     # =============================================================================
     def setup_payment_tab(self):
         for k, l in PAYMENT_FIELDS:
@@ -1250,7 +1186,7 @@ class CustomReportDialog:
             padding=10, expand=True)
 
     # =============================================================================
-    # 17.3.8 — METHOD: setup_right_panel
+    # 17.3.8 — setup_right_panel
     # =============================================================================
     def setup_right_panel(self):
         return ft.Container(
@@ -1260,7 +1196,7 @@ class CustomReportDialog:
             padding=0, expand=True)
 
     # =============================================================================
-    # 17.3.9 — METHOD: setup_filters   (mirrors PyQt6 setup_filters)
+    # 17.3.9 — setup_filters
     # =============================================================================
     def setup_filters(self):
         self.report_format_dropdown = ft.Dropdown(
@@ -1369,7 +1305,7 @@ class CustomReportDialog:
             border_radius=10)
 
     # =============================================================================
-    # 17.3.9b — METHOD: _on_report_format_changed
+    # 17.3.9b — _on_report_format_changed
     # =============================================================================
     def _on_report_format_changed(self, e=None):
         try:
@@ -1388,7 +1324,7 @@ class CustomReportDialog:
             print(f"[CR] _on_report_format_changed error: {ex}")
 
     # =============================================================================
-    # 17.3.10 — METHOD: setup_preview
+    # 17.3.10 — setup_preview
     # =============================================================================
     def setup_preview(self):
         PREVIEW_H = 380
@@ -1439,7 +1375,7 @@ class CustomReportDialog:
             border_radius=10, expand=True)
 
     # =============================================================================
-    # 17.3.11 — METHOD: setup_buttons   (mirrors PyQt6 setup_buttons)
+    # 17.3.11 — setup_buttons
     # =============================================================================
     def setup_buttons(self):
         def _btn(label, icon, color, handler):
@@ -1471,7 +1407,7 @@ class CustomReportDialog:
         ], spacing=8, wrap=True)
 
     # =============================================================================
-    # 17.3.12 — METHOD: setup_status
+    # 17.3.12 — setup_status
     # =============================================================================
     def setup_status(self):
         self.status_icon = ft.Text("✅", size=14)
@@ -1489,14 +1425,13 @@ class CustomReportDialog:
         ], spacing=8)
 
     # =============================================================================
-    # 17.3.13 — METHOD: create_checkbox_group   (compat with PyQt6 name)
+    # 17.3.13 — create_checkbox_group
     # =============================================================================
     def create_checkbox_group(self, items):
-        """Return dict of {key: ft.Checkbox} for the given field list."""
         return {k: ft.Checkbox(label=l, value=False) for k, l in items}
 
     # =============================================================================
-    # 17.3.14 — METHOD: select_all_checkboxes   (compat)
+    # 17.3.14 — select_all_checkboxes
     # =============================================================================
     def select_all_checkboxes(self, checkboxes, select):
         if isinstance(checkboxes, dict):
@@ -1511,7 +1446,7 @@ class CustomReportDialog:
             pass
 
     # =============================================================================
-    # 17.3.15 — METHOD: get_selected_columns
+    # 17.3.15 — get_selected_columns
     # =============================================================================
     def get_selected_columns(self):
         selected = []
@@ -1533,12 +1468,11 @@ class CustomReportDialog:
         return selected
 
     # =============================================================================
-    # 17.3.16 — METHOD: date quick filters   (mirrors PyQt6)
+    # 17.3.16 — date quick filters (compat wrappers)
     # =============================================================================
     def set_date_today(self):
-        today = datetime.now()
-        self.reg_date_from.value = today.strftime("%d/%m/%Y")
-        self.reg_date_to.value = today.strftime("%d/%m/%Y")
+        self.reg_date_from.value = datetime.now().strftime("%d/%m/%Y")
+        self.reg_date_to.value = datetime.now().strftime("%d/%m/%Y")
         self.generate_preview(None)
 
     def set_date_this_week(self):
@@ -1550,8 +1484,7 @@ class CustomReportDialog:
 
     def set_date_this_month(self):
         today = datetime.now()
-        start = today.replace(day=1)
-        self.reg_date_from.value = start.strftime("%d/%m/%Y")
+        self.reg_date_from.value = today.replace(day=1).strftime("%d/%m/%Y")
         self.reg_date_to.value = today.strftime("%d/%m/%Y")
         self.generate_preview(None)
 
@@ -1559,17 +1492,17 @@ class CustomReportDialog:
         today = datetime.now()
         first_this = today.replace(day=1)
         last_last = first_this - timedelta(days=1)
-        start = last_last.replace(day=1)
-        self.reg_date_from.value = start.strftime("%d/%m/%Y")
+        self.reg_date_from.value = last_last.replace(
+            day=1).strftime("%d/%m/%Y")
         self.reg_date_to.value = last_last.strftime("%d/%m/%Y")
         self.generate_preview(None)
 
     def set_date_this_year(self):
         today = datetime.now()
-        start = today.replace(month=1, day=1)
-        end = today.replace(month=12, day=31)
-        self.reg_date_from.value = start.strftime("%d/%m/%Y")
-        self.reg_date_to.value = end.strftime("%d/%m/%Y")
+        self.reg_date_from.value = today.replace(
+            month=1, day=1).strftime("%d/%m/%Y")
+        self.reg_date_to.value = today.replace(
+            month=12, day=31).strftime("%d/%m/%Y")
         self.generate_preview(None)
 
     def set_date_default(self):
@@ -1580,7 +1513,7 @@ class CustomReportDialog:
         self.generate_preview(None)
 
     # =============================================================================
-    # 17.3.17 — METHOD: open_column_ordering_dialog
+    # 17.3.17 — open_column_ordering_dialog
     # =============================================================================
     def open_column_ordering_dialog(self, e=None):
         if self.current_report_mode == 'ledger':
@@ -1609,11 +1542,10 @@ class CustomReportDialog:
         ColumnOrderDialog(self.page, selected, _apply).show()
 
     # =============================================================================
-    # 17.3.18 — METHOD: load_data_preview   (FIX-CSV-AUTHORITY)
+    # 17.3.18 — load_data_preview   (FIX-CSV-AUTHORITY)
     # =============================================================================
     def load_data_preview(self):
         try:
-            # Force DB cache refresh if such a method exists
             for mn in ("reload_payments", "refresh_payments",
                        "_reload_payments", "load_payments",
                        "reload_all", "_load_all"):
@@ -1679,7 +1611,6 @@ class CustomReportDialog:
             self._load_live_tax_rates()
             self._refresh_invoice_caches()
 
-            # Refresh batch filter
             try:
                 self.batch_filter_combo.options = [
                     ft.dropdown.Option("", "All Batches")]
@@ -1695,11 +1626,19 @@ class CustomReportDialog:
             traceback.print_exc()
 
     # =============================================================================
-    # 17.3.18b — METHOD: _force_reload_csv   (bypasses DB)
+    # 17.3.18b — _force_reload_csv
     # =============================================================================
     def _force_reload_csv(self, e=None):
         try:
             print("[CR] 🔃 FORCE RELOAD from CSV …")
+
+            # Ask DB to reload its cache
+            try:
+                if hasattr(self.db, "reload_all"):
+                    self.db.reload_all()
+            except Exception as ex:
+                print(f"[CR] db.reload_all failed: {ex}")
+
             self.traveler_data = self.db.get_travelers()
             self.batch_data = self.db.get_batches()
 
@@ -1745,7 +1684,7 @@ class CustomReportDialog:
             self._snack(f"❌ Force reload failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.18c — METHOD: _diagnose
+    # 17.3.18c — _diagnose
     # =============================================================================
     def _diagnose(self, e=None):
         try:
@@ -1782,17 +1721,32 @@ class CustomReportDialog:
             self._snack(f"❌ Diagnose failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19 — METHOD: generate_preview   (mirrors PyQt6 generate_preview)
+    # 17.3.19 — generate_preview   (UPDATED: forces DB reload first)
     # =============================================================================
     def generate_preview(self, e=None):
-        self._load_live_tax_rates()
-        self._refresh_invoice_caches()
-
-        # Reload payments (uses DB; CSV fallback already ran in load_data_preview)
         try:
-            self.payment_data = self.payment_data or self.db.get_payments()
+            # ✅ Force fresh reload of payments, invoices, and travelers
+            try:
+                if hasattr(self.db, "reload_payments"):
+                    self.db.reload_payments()
+                if hasattr(self.db, "reload_invoices"):
+                    self.db.reload_invoices()
+                if hasattr(self.db, "reload_travelers"):
+                    self.db.reload_travelers()
+            except Exception as ex:
+                print(f"[CR] reload failed: {ex}")
+
+            self.traveler_data = self.db.get_travelers()
+            self.batch_data = {b['id']: b for b in self.db.get_batches()}
+            self.payment_data = list(self.db.get_payments() or [])
+            self.invoice_lookup = {
+                str(i['id']).strip(): i for i in self.db.get_invoices()
+            }
+
+            self._load_live_tax_rates()
+            self._refresh_invoice_caches()
         except Exception as ex:
-            print(f"[CR] generate_preview: payments refresh failed: {ex}")
+            print(f"[CR] generate_preview refresh failed: {ex}")
 
         mode = (self.report_format_dropdown.value
                 if self.report_format_dropdown else "summary") or "summary"
@@ -1853,7 +1807,6 @@ class CustomReportDialog:
             payment_cols = [c for c in selected if c['source'] == 'payment']
             has_payment_cols = len(payment_cols) > 0
 
-            # ---- Filter travelers ----
             filtered_travelers = []
             for traveler in self.traveler_data:
                 try:
@@ -1893,7 +1846,6 @@ class CustomReportDialog:
                 except Exception as ex:
                     print(f"[CR] Error filtering traveler: {ex}")
 
-            # ---- Compute max_slots   (FIX-DYNAMIC-PAY-DYNAMIC) ----
             max_slots = 0
             if has_payment_cols:
                 for traveler in filtered_travelers:
@@ -1917,7 +1869,6 @@ class CustomReportDialog:
                 if max_slots < 1:
                     max_slots = 1
 
-            # ---- Expand dynamic payment columns ----
             slot_source_fields = [
                 pf for pf in payment_cols
                 if not pf['key'].startswith('__sum_')
@@ -1939,7 +1890,6 @@ class CustomReportDialog:
 
             dynamic_payment_cols = []
             if has_payment_cols:
-                # Per-slot columns for regular payment fields
                 for slot in range(1, max_slots + 1):
                     for pf in slot_source_fields:
                         dynamic_payment_cols.append({
@@ -1949,7 +1899,6 @@ class CustomReportDialog:
                             'orig_key': pf['key'],
                             'slot': slot,
                         })
-                # Dynamic per-payment columns (▶)
                 for slot in range(1, max_slots + 1):
                     for pf in dyn_fields:
                         dynamic_payment_cols.append({
@@ -1958,14 +1907,12 @@ class CustomReportDialog:
                             'source': 'payment_dyn',
                             'dyn_index': slot - 1,
                         })
-                # Summary aggregates
                 for sf in summary_fields:
                     dynamic_payment_cols.append({
                         'key': sf['key'],
                         'label': sf['label'],
                         'source': 'payment_summary',
                     })
-                # Invoice-paid snapshot
                 for sf in snapshot_fields:
                     dynamic_payment_cols.append({
                         'key': sf['key'],
@@ -1976,7 +1923,6 @@ class CustomReportDialog:
             final_columns = (traveler_cols + batch_cols
                              + dynamic_payment_cols)
 
-            # ---- Build rows ----
             report_data = []
             batch_lookup = {b['id']: b for b in self.db.get_batches()}
             for traveler in filtered_travelers:
@@ -2039,7 +1985,7 @@ class CustomReportDialog:
             self._snack(f"Could not generate report: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19b — METHOD: _generate_ledger_preview   (FIX-PAID-CASCADE)
+    # 17.3.19b — _generate_ledger_preview   (FIX-PAID-CASCADE)
     # =============================================================================
     def _generate_ledger_preview(self):
         try:
@@ -2169,7 +2115,6 @@ class CustomReportDialog:
                 except (TypeError, ValueError):
                     amt_raw = 0.0
 
-                # FIX-PAID-CASCADE
                 traveler_entry = self.traveler_invoice_data.get(tid, {})
                 has_paid_inv = bool(
                     traveler_entry.get('has_paid_invoice', False))
@@ -2245,7 +2190,7 @@ class CustomReportDialog:
             self._set_status("❌", f"Ledger error: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.20 — METHOD: _build_row_wide   (FIX-PAID-CASCADE)
+    # 17.3.20 — _build_row_wide   (FIX-PAID-CASCADE)
     # =============================================================================
     def _build_row_wide(self, traveler_cols, batch_cols, payment_cols,
                         traveler, batch, payments, max_slots):
@@ -2278,7 +2223,6 @@ class CustomReportDialog:
         path_columns = ['passport_scan', 'aadhaar_scan', 'pan_scan',
                         'vaccine_scan', 'photo']
 
-        # ---- Traveler columns ----
         for col in traveler_cols:
             key = col['key']
             label = col['label']
@@ -2320,7 +2264,6 @@ class CustomReportDialog:
                 value = self.safe_str(value)
             row[label] = value
 
-        # ---- Batch columns ----
         for col in batch_cols:
             key = col['key']
             label = col['label']
@@ -2340,7 +2283,6 @@ class CustomReportDialog:
             else:
                 row[label] = self.safe_str(batch.get(key, ''))
 
-        # ---- Per-payment aggregate summary (with FIX-PAID-CASCADE) ----
         traveler_id = traveler.get('id')
         base_total = 0.0
         discount_total = 0.0
@@ -2374,7 +2316,6 @@ class CustomReportDialog:
             tcs_total         += share['tcs']
             total_share_total += share['total']
 
-        # ---- Per-slot columns ----
         if payment_cols:
             slot_fields = [
                 pf for pf in payment_cols
@@ -2389,7 +2330,6 @@ class CustomReportDialog:
 
             for slot in range(1, max_slots + 1):
                 idx = slot - 1
-                # Regular slot columns
                 for pf in slot_fields:
                     label = f"Payment {slot} {pf['label']}"
                     if idx < len(payments):
@@ -2397,7 +2337,6 @@ class CustomReportDialog:
                             pf['key'], payments[idx], traveler)
                     else:
                         row[label] = ''
-                # Dynamic per-payment (▶)
                 for pf in dyn_fields:
                     label = _dyn_label(pf['key'], slot)
                     if idx < len(payments):
@@ -2406,14 +2345,12 @@ class CustomReportDialog:
                     else:
                         row[label] = ''
 
-            # ---- Summary aggregates ----
             total_paid = sum(
                 float(p.get('amount', 0) or 0) for p in payments)
             overflow = payments[max_slots:]
             ov_total = sum(
                 float(p.get('amount', 0) or 0) for p in overflow)
 
-            # FIX-PAID-CASCADE
             pending_payments = []
             for p in payments:
                 p_status = str(p.get('status', '')).lower()
@@ -2444,7 +2381,6 @@ class CustomReportDialog:
                 outstanding_balance = max(
                     0.0, total_invoice_amount - total_paid)
 
-            # ---- Summary values (both label styles) ----
             summary_values = {
                 'Total Paid':                 f"₹{_fmt_inr_(total_paid)}",
                 'Payment Count':              str(len(payments)),
@@ -2455,12 +2391,10 @@ class CustomReportDialog:
                 'Total Taxable':              f"₹{_fmt_inr_(taxable_total)}",
                 'Total GST':                  f"₹{_fmt_inr_(gst_total)}",
                 'Total TCS':                  f"₹{_fmt_inr_(tcs_total)}",
-                # New labels with em-dash — must match PAYMENT_FIELDS exactly:
                 'Total — With GST/TCS':       f"₹{_fmt_inr_(total_share_total)}",
                 'Pending — With GST/TCS':     f"₹{_fmt_inr_(pending_with_tax_total)}",
                 'Payment — Without GST/TCS':  f"₹{_fmt_inr_(payment_without_tax_total)}",
                 'Outstanding Balance':        f"₹{_fmt_inr_(outstanding_balance)}",
-                # Keep old keys too, so BOTH label styles resolve correctly:
                 'Total (with GST/TCS)':       f"₹{_fmt_inr_(total_share_total)}",
                 'Pending Payment (with GST/TCS)': f"₹{_fmt_inr_(pending_with_tax_total)}",
                 'Payment (without GST/TCS)':  f"₹{_fmt_inr_(payment_without_tax_total)}",
@@ -2474,7 +2408,6 @@ class CustomReportDialog:
                 if label in requested_summary_labels:
                     row[label] = value
 
-            # ---- Invoice-paid snapshot ----
             inv = self.default_invoice_by_traveler.get(traveler_id)
             requested_snapshots = {
                 pf['label'] for pf in payment_cols
@@ -2510,7 +2443,7 @@ class CustomReportDialog:
         return row
 
     # =============================================================================
-    # 17.3.21 — METHOD: _format_payment_value
+    # 17.3.21 — _format_payment_value
     # =============================================================================
     def _format_payment_value(self, key, payment, traveler):
         if key == 'passport_name':
@@ -2584,7 +2517,6 @@ class CustomReportDialog:
         if key == 'payment_without_tax':
             return f"₹{_fmt_inr_(amt)}"
 
-        # Dynamic per-payment (▶) labels
         if key == '__dyn_amount':
             return f"₹{_fmt_inr_(amt)}"
         if key == '__dyn_date':
@@ -2610,7 +2542,7 @@ class CustomReportDialog:
         return ''
 
     # =============================================================================
-    # 17.3.22 — METHOD: display_preview   (mirrors PyQt6 display_preview)
+    # 17.3.22 — display_preview
     # =============================================================================
     def display_preview(self, selected, report_data):
         try:
@@ -2678,7 +2610,7 @@ class CustomReportDialog:
             self.preview_table.rows.append(ft.DataRow(cells=cells))
 
     # =============================================================================
-    # 17.3.23 — METHOD: export_to_excel
+    # 17.3.23 — export_to_excel   (UPDATED: serves via HTTP)
     # =============================================================================
     def export_to_excel(self, e=None):
         if not self.report_data:
@@ -2803,7 +2735,6 @@ class CustomReportDialog:
 
             ws.freeze_panes = 'A2'
 
-            # Summary sheet
             summary_ws = wb.create_sheet("Summary")
             summary_ws['A1'] = "Report Summary"
             summary_ws['A1'].font = Font(bold=True, size=14)
@@ -2820,25 +2751,23 @@ class CustomReportDialog:
                                 f"TCS %: {self.tcs_rate}")
             summary_ws['A8'] = (f"Payment source: "
                                 f"{self._last_payment_source}")
-            summary_ws['A10'] = "Column List:"
-            for idx, col in enumerate(selected, 1):
-                summary_ws[f'A{idx+10}'] = (
-                    f"{idx}. {col['label']} ({col['source'].title()})")
 
             wb.save(str(path))
+
+            # ✅ Serve via HTTP (works on web)
+            url = send_file_to_user(self.page, str(path), "Excel Report")
             self._snack(f"✅ Excel saved → {path}", "#059669")
-            try:
-                self.page.launch_url(
-                    f"/assets/exports/excel/{path.name}")
-            except Exception:
-                pass
-            _open_local_file(str(path))
+            if url:
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    pass
         except Exception as ex:
             traceback.print_exc()
             self._snack(f"❌ Excel export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.24 — METHOD: export_to_csv
+    # 17.3.24 — export_to_csv   (UPDATED: serves via HTTP)
     # =============================================================================
     def export_to_csv(self, e=None):
         if not self.report_data:
@@ -2908,19 +2837,19 @@ class CustomReportDialog:
                 writer.writeheader()
                 writer.writerows(out)
 
+            url = send_file_to_user(self.page, str(path), "CSV Report")
             self._snack(f"✅ CSV saved → {path}", "#059669")
-            try:
-                self.page.launch_url(
-                    f"/assets/exports/csv/{path.name}")
-            except Exception:
-                pass
-            _open_local_file(str(path))
+            if url:
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    pass
         except Exception as ex:
             traceback.print_exc()
             self._snack(f"❌ CSV export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.25 — METHOD: export_to_pdf
+    # 17.3.25 — export_to_pdf   (UPDATED: serves via HTTP)
     # =============================================================================
     def export_to_pdf(self, e=None):
         if not self.report_data:
@@ -2937,19 +2866,19 @@ class CustomReportDialog:
         try:
             self.generate_pdf_report(
                 str(path), selected, self.report_data)
+            url = send_file_to_user(self.page, str(path), "PDF Report")
             self._snack(f"✅ PDF saved → {path}", "#059669")
-            try:
-                self.page.launch_url(
-                    f"/assets/exports/pdf/{path.name}")
-            except Exception:
-                pass
-            _open_local_file(str(path))
+            if url:
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    pass
         except Exception as ex:
             traceback.print_exc()
             self._snack(f"❌ PDF export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.26 — METHOD: generate_pdf_report
+    # 17.3.26 — generate_pdf_report
     # =============================================================================
     def generate_pdf_report(self, filepath, selected, report_data):
         try:
@@ -3146,7 +3075,7 @@ class CustomReportDialog:
             raise
 
     # =============================================================================
-    # 17.3.27 — METHOD: _build_pdf_photo_cell
+    # 17.3.27 — _build_pdf_photo_cell
     # =============================================================================
     def _build_pdf_photo_cell(self, rel_path, base_path, max_size,
                               cell_style):
@@ -3180,7 +3109,6 @@ class CustomReportDialog:
     def show(self):
         try:
             self.page.show_dialog(self.dialog)
-            # Auto-generate first preview
             self.page.run_task(self._auto_preview)
         except Exception as ex:
             print(f"[CR] show failed: {ex}")
@@ -3223,42 +3151,23 @@ class CustomReportDialog:
 # =================================================================================
 # 17.4 — MAINTENANCE WARNINGS
 # =================================================================================
-# 17.4.1  — FIX #12  — Photo thumbnails in Preview.
-# 17.4.2  — FIX #20  — One row per traveler, dynamic payment slots.
-# 17.4.3  — FIX #24  — Professional visual overhaul.
-# 17.4.4  — FIX #25b — Robust batch-name lookup.
-# 17.4.5  — FIX #25c — Ghost widget cleanup.
-# 17.4.6  — FIX-TAX-INVOICE-SOURCE
-# 17.4.7  — FIX-TAX-RATIO-DENOM (v2)
-# 17.4.8  — FIX-TAX-CUMULATIVE-CAP
-# 17.4.9  — FIX-TAX-DOUBLE-COUNT
-# 17.4.10 — HARD_CAP = 10.
-# 17.4.11 — ColumnOrderDialog reorders dynamic slots too.
-# 17.4.12 — Excel/CSV exports parse ₹ and use Indian comma for display.
-# 17.4.13 — Verified clean.
-# 17.4.14 — FIX-NEW-PAY-COLUMNS
-# 17.4.15 — FIX-INR-FORMAT
-# 17.4.16 — FIX-EXACT-PCT
-# 17.4.17 — FIX-SLOT-PAY-COLUMNS
-# 17.4.18 — FIX-PER-INVOICE-SHARE
-# 17.4.19 — FIX-PAYMENT-LEDGER
-# 17.4.20 — FIX-ADV-FILTERS
-# 17.4.21 — FIX-OUTSTANDING-BAL
-# 17.4.22 — FIX-PRO-UI
-# 17.4.23 — FIX-LEDGER-AUTOCOLS
-# 17.4.24 — FIX-SUMMARY-OUTSTANDING
-# 17.4.25 — FIX-EXCEL-PDF-META
-# 17.4.26 — FIX-PAID-CASCADE
-# 17.4.27 — FIX-DYNAMIC-PAY-DYNAMIC  (Flet port):
-#              max_slots = max payments across FILTERED travelers, capped
-#              at HARD_CAP = 10.
-# 17.4.28 — FIX-CSV-AUTHORITY  (Flet port):
-#              _load_data_preview prints every CSV path & row count and
-#              picks the source with the MOST rows (DB vs. all candidate
-#              CSVs). Prevents stale-cache missing-payments bugs.
-# 17.4.29 — Added two buttons in 17.3.11:
-#                🔃 Force Reload CSV → _force_reload_csv (bypasses DB)
-#                🔎 Diagnose         → _diagnose
+# 17.4.1  — FIX-CLOUD-EXPORTS (2026-09-30):
+#              Exports (Excel / CSV / PDF) now use send_file_to_user() to
+#              serve files via HTTP. Previously they used file:/// URLs
+#              which browsers block for security. Downloads work on both
+#              local and Railway deployments.
+# 17.4.2  — FIX-FRESH-DATA (2026-09-30):
+#              generate_preview() forces reload of payments.csv,
+#              invoices.csv, travelers.csv from disk before generating.
+#              This ensures reports always show the latest data (fixes
+#              the Meera multi-payment bug).
+# 17.4.3  — All other fixes from previous revisions preserved:
+#              FIX-PAID-CASCADE, FIX-PER-INVOICE-SHARE, FIX-DYNAMIC-PAY-
+#              DYNAMIC, FIX-CSV-AUTHORITY, FIX-TAX-INVOICE-SOURCE,
+#              FIX-TAX-DOUBLE-COUNT, FIX-SLOT-PAY-COLUMNS, FIX-INR-FORMAT,
+#              FIX-EXACT-PCT, FIX-PAYMENT-LEDGER, FIX-ADV-FILTERS,
+#              FIX-OUTSTANDING-BAL, FIX-PRO-UI, FIX-LEDGER-AUTOCOLS,
+#              FIX-SUMMARY-OUTSTANDING, FIX-EXCEL-PDF-META.
 # =================================================================================
 # SECTION 17 END — CUSTOM REPORT DIALOG
 # =================================================================================
