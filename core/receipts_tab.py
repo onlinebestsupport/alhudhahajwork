@@ -1,6 +1,23 @@
 # =================================================================================
 # SECTION 15 (FLET 1.0.0 VERSION) — RECEIPTS TAB
 # =================================================================================
+# PATCHES APPLIED (v1.1):
+#   15.1.A — refresh()         : force DB reload before reading (fresh cache)
+#   15.1.B — display_receipts(): Pkg-Pending now always computed from ALL
+#                                receipts (was incorrectly using filtered
+#                                subset → fake larger pending on date filter)
+#   15.1.C — display_receipts(): action buttons capture receipt ID, re-fetch
+#                                latest dict before dispatch (no stale row)
+#   15.1.D — delete_receipt()  : prefer db.delete_receipt(); warn user about
+#                                linked payment (payment is NOT auto-deleted)
+#
+# CASCADE NOTE:
+#   Receipts sit *downstream* of payments. Deleting a receipt here does NOT
+#   auto-delete the parent payment — that would surprise the user in the
+#   Payments tab. Instead we surface a warning. Auto-created payments (from
+#   InvoiceModifyDialog cascade) are tagged 'Auto (invoice status)' and can
+#   be cleaned up in the Payments tab.
+# =================================================================================
 
 import flet as ft
 import os
@@ -48,7 +65,7 @@ class ReceiptsTab:
         return self.root
 
     # =============================================================================
-    # setup_ui
+    # 15.1.1 — setup_ui
     # =============================================================================
     def setup_ui(self):
         # ---- TOOLBAR ----
@@ -216,10 +233,22 @@ class ReceiptsTab:
             return d
 
     # =============================================================================
-    # refresh
+    # 15.1.2 — refresh  (PATCH 15.1.A: force DB reload before reading)
     # =============================================================================
     def refresh(self, e=None):
         try:
+            # ---- PATCH 15.1.A: fresh cache reload ----
+            # Payments tab / Invoices tab / Batches tab may have written
+            # to disk since our last read. Re-hydrate so get_* returns
+            # current data, not a stale in-memory snapshot.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[ReceiptsTab.refresh] reload skipped: {_re}")
+
             self.receipts = self.db.get_receipts()
 
             self.travelers = {}
@@ -253,15 +282,23 @@ class ReceiptsTab:
             traceback.print_exc()
 
     # =============================================================================
-    # display_receipts
+    # 15.1.3 — display_receipts
+    #   PATCH 15.1.B: traveler_paid computed from ALL receipts (lifetime),
+    #                 not just the currently-filtered subset
+    #   PATCH 15.1.C: action buttons capture receipt ID, re-fetch on click
     # =============================================================================
     def display_receipts(self, receipts=None):
         if receipts is None:
             receipts = self.receipts
 
-        # Sum receipts per traveler
+        # ----------------------------------------------------------------
+        # PATCH 15.1.B — lifetime paid totals from ALL receipts.
+        # Filtering by date previously made the Pkg Pending column
+        # wildly inaccurate (e.g. show ₹2,00,000 pending when the
+        # traveler had actually paid in full months earlier).
+        # ----------------------------------------------------------------
         traveler_paid = {}
-        for r in receipts:
+        for r in self.receipts:            # ← NOT the filtered list
             p = self.payments.get(r.get('payment_id', ''), {})
             tid = p.get('traveler_id', '')
             if tid:
@@ -326,34 +363,53 @@ class ReceiptsTab:
                 inv_txt = "N/A"
                 inv_color = "#95a5a6"
 
-            actions = ft.Row(
-                controls=[
-                    ft.IconButton(
-                        icon=ft.Icons.VISIBILITY,
-                        icon_color="#3498db", icon_size=18,
-                        tooltip="View",
-                        on_click=lambda e, rr=r:
-                            self.view_receipt_details(rr)),
-                    ft.IconButton(
-                        icon=ft.Icons.PICTURE_AS_PDF,
-                        icon_color="#e74c3c", icon_size=18,
-                        tooltip="Export PDF",
-                        on_click=lambda e, rr=r:
-                            self.export_single_receipt_pdf(rr)),
-                    ft.IconButton(
-                        icon=ft.Icons.PRINT,
-                        icon_color="#9b59b6", icon_size=18,
-                        tooltip="Print",
-                        on_click=lambda e, rr=r:
-                            self.print_single_receipt(rr)),
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE,
-                        icon_color="#95a5a6", icon_size=18,
-                        tooltip="Delete",
-                        on_click=lambda e, rr=r:
-                            self.delete_receipt(rr)),
-                ], spacing=0,
-            )
+            # ------------------------------------------------------------
+            # PATCH 15.1.C — capture receipt ID, re-fetch on click so a
+            # refresh between render and click never passes a stale dict.
+            # ------------------------------------------------------------
+            r_id = r.get('id')
+
+            def _make_actions(_rid=r_id):
+                def _fresh():
+                    return next(
+                        (x for x in self.receipts
+                         if x.get('id') == _rid), None)
+
+                def _wrap(handler):
+                    def h(e, _h=handler, _f=_fresh):
+                        fresh = _f()
+                        if fresh is None:
+                            self._snack("⚠️ Receipt no longer exists — "
+                                        "refreshing…")
+                            self.refresh()
+                            return
+                        _h(fresh)
+                    return h
+
+                return ft.Row(
+                    controls=[
+                        ft.IconButton(
+                            icon=ft.Icons.VISIBILITY,
+                            icon_color="#3498db", icon_size=18,
+                            tooltip="View",
+                            on_click=_wrap(self.view_receipt_details)),
+                        ft.IconButton(
+                            icon=ft.Icons.PICTURE_AS_PDF,
+                            icon_color="#e74c3c", icon_size=18,
+                            tooltip="Export PDF",
+                            on_click=_wrap(self.export_single_receipt_pdf)),
+                        ft.IconButton(
+                            icon=ft.Icons.PRINT,
+                            icon_color="#9b59b6", icon_size=18,
+                            tooltip="Print",
+                            on_click=_wrap(self.print_single_receipt)),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE,
+                            icon_color="#95a5a6", icon_size=18,
+                            tooltip="Delete",
+                            on_click=_wrap(self.delete_receipt)),
+                    ], spacing=0,
+                )
 
             self.table.rows.append(
                 ft.DataRow(cells=[
@@ -375,14 +431,14 @@ class ReceiptsTab:
                                         color=pkg_color)),
                     ft.DataCell(ft.Text(inv_txt, size=10,
                                         color=inv_color)),
-                    ft.DataCell(actions),
+                    ft.DataCell(_make_actions()),
                 ]))
 
         self.filtered_count_label.value = (
             f"🔍 Showing: {len(receipts)} receipts")
 
     # =============================================================================
-    # Stats
+    # 15.1.4 — Stats
     # =============================================================================
     def update_summary_stats(self):
         total = len(self.receipts)
@@ -394,7 +450,7 @@ class ReceiptsTab:
             self._f(r.get('amount', 0)) for r in self.receipts
             if str(r.get('receipt_date', '')).startswith(today))
 
-        # Package pending
+        # Package pending — always lifetime (uses self.receipts)
         traveler_paid = {}
         for r in self.receipts:
             p = self.payments.get(r.get('payment_id', ''), {})
@@ -429,7 +485,7 @@ class ReceiptsTab:
             inv_pending_total)
 
     # =============================================================================
-    # Filter
+    # 15.1.5 — Filter
     # =============================================================================
     def apply_filters(self, e=None):
         tid_filter = self.traveler_filter.value or ""
@@ -477,7 +533,7 @@ class ReceiptsTab:
             pass
 
     # =============================================================================
-    # View details
+    # 15.1.6 — View details
     # =============================================================================
     def view_receipt_details(self, receipt):
         p = self.payments.get(receipt.get('payment_id', ''), {})
@@ -496,6 +552,7 @@ class ReceiptsTab:
             batch_price = self._f(b.get('price', 0))
             batch_name = b.get('batch_name', 'No Batch')
 
+        # Lifetime paid from ALL receipts
         total_paid = 0
         for r in self.receipts:
             pr = self.payments.get(r.get('payment_id', ''), {})
@@ -569,7 +626,7 @@ class ReceiptsTab:
         self.page.show_dialog(dialog)
 
     # =============================================================================
-    # PDF export
+    # 15.1.7 — PDF export
     # =============================================================================
     def export_single_receipt_pdf(self, receipt):
         try:
@@ -683,21 +740,45 @@ class ReceiptsTab:
             self._snack(f"❌ PDF error: {ex}")
 
     # =============================================================================
-    # Print
+    # 15.1.8 — Print
     # =============================================================================
     def print_single_receipt(self, receipt):
         self._snack(
             "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
 
     # =============================================================================
-    # Delete
+    # 15.1.9 — Delete
+    #   PATCH 15.1.D — prefer db.delete_receipt(); surface linked-payment
+    #                  warning so the user can clean up the Payments tab
+    #                  if needed. Receipts do NOT auto-delete their parent
+    #                  payment — that must be an explicit user action.
     # =============================================================================
     def delete_receipt(self, receipt):
+        payment_id = receipt.get('payment_id', '')
+        linked_payment = self.payments.get(payment_id) if payment_id else None
+
+        warn_text = f"Delete receipt {receipt.get('receipt_no', '')}?"
+        if linked_payment:
+            try:
+                amt = self._f(linked_payment.get('amount', 0))
+            except Exception:
+                amt = 0.0
+            warn_text += (
+                f"\n\n⚠️ This receipt is linked to a payment record "
+                f"(₹{amt:,.2f}).\n"
+                f"The payment will NOT be deleted automatically — "
+                f"clean it up in the Payments tab if needed."
+            )
+
         def confirm(ev):
             try:
-                self.db.receipts = self.db.receipts[
-                    self.db.receipts['id'] != receipt['id']]
-                self.db._save_df(self.db.receipts, "receipts.csv")
+                # PATCH 15.1.D — prefer DB method
+                if hasattr(self.db, "delete_receipt"):
+                    self.db.delete_receipt(receipt['id'])
+                else:
+                    self.db.receipts = self.db.receipts[
+                        self.db.receipts['id'] != receipt['id']]
+                    self.db._save_df(self.db.receipts, "receipts.csv")
                 try:
                     self.db.log_activity(
                         self.current_user['id'], "delete_receipt",
@@ -712,8 +793,7 @@ class ReceiptsTab:
 
         dialog = ft.AlertDialog(
             title=ft.Text("Delete Receipt?"),
-            content=ft.Text(
-                f"Delete receipt {receipt.get('receipt_no', '')}?"),
+            content=ft.Text(warn_text),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
