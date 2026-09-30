@@ -1,12 +1,12 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW
 # =================================================================================
-# Updated: permission-based tab visibility
-#   • Tabs are built ONLY if the current user has permission to see them
-#   • super_admin always sees all tabs
-#   • All other roles filtered by their `permissions` field
-#     (JSON list, pipe-separated string, or real list) with fallback
-#     to role defaults when the field is empty
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • Permission-based tab visibility (kept from previous version)
+#   • NEW: 🔄 Reload Data button in header — forces DB cache refresh
+#   • NEW: 💾 Storage Info in settings menu — shows data folder diagnostics
+#   • Auto-refresh now refreshes ALL visible tabs (not just Dashboard)
+#   • Small cosmetic improvements to the header
 # =================================================================================
 
 import flet as ft
@@ -76,7 +76,7 @@ except ImportError:
 
 
 # =================================================================================
-# PERMISSION HELPERS (added for tab filtering)
+# PERMISSION HELPERS (tab filtering)
 # =================================================================================
 ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": {
@@ -189,8 +189,9 @@ class MainWindowView:
         user_role = self.current_user.get('role', 'user')
 
         # =====================================================================
-        # HEADER
+        # HEADER — settings menu, refresh, reload data, logout
         # =====================================================================
+
         def open_settings(e):
             if CompanySettingsDialog is None:
                 self._show_snack("⚠️ Settings dialog not available")
@@ -205,6 +206,60 @@ class MainWindowView:
         def refresh_click(e):
             self.refresh_all()
             self._show_snack("🔄 Refreshed")
+
+        def reload_click(e):
+            """Force reload every CSV from disk (fixes stale cache)."""
+            try:
+                if hasattr(self.db, "reload_all"):
+                    self.db.reload_all()
+                self.refresh_all()
+                self._show_snack("✅ Data reloaded from disk")
+            except Exception as ex:
+                print(f"[RELOAD] failed: {ex}")
+                self._show_snack(f"❌ Reload failed: {ex}")
+
+        def storage_info_click(e):
+            """Show data folder diagnostics (for cloud debugging)."""
+            try:
+                if hasattr(self.db, "get_data_folder_info"):
+                    info = self.db.get_data_folder_info()
+                else:
+                    info = {
+                        "data_path": str(getattr(self.db, "data_dir", "?")),
+                        "note": "get_data_folder_info() not available",
+                    }
+                lines = [f"{k}: {v}" for k, v in info.items()
+                         if k != "files"]
+                files = info.get("files", [])
+                if files:
+                    lines.append("")
+                    lines.append("CSV files:")
+                    for f in files:
+                        lines.append(
+                            f"  • {f['name']} — {f['size_bytes']} bytes — "
+                            f"{f['modified'][:19]}")
+
+                d = ft.AlertDialog(
+                    title=ft.Row([
+                        ft.Icon(ft.Icons.FOLDER, color="#0ea5e9"),
+                        ft.Text("Storage Diagnostics",
+                                weight=ft.FontWeight.BOLD),
+                    ], spacing=8),
+                    content=ft.Container(
+                        content=ft.Text("\n".join(lines),
+                                        size=11,
+                                        selectable=True,
+                                        font_family="Consolas"),
+                        width=600,
+                        padding=10),
+                    actions=[
+                        ft.TextButton(
+                            content=ft.Text("Close"),
+                            on_click=lambda ev: self.page.pop_dialog()),
+                    ])
+                self.page.show_dialog(d)
+            except Exception as ex:
+                self._show_snack(f"❌ {ex}")
 
         def about_click(e):
             self.show_about()
@@ -225,6 +280,13 @@ class MainWindowView:
                 ft.PopupMenuItem(
                     content=ft.Text("🎯 Tours"),
                     on_click=open_settings),
+                ft.PopupMenuItem(),
+                ft.PopupMenuItem(
+                    content=ft.Text("🔄 Reload Data"),
+                    on_click=reload_click),
+                ft.PopupMenuItem(
+                    content=ft.Text("💾 Storage Info"),
+                    on_click=storage_info_click),
                 ft.PopupMenuItem(),
                 ft.PopupMenuItem(
                     content=ft.Text("ℹ️ About"),
@@ -269,8 +331,13 @@ class MainWindowView:
                     ft.IconButton(
                         icon=ft.Icons.REFRESH,
                         icon_color=ft.Colors.WHITE,
-                        tooltip="Refresh",
+                        tooltip="Refresh (F5)",
                         on_click=refresh_click),
+                    ft.IconButton(
+                        icon=ft.Icons.CLOUD_DOWNLOAD,
+                        icon_color=ft.Colors.WHITE,
+                        tooltip="Reload Data from Disk",
+                        on_click=reload_click),
                     settings_menu,
                     ft.Container(width=10),
                     ft.Text(f"👤 {user_name} ({user_role})",
@@ -285,7 +352,7 @@ class MainWindowView:
             bgcolor=ft.Colors.BLUE_800)
 
         # =====================================================================
-        # TABS  ← MODIFIED: permission-filtered
+        # TABS — permission-filtered
         # =====================================================================
 
         def make_placeholder(label, icon):
@@ -324,8 +391,6 @@ class MainWindowView:
                 traceback.print_exc()
                 return make_placeholder(f"{label} (error)", icon)
 
-        # ---- Tab definitions: (tab_label, icon, attr_name,
-        #                         permission_key, class_ref) ----
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
              "view_dashboard",   DashboardTab),
@@ -347,29 +412,26 @@ class MainWindowView:
              "manage_backups",   BackupTab),
         ]
 
-        # ---- Log the user's permissions for debugging ----
         print(f"[MAIN] user='{user_name}' role='{user_role}' "
               f"permissions_raw='{self.current_user.get('permissions', '')}'")
 
-        # ---- Build tabs the user is allowed to see ----
         tab_labels = []
         for label, icon, attr_name, perm_key, cls in TAB_DEFINITIONS:
             if not _user_has_permission(self.current_user, perm_key):
                 print(f"[TAB] {label.strip()}: ⛔ denied "
                       f"(missing '{perm_key}' permission)")
                 continue
-            plain_label = label.split(" ", 1)[-1]  # strip emoji for logs
+            plain_label = label.split(" ", 1)[-1]
             content = build_tab_content(cls, plain_label, icon, attr_name)
             tab_labels.append((label, icon, content))
 
-        # ---- Safety net: never show an empty window ----
         if not tab_labels:
-            print("[MAIN] ⚠️ user has no visible tabs — showing access-denied screen")
+            print("[MAIN] ⚠️ user has no visible tabs — "
+                  "showing access-denied screen")
             tab_labels.append((
                 "⛔ No Access",
                 ft.Icons.LOCK,
-                make_placeholder("No Access",
-                                 ft.Icons.LOCK)))
+                make_placeholder("No Access", ft.Icons.LOCK)))
 
         print(f"[MAIN] showing {len(tab_labels)} tab(s): "
               f"{[lbl for lbl, _, _ in tab_labels]}")
@@ -427,7 +489,7 @@ class MainWindowView:
         return self.root
 
     # =============================================================================
-    # Live clock
+    # Live clock (1-second interval)
     # =============================================================================
     async def _clock_loop(self):
         if self._clock_running:
@@ -449,7 +511,7 @@ class MainWindowView:
             self._clock_running = False
 
     # =============================================================================
-    # Auto-refresh every 30s
+    # Auto-refresh every 30s — refreshes ALL visible tabs
     # =============================================================================
     async def _auto_refresh_loop(self):
         if self._refresh_running:
@@ -459,8 +521,7 @@ class MainWindowView:
             while True:
                 await asyncio.sleep(30)
                 try:
-                    if self.dashboard_tab:
-                        self.dashboard_tab.refresh()
+                    self.refresh_all()
                 except Exception as ex:
                     print(f"[AUTO REFRESH] {ex}")
         except Exception as ex:
@@ -469,7 +530,7 @@ class MainWindowView:
             self._refresh_running = False
 
     # =============================================================================
-    # Refresh all
+    # Refresh all tabs
     # =============================================================================
     def refresh_all(self):
         for name in ('dashboard_tab', 'travelers_tab', 'batches_tab',
@@ -520,7 +581,9 @@ class MainWindowView:
     # =============================================================================
     def _show_snack(self, message):
         try:
-            self.page.show_dialog(ft.SnackBar(content=ft.Text(message)))
+            self.page.snack_bar = ft.SnackBar(content=ft.Text(message))
+            self.page.snack_bar.open = True
+            self.page.update()
         except Exception as ex:
             print(f"[SNACK] {message} ({ex})")
 
