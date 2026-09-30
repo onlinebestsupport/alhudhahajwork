@@ -1,6 +1,24 @@
 # =================================================================================
 # core/dashboard_tab.py — DashboardTab (Flet 1.0 — fully corrected, self-contained)
 # =================================================================================
+# PATCHES APPLIED (v1.1):
+#   6.1.A — refresh()              : force DB reload before reading (fresh cache)
+#   6.1.B — _get_sales_last_days() : read via db.get_payments() so chart data
+#                                    is always current, never from a stale
+#                                    DataFrame attribute
+#   6.1.C — update_activity_log()  : read via db.get_activity_log() when
+#                                    available, so recent activity reflects
+#                                    actions taken in other tabs (invoice
+#                                    modify, receipt delete, etc.)
+#
+# CASCADE NOTE (dashboard is the reader, not writer):
+#   This tab aggregates from travelers, batches, payments, invoices, and
+#   receipts. Every one of those tabs now flushes CSV on save. Adding
+#   db.reload() at the top of refresh() guarantees the dashboard always
+#   shows current totals even if the user landed here after editing
+#   another tab without a hard refresh.
+# =================================================================================
+
 import asyncio
 import math
 import threading
@@ -29,7 +47,7 @@ except Exception:
 
 
 # =================================================================================
-# Inline helper (replaces core.helpers.format_currency_indian)
+# 6.0 — Inline helper (replaces core.helpers.format_currency_indian)
 # =================================================================================
 def format_currency_indian(amount):
     if amount is None or (isinstance(amount, float) and math.isnan(amount)):
@@ -54,7 +72,7 @@ def format_currency_indian(amount):
 
 
 # =================================================================================
-# DashboardTab
+# 6.1 — CLASS: DashboardTab
 # =================================================================================
 class DashboardTab:
     """Dashboard tab. Interface:
@@ -63,6 +81,9 @@ class DashboardTab:
        .refresh() → reload data
     """
 
+    # -----------------------------------------------------------------------------
+    # 6.1.1 — __init__
+    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user):
         self.page = page
         self.db = db
@@ -119,9 +140,9 @@ class DashboardTab:
         except Exception:
             return ""
 
-    # =============================================================================
-    # setup_ui
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.2 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         # ---- Company name (defensive — read from db) ----
         company_name = "Alhudha Haj Travel"
@@ -368,9 +389,9 @@ class DashboardTab:
 
         self._start_clock()
 
-    # =============================================================================
-    # Clock — safe start with fallbacks
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.3 — Clock (safe start with fallbacks)
+    # -----------------------------------------------------------------------------
     def _start_clock(self):
         # Preferred: asyncio task via page.run_task
         try:
@@ -427,9 +448,9 @@ class DashboardTab:
         except Exception:
             pass
 
-    # =============================================================================
-    # Chart section
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.4 — Chart section builder
+    # -----------------------------------------------------------------------------
     def _build_chart_section(self):
         chart_content = None
 
@@ -488,9 +509,9 @@ class DashboardTab:
             padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
-    # =============================================================================
-    # Card factory
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.5 — Card factory
+    # -----------------------------------------------------------------------------
     def _create_card(self, icon, title, color, key):
         value_label = ft.Text("0", size=18,
                               weight=ft.FontWeight.BOLD, color=color)
@@ -521,11 +542,24 @@ class DashboardTab:
             expand=True, height=85,
         )
 
-    # =============================================================================
-    # REFRESH
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.6 — REFRESH  (PATCH 6.1.A: force DB reload before reading)
+    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
+            # ---- PATCH 6.1.A: fresh cache reload ----
+            # The user may have just edited a batch price, generated an
+            # invoice, or recorded a payment in another tab. Re-hydrate
+            # the DB so every get_* call and DataFrame attribute below
+            # returns current data.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[DashboardTab.refresh] reload skipped: {_re}")
+
             travelers = self.db.get_travelers()
             batches   = self.db.get_batches()
             payments  = self.db.get_payments()
@@ -568,7 +602,7 @@ class DashboardTab:
             # ---- Update stat cards ----
             self._set_stat("total_travelers", f"{len(travelers):,}")
 
-            # ★ FIX: case-insensitive active batch count ★
+            # ★ Case-insensitive active batch count ★
             _active_statuses = {"open", "closing soon"}
             active_count = len([
                 b for b in batches
@@ -619,9 +653,9 @@ class DashboardTab:
         if ctrl:
             ctrl.value = str(value)
 
-    # =============================================================================
-    # TOP BATCHES
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.7 — TOP BATCHES
+    # -----------------------------------------------------------------------------
     def update_top_batches(self, batches, travelers):
         counts = {}
         for t in travelers:
@@ -672,9 +706,9 @@ class DashboardTab:
                     ft.DataCell(ft.Text(str(avail), color=avail_color)),
                 ]))
 
-    # =============================================================================
-    # BATCH SUMMARY
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.8 — BATCH SUMMARY
+    # -----------------------------------------------------------------------------
     def update_batch_summary(self, batches, travelers):
         counts = {}
         for t in travelers:
@@ -705,12 +739,27 @@ class DashboardTab:
                     ft.DataCell(ft.Text(self.safe_str(avail), color=avail_color)),
                 ]))
 
-    # =============================================================================
-    # ACTIVITY LOG
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.9 — ACTIVITY LOG  (PATCH 6.1.C: prefer db.get_activity_log())
+    # -----------------------------------------------------------------------------
     def update_activity_log(self):
         try:
-            log_df = getattr(self.db, "activity_log", None)
+            # ---- PATCH 6.1.C: prefer DB accessor so we always see the
+            # latest log — including entries written by other tabs
+            # (invoice modify, receipt delete, batch edit) since the last
+            # full page reload ----
+            log_df = None
+            if hasattr(self.db, "get_activity_log"):
+                try:
+                    res = self.db.get_activity_log()
+                    if isinstance(res, pd.DataFrame):
+                        log_df = res
+                except Exception as _e:
+                    print(f"[DashboardTab.activity] get_activity_log failed: {_e}")
+
+            if log_df is None:
+                log_df = getattr(self.db, "activity_log", None)
+
             if log_df is None or log_df.empty:
                 self.activity_table.rows.clear()
                 return
@@ -747,9 +796,9 @@ class DashboardTab:
         except Exception as ex:
             print(f"Error updating activity log: {ex}")
 
-    # =============================================================================
-    # CHARTS
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.10 — CHARTS
+    # -----------------------------------------------------------------------------
     def update_charts(self):
         if _CHART_ENGINE == "flet_charts":
             self._update_chart_flet_charts()
@@ -835,9 +884,31 @@ class DashboardTab:
         except Exception as ex:
             print(f"matplotlib chart error: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # 6.1.11 — _get_sales_last_days  (PATCH 6.1.B: read via accessor)
+    # -----------------------------------------------------------------------------
     def _get_sales_last_days(self, days):
-        payments = self.db.payments
-        if payments.empty:
+        # ---- PATCH 6.1.B: read via get_payments() so we never touch a
+        # stale in-memory DataFrame attribute. Falls back to direct
+        # access if the accessor is missing (older DB schema). ----
+        payments = None
+        if hasattr(self.db, "get_payments"):
+            try:
+                rows = self.db.get_payments()
+                if rows:
+                    payments = pd.DataFrame(rows)
+                else:
+                    payments = pd.DataFrame()
+            except Exception as _e:
+                print(f"[DashboardTab.chart] get_payments failed: {_e}")
+
+        if payments is None or payments.empty:
+            payments = getattr(self.db, "payments", None)
+            if payments is None or payments.empty:
+                return pd.DataFrame()
+            payments = payments.copy()
+
+        if "payment_date" not in payments.columns:
             return pd.DataFrame()
 
         df = payments.copy()
@@ -850,9 +921,9 @@ class DashboardTab:
         daily = recent.groupby(recent["payment_date"].dt.date)["amount"].sum()
         return daily
 
-    # =============================================================================
-    # QUICK ACTIONS
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 6.1.12 — QUICK ACTIONS
+    # -----------------------------------------------------------------------------
     def _not_ready(self, feature):
         def handler(e):
             self.page.show_dialog(ft.SnackBar(
@@ -875,9 +946,5 @@ class DashboardTab:
 
 
 # =================================================================================
-# END — core/dashboard_tab.py
-# =================================================================================
-
-# =================================================================================
-# SECTION 6 END
+# SECTION 6 END (FLET 1.0.0 VERSION)
 # =================================================================================
