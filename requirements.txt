@@ -1,6 +1,30 @@
-flet>=0.24.0
-pandas
-reportlab
-openpyxl
-Pillow
-numpy
+# =================================================================================
+# Alhudha Haj Travel System — Python dependencies
+# =================================================================================
+# IMPORTANT: This project is built for Flet 1.0.0.
+#   • Do NOT downgrade below 1.0.0 — the codebase uses the new API
+#     (ft.Colors, ft.Icons, ft.Button(content=...), ft.run(), TabBarView, …)
+#   • Do NOT allow 0.x — those versions will crash on import.
+# =================================================================================
+
+# ---- Flet (pinned to 1.0.x — see note above) ----
+flet>=1.0.0,<2.0.0
+
+# ---- Flet charts plugin (optional; dashboard gracefully falls back) ----
+flet-charts>=0.1.0
+
+# ---- Matplotlib (fallback chart engine if flet-charts is missing) ----
+matplotlib>=3.8.0
+
+# ---- Data ----
+pandas>=2.0.0
+numpy>=1.24.0
+
+# ---- PDF generation (server-side) ----
+reportlab>=4.0.0
+
+# ---- Excel export (server-side) ----
+openpyxl>=3.1.0
+
+# ---- Image processing (Excel logo embedding) ----
+Pillow>=10.0.0
