@@ -1,6 +1,12 @@
 # =================================================================================
 # SECTION 4 (FLET 1.0.0 VERSION) — COMPANY SETTINGS DIALOG
 # =================================================================================
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • Logo stored as base64 data URI IN THE CSV — survives Railway redeploys
+#   • Falls back to file path if base64 is missing (backward compat)
+#   • FilePicker registered via page.services (Flet 1.0 standard)
+#   • SnackBar uses page.snack_bar (Flet 1.0 correct way)
+# =================================================================================
 
 import flet as ft
 import json
@@ -28,7 +34,8 @@ class CompanySettingsDialog:
         self.current_user = current_user
         self.settings_manager = SettingsManager(db)
         self.on_save_callback = on_save_callback
-        self.logo_path = None
+        self.logo_path = None              # absolute path (for local files)
+        self.logo_data_uri = None          # base64 data URI (for cloud)
         self.dialog = None
         self.file_picker = None
 
@@ -351,9 +358,9 @@ class CompanySettingsDialog:
 
             self.logo_path = str(logo_dest)
 
-            # 👇 Base64 data URI for browser display
             data_uri = self._get_logo_data_uri(str(logo_dest))
             if data_uri:
+                self.logo_data_uri = data_uri
                 self.logo_image.src = data_uri
                 print(f">>> Logo src = base64 ({len(data_uri)} chars)")
             else:
@@ -403,9 +410,9 @@ class CompanySettingsDialog:
 
             self.logo_path = str(logo_dest)
 
-            # 👇 Base64 data URI for browser display
             data_uri = self._get_logo_data_uri(str(logo_dest))
             if data_uri:
+                self.logo_data_uri = data_uri
                 self.logo_image.src = data_uri
                 print(f">>> Logo src = base64 ({len(data_uri)} chars)")
             else:
@@ -423,6 +430,7 @@ class CompanySettingsDialog:
     def remove_logo_click(self, e):
         print(">>> REMOVE LOGO CLICKED")
         self.logo_path = None
+        self.logo_data_uri = None
         self.logo_image.src = ""
         self.logo_image.visible = False
         self.logo_placeholder.visible = True
@@ -448,17 +456,37 @@ class CompanySettingsDialog:
             self.tan_field.value = s(company.get('tan_no', ''))
             self.pan_field.value = s(company.get('pan_no', ''))
 
-            # ---- Load existing logo as base64 data URI ----
+            # ---- Load existing logo ----
+            # Prefer logo_data_uri column (cloud-safe), fall back to file path.
+            logo_data_uri = company.get('logo_data_uri', '')
             logo_path = company.get('logo_path', '')
-            if isinstance(logo_path, str) and logo_path and os.path.exists(logo_path):
+
+            # Case A: base64 data URI stored in CSV
+            if (isinstance(logo_data_uri, str)
+                    and logo_data_uri.startswith("data:image/")):
+                self.logo_data_uri = logo_data_uri
+                self.logo_image.src = logo_data_uri
+                self.logo_image.visible = True
+                self.logo_placeholder.visible = False
+                print(f">>> Loaded logo from CSV base64 "
+                      f"({len(logo_data_uri)} chars)")
+            # Case B: file path stored in CSV (legacy)
+            elif (isinstance(logo_path, str)
+                    and logo_path
+                    and os.path.exists(logo_path)):
                 self.logo_path = logo_path
                 data_uri = self._get_logo_data_uri(logo_path)
                 if data_uri:
+                    self.logo_data_uri = data_uri
                     self.logo_image.src = data_uri
                     self.logo_image.visible = True
                     self.logo_placeholder.visible = False
                     print(f">>> Loaded existing logo as base64 "
                           f"({len(data_uri)} chars)")
+            else:
+                # No logo available
+                self.logo_image.visible = False
+                self.logo_placeholder.visible = True
 
             bank = company.get('bank_details', {})
             if isinstance(bank, str):
@@ -603,6 +631,9 @@ class CompanySettingsDialog:
                 'upi': (self.upi_field.value or '').strip(),
             }
 
+            # ✅ Include base64 logo in CSV so it survives redeploys
+            logo_data_uri_value = self.logo_data_uri or ''
+
             company_data = {
                 'id': str(company_id),
                 'company_name': (self.company_name_field.value or '').strip(),
@@ -614,12 +645,14 @@ class CompanySettingsDialog:
                 'tan_no': (self.tan_field.value or '').strip(),
                 'pan_no': (self.pan_field.value or '').strip(),
                 'logo_path': str(self.logo_path) if self.logo_path else '',
+                'logo_data_uri': logo_data_uri_value,  # ✅ New column
                 'bank_details': json.dumps(bank_details),
             }
 
             self.db.company_settings = pd.DataFrame([company_data])
             self.db._save_df(self.db.company_settings, "company_settings.csv")
-            print(">>> Company CSV saved")
+            print(f">>> Company CSV saved "
+                  f"(logo_data_uri length: {len(logo_data_uri_value)})")
 
             try:
                 gst_val = float(self.gst_percentage_field.value or 18)
@@ -663,40 +696,35 @@ class CompanySettingsDialog:
     # show / close / snack
     # =============================================================================
     def show(self):
-        registered = False
+        # Register FilePicker as service (Flet 1.0 standard)
         try:
             if hasattr(self.page, 'services'):
                 if self.file_picker not in self.page.services:
                     self.page.services.append(self.file_picker)
-                registered = True
-                print("[FILE PICKER] Registered ✅")
-        except Exception as ex:
-            print(f"[FILE PICKER] services failed: {ex}")
-        if not registered:
-            try:
+                print("[FILE PICKER] Registered via services ✅")
+            else:
+                # Fallback for older Flet versions
                 if self.file_picker not in self.page.overlay:
                     self.page.overlay.append(self.file_picker)
                 print("[FILE PICKER] Registered via overlay ✅")
-            except Exception as ex:
-                print(f"[FILE PICKER] overlay failed: {ex}")
+        except Exception as ex:
+            print(f"[FILE PICKER] registration failed: {ex}")
         self.page.show_dialog(self.dialog)
 
     def close(self):
-        self.page.pop_dialog()
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
 
     def show_snack(self, message):
         print(f"[SNACK] {message}")
         try:
-            snack = ft.SnackBar(content=ft.Text(message))
-            self.page.show_dialog(snack)
-            return
-        except Exception:
-            pass
-        try:
-            snack = ft.SnackBar(content=ft.Text(message))
-            self.page.open(snack)
-        except Exception as e3:
-            print(f"[SNACK] all failed: {e3}")
+            self.page.snack_bar = ft.SnackBar(content=ft.Text(message))
+            self.page.snack_bar.open = True
+            self.page.update()
+        except Exception as ex:
+            print(f"[SNACK] failed: {ex}")
 
 
 # =================================================================================
