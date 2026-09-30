@@ -1,10 +1,16 @@
 # =================================================================================
 # SECTION 3 (FLET VERSION) — SETTINGS MANAGER
 # =================================================================================
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • All CSV reads/writes use encoding='utf-8-sig' (no BOM issues)
+#   • Default company settings include logo_data_uri field
+#   • Error logging on write failures
+#   • Safe fallback if disk is read-only
+# =================================================================================
 
-# ---- 3.0 — Imports (only these change from desktop) ----
 import json
 import uuid
+import os
 from datetime import datetime
 import pandas as pd
 
@@ -21,6 +27,35 @@ class SettingsManager:
         self.db = db
 
     # =================================================================================
+    # 3.1.2 — SAFE CSV HELPERS (private)
+    # =================================================================================
+    def _safe_read_csv(self, path):
+        """Read a CSV with proper encoding; return None on failure."""
+        try:
+            if not os.path.exists(str(path)):
+                return None
+            # utf-8-sig strips any BOM at the start of the file,
+            # which prevents columns like '\ufeffgst_percentage'.
+            df = pd.read_csv(path, encoding='utf-8-sig')
+            return df
+        except Exception as ex:
+            print(f"[SETTINGS] read failed ({path}): {ex}")
+            return None
+
+    def _safe_write_csv(self, df, path):
+        """Write a CSV with proper encoding; return True/False."""
+        try:
+            # Ensure parent folder exists (fresh installs on cloud)
+            parent = os.path.dirname(str(path))
+            if parent and not os.path.exists(parent):
+                os.makedirs(parent, exist_ok=True)
+            df.to_csv(path, index=False, encoding='utf-8-sig')
+            return True
+        except Exception as ex:
+            print(f"[SETTINGS] write failed ({path}): {ex}")
+            return False
+
+    # =================================================================================
     # 3.2 — COMPANY SETTINGS
     # =================================================================================
     def get_company_settings(self):
@@ -31,7 +66,7 @@ class SettingsManager:
                 try:
                     company['bank_details'] = json.loads(
                         company['bank_details'])
-                except:
+                except Exception:
                     company['bank_details'] = {}
             return company
         return self.get_default_company_settings()
@@ -47,6 +82,7 @@ class SettingsManager:
             'tan_no': 'TAN123456',
             'pan_no': 'PAN123456',
             'logo_path': '',
+            'logo_data_uri': '',   # ✅ NEW — base64 logo column
             'bank_details': {
                 'bank_name': 'Islamic Bank',
                 'account_no': '1234567890',
@@ -60,41 +96,41 @@ class SettingsManager:
     # =================================================================================
     def get_tax_settings(self):
         tax_file = self.db.data_dir / "tax_settings.csv"
-        try:
-            if tax_file.exists():
-                df = pd.read_csv(tax_file)
-                if not df.empty:
-                    row = df.iloc[0].to_dict()
+        df = self._safe_read_csv(tax_file)
+        if df is not None and not df.empty:
+            try:
+                row = df.iloc[0].to_dict()
 
-                    gst_val = row.get('gst_percentage', 18)
-                    if gst_val is None or (isinstance(gst_val, float)
-                                           and str(gst_val) == 'nan'):
-                        gst_val = 18.0
-                    try:
-                        gst_val = float(gst_val)
-                    except:
-                        gst_val = 18.0
+                gst_val = row.get('gst_percentage', 18)
+                if gst_val is None or (isinstance(gst_val, float)
+                                       and str(gst_val) == 'nan'):
+                    gst_val = 18.0
+                try:
+                    gst_val = float(gst_val)
+                except Exception:
+                    gst_val = 18.0
 
-                    tcs_val = row.get('tcs_percentage', 0.1)
-                    if tcs_val is None or (isinstance(tcs_val, float)
-                                           and str(tcs_val) == 'nan'):
-                        tcs_val = 0.1
-                    try:
-                        tcs_val = float(tcs_val)
-                    except:
-                        tcs_val = 0.1
+                tcs_val = row.get('tcs_percentage', 0.1)
+                if tcs_val is None or (isinstance(tcs_val, float)
+                                       and str(tcs_val) == 'nan'):
+                    tcs_val = 0.1
+                try:
+                    tcs_val = float(tcs_val)
+                except Exception:
+                    tcs_val = 0.1
 
-                    return {
-                        'gst_percentage': gst_val,
-                        'tcs_percentage': tcs_val,
-                        'gst_description': 'Goods and Services Tax',
-                        'tcs_description': 'Tax Collected at Source',
-                        'updated_date': datetime.now().isoformat(),
-                        'updated_by': 'system'
-                    }
-        except Exception as e:
-            print(f"Error reading tax file: {e}")
+                return {
+                    'gst_percentage': gst_val,
+                    'tcs_percentage': tcs_val,
+                    'gst_description': 'Goods and Services Tax',
+                    'tcs_description': 'Tax Collected at Source',
+                    'updated_date': datetime.now().isoformat(),
+                    'updated_by': 'system'
+                }
+            except Exception as e:
+                print(f"[SETTINGS] tax parse error: {e}")
 
+        # Fall back to defaults
         default_tax = {
             'id': str(uuid.uuid4()),
             'gst_percentage': 18.0,
@@ -104,7 +140,7 @@ class SettingsManager:
             'updated_date': datetime.now().isoformat(),
             'updated_by': 'system'
         }
-        pd.DataFrame([default_tax]).to_csv(tax_file, index=False)
+        self._safe_write_csv(pd.DataFrame([default_tax]), tax_file)
         return default_tax
 
     def update_tax_settings(self, gst_percentage, tcs_percentage):
@@ -112,12 +148,12 @@ class SettingsManager:
 
         try:
             gst_val = float(gst_percentage)
-        except:
+        except Exception:
             gst_val = 18.0
 
         try:
             tcs_val = float(tcs_percentage)
-        except:
+        except Exception:
             tcs_val = 0.1
 
         gst_val = max(0, min(100, gst_val))
@@ -132,29 +168,31 @@ class SettingsManager:
             'updated_date': datetime.now().isoformat(),
             'updated_by': 'system'
         }
-        pd.DataFrame([tax_data]).to_csv(tax_file, index=False)
+        ok = self._safe_write_csv(pd.DataFrame([tax_data]), tax_file)
+        if not ok:
+            print(f"[SETTINGS] ⚠️ Could not save tax settings to {tax_file}")
         return tax_data
 
     # =================================================================================
-    # 3.4 — TOUR TYPES (FIX #8)
+    # 3.4 — TOUR TYPES
     # =================================================================================
     def get_tour_types(self):
         tour_file = self.db.data_dir / "tour_types.csv"
+        df = self._safe_read_csv(tour_file)
 
-        if tour_file.exists():
+        if df is not None and not df.empty:
             try:
-                df = pd.read_csv(tour_file)
                 if 'year' not in df.columns:
                     df['year'] = datetime.now().year
-                    df.to_csv(tour_file, index=False)
+                    self._safe_write_csv(df, tour_file)
                 return df.to_dict('records')
-            except:
-                pass
+            except Exception as e:
+                print(f"[SETTINGS] tour parse error: {e}")
 
+        # Generate defaults
         current_year = datetime.now().year
         default_tours = []
 
-        # Haj + Umrah for current_year - 2 to current_year + 5
         for year in range(current_year - 2, current_year + 6):
             default_tours.append({
                 'id': str(uuid.uuid4()),
@@ -171,7 +209,6 @@ class SettingsManager:
                 'is_active': True
             })
 
-            # Ziyarah + UK Tour only for current_year - 1 to current_year + 3
             if current_year - 1 <= year <= current_year + 3:
                 default_tours.append({
                     'id': str(uuid.uuid4()),
@@ -188,7 +225,7 @@ class SettingsManager:
                     'is_active': True
                 })
 
-        pd.DataFrame(default_tours).to_csv(tour_file, index=False)
+        self._safe_write_csv(pd.DataFrame(default_tours), tour_file)
         return default_tours
 
     def add_tour_type(self, tour_name, description, year=None):
@@ -211,7 +248,7 @@ class SettingsManager:
             'is_active': True
         }
         tours.append(new_tour)
-        pd.DataFrame(tours).to_csv(tour_file, index=False)
+        self._safe_write_csv(pd.DataFrame(tours), tour_file)
         return new_tour
 
     def update_tour_type(self, tour_id, tour_name, year, description,
@@ -232,13 +269,13 @@ class SettingsManager:
                 tour['is_active'] = bool(is_active)
                 break
 
-        pd.DataFrame(tours).to_csv(tour_file, index=False)
+        self._safe_write_csv(pd.DataFrame(tours), tour_file)
 
     def delete_tour_type(self, tour_id):
         tour_file = self.db.data_dir / "tour_types.csv"
         tours = self.get_tour_types()
         tours = [t for t in tours if t['id'] != tour_id]
-        pd.DataFrame(tours).to_csv(tour_file, index=False)
+        self._safe_write_csv(pd.DataFrame(tours), tour_file)
 
     def get_tour_type_by_name_year(self, tour_name, year):
         tours = self.get_tour_types()
