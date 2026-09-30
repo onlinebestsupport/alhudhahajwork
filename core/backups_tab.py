@@ -1,15 +1,16 @@
 # =================================================================================
-# SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED
+# SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED + CLOUD-READY
 # =================================================================================
-# Purpose: Backup management — Create, Restore, Delete, Import, Refresh.
+# Purpose: Backup management — Create, Restore, Delete, Import, Refresh, Download.
 #
 # FIXES IN THIS VERSION:
 #   • Scans BOTH data_dir/backups/ AND data_dir.parent/backups/
 #   • Displays the resolved folder path in the UI header
-#   • Logs both paths to terminal on load
 #   • Uses page_ref (page is read-only on Flet 1.0 controls)
-#   • Full path shown in file listing (hover tooltip)
-#   • FIXED: Registers FilePicker as a service (Flet 1.0 change)
+#   • Registers FilePicker as a service (Flet 1.0 change)
+#   • NEW (cloud): Download button in Actions column
+#   • NEW (cloud): Cloud-mode warning banner
+#   • NEW (cloud): FilePicker registration is idempotent
 # =================================================================================
 
 import os
@@ -21,6 +22,12 @@ from pathlib import Path
 
 import flet as ft
 import pandas as pd
+
+try:
+    from core.helpers import send_file_to_user
+except ImportError:
+    def send_file_to_user(page, path, label="Download"):
+        return None
 
 
 # =================================================================================
@@ -50,7 +57,7 @@ class BackupView(ft.Column):
 
         # File picker (Flet 1.0)
         self.file_picker = ft.FilePicker()
-        # Register in page overlay after mount
+        self._picker_registered = False
 
         try:
             self.setup_ui()
@@ -142,6 +149,26 @@ class BackupView(ft.Column):
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
+        # ---- Cloud info banner ----
+        cloud_note = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.CLOUD, size=18, color="#d97706"),
+                ft.Column([
+                    ft.Text("Cloud storage note",
+                            size=10, weight=ft.FontWeight.BOLD,
+                            color="#92400e"),
+                    ft.Text(
+                        "Backups are saved on the server. Use the "
+                        "⬇️ Download button to save a copy to your PC. "
+                        "Without a Railway Volume, server backups "
+                        "are cleared when the app restarts.",
+                        size=10, color="#92400e"),
+                ], spacing=2, expand=True),
+            ], spacing=10),
+            padding=12, bgcolor="#fef3c7",
+            border_radius=10,
+            border=ft.Border.all(1, "#fcd34d"))
+
         # ---- Folder path banner ----
         self.folder_path_label = ft.Text(
             "", size=11, color="#1e40af", italic=True, selectable=True)
@@ -175,7 +202,7 @@ class BackupView(ft.Column):
                         self.create_backup),
             _action_btn("Refresh List", ft.Icons.REFRESH, "#2563eb",
                         self.refresh),
-            _action_btn("Open Folder", ft.Icons.FOLDER_OPEN, "#7c3aed",
+            _action_btn("Show Folder Path", ft.Icons.FOLDER_OPEN, "#7c3aed",
                         self.open_folder),
         ], spacing=10, wrap=True)
 
@@ -239,6 +266,7 @@ class BackupView(ft.Column):
 
         self.controls = [
             header,
+            cloud_note,
             folder_banner,
             actions_row,
             table_card,
@@ -252,13 +280,23 @@ class BackupView(ft.Column):
         return self
 
     def did_mount(self):
+        # Register FilePicker only once
+        if self._picker_registered:
+            return
         try:
-            # Flet 1.0: FilePicker is a service and should be added to page.services
-            # Do NOT use page.overlay.append() for services in Flet 1.0
-            self.page_ref.services.append(self.file_picker)
+            if hasattr(self.page_ref, 'services'):
+                if self.file_picker not in self.page_ref.services:
+                    self.page_ref.services.append(self.file_picker)
+                    self._picker_registered = True
+                    print("[BACKUP] FilePicker registered ✅")
+            else:
+                if self.file_picker not in self.page_ref.overlay:
+                    self.page_ref.overlay.append(self.file_picker)
+                    self._picker_registered = True
+                    print("[BACKUP] FilePicker registered via overlay ✅")
             self.page_ref.update()
         except Exception as ex:
-            print(f"[BACKUP] file picker service registration failed: {ex}")
+            print(f"[BACKUP] file picker registration failed: {ex}")
 
     # =============================================================================
     # 20.1.6 — refresh (scan ALL known backup folders)
@@ -333,7 +371,7 @@ class BackupView(ft.Column):
                               ft.Colors.RED_500)
 
     # =============================================================================
-    # 20.1.7 — _display_backups
+    # 20.1.7 — _display_backups  (UPDATED: added Download button)
     # =============================================================================
     def _display_backups(self):
         self.table.rows.clear()
@@ -351,6 +389,9 @@ class BackupView(ft.Column):
             status_color = ("#059669"
                             if backup["status"] == "Registered"
                             else "#d97706")
+
+            def _download(e, b=backup):
+                self._download_backup(b)
 
             def _restore(e, b=backup):
                 self._confirm_restore(b)
@@ -375,6 +416,10 @@ class BackupView(ft.Column):
                     size=10, color=ft.Colors.GREY_600,
                     tooltip=backup["folder"])),
                 ft.DataCell(ft.Row([
+                    ft.IconButton(ft.Icons.DOWNLOAD, icon_size=18,
+                                  icon_color="#2563eb",
+                                  tooltip="Download to your PC",
+                                  on_click=_download),
                     ft.IconButton(ft.Icons.RESTORE, icon_size=18,
                                   icon_color="#d97706",
                                   tooltip="Restore this backup",
@@ -389,6 +434,36 @@ class BackupView(ft.Column):
         if self.backup_count_label:
             self.backup_count_label.value = (
                 f"Total: {len(self.backup_files)} backups")
+
+    # =============================================================================
+    # 20.1.7b — _download_backup  (NEW: cloud-friendly download)
+    # =============================================================================
+    def _download_backup(self, backup):
+        """Copy the backup to /static and open the browser download URL."""
+        try:
+            path = backup.get("file_path", "")
+            if not os.path.exists(path):
+                self._snack(f"⚠️ File not found: {path}",
+                            ft.Colors.RED_500)
+                return
+
+            url = send_file_to_user(self.page_ref, path, backup["file_name"])
+            if url:
+                try:
+                    self.page_ref.launch_url(url)
+                except Exception:
+                    pass
+                self._snack(f"⬇️ Downloading {backup['file_name']}",
+                            ft.Colors.BLUE_700)
+                print(f"[BACKUP] Download URL served: {url}")
+            else:
+                self._snack("⚠️ Could not serve file for download",
+                            ft.Colors.RED_500)
+        except Exception as ex:
+            print(f"[BACKUP] download error: {ex}")
+            traceback.print_exc()
+            self._snack(f"❌ Download failed: {ex}",
+                        ft.Colors.RED_500)
 
     # =============================================================================
     # 20.1.8 — create_backup
@@ -443,13 +518,17 @@ class BackupView(ft.Column):
                             padding=10, bgcolor="#f0f9ff",
                             border_radius=6,
                             border=ft.Border.all(1, "#bae6fd")),
+                        ft.Container(height=6),
+                        ft.Text(
+                            "💡 Tip: Use the ⬇️ Download button "
+                            "to save a copy to your PC.",
+                            size=10, color=ft.Colors.GREY_600,
+                            italic=True),
                     ], spacing=8, tight=True),
                     actions=[
                         ft.TextButton(
                             content=ft.Text("OK"),
-                            on_click=lambda _: (
-                                self.page_ref.pop_dialog(),
-                                self.open_folder(None))),
+                            on_click=lambda _: self.page_ref.pop_dialog()),
                     ])
                 self.page_ref.show_dialog(info)
             except Exception as ex:
@@ -522,8 +601,15 @@ class BackupView(ft.Column):
                     f"✅ Restored from {backup['file_name']}",
                     ft.Colors.GREEN_700)
                 self._show_status(
-                    "✅ Restore complete. Restart app to reload all views.",
+                    "✅ Restore complete. Reloading data…",
                     ft.Colors.GREEN_700)
+
+                # Try to reload DB caches so views pick up new data
+                try:
+                    if hasattr(self.db, "reload_all"):
+                        self.db.reload_all()
+                except Exception:
+                    pass
             except Exception as ex:
                 print(f"[BACKUP] restore error: {ex}")
                 traceback.print_exc()
@@ -656,49 +742,48 @@ class BackupView(ft.Column):
         self.page_ref.show_dialog(dialog)
 
     # =============================================================================
-    # 20.1.11 — open_folder
+    # 20.1.11 — open_folder   (UPDATED: web-friendly)
     # =============================================================================
     def open_folder(self, e=None):
-        """Show the folder path and try to open it locally."""
+        """Show the folder path in a dialog (web-safe)."""
         try:
             folder = self._backup_dir()
             path_str = str(folder)
             print(f"[BACKUP] Folder: {path_str}")
 
-            # Try opening locally (works only when running on same machine)
-            try:
-                if os.name == "nt":
-                    os.startfile(path_str)
-                elif os.uname().sysname == "Darwin":
-                    import subprocess
-                    subprocess.Popen(["open", path_str])
-                else:
-                    import subprocess
-                    subprocess.Popen(["xdg-open", path_str])
-                self._snack(f"📂 Opened: {path_str}",
-                            ft.Colors.BLUE_700)
-            except Exception:
-                # Fallback: show path in a dialog
-                dialog = ft.AlertDialog(
-                    modal=True,
-                    title=ft.Text("Backup Folder Path"),
-                    content=ft.Column([
-                        ft.Text("Copy this path and open it manually:",
-                                size=11),
-                        ft.Container(
-                            content=ft.Text(path_str, size=11,
-                                            selectable=True,
-                                            color="#1e40af"),
-                            padding=10, bgcolor="#f0f9ff",
-                            border_radius=6,
-                            border=ft.Border.all(1, "#bae6fd")),
-                    ], spacing=8, tight=True),
-                    actions=[
-                        ft.TextButton(
-                            content=ft.Text("Close"),
-                            on_click=lambda _: self.page_ref.pop_dialog()),
-                    ])
-                self.page_ref.show_dialog(dialog)
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Row([
+                    ft.Icon(ft.Icons.FOLDER_OPEN, color="#7c3aed"),
+                    ft.Text("Backup Folder Path",
+                            weight=ft.FontWeight.BOLD),
+                ], spacing=8),
+                content=ft.Column([
+                    ft.Text(
+                        "Backups are stored on the server. Copy this "
+                        "path to access them from a terminal.",
+                        size=11, color=ft.Colors.GREY_600),
+                    ft.Container(
+                        content=ft.Text(path_str, size=11,
+                                        selectable=True,
+                                        color="#1e40af",
+                                        font_family="Consolas"),
+                        padding=10, bgcolor="#f0f9ff",
+                        border_radius=6,
+                        border=ft.Border.all(1, "#bae6fd")),
+                    ft.Container(height=6),
+                    ft.Text(
+                        "💡 On the web, use the ⬇️ Download button to "
+                        "save individual backups to your PC.",
+                        size=10, color=ft.Colors.GREY_600,
+                        italic=True),
+                ], spacing=8, tight=True),
+                actions=[
+                    ft.TextButton(
+                        content=ft.Text("Close"),
+                        on_click=lambda _: self.page_ref.pop_dialog()),
+                ])
+            self.page_ref.show_dialog(dialog)
         except Exception as ex:
             print(f"[BACKUP] open_folder error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
