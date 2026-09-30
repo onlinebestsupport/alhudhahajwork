@@ -20,6 +20,22 @@
 #   FIX-PRO-LAYOUT         — Card-based Single Traveler dashboard.
 #   FIX-DOCS-INLINE        — Document thumbnails as compact cards.
 #   FIX-KPI-HIGHLIGHT      — Bold KPI values, right-aligned colors.
+#
+# 16.0.2 — PATCHES APPLIED (v1.1):
+#   16.1.A — refresh()               : force DB reload before reading (fresh
+#                                      cache). Reports aggregate from ALL
+#                                      tabs — the stale-cache risk is highest
+#                                      here.
+#   16.1.B — _rebuild_traveler_lists(): new helper that re-queries travelers
+#                                      and rebuilds _single_map + _photo_map
+#                                      + dropdown options. Called from refresh()
+#                                      so newly added travelers appear without
+#                                      a hard page reload.
+#   16.1.C — _generate_standard()    : reload DB before running each report.
+#                                      Users expect "Generate" to mean "now".
+#   16.1.D — _snack()                : use page.show_dialog(SnackBar) — the
+#                                      Flet 1.0 web-safe path (page.snack_bar
+#                                      attribute is deprecated).
 # =================================================================================
 
 # =================================================================================
@@ -390,12 +406,85 @@ class ReportsTab(ft.Column):
 
     # -----------------------------------------------------------------------------
     # 16.2.5 — refresh (called by main_window)
+    #   PATCH 16.1.A: force DB reload before reading
+    #   PATCH 16.1.B: rebuild traveler lists so new entries appear
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
+            # ---- PATCH 16.1.A: fresh cache reload ----
+            # Reports aggregate from every other tab. Re-hydrate the DB
+            # so every get_* call below returns current data — not a
+            # stale in-memory snapshot.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[ReportsTab.refresh] reload skipped: {_re}")
+
+            # Reload tax rates in case CompanySettingsDialog changed them
+            self._load_tax_rates()
+
+            # ---- PATCH 16.1.B: rebuild traveler lookup maps ----
+            # Without this, travelers added in the Travelers tab after the
+            # Reports tab was first built never appear in the Single
+            # Traveler / Photo Viewer dropdowns.
+            self._rebuild_traveler_lists()
+
             self._refresh_hub_stats()
         except Exception as ex:
             print(f"[REPORTS] refresh: {ex}")
+            traceback.print_exc()
+
+    # -----------------------------------------------------------------------------
+    # 16.2.5b — _rebuild_traveler_lists  (PATCH 16.1.B)
+    # -----------------------------------------------------------------------------
+    def _rebuild_traveler_lists(self):
+        """Rebuild _single_map + _photo_map and refresh dropdown options
+        so newly added / renamed travelers show up without a hard reload."""
+        try:
+            travelers = self.db.get_travelers()
+            travelers.sort(key=lambda t: (
+                f"{t.get('first_name','')} {t.get('last_name','')}".lower()))
+
+            # ---- Single Traveler dropdown ----
+            if self._single_search is not None:
+                self._single_map = {}
+                opts = [ft.dropdown.Option("", "— Select a traveler —")]
+                for t in travelers:
+                    name = (f"{t.get('first_name','')} "
+                            f"{t.get('last_name','')}").strip() or "Unknown"
+                    passport = t.get("passport_no", "") or ""
+                    label = f"{name}  ·  {passport}"
+                    tid = t.get("id", "")
+                    opts.append(ft.dropdown.Option(tid, label))
+                    self._single_map[tid] = t
+                self._single_search.options = opts
+                # If the currently-selected traveler still exists,
+                # re-render them so their numbers are fresh.
+                cur = self._single_search.value
+                if cur and cur in self._single_map:
+                    try:
+                        self._render_single_traveler(self._single_map[cur])
+                    except Exception as _e:
+                        print(f"[REPORTS] re-render single: {_e}")
+
+            # ---- Photo Viewer dropdown ----
+            if self._photo_search is not None:
+                self._photo_map = {}
+                opts = [ft.dropdown.Option("", "— Select a traveler —")]
+                for t in travelers:
+                    name = (f"{t.get('first_name','')} "
+                            f"{t.get('last_name','')}").strip() or "Unknown"
+                    has = "📸" if _find_photo_path(t) else "📷"
+                    label = f"{has}  {name} · {t.get('passport_no','')}"
+                    tid = t.get("id", "")
+                    opts.append(ft.dropdown.Option(tid, label))
+                    self._photo_map[tid] = t
+                self._photo_search.options = opts
+        except Exception as ex:
+            print(f"[REPORTS] _rebuild_traveler_lists: {ex}")
 
     # =============================================================================
     # 16.2.6 — Reports Hub tab
@@ -534,9 +623,20 @@ class ReportsTab(ft.Column):
 
     # -----------------------------------------------------------------------------
     # 16.2.7 — _refresh_hub_stats
+    #   PATCH 16.1.A: force DB reload before reading (idempotent — safe to
+    #   call from the manual Refresh button too)
     # -----------------------------------------------------------------------------
     def _refresh_hub_stats(self, e=None):
         try:
+            # ---- PATCH 16.1.A: fresh cache reload ----
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[REPORTS] hub reload skipped: {_re}")
+
             travelers = self.db.get_travelers()
             batches = self.db.get_batches()
             payments = self.db.get_payments()
@@ -853,7 +953,11 @@ class ReportsTab(ft.Column):
                 return
             t = self._single_map.get(raw)
             if t is None:
-                return
+                # User might have typed an ID we don't know → refresh lists
+                self._rebuild_traveler_lists()
+                t = self._single_map.get(raw)
+                if t is None:
+                    return
             self._render_single_traveler(t)
             self._safe_update()
         except Exception as ex:
@@ -1093,8 +1197,22 @@ class ReportsTab(ft.Column):
             ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True),
             padding=24, expand=True)
 
+    # -----------------------------------------------------------------------------
+    # 16.2.13.0 — _generate_standard
+    #   PATCH 16.1.C: reload DB before running each report — "Generate"
+    #   should always reflect the latest data on disk.
+    # -----------------------------------------------------------------------------
     def _generate_standard(self, e=None):
         try:
+            # ---- PATCH 16.1.C: fresh cache reload ----
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[REPORTS] std reload skipped: {_re}")
+
             sd = self._std_from.value.strip()
             ed = self._std_to.value.strip()
             rt = self._std_type.value
@@ -1307,7 +1425,11 @@ class ReportsTab(ft.Column):
                 return
             t = self._photo_map.get(raw)
             if not t:
-                return
+                # Unknown ID → rebuild lists and retry
+                self._rebuild_traveler_lists()
+                t = self._photo_map.get(raw)
+                if not t:
+                    return
             name = (f"{t.get('first_name','')} "
                     f"{t.get('last_name','')}").strip() or "Unknown"
             pp = _find_photo_path(t)
@@ -1341,7 +1463,19 @@ class ReportsTab(ft.Column):
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # 16.2.15b — _snack  (PATCH 16.1.D: Flet 1.0 web-safe SnackBar)
+    # -----------------------------------------------------------------------------
     def _snack(self, msg, color=ft.Colors.GREEN_700):
+        # ---- PATCH 16.1.D: Flet 1.0 deprecated `page.snack_bar`.
+        # Prefer show_dialog(SnackBar) — the reliable path in web mode ----
+        try:
+            self.page_ref.show_dialog(
+                ft.SnackBar(content=ft.Text(msg), bgcolor=color))
+            return
+        except Exception:
+            pass
+        # Last-resort fallback for very old Flet builds
         try:
             self.page_ref.snack_bar = ft.SnackBar(
                 content=ft.Text(msg), bgcolor=color)
@@ -1364,6 +1498,10 @@ class ReportsTab(ft.Column):
 # 16.3.8  — FIX-KPI-HIGHLIGHT — Bold KPI values, direct text.
 # 16.3.9  — Flet 1.0 note: no top-level scroll on ReportsTab; inner
 #              tabs manage their own scrolling. build() returns self.
+# 16.3.10 — PATCH 16.1.A — refresh() reloads DB before reading.
+# 16.3.11 — PATCH 16.1.B — _rebuild_traveler_lists() keeps dropdowns fresh.
+# 16.3.12 — PATCH 16.1.C — _generate_standard() reloads DB before each run.
+# 16.3.13 — PATCH 16.1.D — _snack() uses show_dialog(SnackBar).
 # =================================================================================
-# SECTION 16 END — REPORTS TAB
+# SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION)
 # =================================================================================
