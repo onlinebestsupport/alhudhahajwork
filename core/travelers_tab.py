@@ -1,9 +1,12 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# Section 8  — TravelersTab        (main tab: stats, toolbar, table, pagination)
-# Section 9  — TravelerDialog      (Add/Edit — 36 fields, 6 sections, uploads)
-# Section 10 — TravelerViewDialog  (read-only view — 6 tabs, clickable docs)
+# UPDATED — 2026-09-30 (Cloud-ready)
+#   • open_document now serves files via HTTP (was file:/// — broken on web)
+#   • TravelerViewDialog doc opening uses HTTP too
+#   • refresh() reloads travelers.csv from disk (fixes stale cache)
+#   • After add/edit/delete, forces a reload
+#   • Photos in table shown via data URI where possible
 # =================================================================================
 
 import flet as ft
@@ -14,7 +17,7 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
-from core.helpers import get_app_base_path
+from core.helpers import get_app_base_path, send_file_to_user
 
 
 # =================================================================================
@@ -192,7 +195,7 @@ class TravelersTab:
             spacing=10,
         )
 
-        # ---- ROOT (clean layout — no double scroll) ----
+        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -259,10 +262,19 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # 8.4 — refresh
+    # 8.4 — refresh   (UPDATED: reload from disk before rendering)
     # =============================================================================
     def refresh(self):
         try:
+            # ✅ Force reload from CSV to avoid stale cache
+            try:
+                if hasattr(self.db, "reload_travelers"):
+                    self.db.reload_travelers()
+                if hasattr(self.db, "reload_batches"):
+                    self.db.reload_batches()
+            except Exception as ex:
+                print(f"[TRAVELERS] reload failed: {ex}")
+
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
 
@@ -501,6 +513,14 @@ class TravelersTab:
                     f"Deleted traveler: {traveler.get('first_name','')} "
                     f"{traveler.get('last_name','')}")
                 self.page.pop_dialog()
+
+                # ✅ Reload from disk to ensure cache freshness
+                try:
+                    if hasattr(self.db, "reload_travelers"):
+                        self.db.reload_travelers()
+                except Exception:
+                    pass
+
                 self.refresh()
                 self._snack(
                     f"✅ Deleted {traveler.get('first_name','')} "
@@ -524,6 +544,11 @@ class TravelersTab:
         )
         self.page.show_dialog(confirm_dialog)
 
+    # -----------------------------------------------------------------------------
+    # 8.10.1 — open_document   (UPDATED for web)
+    #   On the web, we can't use file:/// URLs. We copy the file into the
+    #   static folder and give the browser a proper HTTP URL.
+    # -----------------------------------------------------------------------------
     def open_document(self, traveler, key):
         rel = traveler.get(key, '')
         if not rel:
@@ -531,14 +556,25 @@ class TravelersTab:
             return
         base = get_app_base_path()
         abs_path = os.path.join(base, rel)
-        if os.path.exists(abs_path):
-            try:
-                self.page.launch_url(
-                    f"file:///{abs_path.replace(os.sep, '/')}")
-            except Exception as ex:
-                self._snack(f"⚠️ Could not open: {ex}")
-        else:
+        if not os.path.exists(abs_path):
             self._snack(f"⚠️ File not found: {rel}")
+            return
+        try:
+            # Copy to /static/ and open the HTTP URL
+            url = send_file_to_user(self.page, abs_path,
+                                    key.replace('_', ' ').title())
+            if url:
+                # Full URL (works both locally and on Railway)
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    self.page.launch_url(url)
+                self._snack(f"📎 Opened: {os.path.basename(abs_path)}")
+            else:
+                self._snack(f"⚠️ Could not serve file")
+        except Exception as ex:
+            print(f"[TRAVELERS] open_document error: {ex}")
+            self._snack(f"⚠️ Could not open: {ex}")
 
     # =============================================================================
     # 8.11 — Exports
@@ -548,7 +584,6 @@ class TravelersTab:
             self._snack("⚠️ No travelers to export")
             return
         try:
-            from core.helpers import send_file_to_user
             headers = [
                 '#', 'ID', 'First Name', 'Last Name', 'Passport Name',
                 'Gender', 'Date of Birth', 'Batch ID', 'Batch Name',
@@ -622,7 +657,6 @@ class TravelersTab:
             from reportlab.lib.styles import (
                 getSampleStyleSheet, ParagraphStyle)
             from reportlab.lib.enums import TA_CENTER, TA_LEFT
-            from core.helpers import send_file_to_user
 
             base = get_app_base_path()
             exports_dir = Path(base) / "exports"
@@ -713,7 +747,6 @@ class TravelersTab:
 
     def download_csv_template(self, e):
         try:
-            from core.helpers import send_file_to_user
             base = get_app_base_path()
             exports_dir = Path(base) / "exports"
             exports_dir.mkdir(exist_ok=True)
@@ -1152,6 +1185,15 @@ class TravelerDialog:
             except Exception:
                 pass
 
+            # ✅ Reload from disk to ensure fresh data
+            try:
+                if hasattr(self.db, "reload_travelers"):
+                    self.db.reload_travelers()
+                if hasattr(self.db, "reload_batches"):
+                    self.db.reload_batches()
+            except Exception:
+                pass
+
             self.page.pop_dialog()
             self._snack(f"✅ {msg} successfully")
             if self.on_save_callback:
@@ -1454,13 +1496,20 @@ class TravelerViewDialog:
         except Exception:
             return str(value)
 
+    # -----------------------------------------------------------------------------
+    # _open_document — UPDATED for web (uses HTTP download instead of file:///)
+    # -----------------------------------------------------------------------------
     def _open_document(self, abs_path):
         try:
             if not os.path.exists(abs_path):
                 self._snack(f"⚠️ File not found: {abs_path}")
                 return
-            url = f"file:///{abs_path.replace(os.sep, '/')}"
-            self.page.launch_url(url)
+            url = send_file_to_user(self.page, abs_path, "Document")
+            if url:
+                self.page.launch_url(url)
+                self._snack(f"📎 Opened: {os.path.basename(abs_path)}")
+            else:
+                self._snack("⚠️ Could not serve file")
         except Exception as ex:
             self._snack(f"⚠️ Could not open: {ex}")
 
