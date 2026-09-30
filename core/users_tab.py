@@ -1,13 +1,25 @@
 # =================================================================================
 # SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED
 # =================================================================================
-# Fixes applied:
-#   • Flet 1.0 makes `page` a read-only property on all controls.
-#     We store the incoming page argument as `self.page_ref`.
-#   • DEFENSE-IN-DEPTH: UsersTab now refuses to render its UI if the
-#     current user lacks the `manage_users` permission. This protects
-#     against main_window.py accidentally building the tab for a staff
-#     user (which was the bug reported in the terminal log).
+# Fixes applied (v1.1):
+#   18.0 — Flet 1.0 makes `page` a read-only property on all controls.
+#          We store the incoming page argument as `self.page_ref`.
+#   18.1 — DEFENSE-IN-DEPTH: UsersTab refuses to render its UI if the
+#          current user lacks the `manage_users` permission.
+#
+# PATCHES APPLIED (v1.1):
+#   18.1.A — refresh()              : force DB reload before reading (fresh cache)
+#   18.1.B — _render_table()        : action handlers re-fetch user by ID
+#                                     before dispatch (no stale dict)
+#   18.1.C — UserFormDialog._snack(): use page.show_dialog(SnackBar) — the
+#                                     deprecated page.snack_bar attribute is
+#                                     unreliable in Flet 1.0 web mode
+#   18.1.D — _update_existing()     : prefer db.update_user() when available
+#
+# SECURITY NOTE:
+#   Passwords use unsalted SHA-256 (legacy). Migration to bcrypt/argon2
+#   is a separate task — changing it here would invalidate every existing
+#   password hash in production.
 # =================================================================================
 
 import flet as ft
@@ -188,7 +200,7 @@ class UsersTab(ft.Column):
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
     # -----------------------------------------------------------------------------
-    # 18.1.1b — _build_access_denied_ui  🔒 NEW
+    # 18.1.1b — _build_access_denied_ui
     # -----------------------------------------------------------------------------
     def _build_access_denied_ui(self):
         """Render a clean 'Access Denied' placeholder instead of the tab UI."""
@@ -389,7 +401,7 @@ class UsersTab(ft.Column):
         return self
 
     # -----------------------------------------------------------------------------
-    # 18.1.4 — refresh
+    # 18.1.4 — refresh  (PATCH 18.1.A: force DB reload before reading)
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         # 🔒 Safety: refuse if access was denied
@@ -397,6 +409,18 @@ class UsersTab(ft.Column):
             return
 
         try:
+            # ---- PATCH 18.1.A: fresh cache reload ----
+            # Another admin session on Railway might have edited users
+            # since this tab was opened. Re-hydrate so get_users() returns
+            # current data, not a stale in-memory snapshot.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[UsersTab.refresh] reload skipped: {_re}")
+
             raw = self.db.get_users()
             self.users = []
             for u in raw:
@@ -451,6 +475,7 @@ class UsersTab(ft.Column):
 
     # -----------------------------------------------------------------------------
     # 18.1.6 — _render_table
+    #   PATCH 18.1.B: action handlers re-fetch by ID before dispatch
     # -----------------------------------------------------------------------------
     def _render_table(self):
         self.table.rows.clear()
@@ -462,6 +487,7 @@ class UsersTab(ft.Column):
             role = u.get("role", "staff")
             created = u.get("created_at", "")[:10] or "—"
             last_login = u.get("last_login", "")[:10] or "Never"
+            uid = u.get("id")
 
             perms = _parse_permissions(u.get("permissions", ""), role)
             perm_count = len(perms)
@@ -490,25 +516,50 @@ class UsersTab(ft.Column):
                 padding=ft.Padding.symmetric(horizontal=8, vertical=4),
                 bgcolor="#dbeafe", border_radius=10)
 
-            is_self = (u.get("id") == self.current_user.get("id"))
+            is_self = (uid == self.current_user.get("id"))
 
-            def _edit(e, user=u):
-                self.open_edit_dialog(e, user=user)
+            # ------------------------------------------------------------
+            # PATCH 18.1.B — capture ID, re-fetch fresh row on click.
+            # Prevents acting on a stale snapshot if a refresh occurred
+            # between render and click.
+            # ------------------------------------------------------------
+            def _make_edit(_uid=uid):
+                def h(e):
+                    fresh = next(
+                        (x for x in self.users if x.get("id") == _uid), None)
+                    if fresh is None:
+                        self._show_status("⚠️ User no longer exists — "
+                                          "refreshing…",
+                                          ft.Colors.ORANGE_700)
+                        self.refresh()
+                        return
+                    self.open_edit_dialog(e, user=fresh)
+                return h
 
-            def _del(e, user=u):
-                self._confirm_delete(user)
+            def _make_delete(_uid=uid):
+                def h(e):
+                    fresh = next(
+                        (x for x in self.users if x.get("id") == _uid), None)
+                    if fresh is None:
+                        self._show_status("⚠️ User no longer exists — "
+                                          "refreshing…",
+                                          ft.Colors.ORANGE_700)
+                        self.refresh()
+                        return
+                    self._confirm_delete(fresh)
+                return h
 
             actions = ft.Row([
-                ft.IconButton(ft.Icons.EDIT, icon_size=18,
+                ft.IconButton(icon=ft.Icons.EDIT, icon_size=18,
                               icon_color="#2563eb",
                               tooltip="Edit user",
-                              on_click=_edit),
-                ft.IconButton(ft.Icons.DELETE, icon_size=18,
+                              on_click=_make_edit()),
+                ft.IconButton(icon=ft.Icons.DELETE, icon_size=18,
                               icon_color="#dc2626" if not is_self else "#cbd5e1",
                               tooltip=("Cannot delete self"
                                        if is_self else "Delete user"),
                               disabled=is_self,
-                              on_click=_del),
+                              on_click=_make_delete()),
             ], spacing=0)
 
             self.table.rows.append(ft.DataRow(cells=[
@@ -993,16 +1044,33 @@ class UserFormDialog:
         self.db._save_df(self.db.users, "users.csv")
 
     # -----------------------------------------------------------------------------
-    # 18.2.5 — _update_existing
+    # 18.2.5 — _update_existing  (PATCH 18.1.D: prefer db.update_user)
     # -----------------------------------------------------------------------------
     def _update_existing(self, data):
+        uid = _safe_str(self.user.get("id"))
+
+        # ---- PATCH 18.1.D: prefer DB accessor so audit / validation
+        # hooks in db.update_user() fire consistently ----
+        if hasattr(self.db, "update_user"):
+            try:
+                self.db.update_user(uid, **data)
+                return
+            except TypeError:
+                # Some DB signatures take a dict instead of kwargs
+                try:
+                    self.db.update_user(uid, data)
+                    return
+                except Exception as ex:
+                    print(f"[USERS] db.update_user(dict) failed: {ex}; fallback")
+            except Exception as ex:
+                print(f"[USERS] db.update_user failed: {ex}; fallback")
+
         if pd is None:
             raise RuntimeError("pandas not available")
 
         if "permissions" not in self.db.users.columns:
             self.db.users["permissions"] = ""
 
-        uid = _safe_str(self.user.get("id"))
         mask = self.db.users["id"] == uid
 
         for key in ["username", "full_name", "email", "role",
@@ -1017,6 +1085,7 @@ class UserFormDialog:
 
     # -----------------------------------------------------------------------------
     # 18.2.6 — show / close / _snack / _safe_update
+    #   PATCH 18.1.C: SnackBar via show_dialog (Flet 1.0 web-safe)
     # -----------------------------------------------------------------------------
     def show(self):
         try:
@@ -1031,6 +1100,15 @@ class UserFormDialog:
             pass
 
     def _snack(self, message, color=ft.Colors.GREEN_600):
+        # ---- PATCH 18.1.C: Flet 1.0 deprecated `page.snack_bar`.
+        # Use show_dialog(SnackBar) — the reliable path in web mode ----
+        try:
+            self.page_ref.show_dialog(
+                ft.SnackBar(content=ft.Text(message), bgcolor=color))
+            return
+        except Exception:
+            pass
+        # Last-resort fallback for very old Flet builds
         try:
             self.page_ref.snack_bar = ft.SnackBar(
                 content=ft.Text(message), bgcolor=color)
@@ -1047,5 +1125,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END — USERS TAB
+# SECTION 18 END — USERS TAB (FLET 1.0.0 VERSION)
 # =================================================================================
