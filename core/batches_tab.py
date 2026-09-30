@@ -1,9 +1,22 @@
 # =================================================================================
 # SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
 # =================================================================================
+# PATCHES APPLIED (v1.1):
+#   11.2.A — refresh()        : force DB reload before reading (fresh cache)
+#   11.2.B — display_batches(): action icons capture batch ID, re-fetch latest
+#                               dict on click (no stale row data)
+#   11.2.C — delete_batch()   : prefer db.delete_batch(); also guards against
+#                               invoices referencing the batch; shows warning
+#
+# CASCADE NOTE (3rd leg):
+#   This tab owns the "batch price" that drives "Pkg Pending" in both the
+#   Invoices tab (Patch 14.1.A) and the Receipts tab (Patch 15.1.A). Because
+#   both of those tabs now call db.reload() on every refresh, editing a
+#   batch price here propagates to their pending columns without restart.
+# =================================================================================
 
 # =================================================================================
-# core/batches_tab.py — BatchesTab (Flet 1.0 — fully corrected, self-contained)
+# 11.1 — IMPORTS & INLINE HELPERS
 # =================================================================================
 import flet as ft
 import os
@@ -102,10 +115,13 @@ def _db_get_tour_years(db):
 
 
 # =================================================================================
-# BatchesTab
+# 11.2 — CLASS: BatchesTab
 # =================================================================================
 class BatchesTab:
 
+    # -----------------------------------------------------------------------------
+    # 11.2.1 — __init__
+    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user):
         self.page = page
         self.db = db
@@ -154,9 +170,9 @@ class BatchesTab:
     def build(self):
         return self.root
 
-    # =============================================================================
-    # setup_ui
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.2 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         # ---- STAT CARDS ----
         stat_configs = [
@@ -329,9 +345,9 @@ class BatchesTab:
             expand=True,
         )
 
-    # =============================================================================
-    # Helpers
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.3 — Helpers
+    # -----------------------------------------------------------------------------
     def safe_str(self, value):
         if value is None:
             return ""
@@ -352,9 +368,9 @@ class BatchesTab:
         except Exception:
             return str(value)
 
-    # =============================================================================
-    # Tour types & years
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.4 — load_tour_types_and_years
+    # -----------------------------------------------------------------------------
     def load_tour_types_and_years(self):
         try:
             self.tour_types = _db_get_tour_types(self.db)
@@ -388,11 +404,23 @@ class BatchesTab:
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
-    # =============================================================================
-    # refresh
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.5 — refresh  (PATCH 11.2.A: force DB reload before reading)
+    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
+            # ---- PATCH 11.2.A: fresh cache reload ----
+            # Travelers tab, Invoices tab, or Receipts tab may have written
+            # to disk since our last read. Re-hydrate so get_* returns
+            # current data, not a stale in-memory snapshot.
+            try:
+                if hasattr(self.db, "reload"):
+                    self.db.reload()
+                elif hasattr(self.db, "_load_all"):
+                    self.db._load_all()
+            except Exception as _re:
+                print(f"[BatchesTab.refresh] reload skipped: {_re}")
+
             self.load_tour_types_and_years()
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
@@ -421,9 +449,10 @@ class BatchesTab:
             import traceback
             traceback.print_exc()
 
-    # =============================================================================
-    # display_batches
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.6 — display_batches
+    #   PATCH 11.2.B: action icons capture batch ID, re-fetch on every click
+    # -----------------------------------------------------------------------------
     def display_batches(self):
         start = (self.current_page - 1) * self.items_per_page
         end = min(start + self.items_per_page, len(self.filtered_batches))
@@ -465,25 +494,47 @@ class BatchesTab:
                          else "#e67e22" if occ >= 70
                          else "#27ae60")
 
-            actions = ft.Row(
-                controls=[
-                    ft.IconButton(
-                        icon=ft.Icons.VISIBILITY,
-                        icon_color="#3498db", icon_size=18,
-                        tooltip="View",
-                        on_click=lambda e, bb=b: self.view_batch(bb)),
-                    ft.IconButton(
-                        icon=ft.Icons.EDIT,
-                        icon_color="#f39c12", icon_size=18,
-                        tooltip="Edit",
-                        on_click=lambda e, bb=b: self.open_edit_dialog(bb)),
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE,
-                        icon_color="#e74c3c", icon_size=18,
-                        tooltip="Delete",
-                        on_click=lambda e, bb=b: self.delete_batch(bb)),
-                ], spacing=0,
-            )
+            # ------------------------------------------------------------
+            # PATCH 11.2.B — capture ID (not dict), re-fetch before dispatch
+            # ------------------------------------------------------------
+            b_id = b.get("id")
+
+            def _make_actions(_bid=b_id):
+                def _fresh():
+                    return next(
+                        (x for x in self.batches
+                         if x.get("id") == _bid), None)
+
+                def _wrap(handler):
+                    def h(e, _h=handler, _f=_fresh):
+                        fresh = _f()
+                        if fresh is None:
+                            self._snack("⚠️ Batch no longer exists — "
+                                        "refreshing…")
+                            self.refresh()
+                            return
+                        _h(fresh)
+                    return h
+
+                return ft.Row(
+                    controls=[
+                        ft.IconButton(
+                            icon=ft.Icons.VISIBILITY,
+                            icon_color="#3498db", icon_size=18,
+                            tooltip="View",
+                            on_click=_wrap(self.view_batch)),
+                        ft.IconButton(
+                            icon=ft.Icons.EDIT,
+                            icon_color="#f39c12", icon_size=18,
+                            tooltip="Edit",
+                            on_click=_wrap(self.open_edit_dialog)),
+                        ft.IconButton(
+                            icon=ft.Icons.DELETE,
+                            icon_color="#e74c3c", icon_size=18,
+                            tooltip="Delete",
+                            on_click=_wrap(self.delete_batch)),
+                    ], spacing=0,
+                )
 
             self.table.rows.append(
                 ft.DataRow(cells=[
@@ -513,14 +564,14 @@ class BatchesTab:
                         weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(
                         f"{occ:.1f}%", size=11, color=occ_color)),
-                    ft.DataCell(actions),
+                    ft.DataCell(_make_actions()),
                 ]))
 
         self.update_pagination()
 
-    # =============================================================================
-    # Pagination
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.7 — Pagination
+    # -----------------------------------------------------------------------------
     def update_pagination(self):
         total = len(self.filtered_batches)
         start = ((self.current_page - 1) * self.items_per_page + 1
@@ -550,9 +601,9 @@ class BatchesTab:
             except Exception:
                 pass
 
-    # =============================================================================
-    # Filters
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.8 — Filters
+    # -----------------------------------------------------------------------------
     def apply_filters(self, e=None):
         year = self.year_filter.value or ""
         tour_id = self.tour_filter.value or ""
@@ -586,9 +637,9 @@ class BatchesTab:
         except Exception:
             pass
 
-    # =============================================================================
-    # Statistics (case-insensitive)
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.9 — Statistics (case-insensitive)
+    # -----------------------------------------------------------------------------
     def update_statistics(self):
         total = len(self.batches)
 
@@ -622,9 +673,9 @@ class BatchesTab:
         self.stats_labels["value"].value = f"₹{total_value:,}"
         self.stats_labels["return_date"].value = str(with_return)
 
-    # =============================================================================
-    # Dialogs
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.10 — Dialog launchers
+    # -----------------------------------------------------------------------------
     def open_create_dialog(self, e):
         dlg = BatchFormDialog(
             self.page, self.db, self.current_user,
@@ -650,23 +701,52 @@ class BatchesTab:
     def _on_saved(self):
         self.refresh()
 
-    # =============================================================================
-    # Delete
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.11 — delete_batch
+    #   PATCH 11.2.C — prefer db.delete_batch(); also guard against invoices
+    #                  referencing the batch; warn the user.
+    # -----------------------------------------------------------------------------
     def delete_batch(self, batch):
+        # ---- Guard 1: travelers assigned? ----
         assigned = [t for t in self.travelers
-                    if t.get("batch_id") == batch.get("id")]
+                    if str(t.get("batch_id")) == str(batch.get("id"))]
         if assigned:
             self._snack(
                 f"⚠️ Cannot delete — {len(assigned)} traveler(s) assigned")
             return
 
+        # ---- Guard 2: invoices referencing this batch? ----
+        try:
+            invoices = self.db.get_invoices()
+        except Exception:
+            invoices = []
+        linked_invoices = [
+            i for i in invoices
+            if str(i.get("batch_id", "")) == str(batch.get("id"))
+        ]
+
+        warn = f"Delete batch '{batch.get('batch_name', '')}'?"
+        if linked_invoices:
+            warn += (f"\n\n⚠️ {len(linked_invoices)} invoice(s) reference "
+                     f"this batch.\nTheir batch_id will point to a "
+                     f"deleted record.\nConsider re-assigning travelers "
+                     f"first.")
+
         def confirm(ev):
             try:
-                self.db.delete_batch(batch.get("id"))
-                self.db.log_activity(
-                    self.current_user["id"], "delete_batch",
-                    f"Deleted batch: {batch.get('batch_name', '')}")
+                # PATCH 11.2.C — prefer DB method
+                if hasattr(self.db, "delete_batch"):
+                    self.db.delete_batch(batch.get("id"))
+                else:
+                    self.db.batches = self.db.batches[
+                        self.db.batches["id"] != batch.get("id")]
+                    self.db._save_df(self.db.batches, "batches.csv")
+                try:
+                    self.db.log_activity(
+                        self.current_user["id"], "delete_batch",
+                        f"Deleted batch: {batch.get('batch_name', '')}")
+                except Exception:
+                    pass
                 self.page.pop_dialog()
                 self.refresh()
                 self._snack("✅ Batch deleted")
@@ -675,8 +755,7 @@ class BatchesTab:
 
         dialog = ft.AlertDialog(
             title=ft.Text("Delete Batch?"),
-            content=ft.Text(
-                f"Delete batch '{batch.get('batch_name', '')}'?"),
+            content=ft.Text(warn),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -687,16 +766,16 @@ class BatchesTab:
         )
         self.page.show_dialog(dialog)
 
-    # =============================================================================
-    # View
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.12 — View
+    # -----------------------------------------------------------------------------
     def view_batch(self, batch):
         dlg = BatchViewDialog(self.page, self.db, batch)
         dlg.show()
 
-    # =============================================================================
-    # Export
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 11.2.13 — Export
+    # -----------------------------------------------------------------------------
     def export_to_excel(self, e):
         if not self.batches:
             self._snack("⚠️ No batches to export")
@@ -743,6 +822,9 @@ class BatchesTab:
             traceback.print_exc()
             self._snack(f"❌ Export error: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # 11.2.14 — Print + snack
+    # -----------------------------------------------------------------------------
     def print_batches(self, e):
         self._snack("ℹ️ Use your browser's Ctrl+P to print this page")
 
@@ -758,7 +840,7 @@ class BatchesTab:
 
 
 # =================================================================================
-# BatchFormDialog
+# 11.3 — CLASS: BatchFormDialog
 # =================================================================================
 class BatchFormDialog:
 
@@ -792,6 +874,9 @@ class BatchFormDialog:
         if self.is_edit:
             self.load_batch()
 
+    # -----------------------------------------------------------------------------
+    # 11.3.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         year_opts = []
         for y in self.available_years:
@@ -914,6 +999,9 @@ class BatchFormDialog:
         if not self.is_edit:
             self.update_id_preview()
 
+    # -----------------------------------------------------------------------------
+    # 11.3.2 — ID preview helpers
+    # -----------------------------------------------------------------------------
     def _get_next_batch_number(self, prefix, year):
         max_num = 0
         for b in self.db.get_batches():
@@ -961,6 +1049,9 @@ class BatchFormDialog:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # 11.3.3 — load_batch (edit mode)
+    # -----------------------------------------------------------------------------
     def load_batch(self):
         b = self.batch
         self.name_field.value = str(b.get("batch_name", ""))
@@ -978,6 +1069,9 @@ class BatchFormDialog:
         self.description_field.value = str(b.get("description", ""))
         self.update_id_preview()
 
+    # -----------------------------------------------------------------------------
+    # 11.3.4 — save
+    # -----------------------------------------------------------------------------
     def save(self, e):
         try:
             name = (self.name_field.value or "").strip()
@@ -1077,7 +1171,7 @@ class BatchFormDialog:
 
 
 # =================================================================================
-# BatchViewDialog
+# 11.4 — CLASS: BatchViewDialog
 # =================================================================================
 class BatchViewDialog:
 
@@ -1088,6 +1182,9 @@ class BatchViewDialog:
         self.dialog = None
         self.setup_ui()
 
+    # -----------------------------------------------------------------------------
+    # 11.4.1 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         b = self.batch
 
@@ -1147,11 +1244,6 @@ class BatchViewDialog:
 
     def show(self):
         self.page.show_dialog(self.dialog)
-
-
-# =================================================================================
-# END — core/batches_tab.py
-# =================================================================================
 
 
 # =================================================================================
