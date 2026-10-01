@@ -183,9 +183,9 @@
             transition: border-color 0.3s ease;
         }
         .nav-links a:hover { border-color: var(--primary-color); }
-        .nav-buttons { display: flex; gap: 12px; }
+        .nav-buttons { display: flex; gap: 10px; align-items: center; }
         .btn {
-            padding: 10px 22px;
+            padding: 10px 20px;
             border-radius: 50px;
             text-decoration: none;
             font-weight: 600;
@@ -195,12 +195,21 @@
             gap: 8px;
             border: none;
             cursor: pointer;
-            font-size: 0.9rem;
+            font-size: 0.88rem;
+            white-space: nowrap;
         }
         .btn-primary { background: var(--primary-color); color: white; }
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(30, 60, 114, 0.3);
+        }
+        .btn-traveler {
+            background: linear-gradient(135deg, #7c3aed, #a855f7);
+            color: white;
+        }
+        .btn-traveler:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(124, 58, 237, 0.35);
         }
         .btn-outline {
             background: transparent;
@@ -485,6 +494,10 @@
         .floating-whatsapp:hover { transform: scale(1.1); }
 
         /* ============ MOBILE ============ */
+        @media (max-width: 900px) {
+            .nav-buttons { flex-wrap: wrap; gap: 6px; }
+            .nav-buttons .btn { padding: 8px 14px; font-size: 0.8rem; }
+        }
         @media (max-width: 768px) {
             .mobile-toggle { display: block; }
             .nav-menu {
@@ -507,6 +520,12 @@
             .nav-buttons {
                 flex-direction: column;
                 width: 100%;
+            }
+            .nav-buttons .btn {
+                width: 100%;
+                justify-content: center;
+                padding: 12px 20px;
+                font-size: 0.9rem;
             }
             .hero h1 { font-size: 2rem; }
             .hero p { font-size: 1rem; }
@@ -557,8 +576,13 @@
                     <a href="#contact">Contact</a>
                 </div>
                 <div class="nav-buttons">
+                    <!-- ★ TRAVELER LOGIN ★ -->
+                    <a href="/traveler" class="btn btn-traveler">
+                        <i class="fas fa-user"></i> Traveler Login
+                    </a>
+                    <!-- Admin Login -->
                     <a href="/admin" class="btn btn-primary">
-                        <i class="fas fa-lock"></i> Admin Login
+                        <i class="fas fa-lock"></i> Admin
                     </a>
                 </div>
             </div>
@@ -651,6 +675,7 @@
                         <li><a href="#packages"><i class="fas fa-chevron-right"></i> Packages</a></li>
                         <li><a href="#about"><i class="fas fa-chevron-right"></i> About Us</a></li>
                         <li><a href="#contact"><i class="fas fa-chevron-right"></i> Contact</a></li>
+                        <li><a href="/traveler"><i class="fas fa-user"></i> Traveler Portal</a></li>
                     </ul>
                 </div>
                 <div class="footer-section">
@@ -731,7 +756,6 @@
         // FETCH CONFIG + BATCHES
         // ============================================================
         async function loadAll() {
-            // Fetch config and batches in parallel
             const [cfgResult, bResult] = await Promise.allSettled([
                 fetch('/api/frontpage', { cache: 'no-store' }).then(r => r.json()),
                 fetch('/api/batches',   { cache: 'no-store' }).then(r => r.json()),
@@ -785,7 +809,6 @@
                 return;
             }
 
-            // If user closed it before, respect that
             if (localStorage.getItem('alertClosed') === 'true') {
                 banner.classList.remove('active');
                 banner.style.display = 'none';
@@ -801,11 +824,9 @@
                 linkEl.style.display = 'none';
             }
 
-            // Apply gradient from the configured color
             const col = a.color || '#f39c12';
             banner.style.background = `linear-gradient(135deg, ${col}, ${shadeColor(col, -20)})`;
 
-            // Reset animation classes
             banner.classList.remove('pulse', 'blink');
             if (a.style === 'pulse') banner.classList.add('pulse');
             else if (a.style === 'blink') banner.classList.add('blink');
@@ -817,14 +838,12 @@
         function closeAlert() {
             document.getElementById('alertBanner').style.display = 'none';
             localStorage.setItem('alertClosed', 'true');
-            // Re-show after 1 hour
             setTimeout(() => {
                 localStorage.removeItem('alertClosed');
             }, 3600 * 1000);
         }
 
         function shadeColor(hex, percent) {
-            // Simple #RRGGBB shading. `percent` can be negative.
             try {
                 let h = String(hex).replace('#', '');
                 if (h.length === 3) {
@@ -888,10 +907,9 @@
         }
 
         // ============================================================
-        // PACKAGES (from real batches)
+        // PACKAGES
         // ============================================================
         function renderPackages(pcfg, batches) {
-            // Titles
             document.getElementById('packagesTitle').textContent =
                 safeText(pcfg.title, 'Our Haj & Umrah Packages');
             document.getElementById('packagesSubtitle').textContent =
@@ -909,7 +927,6 @@
                 return;
             }
 
-            // Get contact for the CTAs
             const whatsappNum = (CONFIG.contact || {}).whatsapp || '919876543210';
             const emailAddr = (CONFIG.contact || {}).email || 'info@alhudha.com';
 
@@ -928,7 +945,6 @@
                 const emailBody = `I am interested in the "${name}" package. Please share more details.`;
                 const emailUrl = `mailto:${emailAddr}?subject=${encodeURIComponent(emailSub)}&body=${encodeURIComponent(emailBody)}`;
 
-                // Extra feature lines depending on what's available
                 const lines = [];
                 lines.push(`<li><i class="fas fa-check-circle"></i> ${escapeHTML(desc)}</li>`);
                 if (dep) lines.push(`<li><i class="fas fa-calendar"></i> Departure: ${escapeHTML(dep)}</li>`);
@@ -1043,7 +1059,6 @@
             if (c.address_line2) items.push(`<li><a href="#"><i class="fas fa-map-marker-alt"></i> ${escapeHTML(c.address_line2)}</a></li>`);
             footerContact.innerHTML = items.join('');
 
-            // Footer social
             const footerSocial = document.getElementById('footerSocial');
             const socItems = [];
             if (c.facebook || (CONFIG.social || {}).facebook)
@@ -1074,7 +1089,7 @@
         }
 
         // ============================================================
-        // WHATSAPP BUTTONS
+        // WHATSAPP
         // ============================================================
         function setupWhatsApp(c) {
             const num = c.whatsapp || '919876543210';
