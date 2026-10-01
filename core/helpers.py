@@ -1,12 +1,9 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0 + FastAPI, cloud-ready)
 # =================================================================================
-# PATCHES APPLIED (v2.1):
-#   • send_file_to_user now TRIGGERS the browser download itself using
-#     page.launch_url(url, web_window_name="_self"). This avoids Chrome's
-#     popup blocker which silently kills a `window.open()` that fires
-#     after an async server round-trip.
-#   • Returns None (callers' `if url:` blocks skip — no double-download).
+# v3.0 — Download trigger uses JavaScript anchor injection.
+#        This is the ONLY method that works reliably in every modern browser
+#        when the download URL is known AFTER an async server round-trip.
 # =================================================================================
 
 import os
@@ -134,51 +131,83 @@ def round_as_per_rules(value):
     return int(math.floor(v + 0.5))
 
 
-def _trigger_download(page, url):
+# =================================================================================
+# INTERNAL — trigger a download in the browser
+# =================================================================================
+def _trigger_download_js(page, url):
     """
-    Trigger a browser download without hitting the popup blocker.
+    Force the browser to download `url` using JavaScript anchor injection.
 
-    Uses `web_window_name="_self"` — the browser navigates the current
-    tab to `url`. Because the FastAPI endpoint sends
-    `Content-Disposition: attachment`, the browser downloads the file
-    and STAYS on the app page (no visual navigation).
+    This is the ONLY reliable way to bypass Chrome's popup blocker when the
+    download URL is produced by an async server call. We create an <a> element
+    with the `download` attribute, click it programmatically, and remove it.
+
+    The `download` attribute tells the browser to save (not navigate), and
+    because the click is a synthesized DOM event, it doesn't trigger the
+    popup blocker.
     """
     if page is None:
-        return
+        return False
 
-    # Preferred: _self target (no popup, no block)
+    # Escape single quotes in URL just in case
+    safe_url = url.replace("'", "%27")
+    js = (
+        "(function() {"
+        "try {"
+        "  var a = document.createElement('a');"
+        f"  a.href = '{safe_url}';"
+        "  a.download = '';"          # force download, don't navigate
+        "  a.style.display = 'none';"
+        "  document.body.appendChild(a);"
+        "  a.click();"
+        "  setTimeout(function(){ document.body.removeChild(a); }, 100);"
+        "  return true;"
+        "} catch(err) { console.error('download error:', err); return false; }"
+        "})();"
+    )
+
+    try:
+        page.run_javascript(js)
+        print(f"[download] JS anchor triggered: {url}")
+        return True
+    except Exception as ex:
+        print(f"[download] JS anchor failed: {ex}")
+
+    # Fallback 1: launch_url with _self (navigate + download)
     try:
         page.launch_url(url, web_window_name="_self")
-        print(f"[download] launched via _self: {url}")
-        return
-    except TypeError:
-        # Older Flet might not accept web_window_name kwarg
-        pass
+        print(f"[download] launch_url(_self): {url}")
+        return True
     except Exception as ex:
-        print(f"[download] _self launch failed: {ex}")
+        print(f"[download] launch_url(_self) failed: {ex}")
 
-    # Fallback: default launch (may be popup-blocked)
+    # Fallback 2: plain launch_url
     try:
         page.launch_url(url)
-        print(f"[download] launched via default: {url}")
+        print(f"[download] launch_url: {url}")
+        return True
     except Exception as ex:
-        print(f"[download] default launch failed: {ex}")
+        print(f"[download] launch_url failed: {ex}")
+
+    return False
 
 
+# =================================================================================
+# send_file_to_user — the one function all tabs call
+# =================================================================================
 def send_file_to_user(page, filepath, label="Download"):
     """
     Cloud-aware file delivery.
 
     Web mode:
-      • Copy file into <base>/static/downloads/
-      • Trigger download via page.launch_url(_self)  ← avoids popup blocker
-      • Return None (callers' `if url:` blocks skip — no double-download)
+      1. Copy file into <base>/static/downloads/
+      2. Build absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
+      3. Trigger browser download via JS anchor injection
+      4. Return None (callers' `if url:` blocks skip — no double-launch)
 
     Desktop mode:
-      • Open with OS default app
+      • Launch the local file with the OS default app
       • Return None
-
-    Returns None always now. Callers should NOT call launch_url again.
     """
     if not filepath or not os.path.exists(filepath):
         print(f"[send_file_to_user] file missing: {filepath}")
@@ -200,6 +229,8 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
+            # Collision handling: if a different file with same name exists,
+            # add a timestamp so we don't overwrite
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -209,21 +240,27 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            url = f"/download/{fname}"
-            print(f"[send_file_to_user] copied to {dest}, url={url}")
+            # Build the absolute URL — JS anchor needs a full URL
+            domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+            if domain:
+                url = f"https://{domain}/download/{fname}"
+            else:
+                # Fallback for local dev or unknown domains
+                url = f"/download/{fname}"
 
-            _trigger_download(page, url)
+            print(f"[send_file_to_user] copied -> {dest}")
+            print(f"[send_file_to_user] url    = {url}")
 
-            # Return None — caller's `if url:` block will skip
-            return None
+            _trigger_download_js(page, url)
+            return None  # callers' `if url:` blocks skip
 
         except Exception as ex:
             import traceback
             traceback.print_exc()
-            print(f"[send_file_to_user] web copy failed: {ex}")
+            print(f"[send_file_to_user] failed: {ex}")
             return None
 
-    # Desktop
+    # Desktop fallback
     try:
         if page is not None:
             page.launch_url(f"file://{os.path.abspath(filepath)}")
@@ -232,6 +269,9 @@ def send_file_to_user(page, filepath, label="Download"):
     return None
 
 
+# =================================================================================
+# photo_data_uri — inline base64 image for reports
+# =================================================================================
 def photo_data_uri(path):
     """Return a data:image/... URI for a local image, or None."""
     if not path or not os.path.exists(path):

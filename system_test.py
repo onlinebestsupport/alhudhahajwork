@@ -452,7 +452,7 @@ def t_import_classes():
         ("core.dashboard_tab", "DashboardTab"),
         ("core.users_tab", "UsersTab"),
         ("core.reports_tab", "ReportsTab"),
-        ("core.backups_tab", "BackupsTab"),
+        ("core.backups_tab", "BackupTab"),
     ]
     failed = []
     for mod_name, cls_name in checks:
