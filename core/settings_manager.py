@@ -1,7 +1,7 @@
 # =================================================================================
-# SECTION 3 (FLET VERSION) — SETTINGS MANAGER
+# SECTION 3 (FLET 1.0.0 VERSION) — SETTINGS MANAGER
 # =================================================================================
-# UPDATED — 2026-09-30 (Cloud-ready)
+# v1.1 — Cloud-ready (all logic preserved)
 #   • All CSV reads/writes use encoding='utf-8-sig' (no BOM issues)
 #   • Default company settings include logo_data_uri field
 #   • Error logging on write failures
@@ -20,9 +20,6 @@ import pandas as pd
 # =================================================================================
 class SettingsManager:
 
-    # =============================================================================
-    # 3.1.1 — __init__
-    # =============================================================================
     def __init__(self, db):
         self.db = db
 
@@ -34,8 +31,6 @@ class SettingsManager:
         try:
             if not os.path.exists(str(path)):
                 return None
-            # utf-8-sig strips any BOM at the start of the file,
-            # which prevents columns like '\ufeffgst_percentage'.
             df = pd.read_csv(path, encoding='utf-8-sig')
             return df
         except Exception as ex:
@@ -45,7 +40,6 @@ class SettingsManager:
     def _safe_write_csv(self, df, path):
         """Write a CSV with proper encoding; return True/False."""
         try:
-            # Ensure parent folder exists (fresh installs on cloud)
             parent = os.path.dirname(str(path))
             if parent and not os.path.exists(parent):
                 os.makedirs(parent, exist_ok=True)
@@ -82,7 +76,7 @@ class SettingsManager:
             'tan_no': 'TAN123456',
             'pan_no': 'PAN123456',
             'logo_path': '',
-            'logo_data_uri': '',   # ✅ NEW — base64 logo column
+            'logo_data_uri': '',
             'bank_details': {
                 'bank_name': 'Islamic Bank',
                 'account_no': '1234567890',
@@ -130,7 +124,6 @@ class SettingsManager:
             except Exception as e:
                 print(f"[SETTINGS] tax parse error: {e}")
 
-        # Fall back to defaults
         default_tax = {
             'id': str(uuid.uuid4()),
             'gst_percentage': 18.0,
@@ -189,7 +182,6 @@ class SettingsManager:
             except Exception as e:
                 print(f"[SETTINGS] tour parse error: {e}")
 
-        # Generate defaults
         current_year = datetime.now().year
         default_tours = []
 
@@ -308,5 +300,5 @@ class SettingsManager:
 
 
 # =================================================================================
-# SECTION 3 END (FLET VERSION)
+# SECTION 3 END (FLET 1.0.0 VERSION)
 # =================================================================================
