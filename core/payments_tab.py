@@ -1,13 +1,13 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.6 — Flet 1.0.0 compatible
-#   • FIXED: DataRow(on_select_change=...) — correct parameter name for Flet 1.0.0
-#   • FIXED: refresh() no longer calls db.reload_payments() (was wiping cache)
-#   • FIXED: dialogs no longer call db.reload_payments() on save
-#   • ADDED: Tap any row → opens Edit dialog
-#   • ADDED: hint text above table
-#   • Action icons 16 → 18 for easier tapping on mobile
+# v1.7 — Flet 1.0.0 compatible + Row Selection (not Edit-on-tap)
+#   • Row tap now SELECTS the row (highlights it)
+#   • Toolbar 📄 PDF / 🖨️ Print act on the selected row
+#   • Edit still available via ✏️ icon in Actions column (unchanged)
+#   • FIXED: refresh() no longer wipes payment cache
+#   • FIXED: DataRow uses on_select_change (correct for Flet 1.0.0)
+#   • Action icons 18px for easier tapping on mobile
 # =================================================================================
 
 import flet as ft
@@ -196,9 +196,6 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
-                # NOTE: We do NOT call db.reload_payments() here.
-                # update_payment() already updates the DB's in-memory cache.
-
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
                 if self.on_save:
@@ -247,8 +244,9 @@ class PaymentsTab:
         self.search_input = None
         self.table = None
         self.root = None
+        self.selection_label = None
 
-        # Track last-tapped row
+        # Currently selected payment row (for toolbar PDF/Print)
         self._selected_payment_id = None
 
         self.setup_ui()
@@ -377,6 +375,7 @@ class PaymentsTab:
 
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11)),
                 ft.DataColumn(ft.Text("Date", size=11)),
                 ft.DataColumn(ft.Text("Traveler", size=11)),
                 ft.DataColumn(ft.Text("Amount", size=11)),
@@ -398,6 +397,11 @@ class PaymentsTab:
             border_radius=10,
         )
 
+        self.selection_label = ft.Text("", size=10,
+                                       color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD,
+                                       italic=True)
+
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -408,10 +412,13 @@ class PaymentsTab:
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("💡 Tap any row to edit that payment",
+                            ft.Text("💡 Tap a row to SELECT it, then use "
+                                    "toolbar 📄 PDF / 🖨️ Print. "
+                                    "Use ✏️ icon in Actions column to edit.",
                                     size=10,
                                     color=ft.Colors.GREY_600,
                                     italic=True),
+                            self.selection_label,
                             ft.Row([self.table],
                                    scroll=ft.ScrollMode.ADAPTIVE),
                         ], spacing=6),
@@ -424,17 +431,9 @@ class PaymentsTab:
         )
 
     # -----------------------------------------------------------------------------
-    # refresh — DATA LOADING (no destructive reloads)
+    # refresh — NO destructive reloads
     # -----------------------------------------------------------------------------
     def refresh(self):
-        """
-        Load payments + related data from the in-memory DB cache.
-
-        IMPORTANT: We do NOT call db.reload_payments() etc. here.
-        On Railway those methods re-read from a fixed CSV path that may
-        differ from the volume-mount path → cache gets wiped → tab
-        shows all zeros.
-        """
         try:
             self.payments = self.db.get_payments()
             self.travelers = {
@@ -551,6 +550,8 @@ class PaymentsTab:
                 inv_txt = "N/A"
                 inv_color = "#95a5a6"
 
+            is_selected = (self._selected_payment_id == pid)
+
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
@@ -576,20 +577,32 @@ class PaymentsTab:
                 ], spacing=0,
             )
 
-            # -------- ROW TAP → open Edit dialog --------
-            # Flet 1.0.0 uses `on_select_change` (singular).
-            def _on_row_tap(e, pp=p):
+            # -------- ROW TAP → SELECT (not edit) --------
+            def _on_row_tap(e, pp=p, pid=pid):
                 try:
-                    print(f"[PAYMENTS] Row tapped: {pp.get('id')}")
-                    self._selected_payment_id = pp.get('id')
-                    self.edit_payment(pp)
+                    self._select_payment(pid)
                 except Exception as ex:
                     print(f"[PAYMENTS] row tap error: {ex}")
 
             self.table.rows.append(
                 ft.DataRow(
-                    on_select_change=_on_row_tap,      # ✅ Flet 1.0.0
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
                     cells=[
+                        # Selection indicator cell
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
                         ft.DataCell(ft.Text(date_str, size=10)),
                         ft.DataCell(ft.Text(traveler_name[:18], size=10,
                                             weight=ft.FontWeight.BOLD)),
@@ -608,6 +621,47 @@ class PaymentsTab:
                                             color=inv_color)),
                         ft.DataCell(actions),
                     ]))
+
+    # -----------------------------------------------------------------------------
+    # _select_payment — toggle row selection, re-render highlight
+    # -----------------------------------------------------------------------------
+    def _select_payment(self, payment_id):
+        if self._selected_payment_id == payment_id:
+            self._selected_payment_id = None
+        else:
+            self._selected_payment_id = payment_id
+
+        # Update selection label
+        if self.selection_label:
+            if self._selected_payment_id:
+                p = next((x for x in self.payments
+                          if x.get('id') == self._selected_payment_id), None)
+                if p:
+                    self.selection_label.value = (
+                        f"✅ Selected: "
+                        f"{self.travelers.get(p.get('traveler_id',''),'?')} "
+                        f"| ₹{float(p.get('amount',0) or 0):,.0f} "
+                        f"| Txn: {str(p.get('transaction_id',''))[:12]}")
+                else:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        # Re-render table to update the ✓ marker
+        self.display_payments()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    # -----------------------------------------------------------------------------
+    # _get_selected_payment — for toolbar PDF/Print
+    # -----------------------------------------------------------------------------
+    def _get_selected_payment(self):
+        if not self._selected_payment_id:
+            return None
+        return next((p for p in self.payments
+                     if p.get('id') == self._selected_payment_id), None)
 
     def edit_payment(self, payment):
         dlg = PaymentEditDialog(
@@ -722,8 +776,15 @@ class PaymentsTab:
         )
         self.page.show_dialog(dialog)
 
+    # -----------------------------------------------------------------------------
+    # Toolbar PDF — act on selected row
+    # -----------------------------------------------------------------------------
     def export_pdf_selected(self, e):
-        self._snack("ℹ️ Click 📄 in a row to export that receipt")
+        p = self._get_selected_payment()
+        if not p:
+            self._snack("⚠️ Tap a row first to select it, then tap 📄 PDF")
+            return
+        self.export_single_receipt_pdf(p)
 
     def export_single_receipt_pdf(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
@@ -876,12 +937,19 @@ class PaymentsTab:
             traceback.print_exc()
             self._snack(f"❌ PDF error: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # Toolbar Print — act on selected row
+    # -----------------------------------------------------------------------------
     def print_receipt_selected(self, e):
-        self._snack("ℹ️ Click 🖨️ in a row, then use browser Ctrl+P")
+        p = self._get_selected_payment()
+        if not p:
+            self._snack("⚠️ Tap a row first to select it, then tap 🖨️ Print")
+            return
+        self.print_single_receipt(p)
 
     def print_single_receipt(self, payment):
-        self._snack(
-            "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
+        self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
+        self.export_single_receipt_pdf(payment)
 
     def generate_receipt_for_payment(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
@@ -1322,9 +1390,6 @@ class PaymentDialog:
                     f"Recorded payment of ₹{amount:,.2f}")
             except Exception:
                 pass
-
-            # NOTE: We do NOT call db.reload_payments() here.
-            # add_payment() already updates the DB's in-memory cache.
 
             new_total = total_paid + amount
             new_pending = batch_price - new_total
