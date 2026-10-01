@@ -1,12 +1,10 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# UPDATED — 2026-09-30 (Cloud-ready)
-#   • open_document now serves files via HTTP (was file:/// — broken on web)
-#   • TravelerViewDialog doc opening uses HTTP too
-#   • refresh() reloads travelers.csv from disk (fixes stale cache)
-#   • After add/edit/delete, forces a reload
-#   • Photos in table shown via data URI where possible
+# UPDATED — 2026-10-01 (v1.1)
+#   • NEW: _clean_number_string() strips ".0" suffixes from numeric text fields
+#   • Load/Save clean PIN, mobile, emergency_phone, aadhaar
+#   • Fixes travelers.csv getting values like "1234.0" instead of "1234"
 # =================================================================================
 
 import flet as ft
@@ -18,6 +16,49 @@ from datetime import datetime
 import pandas as pd
 
 from core.helpers import get_app_base_path, send_file_to_user
+
+
+# =================================================================================
+# Helper — strip trailing ".0" from numeric-looking strings
+# =================================================================================
+# Fields that MUST be stored as clean text (no decimal point):
+_NUMERIC_STRING_FIELDS = {
+    "pin",
+    "mobile",
+    "emergency_phone",
+    "aadhaar",
+    "passport_no",
+}
+
+
+def _clean_number_string(value) -> str:
+    """
+    Normalise a value that should be a numeric string.
+
+    Examples:
+        "1234"           → "1234"
+        "1234.0"         → "1234"
+        "9841186164.0"   → "9841186164"
+        1234.0           → "1234"
+        " 1234 "         → "1234"
+        None             → ""
+        "abc"            → "abc"
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if value != value:      # NaN
+            return ""
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+    # Strip trailing ".0"
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s
 
 
 # =================================================================================
@@ -36,7 +77,6 @@ class TravelersTab:
         self.current_page = 1
         self.items_per_page = 10
 
-        # UI refs
         self.stats_labels = {}
         self.search_input = None
         self.table = None
@@ -55,7 +95,6 @@ class TravelersTab:
     # 8.2 — setup_ui
     # =============================================================================
     def setup_ui(self):
-        # ---- STAT CARDS ----
         stat_configs = [
             ("total",         "Total Travelers",   "👥", "#3498db"),
             ("active",        "Active Passports",  "✅", "#27ae60"),
@@ -100,7 +139,6 @@ class TravelersTab:
 
         stats_row = ft.Row(controls=stat_cards, spacing=12)
 
-        # ---- TOOLBAR ----
         def _toolbar_btn(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
@@ -138,7 +176,6 @@ class TravelersTab:
             wrap=True,
         )
 
-        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("#")),
@@ -163,7 +200,6 @@ class TravelersTab:
             horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
-        # ---- PAGINATION ----
         self.pagination_label = ft.Text("Showing 0 to 0 of 0 travelers",
                                         size=12,
                                         weight=ft.FontWeight.BOLD,
@@ -195,7 +231,6 @@ class TravelersTab:
             spacing=10,
         )
 
-        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -262,11 +297,10 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # 8.4 — refresh   (UPDATED: reload from disk before rendering)
+    # 8.4 — refresh
     # =============================================================================
     def refresh(self):
         try:
-            # ✅ Force reload from CSV to avoid stale cache
             try:
                 if hasattr(self.db, "reload_travelers"):
                     self.db.reload_travelers()
@@ -277,6 +311,12 @@ class TravelersTab:
 
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
+
+            # Clean numeric-string fields on load
+            for t in self.travelers:
+                for k in _NUMERIC_STRING_FIELDS:
+                    if k in t:
+                        t[k] = _clean_number_string(t.get(k, ""))
 
             batch_map = {str(b['id']): b.get('batch_name', 'Unknown')
                          for b in self.batches}
@@ -307,7 +347,7 @@ class TravelersTab:
 
         self.table.rows.clear()
         for i, t in enumerate(page_items):
-            passport = t.get('passport_no', '-')
+            passport = _clean_number_string(t.get('passport_no', '-'))
             expiry = t.get('passport_expiry_date', '')
             try:
                 if expiry:
@@ -335,7 +375,6 @@ class TravelersTab:
                             if status in ["Submitted", "Processing"]
                             else "#e74c3c")
 
-            # Document icons cell
             doc_keys = ['passport_scan', 'aadhaar_scan', 'pan_scan',
                         'vaccine_scan', 'photo']
             icons = ['📄', '🆔', '💳', '💉', '📸']
@@ -357,7 +396,6 @@ class TravelersTab:
                     )
                 )
 
-            # Actions cell
             actions = ft.Row(
                 controls=[
                     ft.IconButton(
@@ -389,7 +427,8 @@ class TravelersTab:
                     ft.DataCell(ft.Text(
                         f"{passport}\nExp: {exp_disp}", size=11)),
                     ft.DataCell(ft.Text(
-                        str(t.get('mobile', '-')), size=11)),
+                        _clean_number_string(t.get('mobile', '-')) or '-',
+                        size=11)),
                     ft.DataCell(ft.Text(
                         str(t.get('batch_name', 'Not Assigned')),
                         size=11, color="#0064c8",
@@ -514,7 +553,6 @@ class TravelersTab:
                     f"{traveler.get('last_name','')}")
                 self.page.pop_dialog()
 
-                # ✅ Reload from disk to ensure cache freshness
                 try:
                     if hasattr(self.db, "reload_travelers"):
                         self.db.reload_travelers()
@@ -544,11 +582,6 @@ class TravelersTab:
         )
         self.page.show_dialog(confirm_dialog)
 
-    # -----------------------------------------------------------------------------
-    # 8.10.1 — open_document   (UPDATED for web)
-    #   On the web, we can't use file:/// URLs. We copy the file into the
-    #   static folder and give the browser a proper HTTP URL.
-    # -----------------------------------------------------------------------------
     def open_document(self, traveler, key):
         rel = traveler.get(key, '')
         if not rel:
@@ -560,11 +593,9 @@ class TravelersTab:
             self._snack(f"⚠️ File not found: {rel}")
             return
         try:
-            # Copy to /static/ and open the HTTP URL
             url = send_file_to_user(self.page, abs_path,
                                     key.replace('_', ' ').title())
             if url:
-                # Full URL (works both locally and on Railway)
                 try:
                     self.page.launch_url(url)
                 except Exception:
@@ -603,11 +634,13 @@ class TravelersTab:
                     t.get('last_name', ''), t.get('passport_name', ''),
                     t.get('gender', ''), t.get('dob', ''),
                     t.get('batch_id', ''), t.get('batch_name', ''),
-                    t.get('passport_no', ''),
+                    _clean_number_string(t.get('passport_no', '')),
                     t.get('passport_issue_date', ''),
                     t.get('passport_expiry_date', ''),
-                    t.get('passport_status', ''), t.get('mobile', ''),
-                    t.get('email', ''), t.get('aadhaar', ''),
+                    t.get('passport_status', ''),
+                    _clean_number_string(t.get('mobile', '')),
+                    t.get('email', ''),
+                    _clean_number_string(t.get('aadhaar', '')),
                     t.get('pan', ''), t.get('aadhaar_pan_linked', ''),
                     t.get('vaccine_status', ''), t.get('wheelchair', ''),
                     t.get('place_of_birth', ''),
@@ -618,9 +651,10 @@ class TravelersTab:
                     t.get('mother_name', ''),
                     t.get('spouse_name', ''),
                     t.get('expected_return_date', ''),
-                    t.get('file_reference', ''), t.get('pin', ''),
+                    t.get('file_reference', ''),
+                    _clean_number_string(t.get('pin', '')),
                     t.get('emergency_contact', ''),
-                    t.get('emergency_phone', ''),
+                    _clean_number_string(t.get('emergency_phone', '')),
                     t.get('medical_notes', '')
                 ])
             df = pd.DataFrame(data, columns=headers)
@@ -697,8 +731,8 @@ class TravelersTab:
                     t.get('id', ''),
                     f"{t.get('first_name','')} "
                     f"{t.get('last_name','')}".strip(),
-                    t.get('passport_no', ''),
-                    t.get('mobile', ''),
+                    _clean_number_string(t.get('passport_no', '')),
+                    _clean_number_string(t.get('mobile', '')),
                     t.get('email', ''),
                     t.get('batch_name', ''),
                     str(t.get('expected_return_date', ''))[:10],
@@ -757,7 +791,7 @@ class TravelersTab:
                        "Passport Expiry Date", "Aadhaar", "PAN",
                        "Vaccine Status", "Place of Birth",
                        "Place of Issue", "Father Name", "Mother Name",
-                       "File Reference"]
+                       "File Reference", "PIN"]
             pd.DataFrame(columns=headers).to_csv(
                 file_path, index=False, encoding='utf-8-sig')
             url = send_file_to_user(self.page, str(file_path), "Template")
@@ -840,7 +874,6 @@ class TravelerDialog:
                 border=ft.Border(left=ft.BorderSide(4, "#3498db")),
             )
 
-        # ---- Section 1: Personal ----
         passport_name_field = field("passport_name", "Passport Name")
         passport_name_field.read_only = True
 
@@ -871,7 +904,6 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # ---- Section 2: Contact ----
         sec2 = ft.Column(
             controls=[
                 section_header("2. CONTACT INFORMATION"),
@@ -893,7 +925,6 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # ---- Section 3: Address & Family ----
         passport_addr = ft.TextField(
             label="Passport Address", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
@@ -921,7 +952,6 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # ---- Section 4: Travel & Batch ----
         batch_dropdown = ft.Dropdown(height=48, text_size=12)
         self.fields['batch_id'] = batch_dropdown
         try:
@@ -949,7 +979,6 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # ---- Section 5: Documents ----
         doc_fields = [
             ("passport_scan", "Passport Scan", "📄"),
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
@@ -982,16 +1011,26 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # ---- Section 6: Additional ----
         med = ft.TextField(label="Medical Notes", multiline=True,
                            min_lines=2, max_lines=3, text_size=12)
         self.fields['medical_notes'] = med
+
+        # PIN field — text only, 4 digits
+        pin_field = ft.TextField(
+            label="PIN (4 digits) — for Traveler Portal login",
+            width=280, height=48, text_size=14,
+            max_length=8,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]*"),
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=10),
+        )
+        self.fields['pin'] = pin_field
 
         sec6 = ft.Column(
             controls=[
                 section_header("6. ADDITIONAL INFORMATION"),
                 ft.Row([
-                    field("pin", "PIN (4 digits)", 120),
+                    pin_field,
                     field("emergency_contact", "Emergency Contact", 200),
                     field("emergency_phone", "Emergency Phone", 180),
                 ], spacing=10),
@@ -1000,11 +1039,9 @@ class TravelerDialog:
             spacing=10,
         )
 
-        # Auto-calc passport name
         self.fields['first_name'].on_change = self._update_passport_name
         self.fields['last_name'].on_change = self._update_passport_name
 
-        # ---- Content ----
         content = ft.Column(
             controls=[sec1, sec2, sec3, sec4, sec5, sec6],
             spacing=15,
@@ -1107,6 +1144,9 @@ class TravelerDialog:
     def load_traveler(self, traveler):
         for key, field in self.fields.items():
             val = traveler.get(key, '')
+            # Clean numeric-text fields so "1234.0" shows as "1234"
+            if key in _NUMERIC_STRING_FIELDS:
+                val = _clean_number_string(val)
             if field.__class__.__name__ == "Dropdown":
                 field.value = str(val) if val else None
             else:
@@ -1129,7 +1169,11 @@ class TravelerDialog:
                 if field.__class__.__name__ == "Dropdown":
                     data[key] = str(val) if val else ''
                 else:
-                    data[key] = (val or '').strip()
+                    cleaned = (val or '').strip()
+                    # Force clean numeric-string fields
+                    if key in _NUMERIC_STRING_FIELDS:
+                        cleaned = _clean_number_string(cleaned)
+                    data[key] = cleaned
 
             if not data.get('first_name') or not data.get('last_name'):
                 self._snack("⚠️ First and Last Name are required")
@@ -1142,6 +1186,15 @@ class TravelerDialog:
                 return
             if not data.get('batch_id'):
                 self._snack("⚠️ Please select a Batch")
+                return
+
+            # Validate PIN (if provided)
+            pin = data.get('pin', '')
+            if pin and not pin.isdigit():
+                self._snack("⚠️ PIN must be digits only (e.g. 1234)")
+                return
+            if pin and len(pin) > 8:
+                self._snack("⚠️ PIN must be 4–8 digits")
                 return
 
             for key, rel in self.doc_paths.items():
@@ -1185,7 +1238,6 @@ class TravelerDialog:
             except Exception:
                 pass
 
-            # ✅ Reload from disk to ensure fresh data
             try:
                 if hasattr(self.db, "reload_travelers"):
                     self.db.reload_travelers()
@@ -1220,13 +1272,9 @@ class TravelerDialog:
 
 
 # =================================================================================
-# 10.1 — CLASS: TravelerViewDialog (read-only, 6 tabs, clickable docs)
+# 10.1 — CLASS: TravelerViewDialog
 # =================================================================================
 class TravelerViewDialog:
-    """
-    Read-only viewer for one traveler.
-    6 tabs: Personal / Contact / Address / Travel / Documents / Additional.
-    """
 
     def __init__(self, page, traveler, db=None):
         self.page = page
@@ -1242,6 +1290,11 @@ class TravelerViewDialog:
                      f"{t.get('last_name', '')}").strip() or "Traveler"
 
         def info_row(label, value):
+            # Clean numeric-looking strings for display
+            if value is not None:
+                value = _clean_number_string(value) if isinstance(
+                    value, float) or (isinstance(value, str)
+                                      and value.endswith(".0")) else value
             return ft.Row(
                 controls=[
                     ft.Container(
@@ -1274,7 +1327,6 @@ class TravelerViewDialog:
                 border=ft.Border.all(1, ft.Colors.GREY_300),
             )
 
-        # ---------- TAB 1: PERSONAL ----------
         batch_name = t.get('batch_name', '')
         if not batch_name and t.get('batch_id') and self.db:
             try:
@@ -1294,7 +1346,8 @@ class TravelerViewDialog:
                 info_row("Gender", t.get('gender', '')),
                 info_row("Date of Birth", self._fmt_date(t.get('dob'))),
                 info_row("Batch", batch_name),
-                info_row("Passport No", t.get('passport_no', '')),
+                info_row("Passport No",
+                         _clean_number_string(t.get('passport_no', ''))),
                 info_row("Passport Issue",
                          self._fmt_date(t.get('passport_issue_date'))),
                 info_row("Passport Expiry",
@@ -1304,12 +1357,13 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TAB 2: CONTACT ----------
         contact_tab = ft.Column(
             controls=[section_card("📞 Contact Information", [
-                info_row("Mobile", t.get('mobile', '')),
+                info_row("Mobile",
+                         _clean_number_string(t.get('mobile', ''))),
                 info_row("Email", t.get('email', '')),
-                info_row("Aadhaar", t.get('aadhaar', '')),
+                info_row("Aadhaar",
+                         _clean_number_string(t.get('aadhaar', ''))),
                 info_row("PAN", t.get('pan', '')),
                 info_row("Aadhaar-PAN Linked",
                          t.get('aadhaar_pan_linked', '')),
@@ -1319,7 +1373,6 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TAB 3: ADDRESS ----------
         address_tab = ft.Column(
             controls=[section_card("🏠 Address & Family", [
                 info_row("Place of Birth", t.get('place_of_birth', '')),
@@ -1334,7 +1387,6 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TAB 4: TRAVEL ----------
         travel_tab = ft.Column(
             controls=[section_card("✈️ Travel Information", [
                 info_row("Expected Return",
@@ -1346,7 +1398,6 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TAB 5: DOCUMENTS ----------
         doc_fields = [
             ("passport_scan", "📄 Passport Scan"),
             ("aadhaar_scan", "🆔 Aadhaar Scan"),
@@ -1411,13 +1462,15 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TAB 6: ADDITIONAL ----------
         additional_tab = ft.Column(
             controls=[section_card("🔒 Additional Information", [
-                info_row("PIN", t.get('pin', '0000')),
+                info_row("PIN",
+                         _clean_number_string(t.get('pin', '')) or '—'),
                 info_row("Emergency Contact",
                          t.get('emergency_contact', '')),
-                info_row("Emergency Phone", t.get('emergency_phone', '')),
+                info_row("Emergency Phone",
+                         _clean_number_string(
+                             t.get('emergency_phone', ''))),
                 info_row("Medical Notes", t.get('medical_notes', '')),
                 info_row("Created At",
                          self._fmt_date(t.get('created_at'))),
@@ -1425,7 +1478,6 @@ class TravelerViewDialog:
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
 
-        # ---------- TABS ----------
         self.tabs_control = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -1463,7 +1515,6 @@ class TravelerViewDialog:
             ),
         )
 
-        # ---------- DIALOG ----------
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"👤 {full_name}",
@@ -1483,9 +1534,6 @@ class TravelerViewDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # =============================================================================
-    # Helpers
-    # =============================================================================
     def _fmt_date(self, value):
         if not value:
             return ''
@@ -1496,9 +1544,6 @@ class TravelerViewDialog:
         except Exception:
             return str(value)
 
-    # -----------------------------------------------------------------------------
-    # _open_document — UPDATED for web (uses HTTP download instead of file:///)
-    # -----------------------------------------------------------------------------
     def _open_document(self, abs_path):
         try:
             if not os.path.exists(abs_path):

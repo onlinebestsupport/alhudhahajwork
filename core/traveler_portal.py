@@ -1,22 +1,67 @@
 # =================================================================================
 # core/traveler_portal.py — Traveler authentication + data aggregation
 # =================================================================================
-# Provides:
-#   • authenticate_traveler(db, passport_no, pin)  →  (traveler_dict, error_msg)
-#   • create_session(traveler)                     →  token
-#   • verify_session(token)                        →  session_dict | None
-#   • destroy_session(token)
-#   • build_traveler_view(db, traveler)            →  full JSON for the portal
-#   • get_document_path(db, traveler, doc_key)     →  absolute file path | None
-#
-# Sessions are kept in-process (dict). On Railway redeploy or container
-# restart, travelers must log in again. That's acceptable for this scale.
+# v1.1 — Fix for PIN stored as "1234.0" in travelers.csv
+#   • _clean_number_string() helper to strip .0 suffixes
+#   • Applied to: pin, mobile, emergency_phone, aadhaar, passport_no
+#   • authenticate_traveler() now normalises both stored and input PIN
 # =================================================================================
 
 import os
 import secrets
 import time
 from datetime import datetime
+
+
+# =================================================================================
+# 0 — Helpers
+# =================================================================================
+def _safe_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, float) and v != v:
+        return ""
+    try:
+        s = str(v).strip()
+    except Exception:
+        return ""
+    if s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+    return s
+
+
+def _clean_number_string(value) -> str:
+    """
+    Strip trailing ".0" from numeric-looking strings.
+    "1234.0"       → "1234"
+    "9841186164.0" → "9841186164"
+    1234.0         → "1234"
+    " 1234 "       → "1234"
+    None           → ""
+    "abc"          → "abc"
+    """
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if value != value:
+            return ""
+        if value.is_integer():
+            return str(int(value))
+        return str(value)
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+    if s.endswith(".0"):
+        s = s[:-2]
+    # Try to normalise "1234.00" too
+    if "." in s:
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+        except (ValueError, TypeError):
+            pass
+    return s
 
 
 # =================================================================================
@@ -27,11 +72,10 @@ _SESSION_TTL = 8 * 3600  # 8 hours
 
 
 def create_session(traveler: dict) -> str:
-    """Generate a new session token for a traveler."""
     token = secrets.token_urlsafe(32)
     _SESSIONS[token] = {
         "traveler_id": str(traveler.get("id", "")),
-        "passport_no": str(traveler.get("passport_no", "")),
+        "passport_no": _clean_number_string(traveler.get("passport_no", "")),
         "expires_at": time.time() + _SESSION_TTL,
     }
     print(f"[TRAVELER] Session created for {traveler.get('id')}")
@@ -39,7 +83,6 @@ def create_session(traveler: dict) -> str:
 
 
 def verify_session(token: str):
-    """Return the session dict if valid, else None."""
     if not token:
         return None
     s = _SESSIONS.get(token)
@@ -57,7 +100,6 @@ def destroy_session(token: str):
 
 
 def cleanup_expired():
-    """Housekeeping — safe to call any time."""
     now = time.time()
     expired = [k for k, v in _SESSIONS.items()
                if v.get("expires_at", 0) < now]
@@ -68,27 +110,18 @@ def cleanup_expired():
 # =================================================================================
 # 2 — Authentication
 # =================================================================================
-def _safe_str(v) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, float) and v != v:
-        return ""
-    try:
-        s = str(v).strip()
-    except Exception:
-        return ""
-    if s.lower() in ("nan", "none", "nat", "null"):
-        return ""
-    return s
-
-
 def authenticate_traveler(db, passport_no, pin):
     """
-    Verify passport_no + pin against the travelers table.
+    Verify passport_no + pin against travelers.csv.
     Returns (traveler_dict, None) on success, (None, error_msg) on failure.
+
+    Handles decimal-truncated values like "1234.0" that pandas may have
+    written when saving. Normalises both the stored PIN and input PIN
+    before comparison.
     """
-    passport_no = _safe_str(passport_no).upper()
-    pin = _safe_str(pin)
+    # ---- Normalise inputs ----
+    passport_no = _clean_number_string(passport_no).upper()
+    pin = _clean_number_string(pin)
 
     if not passport_no:
         return None, "Passport number is required."
@@ -101,9 +134,12 @@ def authenticate_traveler(db, passport_no, pin):
         print(f"[TRAVELER] get_travelers failed: {e}")
         return None, "Server error. Please try again."
 
+    # ---- Find traveler by passport number (case-insensitive) ----
     match = None
     for t in travelers:
-        if _safe_str(t.get("passport_no", "")).upper() == passport_no:
+        stored_passport = _clean_number_string(
+            t.get("passport_no", "")).upper()
+        if stored_passport == passport_no:
             match = t
             break
 
@@ -111,13 +147,18 @@ def authenticate_traveler(db, passport_no, pin):
         print(f"[TRAVELER] No match for passport='{passport_no}'")
         return None, "Invalid passport number or PIN."
 
-    stored_pin = _safe_str(match.get("pin", ""))
+    # ---- Clean stored PIN ----
+    stored_pin = _clean_number_string(match.get("pin", ""))
+
+    # ---- Validate PIN presence ----
     if not stored_pin or stored_pin == "0":
         return None, ("Your account is not yet activated. "
                       "Please contact the office to set your PIN.")
 
+    # ---- Compare ----
     if stored_pin != pin:
-        print(f"[TRAVELER] Wrong PIN for passport='{passport_no}'")
+        print(f"[TRAVELER] Wrong PIN for passport='{passport_no}' "
+              f"(stored='{stored_pin}', input='{pin}')")
         return None, "Invalid passport number or PIN."
 
     return dict(match), None
@@ -127,7 +168,6 @@ def authenticate_traveler(db, passport_no, pin):
 # 3 — Document paths
 # =================================================================================
 _DOC_SPECS = [
-    # key                label              folder(s) to search
     ("photo",            "Photo",           ["photos", "photo", ""]),
     ("passport_scan",    "Passport Scan",   ["passports", "passport"]),
     ("aadhaar_scan",     "Aadhaar Card",    ["aadhaar", "aadhar"]),
@@ -149,8 +189,6 @@ def _get_base_path():
 def get_document_path(db, traveler, doc_key):
     """
     Return the absolute file path for the given document key, or None.
-    Looks at the traveler's stored `*_scan` / `photo` field first,
-    then scans the standard documents/<traveler_folder>/<sub>/ folder.
     """
     base = _get_base_path()
     tid = _safe_str(traveler.get("id", ""))
@@ -163,13 +201,12 @@ def get_document_path(db, traveler, doc_key):
     # Try the stored relative path first
     rel = _safe_str(traveler.get(doc_key, ""))
     if rel:
-        # Normalise Windows backslashes to os.sep
         rel = rel.replace("\\", os.sep).replace("/", os.sep)
         candidate = os.path.join(base, rel)
         if os.path.exists(candidate):
             return candidate
 
-    # Fall back to scanning the standard subfolders
+    # Fall back to scanning standard subfolders
     spec = next((s for s in _DOC_SPECS if s[0] == doc_key), None)
     if not spec:
         return None
@@ -189,14 +226,12 @@ def get_document_path(db, traveler, doc_key):
 
 
 def _doc_url_for(traveler_id: str, doc_key: str) -> str:
-    """The URL the browser uses to fetch a document (via the API)."""
     return f"/api/traveler/document/{doc_key}"
 
 
 # =================================================================================
 # 4 — Build the JSON payload for the portal
 # =================================================================================
-# Admin-only fields we NEVER expose to the traveler
 _HIDDEN_FIELDS = {
     "pin",              # never send back
     "medical_notes",    # internal admin note
@@ -215,7 +250,6 @@ def _f(v, default=0.0):
 
 
 def _fmt_date(s):
-    """ISO or dd/mm/yyyy → 'dd Mon yyyy' (readable)."""
     if not s:
         return ""
     s = str(s)[:10]
@@ -230,13 +264,7 @@ def _fmt_date(s):
 
 def build_traveler_view(db, traveler: dict) -> dict:
     """
-    Aggregate everything the portal shows for a traveler:
-      • Sanitised profile (no admin fields)
-      • Batch info
-      • Documents (with URLs)
-      • Payments list
-      • Invoice breakdown
-      • Summary totals
+    Aggregate everything the portal shows for a traveler.
     """
     tid = _safe_str(traveler.get("id", ""))
 
@@ -245,9 +273,11 @@ def build_traveler_view(db, traveler: dict) -> dict:
     for k, v in traveler.items():
         if k in _HIDDEN_FIELDS:
             continue
+        # Clean numeric-looking strings for display
+        if k in ("passport_no", "mobile", "aadhaar", "emergency_phone"):
+            v = _clean_number_string(v)
         profile[k] = v
 
-    # Add a convenience full name
     fn = _safe_str(traveler.get("first_name", ""))
     ln = _safe_str(traveler.get("last_name", ""))
     profile["full_name"] = (f"{fn} {ln}").strip() or "Traveler"
@@ -307,22 +337,22 @@ def build_traveler_view(db, traveler: dict) -> dict:
                 "date_display": _fmt_date(p.get("payment_date", "")),
                 "amount": amt,
                 "method": _safe_str(p.get("payment_method", "") or "—"),
-                "transaction_id": _safe_str(p.get("transaction_id", "")),
-                "status": _safe_str(p.get("status", "completed") or "completed"),
+                "transaction_id": _clean_number_string(
+                    p.get("transaction_id", "")),
+                "status": _safe_str(p.get("status", "completed")
+                                    or "completed"),
                 "receipt_no": _safe_str(p.get("receipt_no", "")),
                 "notes": _safe_str(p.get("notes", "")),
             })
     except Exception as e:
         print(f"[TRAVELER] get_payments failed: {e}")
 
-    # Sort newest first
     payments.sort(key=lambda x: x.get("date", ""), reverse=True)
 
     # ---------- 5. Invoice ----------
     invoice = None
     try:
         raw_invoices = db.get_invoices(tid) if tid else []
-        # Pick the most recent invoice
         if raw_invoices:
             raw_invoices = sorted(
                 raw_invoices,
@@ -353,13 +383,13 @@ def build_traveler_view(db, traveler: dict) -> dict:
 
     # ---------- 6. Summary ----------
     package_price = _f(batch.get("price", 0)) if batch else 0.0
-    invoice_total = _f(invoice.get("rounded_total",
-                                  invoice.get("total_amount", 0))) if invoice else 0.0
+    invoice_total = 0.0
+    if invoice:
+        invoice_total = _f(invoice.get("rounded_total",
+                                       invoice.get("total_amount", 0)))
 
-    # Package pending: uses package price (excl. GST)
     pkg_pending = max(0.0, package_price - total_paid) if package_price > 0 else 0.0
 
-    # Invoice pending: uses invoice total (incl. GST + TCS)
     inv_pending = 0.0
     if invoice:
         if _safe_str(invoice.get("status", "")).lower() == "paid":
