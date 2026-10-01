@@ -1,35 +1,14 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION
 # =================================================================================
-# Bootstrap for the web app:
-#   1. Detect base folder
-#   2. Print diagnostics
-#   3. Instantiate HajDatabase
-#   4. Show LoginView
-#   5. On success, open MainWindowView
-#   6. Handle logout → return to login
-#
-# CLOUD-READY (Railway / Render / Fly.io / VPS):
-#   • Port is read from the PORT environment variable
-#   • Host is bound to 0.0.0.0 so external connections work
-#   • Falls back to port 8000 when PORT is not set (local dev)
-#   • Serves /static/ folder so downloaded files work in the browser
-#
-# PATCHES APPLIED (v1.2):
-#   21.1.A — Cloud environment detection (RAILWAY_ENVIRONMENT etc.) with a
-#            clearer startup banner that names the platform.
-#   21.1.B — Defensive window-close handler (`page.window.close()` is a
-#            no-op on web — was raising AttributeError and killing the
-#            Cancel button).
-#   21.1.C — Flet 1.0 window sizing via `page.window.width/height`.
-#   21.1.D — Friendly error page if HajDatabase() fails to init.
-#   21.1.E — Graceful SIGTERM handling so Railway redeploys don't leave
-#            half-written CSVs on the volume.
-#   21.1.F — NEW: Monkey-patch Page.update() to swallow the "destroyed
-#            session" RuntimeError that spams the log after every browser
-#            tab close. Real bugs still propagate.
-#   21.1.G — NEW: Ensure static/downloads/ exists at boot (used by
-#            send_file_to_user for browser downloads).
+# PATCHES APPLIED (v1.3):
+#   21.1.A — Cloud environment detection
+#   21.1.B — Defensive window-close handler
+#   21.1.C — Flet 1.0 window sizing
+#   21.1.D — Friendly DB error page
+#   21.1.E — Graceful SIGTERM handling
+#   21.1.F — Suppress destroyed-session errors (applied at module import)
+#   21.1.G — Ensure static/downloads/ exists at boot
 # =================================================================================
 
 import flet as ft
@@ -49,10 +28,9 @@ from core.main_window import MainWindowView
 # 21.1 — CONFIGURATION
 # =================================================================================
 APP_PORT = int(os.getenv("PORT", 8000))
-APP_HOST = "0.0.0.0"          # MUST be 0.0.0.0 for cloud hosting
+APP_HOST = "0.0.0.0"
 
 
-# ---- Cloud platform detection (best-effort) ----
 def _detect_platform() -> str:
     env = os.environ
     if env.get("RAILWAY_ENVIRONMENT") or env.get("RAILWAY_PROJECT_ID"):
@@ -71,40 +49,73 @@ def _detect_platform() -> str:
 PLATFORM = _detect_platform()
 IS_CLOUD = PLATFORM != "Local / Desktop"
 
-log = logging.getLogger("main")
+# Simple print-based logger — always shows on Railway
+def _boot_log(msg: str):
+    print(f"[BOOT] {msg}", flush=True)
 
 
 # =================================================================================
-# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors  (PATCH 21.1.F)
+# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors
 # =================================================================================
-# Flet destroys the session when the browser tab closes or the WebSocket
-# drops. Background threads / scheduled tasks that outlive the session
-# then crash on page.update() with:
-#     RuntimeError: An attempt to fetch destroyed session.
-#
-# There's nothing to update in that case — the error is harmless. We
-# swallow only THAT specific error; any other exception still raises.
+# Runs AT MODULE IMPORT TIME (before any Page exists) so every session is
+# patched. Prints confirmation via stdout so it always appears in logs.
 # =================================================================================
+_PATCH_INSTALLED = False
+
+
 def _patch_page_update():
+    """Patch Page.update() to swallow 'destroyed session' RuntimeErrors."""
+    global _PATCH_INSTALLED
+    if _PATCH_INSTALLED:
+        return
+
+    # Try multiple possible import paths — Flet's internals shift between
+    # patch releases within the same major version.
+    Page = None
+    import_errors = []
+    for path in (
+        "flet.controls.page",
+        "flet.page",
+        "flet",
+    ):
+        try:
+            mod = __import__(path, fromlist=["Page"])
+            Page = getattr(mod, "Page", None)
+            if Page is not None:
+                _boot_log(f"Page class resolved from '{path}'")
+                break
+        except Exception as e:
+            import_errors.append(f"{path}: {e}")
+
+    if Page is None:
+        _boot_log(f"❌ Could not locate Page class. Tried: {import_errors}")
+        return
+
     try:
-        from flet.controls.page import Page
         _original_update = Page.update
 
-        def _safe_page_update(self, *args, **kwargs):
+        def _safe_update(self, *args, **kwargs):
             try:
                 return _original_update(self, *args, **kwargs)
             except RuntimeError as ex:
-                if "destroyed session" in str(ex).lower():
+                msg = str(ex).lower()
+                if "destroyed session" in msg or "session" in msg:
                     return None
                 raise
             except Exception:
-                # Any other update error during shutdown — also safe
+                # Any other error during teardown — swallow silently
                 return None
 
-        Page.update = _safe_page_update
-        log.info("✅ Patched Page.update() to swallow destroyed-session errors")
+        Page.update = _safe_update
+        _PATCH_INSTALLED = True
+        _boot_log("✅ Patched Page.update() — destroyed-session errors "
+                  "will be swallowed")
     except Exception as e:
-        log.warning("Could not patch Page.update(): %s", e)
+        _boot_log(f"❌ Patch failed: {e}")
+
+
+# Apply at import time — runs the instant Python loads this module
+_patch_page_update()
 
 
 # =================================================================================
@@ -112,35 +123,36 @@ def _patch_page_update():
 # =================================================================================
 class HajTravelApp:
 
-    # -----------------------------------------------------------------------------
-    # 21.2.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self):
         base_path = get_app_base_path()
         data_dir = os.path.join(base_path, "data")
         static_dir = os.path.join(base_path, "static")
         downloads_dir = os.path.join(static_dir, "downloads")
 
-        # Ensure downloads subfolder exists (PATCH 21.1.G)
         try:
             os.makedirs(downloads_dir, exist_ok=True)
         except Exception as e:
-            print(f"[BOOT] Could not create downloads dir: {e}")
+            _boot_log(f"Could not create downloads dir: {e}")
 
-        print("=" * 66)
-        print("🏆  Alhudha Haj Travel System — Web Edition")
-        print(f"📦  Platform   : {PLATFORM}")
-        print(f"📁  Base path  : {base_path}")
-        print(f"📁  Data dir   : {data_dir}")
-        print(f"📁  Static dir : {static_dir}")
-        print(f"📁  Downloads  : {downloads_dir}")
-        print(f"🌐  Host       : {APP_HOST}")
+        print("=" * 66, flush=True)
+        print("🏆  Alhudha Haj Travel System — Web Edition", flush=True)
+        print(f"📦  Platform   : {PLATFORM}", flush=True)
+        print(f"📁  Base path  : {base_path}", flush=True)
+        print(f"📁  Data dir   : {data_dir}", flush=True)
+        print(f"📁  Static dir : {static_dir}", flush=True)
+        print(f"📁  Downloads  : {downloads_dir}", flush=True)
+        print(f"🌐  Host       : {APP_HOST}", flush=True)
         print(f"🚪  Port       : {APP_PORT} (PORT env = "
-              f"{os.getenv('PORT', '<unset>')})")
-        print(f"🕐  Started    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+              f"{os.getenv('PORT', '<unset>')})", flush=True)
+        print(f"🕐  Started    : "
+              f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
         if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
-            print(f"💾  Volume     : {os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}")
-        print("=" * 66)
+            print(f"💾  Volume     : "
+                  f"{os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
+        print(f"🩹  Patch      : "
+              f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}",
+              flush=True)
+        print("=" * 66, flush=True)
 
         # ---- DB init with retry + backoff ----
         self.db = None
@@ -152,40 +164,41 @@ class HajTravelApp:
         for attempt in range(1, max_retries + 1):
             try:
                 self.db = HajDatabase()
-                log.info("Database loaded successfully (attempt %d)", attempt)
+                _boot_log(f"Database loaded successfully "
+                          f"(attempt {attempt})")
                 self._db_ready = True
                 break
             except FileNotFoundError as ex:
                 self._db_error = f"Data files not found: {ex}"
-                log.error("DB init attempt %d/%d — FileNotFoundError: %s",
-                          attempt, max_retries, ex)
+                _boot_log(f"DB init {attempt}/{max_retries} — "
+                          f"FileNotFoundError: {ex}")
             except PermissionError as ex:
                 self._db_error = f"Permission denied: {ex}"
-                log.error("DB init attempt %d/%d — PermissionError: %s "
-                          "(check Railway Volume is writable)",
-                          attempt, max_retries, ex)
+                _boot_log(f"DB init {attempt}/{max_retries} — "
+                          f"PermissionError: {ex}")
             except Exception as ex:
                 self._db_error = str(ex)
-                log.error("DB init attempt %d/%d — unexpected: %s",
-                          attempt, max_retries, ex, exc_info=True)
+                _boot_log(f"DB init {attempt}/{max_retries} — "
+                          f"unexpected: {ex}")
+                import traceback
+                traceback.print_exc()
 
             if attempt < max_retries:
                 backoff = 2 ** (attempt - 1)
-                log.info("Retrying DB init in %ds…", backoff)
+                _boot_log(f"Retrying DB init in {backoff}s…")
                 time.sleep(backoff)
 
         if not self._db_ready:
-            log.error("Database init failed after %d attempts", max_retries)
+            _boot_log(f"Database init failed after {max_retries} attempts")
 
-        # ---- Graceful SIGTERM handling ----
         self._install_signal_handlers()
 
     # -----------------------------------------------------------------------------
-    # 21.2.1b — _install_signal_handlers
+    # _install_signal_handlers
     # -----------------------------------------------------------------------------
     def _install_signal_handlers(self):
         def _handler(signum, frame):
-            log.info("Received signal %s — flushing DB before exit…", signum)
+            _boot_log(f"Received signal {signum} — flushing DB…")
             try:
                 if self.db is not None:
                     flush = (getattr(self.db, "flush", None)
@@ -193,19 +206,22 @@ class HajTravelApp:
                     if callable(flush):
                         flush()
             except Exception as e:
-                log.warning("DB flush on shutdown failed: %s", e)
+                _boot_log(f"DB flush on shutdown failed: {e}")
             sys.exit(0)
 
         try:
             signal.signal(signal.SIGTERM, _handler)
             signal.signal(signal.SIGINT, _handler)
         except Exception as e:
-            log.debug("Could not install signal handlers: %s", e)
+            _boot_log(f"Could not install signal handlers: {e}")
 
     # =============================================================================
-    # 21.2.2 — run(page)
+    # run(page)
     # =============================================================================
     def run(self, page: ft.Page):
+        # Re-apply patch in case module-level patch was skipped
+        _patch_page_update()
+
         page.title = "Alhudha Haj Travel System"
         page.theme_mode = ft.ThemeMode.LIGHT
         page.padding = 0
@@ -233,7 +249,7 @@ class HajTravelApp:
                 try:
                     page.window_close()
                 except Exception:
-                    log.debug("window.close() is a no-op in web mode")
+                    pass
 
         def show_login():
             page.controls.clear()
@@ -244,7 +260,10 @@ class HajTravelApp:
                 on_cancel=_close_window,
             )
             page.add(login.build())
-            page.update()
+            try:
+                page.update()
+            except Exception:
+                pass
 
         def on_login_success(user):
             state["user"] = user
@@ -256,8 +275,8 @@ class HajTravelApp:
                 try:
                     self.db.log_activity(
                         user['id'], "logout", "User logged out")
-                except Exception as ex:
-                    log.warning("Logout log failed: %s", ex)
+                except Exception:
+                    pass
             state["user"] = None
             show_login()
 
@@ -266,19 +285,19 @@ class HajTravelApp:
             try:
                 self.db.log_activity(
                     user['id'], "login", "User logged in")
-            except Exception as ex:
-                print(f"[LOGIN LOG] failed: {ex}")
+            except Exception:
+                pass
 
             mw = MainWindowView(
                 page, self.db, user, on_logout=on_logout)
             page.add(mw.build())
-            page.update()
+            try:
+                page.update()
+            except Exception:
+                pass
 
         show_login()
 
-    # -----------------------------------------------------------------------------
-    # 21.2.2b — _show_db_error
-    # -----------------------------------------------------------------------------
     def _show_db_error(self, page: ft.Page):
         try:
             page.controls.clear()
@@ -307,8 +326,8 @@ class HajTravelApp:
                 border_radius=12,
                 border=ft.Border.all(1, "#fecaca")))
             page.update()
-        except Exception as ex:
-            log.error("Could not render DB error page: %s", ex)
+        except Exception:
+            pass
 
 
 # =================================================================================
@@ -324,11 +343,8 @@ if __name__ == "__main__":
     os.makedirs(static_dir, exist_ok=True)
     os.makedirs(os.path.join(static_dir, "downloads"), exist_ok=True)
 
-    # Install monkey-patch BEFORE ft.run so it applies to every session
-    _patch_page_update()
-
-    log.info("Launching Flet — view=WEB_BROWSER, host=%s, port=%s "
-             "(platform=%s)", APP_HOST, APP_PORT, PLATFORM)
+    _boot_log(f"Launching Flet — host={APP_HOST} port={APP_PORT} "
+              f"platform={PLATFORM}")
 
     ft.run(
         main,
