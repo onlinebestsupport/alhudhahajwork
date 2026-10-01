@@ -1,16 +1,16 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.11 — NaN-safe JSON responses
-#   • _json_safe() recursively sanitizes NaN/Infinity in every JSON response
-#   • Applied to /api/frontpage, /api/batches, /api/traveler/me
-#   • Fixes "Out of range float values are not JSON compliant: nan"
+# v2.12 — Mobile-responsive admin shell
+#   • flet_main() sets responsive window and injects mobile CSS
+#   • All other patches preserved (NaN-safe JSON, sessions, seeding, etc.)
 # =================================================================================
 
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
+from fastapi.responses import (FileResponse, RedirectResponse,
+                               Response, JSONResponse)
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
@@ -66,11 +66,7 @@ def _boot_log(msg: str):
 # 21.1.4 — JSON SANITIZER
 # =================================================================================
 def _json_safe(obj):
-    """
-    Recursively convert NaN / Infinity / -Infinity / NaN-strings to
-    JSON-safe values (None or 0). Python's json.dumps() rejects NaN by
-    default, which crashes FastAPI responses.
-    """
+    """Recursively convert NaN / Infinity to JSON-safe values."""
     if obj is None:
         return None
     if isinstance(obj, float):
@@ -296,23 +292,47 @@ async def _clear_session(page):
 
 
 # =================================================================================
-# 21.3 — FLET ADMIN APP ENTRY POINT
+# 21.3 — FLET ADMIN APP ENTRY POINT (MOBILE-RESPONSIVE)
 # =================================================================================
 def flet_main(page: ft.Page):
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
+    # ---- Responsive window settings ----
+    # On web these are largely ignored by the browser, but Flet uses
+    # them for its own layout calculations.
     try:
-        page.window.width = 1400
-        page.window.height = 900
+        page.window.width = 400          # force fluid width on mobile
+        page.window.height = 800
+        page.window.resizable = True
     except Exception:
         try:
-            page.window_width = 1400
-            page.window_height = 900
+            page.window_width = 400
+            page.window_height = 800
         except Exception:
             pass
 
+    # ---- Mobile CSS injection ----
+    try:
+        page.html_style = """
+            html, body {
+                margin: 0; padding: 0;
+                width: 100%; height: 100%;
+                overflow-x: hidden;
+                -webkit-text-size-adjust: 100%;
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            }
+            * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+            /* Make dialogs fit small screens */
+            flt-dialog, .flt-dialog { max-width: 100vw !important; }
+            /* Prevent horizontal overflow */
+            flt-view, .flt-view { overflow-x: hidden !important; }
+        """
+    except Exception:
+        pass
+
+    # ---- DB failure page ----
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -473,7 +493,6 @@ def _build_app() -> FastAPI:
     app = FastAPI(title="Alhudha Haj Travel System")
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
 
-    # ---- Global exception handler so we always see tracebacks ----
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
         _boot_log(f"❌ Unhandled error on {request.url.path}: {exc}")
@@ -482,9 +501,6 @@ def _build_app() -> FastAPI:
             status_code=500,
             content={"detail": f"Internal server error: {exc}"})
 
-    # -----------------------------------------------------------------------------
-    # File download endpoint
-    # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
         safe_name = os.path.basename(filename)
@@ -498,9 +514,6 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    # -----------------------------------------------------------------------------
-    # Front page config API
-    # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
         try:
@@ -510,9 +523,6 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    # -----------------------------------------------------------------------------
-    # Batches-as-packages API
-    # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
         try:
@@ -541,9 +551,8 @@ def _build_app() -> FastAPI:
                 packages.append({
                     "id": str(b.get("id", "")),
                     "name": str(b.get("batch_name", "Package")),
-                    "description": str(
-                        b.get("description", "") or
-                        "Complete Haj/Umrah package"),
+                    "description": str(b.get("description", "")
+                                       or "Complete Haj/Umrah package"),
                     "price": price_val,
                     "departure_date": str(b.get("departure_date", "") or ""),
                     "return_date": str(b.get("return_date", "") or ""),
@@ -558,9 +567,7 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    # =============================================================================
-    # TRAVELER PORTAL ENDPOINTS
-    # =============================================================================
+    # ---- Traveler portal endpoints ----
 
     @app.get("/traveler")
     async def traveler_portal_page():
@@ -667,7 +674,6 @@ def _build_app() -> FastAPI:
                                     detail="Traveler not found")
 
             data = build_traveler_view(AppState.db, traveler)
-            # ✅ Sanitize NaN/Infinity before JSON serialization
             safe_data = _json_safe(data)
             return {"success": True, "data": safe_data}
 
@@ -739,22 +745,13 @@ def _build_app() -> FastAPI:
 
     _boot_log("Traveler portal endpoints registered")
 
-    # -----------------------------------------------------------------------------
-    # Mount Flet admin app at /admin
-    # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
     _boot_log(f"Mounted Flet admin at /admin (assets_dir={flet_assets_dir})")
 
-    # -----------------------------------------------------------------------------
-    # Static assets
-    # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
-    # -----------------------------------------------------------------------------
-    # Marketing front page at "/"
-    # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
