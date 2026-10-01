@@ -1,7 +1,7 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.3):
+# PATCHES APPLIED (v2.4):
 #   21.1.A — Cloud environment detection
 #   21.1.B — Defensive window-close handler
 #   21.1.C — Flet 1.0 window sizing
@@ -10,10 +10,17 @@
 #   21.1.F — Narrow destroyed-session patch (import time)
 #   21.1.G — Ensure static/downloads/ exists
 #   21.1.H — SEED: populate empty volume from seed_data/
-#   21.1.I — Session persistence via client_storage (login survives refresh)
-#   21.2.0 — NEW: Marketing front page at "/" (static/index.html)
-#   21.2.1 — NEW: Flet admin app mounted at "/admin"
-#   21.2.2 — NEW: /static/* serves logo.png and other assets
+#   21.1.I — Session persistence via client_storage
+#
+#   21.2.0 — Marketing front page at "/" (static/index.html)
+#   21.2.1 — Flet admin app mounted at "/admin"
+#   21.2.2 — /static/* serves logo.png and other assets
+#
+#   21.2.3 — FIX: /admin was serving the marketing page because Flet's
+#            `assets_dir=static_dir` was pointing at the folder that
+#            contains our custom index.html. Flet then served that as
+#            its own SPA shell. FIX: do NOT pass assets_dir to Flet;
+#            mount /admin FIRST, then /static, then the "/" route.
 # =================================================================================
 
 import flet as ft
@@ -439,27 +446,42 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.4.2 — Static assets at /static/* (logo, index.html, etc.)
+    # 21.4.2 — Mount Flet admin app at /admin  (mounted FIRST)
     # -----------------------------------------------------------------------------
-    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    # CRITICAL: Do NOT pass `assets_dir=static_dir` here. If we do, Flet
+    # uses our custom static/index.html as its SPA shell, which means
+    # /admin serves the marketing page instead of the login screen.
+    # Flet's built-in assets are bundled with the package — no need to
+    # point at our folder.
+    admin_app = flet_fastapi.app(flet_main)
+    app.mount("/admin", admin_app)
+    _boot_log("Mounted Flet admin app at /admin")
 
     # -----------------------------------------------------------------------------
-    # 21.4.3 — Marketing front page at "/"
+    # 21.4.3 — Static assets at /static/* (logo, index.html, etc.)
+    # -----------------------------------------------------------------------------
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    _boot_log("Mounted /static for logo + assets")
+
+    # -----------------------------------------------------------------------------
+    # 21.4.4 — Marketing front page at "/"
     # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
             return FileResponse(index_html, media_type="text/html")
-        # Fallback: no marketing page → go to admin
         _boot_log("No index.html — redirecting / to /admin")
         return RedirectResponse(url="/admin")
 
     # -----------------------------------------------------------------------------
-    # 21.4.4 — Flet admin app mounted at "/admin"
-    #             Mounted LAST so /, /static, /download are not swallowed.
+    # 21.4.5 — Favicon (browsers auto-request /favicon.ico)
     # -----------------------------------------------------------------------------
-    admin_app = flet_fastapi.app(flet_main, assets_dir=static_dir)
-    app.mount("/admin", admin_app)
+    @app.get("/favicon.ico")
+    async def favicon():
+        logo = os.path.join(static_dir, "logo.png")
+        if os.path.exists(logo):
+            return FileResponse(logo, media_type="image/png")
+        raise HTTPException(status_code=404, detail="no favicon")
 
     return app
 
