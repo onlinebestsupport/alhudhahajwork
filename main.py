@@ -1,31 +1,20 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.5):
-#   21.1.A — Cloud environment detection
-#   21.1.B — Defensive window-close handler
-#   21.1.C — Flet 1.0 window sizing
-#   21.1.D — DB error page + retry with backoff
-#   21.1.E — Graceful SIGTERM handling
-#   21.1.F — Narrow destroyed-session patch (import time)
-#   21.1.G — Ensure static/downloads/ exists
-#   21.1.H — SEED: populate empty volume from seed_data/
-#   21.1.I — Session persistence via client_storage
-#   21.2.0 — Marketing front page at "/" (static/index.html)
-#   21.2.1 — Flet admin app mounted at "/admin"
-#   21.2.2 — /static/* serves logo.png and other assets
-#   21.2.3 — Mount /admin before /static; no assets_dir conflict
-#   21.2.4 — NEW: Serve custom logo as favicon + Flet splash icon.
-#            Routes for /favicon.png, /favicon.ico, /admin/favicon.png,
-#            /admin/favicon.ico registered BEFORE the Flet mount so they
-#            take precedence over Flet's built-in pink arrow icon.
+# PATCHES APPLIED (v2.6):
+#   21.1.* — cloud detection, DB retry, SIGTERM, session persistence
+#   21.2.* — marketing page at "/", Flet admin at "/admin"
+#   21.2.5 — NEW: Starlette middleware intercepts EVERY favicon request
+#            and serves the custom logo. Runs before routing, so it works
+#            even if Flet's internal mount would otherwise intercept it.
 # =================================================================================
 
 import flet as ft
 import flet.fastapi as flet_fastapi
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
 import os
 import sys
@@ -126,6 +115,8 @@ class AppState:
     db = None
     db_ready = False
     db_error = ""
+    static_dir = ""
+    logo_path = ""
 
 
 def _seed_volume_if_empty(base_path: str):
@@ -396,7 +387,51 @@ def flet_main(page: ft.Page):
 
 
 # =================================================================================
-# 21.4 — FASTAPI SETUP
+# 21.4 — FAVICON MIDDLEWARE (bulletproof, runs before routing)
+# =================================================================================
+class FaviconOverrideMiddleware(BaseHTTPMiddleware):
+    """
+    Intercepts every request to a favicon URL and returns the custom
+    logo. Runs BEFORE FastAPI routing, so it takes precedence over
+    Flet's built-in icon regardless of mount order.
+    """
+    def __init__(self, app, logo_path: str):
+        super().__init__(app)
+        self.logo_path = logo_path
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path.lower().rstrip("/")
+
+        # Paths that should return our logo instead of Flet's icon
+        favicon_paths = {
+            "/favicon.ico",
+            "/favicon.png",
+            "/admin/favicon.ico",
+            "/admin/favicon.png",
+        }
+
+        if path in favicon_paths and os.path.exists(self.logo_path):
+            try:
+                with open(self.logo_path, "rb") as f:
+                    data = f.read()
+                return Response(
+                    content=data,
+                    media_type="image/png",
+                    headers={
+                        # Discourage caching so changes appear fast
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache",
+                        "Expires": "0",
+                    },
+                )
+            except Exception as e:
+                _boot_log(f"Favicon middleware error: {e}")
+
+        return await call_next(request)
+
+
+# =================================================================================
+# 21.5 — FASTAPI SETUP
 # =================================================================================
 def _build_app() -> FastAPI:
     base_path = get_app_base_path()
@@ -406,6 +441,10 @@ def _build_app() -> FastAPI:
     logo_path = os.path.join(static_dir, "logo.png")
 
     os.makedirs(downloads_dir, exist_ok=True)
+
+    # Store on AppState so middleware can access later
+    AppState.static_dir = static_dir
+    AppState.logo_path = logo_path
 
     _boot_log(f"Base path   : {base_path}")
     _boot_log(f"Static dir  : {static_dir}")
@@ -417,15 +456,11 @@ def _build_app() -> FastAPI:
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
-    # ---- Shared logo response helper ----
-    def _logo_response():
-        if os.path.exists(logo_path):
-            return FileResponse(logo_path, media_type="image/png")
-        raise HTTPException(status_code=404, detail="no logo")
+    # ---- Favicon middleware (must be added BEFORE mounts) ----
+    app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
+    _boot_log("Favicon middleware installed")
 
-    # -----------------------------------------------------------------------------
-    # 21.4.1 — File download endpoint
-    # -----------------------------------------------------------------------------
+    # ---- File download endpoint ----
     @app.get("/download/{filename}")
     async def download_file(filename: str):
         safe_name = os.path.basename(filename)
@@ -442,46 +477,16 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    # -----------------------------------------------------------------------------
-    # 21.4.2 — Custom favicon + Flet splash icon overrides
-    #            CRITICAL: These must be registered BEFORE the /admin mount,
-    #            otherwise the mount intercepts the requests and Flet serves
-    #            its built-in pink arrow icon.
-    # -----------------------------------------------------------------------------
-    @app.get("/favicon.ico")
-    async def favicon_ico_root():
-        return _logo_response()
-
-    @app.get("/favicon.png")
-    async def favicon_png_root():
-        return _logo_response()
-
-    @app.get("/admin/favicon.ico")
-    async def favicon_ico_admin():
-        return _logo_response()
-
-    @app.get("/admin/favicon.png")
-    async def favicon_png_admin():
-        return _logo_response()
-
-    _boot_log("Registered favicon overrides for / and /admin")
-
-    # -----------------------------------------------------------------------------
-    # 21.4.3 — Mount Flet admin app at /admin
-    # -----------------------------------------------------------------------------
+    # ---- Mount Flet admin app at /admin ----
     admin_app = flet_fastapi.app(flet_main)
     app.mount("/admin", admin_app)
     _boot_log("Mounted Flet admin app at /admin")
 
-    # -----------------------------------------------------------------------------
-    # 21.4.4 — Static assets at /static/*
-    # -----------------------------------------------------------------------------
+    # ---- Static assets at /static/* ----
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
-    # -----------------------------------------------------------------------------
-    # 21.4.5 — Marketing front page at "/"
-    # -----------------------------------------------------------------------------
+    # ---- Marketing front page at "/" ----
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
@@ -493,7 +498,7 @@ def _build_app() -> FastAPI:
 
 
 # =================================================================================
-# 21.5 — ENTRY POINT
+# 21.6 — ENTRY POINT
 # =================================================================================
 base_path = get_app_base_path()
 
