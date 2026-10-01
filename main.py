@@ -1,12 +1,18 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.6):
+# PATCHES APPLIED (v2.7):
 #   21.1.* — cloud detection, DB retry, SIGTERM, session persistence
 #   21.2.* — marketing page at "/", Flet admin at "/admin"
-#   21.2.5 — NEW: Starlette middleware intercepts EVERY favicon request
-#            and serves the custom logo. Runs before routing, so it works
-#            even if Flet's internal mount would otherwise intercept it.
+#   21.2.5 — middleware favicon override (working)
+#   21.2.6 — NEW: pass a dedicated FLET_ASSETS_DIR to flet_fastapi.app()
+#            so Flet's built-in splash icon and favicon are overridden
+#            by our logo. Files needed:
+#              <FLET_ASSETS_DIR>/favicon.png
+#              <FLET_ASSETS_DIR>/icons/loading-animation.png
+#            This is the ONLY way to replace the pink loading arrow
+#            because Flet fetches the splash image from its compiled
+#            Flutter client, not via a URL route.
 # =================================================================================
 
 import flet as ft
@@ -117,6 +123,7 @@ class AppState:
     db_error = ""
     static_dir = ""
     logo_path = ""
+    flet_assets_dir = ""
 
 
 def _seed_volume_if_empty(base_path: str):
@@ -387,14 +394,12 @@ def flet_main(page: ft.Page):
 
 
 # =================================================================================
-# 21.4 — FAVICON MIDDLEWARE (bulletproof, runs before routing)
+# 21.4 — FAVICON MIDDLEWARE (fallback for browser tab)
 # =================================================================================
 class FaviconOverrideMiddleware(BaseHTTPMiddleware):
-    """
-    Intercepts every request to a favicon URL and returns the custom
-    logo. Runs BEFORE FastAPI routing, so it takes precedence over
-    Flet's built-in icon regardless of mount order.
-    """
+    """Intercepts favicon URL requests and returns the custom logo.
+    This handles the browser-tab favicon. The splash-screen icon is
+    handled separately via the Flet assets_dir (see _build_app)."""
     def __init__(self, app, logo_path: str):
         super().__init__(app)
         self.logo_path = logo_path
@@ -402,7 +407,6 @@ class FaviconOverrideMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path.lower().rstrip("/")
 
-        # Paths that should return our logo instead of Flet's icon
         favicon_paths = {
             "/favicon.ico",
             "/favicon.png",
@@ -418,7 +422,6 @@ class FaviconOverrideMiddleware(BaseHTTPMiddleware):
                     content=data,
                     media_type="image/png",
                     headers={
-                        # Discourage caching so changes appear fast
                         "Cache-Control": "no-cache, no-store, must-revalidate",
                         "Pragma": "no-cache",
                         "Expires": "0",
@@ -440,23 +443,47 @@ def _build_app() -> FastAPI:
     index_html = os.path.join(static_dir, "index.html")
     logo_path = os.path.join(static_dir, "logo.png")
 
-    os.makedirs(downloads_dir, exist_ok=True)
+    # ★ Dedicated Flet assets folder for splash + favicon override
+    flet_assets_dir = os.path.join(base_path, "flet_assets")
 
-    # Store on AppState so middleware can access later
+    os.makedirs(downloads_dir, exist_ok=True)
+    os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
+
+    # ---- Auto-seed the Flet assets folder from static/logo.png ----
+    # This makes the splash icon work even if the user forgets to
+    # create the folder manually. Copies are made only if missing.
+    try:
+        if os.path.exists(logo_path):
+            fav = os.path.join(flet_assets_dir, "favicon.png")
+            anim = os.path.join(flet_assets_dir, "icons",
+                                "loading-animation.png")
+            if not os.path.exists(fav):
+                shutil.copy2(logo_path, fav)
+                _boot_log(f"Seeded {fav}")
+            if not os.path.exists(anim):
+                shutil.copy2(logo_path, anim)
+                _boot_log(f"Seeded {anim}")
+    except Exception as e:
+        _boot_log(f"Flet assets seed failed: {e}")
+
     AppState.static_dir = static_dir
     AppState.logo_path = logo_path
+    AppState.flet_assets_dir = flet_assets_dir
 
-    _boot_log(f"Base path   : {base_path}")
-    _boot_log(f"Static dir  : {static_dir}")
-    _boot_log(f"Downloads   : {downloads_dir}")
-    _boot_log(f"Index HTML  : {index_html} "
-              f"({'found' if os.path.exists(index_html) else 'MISSING'})")
-    _boot_log(f"Logo        : {logo_path} "
-              f"({'found' if os.path.exists(logo_path) else 'MISSING'})")
+    _boot_log(f"Base path       : {base_path}")
+    _boot_log(f"Static dir      : {static_dir}")
+    _boot_log(f"Downloads       : {downloads_dir}")
+    _boot_log(f"Flet assets dir : {flet_assets_dir}")
+    _boot_log(f"Favicon         : "
+              f"{os.path.join(flet_assets_dir, 'favicon.png')} "
+              f"({'found' if os.path.exists(os.path.join(flet_assets_dir, 'favicon.png')) else 'MISSING'})")
+    _boot_log(f"Loading anim    : "
+              f"{os.path.join(flet_assets_dir, 'icons', 'loading-animation.png')} "
+              f"({'found' if os.path.exists(os.path.join(flet_assets_dir, 'icons', 'loading-animation.png')) else 'MISSING'})")
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
-    # ---- Favicon middleware (must be added BEFORE mounts) ----
+    # ---- Favicon middleware ----
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
     _boot_log("Favicon middleware installed")
 
@@ -478,9 +505,14 @@ def _build_app() -> FastAPI:
             })
 
     # ---- Mount Flet admin app at /admin ----
-    admin_app = flet_fastapi.app(flet_main)
+    # ★ KEY: pass assets_dir=flet_assets_dir so Flet picks up our
+    #        favicon.png and icons/loading-animation.png overrides.
+    #        Flet serves internal asset requests at /admin/assets/<file>
+    #        automatically from this folder.
+    admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
-    _boot_log("Mounted Flet admin app at /admin")
+    _boot_log(f"Mounted Flet admin at /admin "
+              f"(assets_dir={flet_assets_dir})")
 
     # ---- Static assets at /static/* ----
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -506,24 +538,29 @@ static_dir = os.path.join(base_path, "static")
 os.makedirs(static_dir, exist_ok=True)
 os.makedirs(os.path.join(static_dir, "downloads"), exist_ok=True)
 os.makedirs(os.path.join(base_path, "data"), exist_ok=True)
+os.makedirs(os.path.join(base_path, "flet_assets", "icons"), exist_ok=True)
 
 _boot_log(f"Launching — host={APP_HOST} port={APP_PORT} platform={PLATFORM}")
 
 print("=" * 66, flush=True)
 print("🏆  Alhudha Haj Travel System — Web Edition", flush=True)
-print(f"📦  Platform   : {PLATFORM}", flush=True)
-print(f"📁  Base path  : {base_path}", flush=True)
-print(f"📁  Data dir   : {os.path.join(base_path, 'data')}", flush=True)
-print(f"📁  Static dir : {static_dir}", flush=True)
-print(f"📁  Downloads  : {os.path.join(static_dir, 'downloads')}", flush=True)
-print(f"🌐  Host       : {APP_HOST}", flush=True)
-print(f"🚪  Port       : {APP_PORT}", flush=True)
-print(f"🕐  Started    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+print(f"📦  Platform       : {PLATFORM}", flush=True)
+print(f"📁  Base path      : {base_path}", flush=True)
+print(f"📁  Data dir       : {os.path.join(base_path, 'data')}", flush=True)
+print(f"📁  Static dir     : {static_dir}", flush=True)
+print(f"📁  Flet assets    : "
+      f"{os.path.join(base_path, 'flet_assets')}", flush=True)
+print(f"🌐  Host           : {APP_HOST}", flush=True)
+print(f"🚪  Port           : {APP_PORT}", flush=True)
+print(f"🕐  Started        : "
+      f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
-    print(f"💾  Volume     : {os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
-print(f"🩹  Patch      : {'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
-print(f"🏠  Front page : http://{APP_HOST}:{APP_PORT}/", flush=True)
-print(f"🔐  Admin app  : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
+    print(f"💾  Volume         : "
+          f"{os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
+print(f"🩹  Patch          : "
+      f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
+print(f"🏠  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
+print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print("=" * 66, flush=True)
 
 _seed_volume_if_empty(base_path)
