@@ -1,15 +1,16 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.10 — Robust traveler endpoints with DataFrame-safe lookups
-#   • Traveler endpoints use _to_list() from traveler_portal for safety
-#   • Full traceback logging on errors
+# v2.11 — NaN-safe JSON responses
+#   • _json_safe() recursively sanitizes NaN/Infinity in every JSON response
+#   • Applied to /api/frontpage, /api/batches, /api/traveler/me
+#   • Fixes "Out of range float values are not JSON compliant: nan"
 # =================================================================================
 
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, RedirectResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import uvicorn
@@ -19,6 +20,7 @@ import signal
 import logging
 import shutil
 import asyncio
+import math
 import traceback
 from datetime import datetime
 
@@ -58,6 +60,48 @@ PLATFORM = _detect_platform()
 
 def _boot_log(msg: str):
     print(f"[BOOT] {msg}", flush=True)
+
+
+# =================================================================================
+# 21.1.4 — JSON SANITIZER
+# =================================================================================
+def _json_safe(obj):
+    """
+    Recursively convert NaN / Infinity / -Infinity / NaN-strings to
+    JSON-safe values (None or 0). Python's json.dumps() rejects NaN by
+    default, which crashes FastAPI responses.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, (int, bool)):
+        return obj
+    if isinstance(obj, str):
+        if obj.lower() in ("nan", "inf", "-inf", "infinity", "-infinity"):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(x) for x in obj]
+    try:
+        import pandas as pd
+        if isinstance(obj, pd.DataFrame):
+            return _json_safe(obj.to_dict(orient="records"))
+        if isinstance(obj, pd.Series):
+            return _json_safe(obj.to_dict())
+    except Exception:
+        pass
+    try:
+        s = str(obj)
+        if s.lower() in ("nan", "inf", "-inf", "infinity", "-infinity"):
+            return None
+        return s
+    except Exception:
+        return None
 
 
 # =================================================================================
@@ -434,7 +478,6 @@ def _build_app() -> FastAPI:
     async def _global_error_handler(request: Request, exc: Exception):
         _boot_log(f"❌ Unhandled error on {request.url.path}: {exc}")
         traceback.print_exc()
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=500,
             content={"detail": f"Internal server error: {exc}"})
@@ -462,7 +505,7 @@ def _build_app() -> FastAPI:
     async def api_frontpage():
         try:
             from core.frontpage_config import load_config
-            return load_config()
+            return _json_safe(load_config())
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
@@ -487,8 +530,14 @@ def _build_app() -> FastAPI:
             for b in selected:
                 try:
                     price_val = float(b.get("price", 0) or 0)
+                    if math.isnan(price_val) or math.isinf(price_val):
+                        price_val = 0.0
                 except Exception:
                     price_val = 0.0
+                try:
+                    seats_val = int(b.get("total_seats", 0) or 0)
+                except Exception:
+                    seats_val = 0
                 packages.append({
                     "id": str(b.get("id", "")),
                     "name": str(b.get("batch_name", "Package")),
@@ -501,10 +550,10 @@ def _build_app() -> FastAPI:
                     "year": str(b.get("year", "") or ""),
                     "tour_type_name": str(b.get("tour_type_name", "") or ""),
                     "status": str(b.get("status", "") or ""),
-                    "total_seats": int(b.get("total_seats", 0) or 0),
+                    "total_seats": seats_val,
                 })
-            return {"success": True, "batches": packages,
-                    "count": len(packages)}
+            return _json_safe({"success": True, "batches": packages,
+                               "count": len(packages)})
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
@@ -618,7 +667,9 @@ def _build_app() -> FastAPI:
                                     detail="Traveler not found")
 
             data = build_traveler_view(AppState.db, traveler)
-            return {"success": True, "data": data}
+            # ✅ Sanitize NaN/Infinity before JSON serialization
+            safe_data = _json_safe(data)
+            return {"success": True, "data": safe_data}
 
         except HTTPException:
             raise
