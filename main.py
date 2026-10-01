@@ -1,19 +1,9 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.9):
-#   21.1.* — cloud detection, DB retry, SIGTERM, session persistence
-#   21.2.* — marketing page at "/", Flet admin at "/admin"
-#   21.2.5 — middleware favicon override
-#   21.2.6 — Flet splash icon override via assets_dir
-#   21.2.7 — front page config + batches APIs
-#   21.2.8 — NEW: Traveler Portal
-#              • GET  /traveler                     → serves traveler.html
-#              • POST /api/traveler/login           → passport + pin
-#              • GET  /api/traveler/me              → current traveler data
-#              • POST /api/traveler/logout          → destroy session
-#              • GET  /api/traveler/document/<key>  → serve uploaded doc
-#            Sessions are in-memory, cookies carry the token.
+# v2.10 — Robust traveler endpoints with DataFrame-safe lookups
+#   • Traveler endpoints use _to_list() from traveler_portal for safety
+#   • Full traceback logging on errors
 # =================================================================================
 
 import flet as ft
@@ -29,6 +19,7 @@ import signal
 import logging
 import shutil
 import asyncio
+import traceback
 from datetime import datetime
 
 from core.helpers import get_app_base_path
@@ -79,7 +70,6 @@ def _patch_page_update():
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
-
     Page = None
     for path in ("flet.controls.page", "flet.page", "flet"):
         try:
@@ -90,11 +80,9 @@ def _patch_page_update():
                 break
         except Exception:
             continue
-
     if Page is None:
         _boot_log("❌ Could not locate Page class")
         return
-
     try:
         _original_update = Page.update
 
@@ -176,7 +164,6 @@ def _init_db():
         except Exception as ex:
             AppState.db_error = str(ex)
             _boot_log(f"DB init {attempt}/{max_retries} — unexpected: {ex}")
-            import traceback
             traceback.print_exc()
         if attempt < max_retries:
             backoff = 2 ** (attempt - 1)
@@ -206,11 +193,12 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — SESSION PERSISTENCE helpers (admin)
+# 21.2.5 — ADMIN session helpers
 # =================================================================================
 def _find_user_by_id(db, user_id):
     try:
-        for u in db.get_users():
+        from core.traveler_portal import _to_list
+        for u in _to_list(db.get_users()):
             if str(u.get("id")) == str(user_id):
                 return dict(u)
     except Exception as e:
@@ -245,8 +233,7 @@ async def _load_session(page):
             uid = result
         if not uid:
             return None
-        user = _find_user_by_id(AppState.db, uid)
-        return user
+        return _find_user_by_id(AppState.db, uid)
     except Exception as e:
         print(f"[SESSION] load failed: {e}")
         return None
@@ -289,11 +276,6 @@ def flet_main(page: ft.Page):
                 ft.Icon(ft.Icons.STORAGE, size=64, color=ft.Colors.RED_400),
                 ft.Text("Database unavailable", size=22,
                         weight=ft.FontWeight.BOLD, color=ft.Colors.RED_700),
-                ft.Text(
-                    "The application could not open its data files.",
-                    size=12, color=ft.Colors.GREY_600,
-                    text_align=ft.TextAlign.CENTER),
-                ft.Container(height=8),
                 ft.Text(f"Details: {AppState.db_error}",
                         size=11, color=ft.Colors.GREY_500,
                         selectable=True, text_align=ft.TextAlign.CENTER),
@@ -399,12 +381,10 @@ class FaviconOverrideMiddleware(BaseHTTPMiddleware):
                 with open(self.logo_path, "rb") as f:
                     data = f.read()
                 return Response(
-                    content=data,
-                    media_type="image/png",
+                    content=data, media_type="image/png",
                     headers={
                         "Cache-Control": "no-cache, no-store, must-revalidate",
-                        "Pragma": "no-cache",
-                        "Expires": "0",
+                        "Pragma": "no-cache", "Expires": "0",
                     })
             except Exception as e:
                 _boot_log(f"Favicon middleware error: {e}")
@@ -426,7 +406,6 @@ def _build_app() -> FastAPI:
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
-    # Auto-seed Flet assets from static/logo.png
     try:
         if os.path.exists(logo_path):
             fav = os.path.join(flet_assets_dir, "favicon.png")
@@ -448,13 +427,20 @@ def _build_app() -> FastAPI:
     _boot_log(f"Flet assets dir : {flet_assets_dir}")
 
     app = FastAPI(title="Alhudha Haj Travel System")
-
-    # ---- Favicon middleware ----
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
-    _boot_log("Favicon middleware installed")
+
+    # ---- Global exception handler so we always see tracebacks ----
+    @app.exception_handler(Exception)
+    async def _global_error_handler(request: Request, exc: Exception):
+        _boot_log(f"❌ Unhandled error on {request.url.path}: {exc}")
+        traceback.print_exc()
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {exc}"})
 
     # -----------------------------------------------------------------------------
-    # 21.5.1 — File download endpoint (admin exports)
+    # File download endpoint
     # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
@@ -464,14 +450,13 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=404,
                                 detail=f"{safe_name} not found")
         return FileResponse(
-            path=filepath,
-            media_type="application/octet-stream",
+            path=filepath, media_type="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.2 — Front page config API
+    # Front page config API
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
@@ -479,25 +464,24 @@ def _build_app() -> FastAPI:
             from core.frontpage_config import load_config
             return load_config()
         except Exception as e:
-            _boot_log(f"/api/frontpage failed: {e}")
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.3 — Batches-as-packages API
+    # Batches-as-packages API
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
         try:
-            from core.frontpage_config import (
-                load_config, get_selected_batches)
+            from core.frontpage_config import load_config, get_selected_batches
+            from core.traveler_portal import _to_list
             cfg = load_config()
             all_batches = []
             if AppState.db_ready and AppState.db is not None:
                 try:
-                    all_batches = AppState.db.get_batches() or []
+                    all_batches = _to_list(AppState.db.get_batches())
                 except Exception as e:
                     _boot_log(f"api_batches get_batches failed: {e}")
-                    all_batches = []
             selected = get_selected_batches(cfg, all_batches)
             packages = []
             for b in selected:
@@ -522,14 +506,13 @@ def _build_app() -> FastAPI:
             return {"success": True, "batches": packages,
                     "count": len(packages)}
         except Exception as e:
-            _boot_log(f"/api/batches failed: {e}")
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     # =============================================================================
-    # 21.5.4 — TRAVELER PORTAL
+    # TRAVELER PORTAL ENDPOINTS
     # =============================================================================
 
-    # ---- 21.5.4.1 — Serve the traveler portal HTML ----
     @app.get("/traveler")
     async def traveler_portal_page():
         if os.path.exists(traveler_html):
@@ -537,7 +520,6 @@ def _build_app() -> FastAPI:
         raise HTTPException(status_code=404,
                             detail="Traveler portal not found")
 
-    # ---- 21.5.4.2 — POST /api/traveler/login ----
     @app.post("/api/traveler/login")
     async def traveler_login(request: Request):
         try:
@@ -553,35 +535,43 @@ def _build_app() -> FastAPI:
             from core.traveler_portal import (
                 authenticate_traveler, create_session)
         except Exception as e:
-            _boot_log(f"traveler_portal import failed: {e}")
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
         if not AppState.db_ready or AppState.db is None:
             raise HTTPException(status_code=503,
                                 detail="Database unavailable")
 
-        traveler, err = authenticate_traveler(
-            AppState.db, passport_no, pin)
+        try:
+            traveler, err = authenticate_traveler(
+                AppState.db, passport_no, pin)
+        except Exception as e:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
         if err:
-            _boot_log(f"Traveler login failed: {err}")
             raise HTTPException(status_code=401, detail=err)
 
-        token = create_session(traveler)
+        try:
+            token = create_session(traveler)
+        except Exception as e:
+            traceback.print_exc()
+            raise HTTPException(status_code=500,
+                                detail=f"Session create failed: {e}")
+
         _boot_log(f"Traveler login OK: {traveler.get('id')}")
 
-        # Set cookie + return success
         response = Response(
             content='{"success": true}',
             media_type="application/json")
         response.set_cookie(
             TRAVELER_COOKIE, token,
-            max_age=8 * 3600,          # 8 hours
-            httponly=False,            # JS reads it to display session info
+            max_age=8 * 3600,
+            httponly=False,
             samesite="lax",
             path="/")
         return response
 
-    # ---- 21.5.4.3 — POST /api/traveler/logout ----
     @app.post("/api/traveler/logout")
     async def traveler_logout(request: Request):
         token = request.cookies.get(TRAVELER_COOKIE, "")
@@ -596,120 +586,123 @@ def _build_app() -> FastAPI:
         response.delete_cookie(TRAVELER_COOKIE, path="/")
         return response
 
-    # ---- 21.5.4.4 — GET /api/traveler/me ----
     @app.get("/api/traveler/me")
     async def traveler_me(request: Request):
-        token = request.cookies.get(TRAVELER_COOKIE, "")
-        if not token:
-            raise HTTPException(status_code=401,
-                                detail="Not logged in")
-
         try:
+            token = request.cookies.get(TRAVELER_COOKIE, "")
+            if not token:
+                raise HTTPException(status_code=401,
+                                    detail="Not logged in")
+
             from core.traveler_portal import (
-                verify_session, build_traveler_view)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+                verify_session, build_traveler_view, _to_list)
 
-        session = verify_session(token)
-        if not session:
-            raise HTTPException(status_code=401,
-                                detail="Session expired")
+            session = verify_session(token)
+            if not session:
+                raise HTTPException(status_code=401,
+                                    detail="Session expired")
 
-        if not AppState.db_ready or AppState.db is None:
-            raise HTTPException(status_code=503,
-                                detail="Database unavailable")
+            if not AppState.db_ready or AppState.db is None:
+                raise HTTPException(status_code=503,
+                                    detail="Database unavailable")
 
-        # Look up the traveler fresh (their data may have been edited)
-        traveler = None
-        try:
-            for t in (AppState.db.get_travelers() or []):
+            travelers = _to_list(AppState.db.get_travelers())
+            traveler = None
+            for t in travelers:
                 if str(t.get("id", "")) == session.get("traveler_id"):
                     traveler = dict(t)
                     break
+
+            if not traveler:
+                raise HTTPException(status_code=404,
+                                    detail="Traveler not found")
+
+            data = build_traveler_view(AppState.db, traveler)
+            return {"success": True, "data": data}
+
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            _boot_log(f"❌ /api/traveler/me failed: {e}")
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Server error: {type(e).__name__}: {e}")
 
-        if not traveler:
-            raise HTTPException(status_code=404,
-                                detail="Traveler not found")
-
-        data = build_traveler_view(AppState.db, traveler)
-        return {"success": True, "data": data}
-
-    # ---- 21.5.4.5 — GET /api/traveler/document/<key> ----
     @app.get("/api/traveler/document/{doc_key}")
     async def traveler_document(doc_key: str, request: Request):
-        token = request.cookies.get(TRAVELER_COOKIE, "")
-        if not token:
-            raise HTTPException(status_code=401,
-                                detail="Not logged in")
-
         try:
+            token = request.cookies.get(TRAVELER_COOKIE, "")
+            if not token:
+                raise HTTPException(status_code=401,
+                                    detail="Not logged in")
+
             from core.traveler_portal import (
-                verify_session, get_document_path)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+                verify_session, get_document_path, _to_list)
 
-        session = verify_session(token)
-        if not session:
-            raise HTTPException(status_code=401,
-                                detail="Session expired")
+            session = verify_session(token)
+            if not session:
+                raise HTTPException(status_code=401,
+                                    detail="Session expired")
 
-        if not AppState.db_ready or AppState.db is None:
-            raise HTTPException(status_code=503,
-                                detail="Database unavailable")
+            if not AppState.db_ready or AppState.db is None:
+                raise HTTPException(status_code=503,
+                                    detail="Database unavailable")
 
-        # Find the traveler
-        traveler = None
-        try:
-            for t in (AppState.db.get_travelers() or []):
+            travelers = _to_list(AppState.db.get_travelers())
+            traveler = None
+            for t in travelers:
                 if str(t.get("id", "")) == session.get("traveler_id"):
                     traveler = dict(t)
                     break
-        except Exception:
-            pass
 
-        if not traveler:
-            raise HTTPException(status_code=404,
-                                detail="Traveler not found")
+            if not traveler:
+                raise HTTPException(status_code=404,
+                                    detail="Traveler not found")
 
-        path = get_document_path(AppState.db, traveler, doc_key)
-        if not path or not os.path.exists(path):
-            raise HTTPException(status_code=404,
-                                detail=f"Document '{doc_key}' not found")
+            path = get_document_path(AppState.db, traveler, doc_key)
+            if not path or not os.path.exists(path):
+                raise HTTPException(status_code=404,
+                                    detail=f"Document '{doc_key}' not found")
 
-        # Guess media type
-        low = path.lower()
-        if low.endswith(".pdf"):
-            media_type = "application/pdf"
-        elif low.endswith(".png"):
-            media_type = "image/png"
-        elif low.endswith(".gif"):
-            media_type = "image/gif"
-        elif low.endswith(".bmp"):
-            media_type = "image/bmp"
-        else:
-            media_type = "image/jpeg"
+            low = path.lower()
+            if low.endswith(".pdf"):
+                media_type = "application/pdf"
+            elif low.endswith(".png"):
+                media_type = "image/png"
+            elif low.endswith(".gif"):
+                media_type = "image/gif"
+            elif low.endswith(".bmp"):
+                media_type = "image/bmp"
+            else:
+                media_type = "image/jpeg"
 
-        return FileResponse(path, media_type=media_type)
+            return FileResponse(path, media_type=media_type)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            _boot_log(f"❌ /api/traveler/document/{doc_key} failed: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
 
     _boot_log("Traveler portal endpoints registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — Mount Flet admin app at /admin
+    # Mount Flet admin app at /admin
     # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
     _boot_log(f"Mounted Flet admin at /admin (assets_dir={flet_assets_dir})")
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — Static assets
+    # Static assets
     # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
     # -----------------------------------------------------------------------------
-    # 21.5.7 — Marketing front page at "/"
+    # Marketing front page at "/"
     # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
@@ -739,8 +732,6 @@ print(f"📦  Platform       : {PLATFORM}", flush=True)
 print(f"📁  Base path      : {base_path}", flush=True)
 print(f"📁  Data dir       : {os.path.join(base_path, 'data')}", flush=True)
 print(f"📁  Static dir     : {static_dir}", flush=True)
-print(f"📁  Flet assets    : "
-      f"{os.path.join(base_path, 'flet_assets')}", flush=True)
 print(f"🌐  Host           : {APP_HOST}", flush=True)
 print(f"🚪  Port           : {APP_PORT}", flush=True)
 print(f"🕐  Started        : "
@@ -753,8 +744,6 @@ print(f"🩹  Patch          : "
 print(f"🏠  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
 print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"👤  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
-print(f"🔌  APIs           : /api/frontpage  /api/batches  "
-      f"/api/traveler/*", flush=True)
 print("=" * 66, flush=True)
 
 _seed_volume_if_empty(base_path)
