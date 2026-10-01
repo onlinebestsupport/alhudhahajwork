@@ -1,13 +1,14 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION
 # =================================================================================
-# PATCHES APPLIED (v1.3):
+# PATCHES APPLIED (v1.4):
 #   21.1.A — Cloud environment detection
 #   21.1.B — Defensive window-close handler
 #   21.1.C — Flet 1.0 window sizing
 #   21.1.D — Friendly DB error page
 #   21.1.E — Graceful SIGTERM handling
-#   21.1.F — Suppress destroyed-session errors (applied at module import)
+#   21.1.F — Suppress destroyed-session errors ONLY (narrow patch)
+#            — All other exceptions now propagate so UI bugs are visible
 #   21.1.G — Ensure static/downloads/ exists at boot
 # =================================================================================
 
@@ -56,29 +57,35 @@ def _boot_log(msg: str):
 
 
 # =================================================================================
-# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors
+# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors ONLY
 # =================================================================================
-# Runs AT MODULE IMPORT TIME (before any Page exists) so every session is
-# patched. Prints confirmation via stdout so it always appears in logs.
+# Flet destroys the session when the browser tab closes or the WebSocket
+# drops. Background threads then crash on page.update() with:
+#     RuntimeError: An attempt to fetch destroyed session.
+#
+# The patch below swallows ONLY that specific error. Any other exception
+# (dialog bugs, control errors, etc.) propagates normally — so we don't
+# silently hide real UI problems.
+#
+# Runs at MODULE IMPORT TIME so every session is covered.
 # =================================================================================
 _PATCH_INSTALLED = False
 
 
 def _patch_page_update():
-    """Patch Page.update() to swallow 'destroyed session' RuntimeErrors."""
+    """Patch Page.update() to swallow ONLY destroyed-session RuntimeErrors.
+
+    All other exceptions propagate normally so UI bugs aren't hidden.
+    """
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
 
-    # Try multiple possible import paths — Flet's internals shift between
-    # patch releases within the same major version.
+    # Try multiple possible import paths — Flet's internals shift
+    # between patch releases within the same major version.
     Page = None
     import_errors = []
-    for path in (
-        "flet.controls.page",
-        "flet.page",
-        "flet",
-    ):
+    for path in ("flet.controls.page", "flet.page", "flet"):
         try:
             mod = __import__(path, fromlist=["Page"])
             Page = getattr(mod, "Page", None)
@@ -99,18 +106,18 @@ def _patch_page_update():
             try:
                 return _original_update(self, *args, **kwargs)
             except RuntimeError as ex:
-                msg = str(ex).lower()
-                if "destroyed session" in msg or "session" in msg:
+                # ONLY swallow the harmless post-tab-close error.
+                # Real bugs (dialog crashes, control errors) still raise
+                # so they surface in the logs.
+                if "destroyed session" in str(ex).lower():
                     return None
                 raise
-            except Exception:
-                # Any other error during teardown — swallow silently
-                return None
+            # No catch-all — let every other exception surface
 
         Page.update = _safe_update
         _PATCH_INSTALLED = True
-        _boot_log("✅ Patched Page.update() — destroyed-session errors "
-                  "will be swallowed")
+        _boot_log("✅ Patched Page.update() (narrow — only swallows "
+                  "destroyed-session errors; other bugs will surface)")
     except Exception as e:
         _boot_log(f"❌ Patch failed: {e}")
 
@@ -263,8 +270,8 @@ class HajTravelApp:
             page.add(login.build())
             try:
                 page.update()
-            except Exception:
-                pass
+            except Exception as ex:
+                _boot_log(f"show_login update failed: {ex}")
 
         def on_login_success(user):
             state["user"] = user
@@ -294,8 +301,8 @@ class HajTravelApp:
             page.add(mw.build())
             try:
                 page.update()
-            except Exception:
-                pass
+            except Exception as ex:
+                _boot_log(f"show_main_window update failed: {ex}")
 
         show_login()
 
