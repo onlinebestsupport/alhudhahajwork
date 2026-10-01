@@ -1,25 +1,13 @@
 # =================================================================================
 # SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED + CLOUD-READY + MOBILE-RESPONSIVE
 # =================================================================================
-# Purpose: Backup management — Create, Restore, Delete, Import, Refresh, Download.
-#
-# FIXES IN THIS VERSION:
-#   • Scans BOTH data_dir/backups/ AND data_dir.parent/backups/
-#   • Displays the resolved folder path in the UI header
-#   • Uses page_ref (page is read-only on Flet 1.0 controls)
-#   • Registers FilePicker as a service (Flet 1.0 change)
-#   • NEW (cloud): Download button in Actions column
-#   • NEW (cloud): Cloud-mode warning banner
-#   • NEW (cloud): FilePicker registration is idempotent
-#
-# PATCHES APPLIED (v1.2 — MOBILE-RESPONSIVE):
-#   20.2.A — setup_ui()              : responsive header, stacked actions, 
-#                                      card-list container
-#   20.2.B — _display_backups()      : branches to _render_mobile_backups()
-#   20.2.C — _render_mobile_backups(): NEW — card layout with 
-#                                      download/restore/delete
-#   20.2.D — on_resize()             : NEW — re-render when viewport crosses 
-#                                      700px
+# v1.3 — Row Selection
+#   • ADDED: Tap any row → SELECTS (highlights the backup)
+#   • ADDED: Toolbar Download/Restore/Delete act on selected row
+#   • ADDED: "Sel" column with ✓ marker
+#   • FIXED: on_select_change (correct Flet 1.0.0 param)
+#   • Action icons 18 → 20 for easier tapping
+#   • Preserved: cloud banner, FilePicker, path scanning
 # =================================================================================
 
 import os
@@ -67,8 +55,12 @@ class BackupView(ft.Column):
         self.backup_count_label = None
         self.folder_path_label = None
         self.status_label = None
+        self.selection_label = None
         self.backup_files = []
         self._mobile_mode = False
+
+        # Currently selected backup (for toolbar actions)
+        self._selected_backup_idx = None
 
         # File picker (Flet 1.0)
         self.file_picker = ft.FilePicker()
@@ -153,7 +145,7 @@ class BackupView(ft.Column):
         return dirs
 
     # =============================================================================
-    # 20.1.4 — setup_ui  (MOBILE-RESPONSIVE)
+    # 20.1.4 — setup_ui  (MOBILE-RESPONSIVE + row selection)
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -234,7 +226,7 @@ class BackupView(ft.Column):
             border=ft.Border.all(1, "#bae6fd"))
 
         # ---- Action buttons ----
-        def _action_btn(label, icon, color, handler):
+        def _action_btn(label, icon, color, handler, expand_narrow=False):
             return ft.Button(
                 content=ft.Row([
                     ft.Icon(icon, size=16 if narrow else 18,
@@ -247,17 +239,26 @@ class BackupView(ft.Column):
                 on_click=handler,
                 height=44 if narrow else 46,
                 bgcolor=color,
-                expand=narrow)
+                expand=expand_narrow)
 
         if narrow:
             actions_block = ft.Column([
                 _action_btn("Create New Backup", ft.Icons.SAVE,
-                            "#059669", self.create_backup),
+                            "#059669", self.create_backup,
+                            expand_narrow=True),
                 ft.Row([
                     _action_btn("Refresh", ft.Icons.REFRESH,
                                 "#2563eb", self.refresh),
                     _action_btn("Folder", ft.Icons.FOLDER_OPEN,
                                 "#7c3aed", self.open_folder),
+                ], spacing=8),
+                ft.Row([
+                    _action_btn("⬇️ Download", ft.Icons.DOWNLOAD,
+                                "#0891b2", self._download_selected),
+                    _action_btn("♻️ Restore", ft.Icons.RESTORE,
+                                "#d97706", self._restore_selected),
+                    _action_btn("🗑️ Delete", ft.Icons.DELETE,
+                                "#dc2626", self._delete_selected),
                 ], spacing=8),
             ], spacing=8)
         else:
@@ -266,6 +267,12 @@ class BackupView(ft.Column):
                             "#059669", self.create_backup),
                 _action_btn("Refresh List", ft.Icons.REFRESH,
                             "#2563eb", self.refresh),
+                _action_btn("⬇️ Download (selected)", ft.Icons.DOWNLOAD,
+                            "#0891b2", self._download_selected),
+                _action_btn("♻️ Restore (selected)", ft.Icons.RESTORE,
+                            "#d97706", self._restore_selected),
+                _action_btn("🗑️ Delete (selected)", ft.Icons.DELETE,
+                            "#dc2626", self._delete_selected),
                 _action_btn("Show Folder Path", ft.Icons.FOLDER_OPEN,
                             "#7c3aed", self.open_folder),
             ], spacing=10, wrap=True)
@@ -273,6 +280,9 @@ class BackupView(ft.Column):
         # ---- Desktop table ----
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11,
+                                      weight=ft.FontWeight.BOLD,
+                                      color=ft.Colors.WHITE)),
                 ft.DataColumn(ft.Text(h, size=11,
                                       weight=ft.FontWeight.BOLD,
                                       color=ft.Colors.WHITE))
@@ -302,6 +312,17 @@ class BackupView(ft.Column):
             "Total: 0 backups", size=11,
             weight=ft.FontWeight.BOLD, color="#1e40af")
 
+        self.selection_label = ft.Text(
+            "", size=10, color=ft.Colors.BLUE_700,
+            weight=ft.FontWeight.BOLD, italic=True)
+
+        hint_text = ("💡 Tap a backup card to select, then use toolbar "
+                     "Download / Restore / Delete"
+                     if narrow else
+                     "💡 Tap a row to SELECT it, then use toolbar "
+                     "Download / Restore / Delete. "
+                     "You can also use per-row icons.")
+
         table_card = ft.Container(
             content=ft.Column([
                 ft.Row([
@@ -311,6 +332,9 @@ class BackupView(ft.Column):
                     ft.Container(expand=True),
                     self.backup_count_label,
                 ], spacing=6),
+                ft.Text(hint_text, size=10,
+                        color=ft.Colors.GREY_600, italic=True),
+                self.selection_label,
                 table_body,
             ], spacing=8),
             padding=10 if narrow else 12,
@@ -356,7 +380,7 @@ class BackupView(ft.Column):
             print(f"[BACKUP] file picker registration failed: {ex}")
 
     # =============================================================================
-    # 20.1.5b — on_resize  (NEW — re-render when viewport crosses breakpoint)
+    # 20.1.5b — on_resize
     # =============================================================================
     def on_resize(self, e=None):
         """Re-evaluate layout when viewport changes."""
@@ -375,11 +399,12 @@ class BackupView(ft.Column):
             print(f"[BACKUP] on_resize error: {ex}")
 
     # =============================================================================
-    # 20.1.6 — refresh (scan ALL known backup folders)
+    # 20.1.6 — refresh
     # =============================================================================
     def refresh(self, e=None):
         try:
             self.backup_files = []
+            self._selected_backup_idx = None
             scanned_dirs = self._scan_all_dirs()
 
             print(f"[BACKUP] scanning {len(scanned_dirs)} folder(s):")
@@ -449,7 +474,7 @@ class BackupView(ft.Column):
                               ft.Colors.RED_500)
 
     # =============================================================================
-    # 20.1.7 — _display_backups  (branches to mobile renderer)
+    # 20.1.7 — _display_backups (desktop table)
     # =============================================================================
     def _display_backups(self):
         self.table.rows.clear()
@@ -477,37 +502,64 @@ class BackupView(ft.Column):
             def _delete(e, b=backup):
                 self._confirm_delete(b)
 
-            self.table.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(str(i + 1), size=11,
-                                    text_align=ft.TextAlign.CENTER)),
-                ft.DataCell(ft.Text(date_str, size=11)),
-                ft.DataCell(ft.Text(backup["file_name"], size=11,
+            is_selected = (self._selected_backup_idx == i)
+
+            def _on_row_tap(e, idx=i):
+                try:
+                    self._select_backup(idx)
+                except Exception as ex:
+                    print(f"[BACKUP] row tap error: {ex}")
+
+            self.table.rows.append(
+                ft.DataRow(
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
+                    cells=[
+                        # Selection indicator
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
                                     weight=ft.FontWeight.BOLD,
-                                    tooltip=backup["file_path"])),
-                ft.DataCell(ft.Text(size_str, size=11,
-                                    text_align=ft.TextAlign.RIGHT)),
-                ft.DataCell(ft.Text(backup["status"], size=10,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=status_color)),
-                ft.DataCell(ft.Text(
-                    Path(backup["folder"]).name or backup["folder"],
-                    size=10, color=ft.Colors.GREY_600,
-                    tooltip=backup["folder"])),
-                ft.DataCell(ft.Row([
-                    ft.IconButton(ft.Icons.DOWNLOAD, icon_size=18,
-                                  icon_color="#2563eb",
-                                  tooltip="Download to your PC",
-                                  on_click=_download),
-                    ft.IconButton(ft.Icons.RESTORE, icon_size=18,
-                                  icon_color="#d97706",
-                                  tooltip="Restore this backup",
-                                  on_click=_restore),
-                    ft.IconButton(ft.Icons.DELETE, icon_size=18,
-                                  icon_color="#dc2626",
-                                  tooltip="Delete this backup",
-                                  on_click=_delete),
-                ], spacing=0)),
-            ]))
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
+                        ft.DataCell(ft.Text(str(i + 1), size=11,
+                                            text_align=ft.TextAlign.CENTER)),
+                        ft.DataCell(ft.Text(date_str, size=11)),
+                        ft.DataCell(ft.Text(
+                            backup["file_name"], size=11,
+                            weight=ft.FontWeight.BOLD,
+                            tooltip=backup["file_path"])),
+                        ft.DataCell(ft.Text(size_str, size=11,
+                                            text_align=ft.TextAlign.RIGHT)),
+                        ft.DataCell(ft.Text(backup["status"], size=10,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=status_color)),
+                        ft.DataCell(ft.Text(
+                            Path(backup["folder"]).name or backup["folder"],
+                            size=10, color=ft.Colors.GREY_600,
+                            tooltip=backup["folder"])),
+                        ft.DataCell(ft.Row([
+                            ft.IconButton(ft.Icons.DOWNLOAD, icon_size=20,
+                                          icon_color="#2563eb",
+                                          tooltip="Download to your PC",
+                                          on_click=_download),
+                            ft.IconButton(ft.Icons.RESTORE, icon_size=20,
+                                          icon_color="#d97706",
+                                          tooltip="Restore this backup",
+                                          on_click=_restore),
+                            ft.IconButton(ft.Icons.DELETE, icon_size=20,
+                                          icon_color="#dc2626",
+                                          tooltip="Delete this backup",
+                                          on_click=_delete),
+                        ], spacing=0)),
+                    ]))
 
         if self.backup_count_label:
             self.backup_count_label.value = (
@@ -521,7 +573,7 @@ class BackupView(ft.Column):
                 print(f"[BACKUP] mobile render failed: {ex}")
 
     # =============================================================================
-    # 20.1.7b — _render_mobile_backups  (NEW — card layout)
+    # 20.1.7b — _render_mobile_backups
     # =============================================================================
     def _render_mobile_backups(self):
         """Render backup list as cards for narrow screens."""
@@ -552,69 +604,150 @@ class BackupView(ft.Column):
             def _delete(e, b=backup):
                 self._confirm_delete(b)
 
-            self.mobile_list.controls.append(
-                ft.Container(
-                    content=ft.Column([
-                        # Row 1: index + file name + status
-                        ft.Row([
-                            ft.Container(
-                                content=ft.Text(
-                                    f"#{i+1}", size=9,
-                                    color=ft.Colors.WHITE,
-                                    weight=ft.FontWeight.BOLD),
-                                padding=ft.Padding.symmetric(
-                                    horizontal=6, vertical=2),
-                                bgcolor="#1e40af",
-                                border_radius=6),
-                            ft.Text(backup["file_name"], size=11,
-                                    weight=ft.FontWeight.BOLD,
-                                    expand=True, max_lines=1,
-                                    overflow=ft.TextOverflow.ELLIPSIS),
-                            ft.Text(backup["status"], size=9,
-                                    color=status_color,
-                                    weight=ft.FontWeight.BOLD),
-                        ], spacing=6),
+            is_selected = (self._selected_backup_idx == i)
 
-                        # Row 2: date + size + folder
-                        ft.Row([
-                            ft.Text(f"📅 {date_str}", size=9,
-                                    color=ft.Colors.GREY_600),
-                            ft.Text(f"💾 {size_str}", size=9,
-                                    color=ft.Colors.GREY_600),
-                            ft.Text(
-                                f"📁 {Path(backup['folder']).name}",
-                                size=9, color=ft.Colors.GREY_600),
-                        ], spacing=8, wrap=True),
+            def _on_card_tap(e, idx=i):
+                try:
+                    self._select_backup(idx)
+                except Exception as ex:
+                    print(f"[BACKUP] card tap error: {ex}")
 
-                        # Row 3: actions
-                        ft.Row([
-                            ft.IconButton(
-                                ft.Icons.DOWNLOAD, icon_size=20,
-                                icon_color="#2563eb",
-                                tooltip="Download",
-                                on_click=_download),
-                            ft.IconButton(
-                                ft.Icons.RESTORE, icon_size=20,
-                                icon_color="#d97706",
-                                tooltip="Restore",
-                                on_click=_restore),
-                            ft.IconButton(
-                                ft.Icons.DELETE, icon_size=20,
-                                icon_color="#dc2626",
-                                tooltip="Delete",
-                                on_click=_delete),
-                        ], spacing=0,
-                           alignment=ft.MainAxisAlignment.END),
+            card = ft.Container(
+                content=ft.Column([
+                    # Row 1: index + file name + status
+                    ft.Row([
+                        ft.Container(
+                            content=ft.Text(
+                                f"#{i+1}", size=9,
+                                color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD),
+                            padding=ft.Padding.symmetric(
+                                horizontal=6, vertical=2),
+                            bgcolor="#1e40af",
+                            border_radius=6),
+                        ft.Text(backup["file_name"], size=11,
+                                weight=ft.FontWeight.BOLD,
+                                expand=True, max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(
+                            ("✓ " if is_selected else "") +
+                            backup["status"],
+                            size=9,
+                            color="#27ae60" if is_selected else status_color,
+                            weight=ft.FontWeight.BOLD),
                     ], spacing=6),
-                    padding=12,
-                    bgcolor=ft.Colors.WHITE,
-                    border_radius=10,
-                    border=ft.Border.all(1, "#e2e8f0"),
-                )
+
+                    # Row 2: date + size + folder
+                    ft.Row([
+                        ft.Text(f"📅 {date_str}", size=9,
+                                color=ft.Colors.GREY_600),
+                        ft.Text(f"💾 {size_str}", size=9,
+                                color=ft.Colors.GREY_600),
+                        ft.Text(
+                            f"📁 {Path(backup['folder']).name}",
+                            size=9, color=ft.Colors.GREY_600),
+                    ], spacing=8, wrap=True),
+
+                    # Row 3: actions
+                    ft.Row([
+                        ft.IconButton(
+                            ft.Icons.DOWNLOAD, icon_size=20,
+                            icon_color="#2563eb",
+                            tooltip="Download",
+                            on_click=_download),
+                        ft.IconButton(
+                            ft.Icons.RESTORE, icon_size=20,
+                            icon_color="#d97706",
+                            tooltip="Restore",
+                            on_click=_restore),
+                        ft.IconButton(
+                            ft.Icons.DELETE, icon_size=20,
+                            icon_color="#dc2626",
+                            tooltip="Delete",
+                            on_click=_delete),
+                    ], spacing=0,
+                       alignment=ft.MainAxisAlignment.END),
+                ], spacing=6),
+                padding=12,
+                bgcolor=("#dcfce7" if is_selected else ft.Colors.WHITE),
+                border_radius=10,
+                border=ft.Border.all(
+                    2 if is_selected else 1,
+                    "#27ae60" if is_selected else "#e2e8f0"),
+                on_click=_on_card_tap,
+                ink=True,
             )
 
+            self.mobile_list.controls.append(card)
+
     # =============================================================================
-    # 20.1.7c — _download_backup  (cloud-friendly download)
+    # 20.1.7c — _select_backup / _get_selected_backup
+    # =============================================================================
+    def _select_backup(self, idx):
+        if self._selected_backup_idx == idx:
+            self._selected_backup_idx = None
+        else:
+            self._selected_backup_idx = idx
+
+        if self.selection_label:
+            if self._selected_backup_idx is not None:
+                try:
+                    b = self.backup_files[self._selected_backup_idx]
+                    size = b["file_size"]
+                    if size < 1024 * 1024:
+                        size_str = f"{size/1024:.1f} KB"
+                    else:
+                        size_str = f"{size/(1024*1024):.2f} MB"
+                    self.selection_label.value = (
+                        f"✅ Selected: {b['file_name']} | "
+                        f"{size_str} | "
+                        f"{b['file_date'].strftime('%Y-%m-%d %H:%M')}")
+                except Exception:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        # Re-render to update highlight
+        self._display_backups()
+        self._safe_update()
+
+    def _get_selected_backup(self):
+        if self._selected_backup_idx is None:
+            return None
+        try:
+            return self.backup_files[self._selected_backup_idx]
+        except Exception:
+            return None
+
+    # =============================================================================
+    # 20.1.7d — toolbar action wrappers
+    # =============================================================================
+    def _download_selected(self, e=None):
+        b = self._get_selected_backup()
+        if not b:
+            self._snack("⚠️ Tap a backup row/card first to select it",
+                        ft.Colors.ORANGE_700)
+            return
+        self._download_backup(b)
+
+    def _restore_selected(self, e=None):
+        b = self._get_selected_backup()
+        if not b:
+            self._snack("⚠️ Tap a backup row/card first to select it",
+                        ft.Colors.ORANGE_700)
+            return
+        self._confirm_restore(b)
+
+    def _delete_selected(self, e=None):
+        b = self._get_selected_backup()
+        if not b:
+            self._snack("⚠️ Tap a backup row/card first to select it",
+                        ft.Colors.ORANGE_700)
+            return
+        self._confirm_delete(b)
+
+    # =============================================================================
+    # 20.1.7e — _download_backup  (cloud-friendly download)
     # =============================================================================
     def _download_backup(self, backup):
         """Copy the backup to /static and open the browser download URL."""
@@ -923,7 +1056,7 @@ class BackupView(ft.Column):
         self.page_ref.show_dialog(dialog)
 
     # =============================================================================
-    # 20.1.11 — open_folder  (web-friendly)
+    # 20.1.11 — open_folder
     # =============================================================================
     def open_folder(self, e=None):
         """Show the folder path in a dialog (web-safe)."""
