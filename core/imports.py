@@ -3,8 +3,7 @@
 # =================================================================================
 # PATCHES APPLIED (v1.1):
 #   0.1.A — Cloud-aware BASE_DIR resolution (Railway Volume support)
-#   0.1.B — Removed stale `warnings.filterwarnings("ignore")` (was hiding
-#           pandas/reportlab deprecation warnings that matter on cloud)
+#   0.1.B — Removed stale `warnings.filterwarnings("ignore")`
 #   0.1.C — Trimmed dead imports (numpy, csv, reportlab.canvas, letter, landscape)
 #   0.1.D — Light logging setup so Railway logs are useful
 # =================================================================================
@@ -58,12 +57,10 @@ APP_VERSION = "3.0.0 (Web)"
 
 def _resolve_base_dir() -> Path:
     """Resolve the writable data root.
-
-    Priority order:
+    Priority:
       1. DATA_ROOT env var (explicit override)
       2. RAILWAY_VOLUME_MOUNT_PATH env var (auto-set when a Railway
-         Volume is attached — this is the recommended deployment path
-         for persistent CSVs on Railway)
+         Volume is attached)
       3. PyInstaller frozen executable directory (desktop builds)
       4. Project root (local dev)
     """
@@ -88,7 +85,6 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
 EXPORT_DIR = BASE_DIR / "exports"
 
-# Ensure folders exist
 for folder in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR):
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -100,11 +96,9 @@ for folder in (DATA_DIR, UPLOAD_DIR, EXPORT_DIR):
 # 0.8 — Logging
 # =================================================================================
 def _setup_logging():
-    """Configure root logger so Railway logs show timestamps & levels."""
     root = logging.getLogger()
     if root.handlers:
-        return  # already configured (e.g. re-import)
-
+        return
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -115,7 +109,5 @@ def _setup_logging():
 
 _setup_logging()
 
-# Emit a startup banner so Railway logs immediately reveal which data
-# root the container is using — critical for debugging volume mounts.
 logging.getLogger("config").info(
     "Data root: %s (DATA_DIR=%s)", BASE_DIR, DATA_DIR)

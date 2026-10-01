@@ -1,14 +1,7 @@
 # =================================================================================
 # nixpacks.toml — Alhudha Haj Travel System (Railway deployment)
 # =================================================================================
-# Flet 1.0 web app. Runs as a uvicorn/starlette server — no desktop GUI needed.
-#
-# PATCHES APPLIED (v1.1):
-#   • Dropped gstreamer + gst-plugins-base (PyQt-era leftovers, ~140 MB)
-#   • Kept libgtk-3 as a safety net for flet-desktop's import-time checks
-#   • Added PYTHONUNBUFFERED so Railway logs stream in real-time
-#   • Upgraded pip before install (avoids occasional resolver bugs)
-#   • Explicit PORT passthrough note for future maintainers
+# Flet 1.0 web app. Runs as uvicorn/starlette — no desktop GUI needed.
 # =================================================================================
 
 [phases.setup]
@@ -26,13 +19,6 @@ cmds = [
 [start]
 cmd = "python main.py"
 
-# =================================================================================
-# ENVIRONMENT VARIABLES
-# =================================================================================
-# Railway injects PORT automatically. main.py reads it via os.getenv("PORT").
-# PYTHONUNBUFFERED ensures print()/logging output flushes immediately so
-# Railway shows logs in real time — critical for debugging startup issues.
-# =================================================================================
 [variables]
 PYTHONUNBUFFERED = "1"
 PYTHONDONTWRITEBYTECODE = "1"
