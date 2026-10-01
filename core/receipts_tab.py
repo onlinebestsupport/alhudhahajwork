@@ -1,15 +1,15 @@
 # =================================================================================
 # SECTION 15 (FLET 1.0.0 VERSION) — RECEIPTS TAB
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Stat cards 2-per-row on mobile, 5-per-row on desktop
-#   • Toolbar + filter bar use ResponsiveRow
-#   • Table wrapped in horizontal scroll
-#   • All original patches preserved:
-#       15.1.A — fresh DB reload
-#       15.1.B — lifetime Pkg-Pending (uses ALL receipts, not filter)
-#       15.1.C — action buttons re-fetch fresh dict on click
-#       15.1.D — delete warns about linked payment
+# v1.3 — Row Selection + Data-Loading Safety
+#   • ADDED: Tap any row → SELECTS (does not open Edit)
+#   • ADDED: Toolbar 📄 PDF / 🖨️ Print act on selected row
+#   • ADDED: "Sel" column with ✓ marker
+#   • FIXED: on_select_change (correct Flet 1.0.0 param)
+#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
+#   • Action icons 16 → 18 for easier mobile tapping
+#   • Preserved: 15.1.A (fresh reload), 15.1.B (lifetime Pkg-Pending),
+#                15.1.C (action handlers re-fetch), 15.1.D (delete warns)
 # =================================================================================
 
 import flet as ft
@@ -49,7 +49,11 @@ class ReceiptsTab:
         self.date_to = None
         self.table = None
         self.filtered_count_label = None
+        self.selection_label = None
         self.root = None
+
+        # Currently selected receipt (for toolbar PDF/Print)
+        self._selected_receipt_id = None
 
         self.setup_ui()
         self.refresh()
@@ -58,7 +62,7 @@ class ReceiptsTab:
         return self.root
 
     # =============================================================================
-    # 15.1.1 — setup_ui  (MOBILE-RESPONSIVE)
+    # 15.1.1 — setup_ui
     # =============================================================================
     def setup_ui(self):
         # ---- TOOLBAR ----
@@ -76,7 +80,13 @@ class ReceiptsTab:
             )
 
         toolbar = ft.Row(
-            controls=[_tb("🔄 Refresh", "#3498db", self.refresh)],
+            controls=[
+                _tb("🔄 Refresh", "#3498db", self.refresh),
+                _tb("📄 PDF (selected)", "#e74c3c",
+                    self.export_pdf_selected),
+                _tb("🖨️ Print (selected)", "#9b59b6",
+                    self.print_receipt_selected),
+            ],
             spacing=8, wrap=True,
         )
 
@@ -165,9 +175,15 @@ class ReceiptsTab:
             "🔍 Showing: 0 receipts", size=11,
             weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_800)
 
+        self.selection_label = ft.Text("", size=10,
+                                       color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD,
+                                       italic=True)
+
         # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11)),
                 ft.DataColumn(ft.Text("Receipt", size=11)),
                 ft.DataColumn(ft.Text("Date", size=11)),
                 ft.DataColumn(ft.Text("Traveler", size=11)),
@@ -204,10 +220,20 @@ class ReceiptsTab:
                     stats_row,
                     self.filtered_count_label,
                     ft.Container(
-                        content=ft.Row(
-                            [self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE,
-                        ),
+                        content=ft.Column([
+                            ft.Text("💡 Tap a row to SELECT it, then use "
+                                    "toolbar 📄 PDF / 🖨️ Print. "
+                                    "Use icons in Actions column for "
+                                    "per-row actions.",
+                                    size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            self.selection_label,
+                            ft.Row(
+                                [self.table],
+                                scroll=ft.ScrollMode.ADAPTIVE,
+                            ),
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10, padding=10),
                 ],
@@ -241,18 +267,16 @@ class ReceiptsTab:
             return d
 
     # =============================================================================
-    # 15.1.2 — refresh  (PATCH 15.1.A preserved)
+    # 15.1.2 — refresh (reload removed to protect cache)
     # =============================================================================
     def refresh(self, e=None):
-        try:
-            try:
-                if hasattr(self.db, "reload"):
-                    self.db.reload()
-                elif hasattr(self.db, "_load_all"):
-                    self.db._load_all()
-            except Exception as _re:
-                print(f"[ReceiptsTab.refresh] reload skipped: {_re}")
+        """
+        Load receipts + related data from the DB's in-memory cache.
 
+        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
+        can differ from the volume mount path, which wipes the cache.
+        """
+        try:
             self.receipts = self.db.get_receipts()
 
             self.travelers = {}
@@ -276,9 +300,16 @@ class ReceiptsTab:
                 opts.append(ft.dropdown.Option(key=tid, text=label[:60]))
             self.traveler_filter.options = opts
 
+            print(f"[RECEIPTS] loaded {len(self.receipts)} receipts, "
+                  f"{len(self.payments)} payments, "
+                  f"{len(self.invoices)} invoices")
+
             self.display_receipts()
             self.update_summary_stats()
-            self.page.update()
+            try:
+                self.page.update()
+            except Exception:
+                pass
         except Exception as ex:
             print(f"Receipts refresh error: {ex}")
             import traceback
@@ -286,8 +317,6 @@ class ReceiptsTab:
 
     # =============================================================================
     # 15.1.3 — display_receipts
-    #   PATCH 15.1.B: traveler_paid computed from ALL receipts (lifetime)
-    #   PATCH 15.1.C: action buttons capture receipt ID, re-fetch on click
     # =============================================================================
     def display_receipts(self, receipts=None):
         if receipts is None:
@@ -385,52 +414,117 @@ class ReceiptsTab:
                     controls=[
                         ft.IconButton(
                             icon=ft.Icons.VISIBILITY,
-                            icon_color="#3498db", icon_size=16,
+                            icon_color="#3498db", icon_size=18,
                             tooltip="View",
                             on_click=_wrap(self.view_receipt_details)),
                         ft.IconButton(
                             icon=ft.Icons.PICTURE_AS_PDF,
-                            icon_color="#e74c3c", icon_size=16,
+                            icon_color="#e74c3c", icon_size=18,
                             tooltip="PDF",
                             on_click=_wrap(self.export_single_receipt_pdf)),
                         ft.IconButton(
                             icon=ft.Icons.PRINT,
-                            icon_color="#9b59b6", icon_size=16,
+                            icon_color="#9b59b6", icon_size=18,
                             tooltip="Print",
                             on_click=_wrap(self.print_single_receipt)),
                         ft.IconButton(
                             icon=ft.Icons.DELETE,
-                            icon_color="#95a5a6", icon_size=16,
+                            icon_color="#95a5a6", icon_size=18,
                             tooltip="Delete",
                             on_click=_wrap(self.delete_receipt)),
                     ], spacing=0,
                 )
 
+            is_selected = (self._selected_receipt_id == r_id)
+
+            # -------- ROW TAP → SELECT (not edit) --------
+            def _on_row_tap(e, _rid=r_id):
+                try:
+                    self._select_receipt(_rid)
+                except Exception as ex:
+                    print(f"[RECEIPTS] row tap error: {ex}")
+
             self.table.rows.append(
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(
-                        self.safe_str(r.get('receipt_no', ''))[:16],
-                        size=10, weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(tname[:18], size=10)),
-                    ft.DataCell(ft.Text(tpassport, size=10)),
-                    ft.DataCell(ft.Text(method[:12], size=10)),
-                    ft.DataCell(ft.Text(
-                        f"₹{amount:,.0f}", size=10,
-                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(inv_no[:14], size=10)),
-                    ft.DataCell(ft.Text(status, size=10,
-                                        color=status_color,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(pkg_txt, size=10,
-                                        color=pkg_color)),
-                    ft.DataCell(ft.Text(inv_txt, size=10,
-                                        color=inv_color)),
-                    ft.DataCell(_make_actions()),
-                ]))
+                ft.DataRow(
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
+                    cells=[
+                        # Selection indicator
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
+                        ft.DataCell(ft.Text(
+                            self.safe_str(r.get('receipt_no', ''))[:16],
+                            size=10, weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(date_str, size=10)),
+                        ft.DataCell(ft.Text(tname[:18], size=10)),
+                        ft.DataCell(ft.Text(tpassport, size=10)),
+                        ft.DataCell(ft.Text(method[:12], size=10)),
+                        ft.DataCell(ft.Text(
+                            f"₹{amount:,.0f}", size=10,
+                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(inv_no[:14], size=10)),
+                        ft.DataCell(ft.Text(status, size=10,
+                                            color=status_color,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(pkg_txt, size=10,
+                                            color=pkg_color)),
+                        ft.DataCell(ft.Text(inv_txt, size=10,
+                                            color=inv_color)),
+                        ft.DataCell(_make_actions()),
+                    ]))
 
         self.filtered_count_label.value = (
             f"🔍 Showing: {len(receipts)} receipts")
+
+    # =============================================================================
+    # 15.1.3b — _select_receipt / _get_selected_receipt
+    # =============================================================================
+    def _select_receipt(self, receipt_id):
+        if self._selected_receipt_id == receipt_id:
+            self._selected_receipt_id = None
+        else:
+            self._selected_receipt_id = receipt_id
+
+        if self.selection_label:
+            if self._selected_receipt_id:
+                r = next((x for x in self.receipts
+                          if x.get('id') == self._selected_receipt_id), None)
+                if r:
+                    p = self.payments.get(r.get('payment_id', ''), {})
+                    tid = p.get('traveler_id', '')
+                    info = self.travelers.get(tid, {'name': '?'})
+                    self.selection_label.value = (
+                        f"✅ Selected: Receipt "
+                        f"{self.safe_str(r.get('receipt_no', ''))[:16]} | "
+                        f"{info['name']} | "
+                        f"₹{self._f(r.get('amount', 0)):,.0f}")
+                else:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        self.display_receipts()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _get_selected_receipt(self):
+        if not self._selected_receipt_id:
+            return None
+        return next((r for r in self.receipts
+                     if r.get('id') == self._selected_receipt_id), None)
 
     # =============================================================================
     # 15.1.4 — Stats
@@ -482,11 +576,18 @@ class ReceiptsTab:
                 return f"₹{n/1000:.1f}K"
             return f"₹{n:,.0f}"
 
-        self.stat_labels['total_receipts'].value = str(total)
-        self.stat_labels['total_amount'].value = _short(total_amount)
-        self.stat_labels['today'].value = _short(today_amount)
-        self.stat_labels['package_pending'].value = _short(pkg_pending_total)
-        self.stat_labels['invoice_pending'].value = _short(inv_pending_total)
+        if 'total_receipts' in self.stat_labels:
+            self.stat_labels['total_receipts'].value = str(total)
+        if 'total_amount' in self.stat_labels:
+            self.stat_labels['total_amount'].value = _short(total_amount)
+        if 'today' in self.stat_labels:
+            self.stat_labels['today'].value = _short(today_amount)
+        if 'package_pending' in self.stat_labels:
+            self.stat_labels['package_pending'].value = _short(
+                pkg_pending_total)
+        if 'invoice_pending' in self.stat_labels:
+            self.stat_labels['invoice_pending'].value = _short(
+                inv_pending_total)
 
     # =============================================================================
     # 15.1.5 — Filter
@@ -629,8 +730,15 @@ class ReceiptsTab:
         self.page.show_dialog(dialog)
 
     # =============================================================================
-    # 15.1.7 — PDF export
+    # 15.1.7 — PDF export (also used by toolbar + row icon)
     # =============================================================================
+    def export_pdf_selected(self, e):
+        r = self._get_selected_receipt()
+        if not r:
+            self._snack("⚠️ Tap a row first to select it, then tap 📄 PDF")
+            return
+        self.export_single_receipt_pdf(r)
+
     def export_single_receipt_pdf(self, receipt):
         try:
             from reportlab.lib.pagesizes import A4
@@ -743,15 +851,21 @@ class ReceiptsTab:
             self._snack(f"❌ PDF error: {ex}")
 
     # =============================================================================
-    # 15.1.8 — Print
+    # 15.1.8 — Print (also used by toolbar + row icon)
     # =============================================================================
+    def print_receipt_selected(self, e):
+        r = self._get_selected_receipt()
+        if not r:
+            self._snack("⚠️ Tap a row first to select it, then tap 🖨️ Print")
+            return
+        self.print_single_receipt(r)
+
     def print_single_receipt(self, receipt):
-        self._snack(
-            "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
+        self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
+        self.export_single_receipt_pdf(receipt)
 
     # =============================================================================
-    # 15.1.9 — Delete
-    #   PATCH 15.1.D preserved
+    # 15.1.9 — Delete (PATCH 15.1.D preserved)
     # =============================================================================
     def delete_receipt(self, receipt):
         payment_id = receipt.get('payment_id', '')
