@@ -1,37 +1,25 @@
 # =================================================================================
-# SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
+# SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS (Mobile-Responsive)
 # =================================================================================
-# PATCHES APPLIED (v1.1):
-#   11.2.A — refresh()        : force DB reload before reading (fresh cache)
-#   11.2.B — display_batches(): action icons capture batch ID, re-fetch latest
-#                               dict on click (no stale row data)
-#   11.2.C — delete_batch()   : prefer db.delete_batch(); also guards against
-#                               invoices referencing the batch; shows warning
-#
-# CASCADE NOTE (3rd leg):
-#   This tab owns the "batch price" that drives "Pkg Pending" in both the
-#   Invoices tab (Patch 14.1.A) and the Receipts tab (Patch 15.1.A). Because
-#   both of those tabs now call db.reload() on every refresh, editing a
-#   batch price here propagates to their pending columns without restart.
+# v1.2 — Mobile-friendly layout:
+#   • Stat cards 2-per-row on mobile
+#   • Toolbar buttons responsive
+#   • Table wrapped in horizontal scroll
+#   • Dialogs fit mobile screens
 # =================================================================================
 
-# =================================================================================
-# 11.1 — IMPORTS & INLINE HELPERS
-# =================================================================================
 import flet as ft
 import os
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
 
-# ---- SettingsManager (safe import) ----
 try:
     from core.settings_manager import SettingsManager
 except ImportError:
     SettingsManager = None
 
 
-# ---- Inline helpers ----
 def get_app_base_path():
     import sys
     if getattr(sys, "frozen", False):
@@ -40,7 +28,6 @@ def get_app_base_path():
 
 
 def _get_prefix(name):
-    """Derive a 3-char prefix from a tour name."""
     if not name:
         return "HAJ"
     special = {
@@ -66,10 +53,8 @@ def _get_prefix(name):
 
 
 def _db_add_batch(db, data):
-    """Add a batch using db.add_batch if available, else inline fallback."""
     if hasattr(db, "add_batch"):
         return db.add_batch(data)
-
     year = data.get("year")
     tour_name = data.get("tour_type_name", "HAJ")
     prefix = _get_prefix(tour_name)
@@ -83,13 +68,11 @@ def _db_add_batch(db, data):
 
 
 def _db_get_tour_types(db):
-    """Return tour types from settings_manager, or fall back to a built-in list."""
     if SettingsManager is not None:
         try:
             return SettingsManager(db).get_tour_types()
         except Exception:
             pass
-    # Fallback: scan existing batches to derive tour types
     tours = []
     seen = set()
     try:
@@ -105,7 +88,6 @@ def _db_get_tour_types(db):
 
 
 def _db_get_tour_years(db):
-    """Return years from settings_manager, or fall back to 2020..2099."""
     if SettingsManager is not None:
         try:
             return SettingsManager(db).get_tour_years()
@@ -114,14 +96,8 @@ def _db_get_tour_years(db):
     return list(range(2020, 2100))
 
 
-# =================================================================================
-# 11.2 — CLASS: BatchesTab
-# =================================================================================
 class BatchesTab:
 
-    # -----------------------------------------------------------------------------
-    # 11.2.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user):
         self.page = page
         self.db = db
@@ -170,11 +146,7 @@ class BatchesTab:
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
-    # 11.2.2 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
-        # ---- STAT CARDS ----
         stat_configs = [
             ("total",       "Total Batches",    "📦", "#3498db"),
             ("open",        "Open Batches",     "🚪", "#27ae60"),
@@ -186,7 +158,7 @@ class BatchesTab:
 
         stat_cards = []
         for key, label, icon, color in stat_configs:
-            value_label = ft.Text("0", size=20,
+            value_label = ft.Text("0", size=18,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stats_labels[key] = value_label
@@ -195,10 +167,12 @@ class BatchesTab:
                     controls=[
                         ft.Row(
                             controls=[
-                                ft.Text(icon, size=16),
-                                ft.Text(label, size=10,
+                                ft.Text(icon, size=14),
+                                ft.Text(label, size=9,
                                         color=ft.Colors.WHITE,
-                                        weight=ft.FontWeight.BOLD),
+                                        weight=ft.FontWeight.BOLD,
+                                        no_wrap=False,
+                                        max_lines=2),
                             ],
                             spacing=4,
                         ),
@@ -207,118 +181,130 @@ class BatchesTab:
                     spacing=2,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=10,
-                bgcolor=color,   # ← solid color instead of gradient (safer)
+                padding=8,
+                bgcolor=color,
                 border_radius=10,
-                expand=True,
-                height=80,
+                height=72,
             )
             stat_cards.append(card)
 
-        stats_row = ft.Row(controls=stat_cards, spacing=10)
+        stats_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=c,
+                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                for c in stat_cards
+            ],
+            spacing=6, run_spacing=6,
+        )
 
-        # ---- TOOLBAR ----
         def _toolbar_btn(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
-                                weight=ft.FontWeight.BOLD),
-                on_click=handler, height=38,
-                bgcolor=color, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                on_click=handler, height=38, bgcolor=color,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
         self.year_filter = ft.Dropdown(
             label="Year",
             options=[ft.dropdown.Option(key="", text="All")],
-            value="",
-            width=120, height=48, text_size=12,
+            value="", width=110, height=48, text_size=11,
         )
         self.year_filter.on_change = self.apply_filters
 
         self.tour_filter = ft.Dropdown(
-            label="Tour Type",
+            label="Tour",
             options=[ft.dropdown.Option(key="", text="All")],
-            value="",
-            width=180, height=48, text_size=12,
+            value="", width=150, height=48, text_size=11,
         )
         self.tour_filter.on_change = self.apply_filters
 
         self.search_input = ft.TextField(
             hint_text="🔍 Search...",
-            width=220, height=48,
-            content_padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            height=48, text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8),
         )
         self.search_input.on_change = self.apply_filters
 
-        toolbar = ft.Row(
+        toolbar = ft.ResponsiveRow(
             controls=[
-                _toolbar_btn("➕ Create New Batch", "#27ae60",
-                             self.open_create_dialog),
-                _toolbar_btn("📊 Export", "#16a085",
-                             self.export_to_excel),
-                _toolbar_btn("🖨️ Print", "#2980b9", self.print_batches),
-                self.year_filter,
-                self.tour_filter,
-                self.search_input,
+                ft.Container(
+                    content=_toolbar_btn("➕ Create", "#27ae60",
+                                         self.open_create_dialog),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("📊 Export", "#16a085",
+                                         self.export_to_excel),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("🖨️ Print", "#2980b9",
+                                         self.print_batches),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=self.year_filter,
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=self.tour_filter,
+                    col={"xs": 12, "sm": 6, "md": 2}),
+                ft.Container(
+                    content=self.search_input,
+                    col={"xs": 12, "sm": 12, "md": 2}),
             ],
-            spacing=8,
-            wrap=True,
+            spacing=8, run_spacing=8,
         )
 
-        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("ID")),
-                ft.DataColumn(ft.Text("Package")),
-                ft.DataColumn(ft.Text("Tour Type")),
-                ft.DataColumn(ft.Text("Year")),
-                ft.DataColumn(ft.Text("Departure")),
-                ft.DataColumn(ft.Text("Return")),
-                ft.DataColumn(ft.Text("Price (₹)")),
-                ft.DataColumn(ft.Text("Seats")),
-                ft.DataColumn(ft.Text("Booked")),
-                ft.DataColumn(ft.Text("Avail")),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Occ%")),
-                ft.DataColumn(ft.Text("Actions")),
+                ft.DataColumn(ft.Text("ID", size=11)),
+                ft.DataColumn(ft.Text("Package", size=11)),
+                ft.DataColumn(ft.Text("Type", size=11)),
+                ft.DataColumn(ft.Text("Year", size=11)),
+                ft.DataColumn(ft.Text("Departure", size=11)),
+                ft.DataColumn(ft.Text("Return", size=11)),
+                ft.DataColumn(ft.Text("Price", size=11)),
+                ft.DataColumn(ft.Text("Seats", size=11)),
+                ft.DataColumn(ft.Text("Booked", size=11)),
+                ft.DataColumn(ft.Text("Avail", size=11)),
+                ft.DataColumn(ft.Text("Status", size=11)),
+                ft.DataColumn(ft.Text("Occ%", size=11)),
+                ft.DataColumn(ft.Text("Actions", size=11)),
             ],
             rows=[],
-            column_spacing=12,
+            column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=42,
-            data_row_min_height=48,
-            data_row_max_height=60,
+            heading_row_height=40,
+            data_row_min_height=44,
+            data_row_max_height=56,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
-            vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
-            horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
-        # ---- PAGINATION ----
-        self.pagination_label = ft.Text("Showing 0 to 0 of 0 batches",
-                                        size=12,
+        self.pagination_label = ft.Text("0–0 of 0", size=11,
                                         weight=ft.FontWeight.BOLD,
                                         color=ft.Colors.BLUE_GREY_800)
         self.prev_btn = ft.Button(
-            content=ft.Text("◀ Previous"),
-            on_click=self.prev_page, height=36,
+            content=ft.Text("◀ Prev", size=11),
+            on_click=self.prev_page, height=34,
             bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE,
             disabled=True,
         )
         self.next_btn = ft.Button(
-            content=ft.Text("Next ▶"),
-            on_click=self.next_page, height=36,
+            content=ft.Text("Next ▶", size=11),
+            on_click=self.next_page, height=34,
             bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE,
             disabled=True,
         )
         pagination_row = ft.Row(
             controls=[
-                self.pagination_label,
-                ft.Container(expand=True),
+                ft.Container(content=self.pagination_label, expand=True),
                 self.prev_btn, self.next_btn,
-            ], spacing=10,
+            ], spacing=8,
         )
 
-        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -327,27 +313,20 @@ class BatchesTab:
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE,
-                        ),
+                        content=ft.Row([self.table],
+                                       scroll=ft.ScrollMode.ADAPTIVE),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10,
                         padding=10,
                     ),
                     pagination_row,
                 ],
-                spacing=12,
+                spacing=10,
                 scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15,
-            bgcolor="#f0f2f5",
-            expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
-    # -----------------------------------------------------------------------------
-    # 11.2.3 — Helpers
-    # -----------------------------------------------------------------------------
     def safe_str(self, value):
         if value is None:
             return ""
@@ -368,13 +347,9 @@ class BatchesTab:
         except Exception:
             return str(value)
 
-    # -----------------------------------------------------------------------------
-    # 11.2.4 — load_tour_types_and_years
-    # -----------------------------------------------------------------------------
     def load_tour_types_and_years(self):
         try:
             self.tour_types = _db_get_tour_types(self.db)
-
             current_year = datetime.now().year
             default_years = list(range(current_year - 2, current_year + 6))
             tour_years = _db_get_tour_years(self.db)
@@ -396,7 +371,6 @@ class BatchesTab:
                         text=str(t.get("tour_name", "")),
                     ))
             self.tour_filter.options = tour_opts
-
             try:
                 self.page.update()
             except Exception:
@@ -404,15 +378,8 @@ class BatchesTab:
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 11.2.5 — refresh  (PATCH 11.2.A: force DB reload before reading)
-    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
-            # ---- PATCH 11.2.A: fresh cache reload ----
-            # Travelers tab, Invoices tab, or Receipts tab may have written
-            # to disk since our last read. Re-hydrate so get_* returns
-            # current data, not a stale in-memory snapshot.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -449,10 +416,6 @@ class BatchesTab:
             import traceback
             traceback.print_exc()
 
-    # -----------------------------------------------------------------------------
-    # 11.2.6 — display_batches
-    #   PATCH 11.2.B: action icons capture batch ID, re-fetch on every click
-    # -----------------------------------------------------------------------------
     def display_batches(self):
         start = (self.current_page - 1) * self.items_per_page
         end = min(start + self.items_per_page, len(self.filtered_batches))
@@ -494,9 +457,6 @@ class BatchesTab:
                          else "#e67e22" if occ >= 70
                          else "#27ae60")
 
-            # ------------------------------------------------------------
-            # PATCH 11.2.B — capture ID (not dict), re-fetch before dispatch
-            # ------------------------------------------------------------
             b_id = b.get("id")
 
             def _make_actions(_bid=b_id):
@@ -509,8 +469,7 @@ class BatchesTab:
                     def h(e, _h=handler, _f=_fresh):
                         fresh = _f()
                         if fresh is None:
-                            self._snack("⚠️ Batch no longer exists — "
-                                        "refreshing…")
+                            self._snack("⚠️ Batch not found — refreshing")
                             self.refresh()
                             return
                         _h(fresh)
@@ -518,67 +477,57 @@ class BatchesTab:
 
                 return ft.Row(
                     controls=[
-                        ft.IconButton(
-                            icon=ft.Icons.VISIBILITY,
-                            icon_color="#3498db", icon_size=18,
-                            tooltip="View",
-                            on_click=_wrap(self.view_batch)),
-                        ft.IconButton(
-                            icon=ft.Icons.EDIT,
-                            icon_color="#f39c12", icon_size=18,
-                            tooltip="Edit",
-                            on_click=_wrap(self.open_edit_dialog)),
-                        ft.IconButton(
-                            icon=ft.Icons.DELETE,
-                            icon_color="#e74c3c", icon_size=18,
-                            tooltip="Delete",
-                            on_click=_wrap(self.delete_batch)),
-                    ], spacing=0,
-                )
+                        ft.IconButton(icon=ft.Icons.VISIBILITY,
+                                      icon_color="#3498db", icon_size=16,
+                                      tooltip="View",
+                                      on_click=_wrap(self.view_batch)),
+                        ft.IconButton(icon=ft.Icons.EDIT,
+                                      icon_color="#f39c12", icon_size=16,
+                                      tooltip="Edit",
+                                      on_click=_wrap(self.open_edit_dialog)),
+                        ft.IconButton(icon=ft.Icons.DELETE,
+                                      icon_color="#e74c3c", icon_size=16,
+                                      tooltip="Delete",
+                                      on_click=_wrap(self.delete_batch)),
+                    ], spacing=0)
 
             self.table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(bid or ""), size=10)),
+                    ft.DataCell(ft.Text(str(bid or "")[:18], size=9)),
                     ft.DataCell(ft.Text(str(b.get("batch_name", "")),
-                                        size=11,
+                                        size=10,
                                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(tname, size=11, color=tcolor,
+                    ft.DataCell(ft.Text(tname, size=10, color=tcolor,
                                         weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(str(b.get("year", "")), size=10,
+                                        color="#0064c8")),
                     ft.DataCell(ft.Text(
-                        str(b.get("year", "")), size=11,
-                        color="#0064c8", weight=ft.FontWeight.BOLD)),
+                        self._fmt_date(b.get("departure_date")), size=10)),
                     ft.DataCell(ft.Text(
-                        self._fmt_date(b.get("departure_date")), size=11)),
+                        self._fmt_date(b.get("return_date")), size=10)),
                     ft.DataCell(ft.Text(
-                        self._fmt_date(b.get("return_date")), size=11)),
-                    ft.DataCell(ft.Text(
-                        f"₹{int(b.get('price', 0) or 0):,}", size=11)),
-                    ft.DataCell(ft.Text(str(total), size=11)),
-                    ft.DataCell(ft.Text(
-                        str(booked), size=11,
-                        color="#1e8449" if booked > 0 else "#95a5a6")),
-                    ft.DataCell(ft.Text(
-                        str(avail), size=11, color=avail_color)),
-                    ft.DataCell(ft.Text(
-                        status, size=11, color=status_color,
-                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(
-                        f"{occ:.1f}%", size=11, color=occ_color)),
+                        f"₹{int(b.get('price', 0) or 0):,}", size=10)),
+                    ft.DataCell(ft.Text(str(total), size=10)),
+                    ft.DataCell(ft.Text(str(booked), size=10,
+                                        color="#1e8449" if booked > 0 else "#95a5a6")),
+                    ft.DataCell(ft.Text(str(avail), size=10,
+                                        color=avail_color)),
+                    ft.DataCell(ft.Text(status, size=10,
+                                        color=status_color,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(f"{occ:.0f}%", size=10,
+                                        color=occ_color)),
                     ft.DataCell(_make_actions()),
                 ]))
 
         self.update_pagination()
 
-    # -----------------------------------------------------------------------------
-    # 11.2.7 — Pagination
-    # -----------------------------------------------------------------------------
     def update_pagination(self):
         total = len(self.filtered_batches)
         start = ((self.current_page - 1) * self.items_per_page + 1
                  if total else 0)
         end = min(self.current_page * self.items_per_page, total)
-        self.pagination_label.value = (
-            f"Showing {start} to {end} of {total} batches")
+        self.pagination_label.value = f"{start}–{end} of {total}"
         self.prev_btn.disabled = self.current_page <= 1
         self.next_btn.disabled = end >= total
 
@@ -601,9 +550,6 @@ class BatchesTab:
             except Exception:
                 pass
 
-    # -----------------------------------------------------------------------------
-    # 11.2.8 — Filters
-    # -----------------------------------------------------------------------------
     def apply_filters(self, e=None):
         year = self.year_filter.value or ""
         tour_id = self.tour_filter.value or ""
@@ -637,16 +583,13 @@ class BatchesTab:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 11.2.9 — Statistics (case-insensitive)
-    # -----------------------------------------------------------------------------
     def update_statistics(self):
         total = len(self.batches)
 
-        # Case-insensitive: "Open", "open", "OPEN" all count
         open_batches = len([
             b for b in self.batches
-            if str(b.get("status", "")).strip().lower() in ("open", "closing soon")
+            if str(b.get("status", "")).strip().lower()
+               in ("open", "closing soon")
         ])
 
         total_seats = sum(int(b.get("total_seats", 0) or 0)
@@ -673,9 +616,6 @@ class BatchesTab:
         self.stats_labels["value"].value = f"₹{total_value:,}"
         self.stats_labels["return_date"].value = str(with_return)
 
-    # -----------------------------------------------------------------------------
-    # 11.2.10 — Dialog launchers
-    # -----------------------------------------------------------------------------
     def open_create_dialog(self, e):
         dlg = BatchFormDialog(
             self.page, self.db, self.current_user,
@@ -701,13 +641,7 @@ class BatchesTab:
     def _on_saved(self):
         self.refresh()
 
-    # -----------------------------------------------------------------------------
-    # 11.2.11 — delete_batch
-    #   PATCH 11.2.C — prefer db.delete_batch(); also guard against invoices
-    #                  referencing the batch; warn the user.
-    # -----------------------------------------------------------------------------
     def delete_batch(self, batch):
-        # ---- Guard 1: travelers assigned? ----
         assigned = [t for t in self.travelers
                     if str(t.get("batch_id")) == str(batch.get("id"))]
         if assigned:
@@ -715,7 +649,6 @@ class BatchesTab:
                 f"⚠️ Cannot delete — {len(assigned)} traveler(s) assigned")
             return
 
-        # ---- Guard 2: invoices referencing this batch? ----
         try:
             invoices = self.db.get_invoices()
         except Exception:
@@ -728,13 +661,10 @@ class BatchesTab:
         warn = f"Delete batch '{batch.get('batch_name', '')}'?"
         if linked_invoices:
             warn += (f"\n\n⚠️ {len(linked_invoices)} invoice(s) reference "
-                     f"this batch.\nTheir batch_id will point to a "
-                     f"deleted record.\nConsider re-assigning travelers "
-                     f"first.")
+                     f"this batch.")
 
         def confirm(ev):
             try:
-                # PATCH 11.2.C — prefer DB method
                 if hasattr(self.db, "delete_batch"):
                     self.db.delete_batch(batch.get("id"))
                 else:
@@ -754,8 +684,8 @@ class BatchesTab:
                 self._snack(f"❌ {ex}")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("Delete Batch?"),
-            content=ft.Text(warn),
+            title=ft.Text("Delete Batch?", size=14),
+            content=ft.Text(warn, size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -766,16 +696,10 @@ class BatchesTab:
         )
         self.page.show_dialog(dialog)
 
-    # -----------------------------------------------------------------------------
-    # 11.2.12 — View
-    # -----------------------------------------------------------------------------
     def view_batch(self, batch):
         dlg = BatchViewDialog(self.page, self.db, batch)
         dlg.show()
 
-    # -----------------------------------------------------------------------------
-    # 11.2.13 — Export
-    # -----------------------------------------------------------------------------
     def export_to_excel(self, e):
         if not self.batches:
             self._snack("⚠️ No batches to export")
@@ -816,15 +740,20 @@ class BatchesTab:
             path = exports / fname
             df.to_csv(path, index=False, encoding="utf-8-sig")
 
-            self._snack(f"✅ Exported {len(self.batches)} batches to {path}")
+            from core.helpers import send_file_to_user
+            url = send_file_to_user(self.page, str(path),
+                                    "Batches CSV")
+            self._snack(f"✅ Exported {len(self.batches)} batches")
+            if url:
+                try:
+                    self.page.launch_url(url)
+                except Exception:
+                    pass
         except Exception as ex:
             import traceback
             traceback.print_exc()
             self._snack(f"❌ Export error: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 11.2.14 — Print + snack
-    # -----------------------------------------------------------------------------
     def print_batches(self, e):
         self._snack("ℹ️ Use your browser's Ctrl+P to print this page")
 
@@ -839,9 +768,6 @@ class BatchesTab:
             pass
 
 
-# =================================================================================
-# 11.3 — CLASS: BatchFormDialog
-# =================================================================================
 class BatchFormDialog:
 
     def __init__(self, page, db, current_user, batch=None,
@@ -874,9 +800,6 @@ class BatchFormDialog:
         if self.is_edit:
             self.load_batch()
 
-    # -----------------------------------------------------------------------------
-    # 11.3.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         year_opts = []
         for y in self.available_years:
@@ -930,12 +853,12 @@ class BatchFormDialog:
         self.departure_field = ft.TextField(
             label="Departure (YYYY-MM-DD)",
             value=datetime.now().strftime("%Y-%m-%d"),
-            width=200, height=48, text_size=12,
+            height=48, text_size=12,
         )
         self.return_field = ft.TextField(
             label="Return (YYYY-MM-DD)",
             value=datetime.now().strftime("%Y-%m-%d"),
-            width=200, height=48, text_size=12,
+            height=48, text_size=12,
         )
         self.date_validation = ft.Text("", size=11,
                                        color=ft.Colors.GREEN_700)
@@ -961,12 +884,12 @@ class BatchFormDialog:
             controls=[
                 self.name_field,
                 ft.Row([self.year_dropdown, self.tour_dropdown],
-                       spacing=10),
+                       spacing=10, wrap=True),
                 self.id_preview,
                 ft.Row([self.seats_field, self.price_field],
-                       spacing=10),
-                ft.Row([self.departure_field, self.return_field],
-                       spacing=10),
+                       spacing=10, wrap=True),
+                self.departure_field,
+                self.return_field,
                 self.date_validation,
                 self.status_dropdown,
                 self.description_field,
@@ -975,14 +898,13 @@ class BatchFormDialog:
             scroll=ft.ScrollMode.AUTO,
         )
 
-        title = ("✏️ Edit Batch" if self.is_edit
-                 else "➕ Create New Batch")
+        title = "✏️ Edit Batch" if self.is_edit else "➕ Create New Batch"
 
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=650, height=520, padding=10),
+                                 width=600, height=560, padding=10),
             actions=[
                 ft.TextButton(
                     content=ft.Text("Cancel"),
@@ -999,9 +921,6 @@ class BatchFormDialog:
         if not self.is_edit:
             self.update_id_preview()
 
-    # -----------------------------------------------------------------------------
-    # 11.3.2 — ID preview helpers
-    # -----------------------------------------------------------------------------
     def _get_next_batch_number(self, prefix, year):
         max_num = 0
         for b in self.db.get_batches():
@@ -1049,9 +968,6 @@ class BatchFormDialog:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 11.3.3 — load_batch (edit mode)
-    # -----------------------------------------------------------------------------
     def load_batch(self):
         b = self.batch
         self.name_field.value = str(b.get("batch_name", ""))
@@ -1069,9 +985,6 @@ class BatchFormDialog:
         self.description_field.value = str(b.get("description", ""))
         self.update_id_preview()
 
-    # -----------------------------------------------------------------------------
-    # 11.3.4 — save
-    # -----------------------------------------------------------------------------
     def save(self, e):
         try:
             name = (self.name_field.value or "").strip()
@@ -1170,9 +1083,6 @@ class BatchFormDialog:
             pass
 
 
-# =================================================================================
-# 11.4 — CLASS: BatchViewDialog
-# =================================================================================
 class BatchViewDialog:
 
     def __init__(self, page, db, batch):
@@ -1182,18 +1092,15 @@ class BatchViewDialog:
         self.dialog = None
         self.setup_ui()
 
-    # -----------------------------------------------------------------------------
-    # 11.4.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         b = self.batch
 
         def row(label, value):
             return ft.Row([
-                ft.Text(label, width=160,
-                        weight=ft.FontWeight.BOLD, size=12),
+                ft.Text(label, width=140,
+                        weight=ft.FontWeight.BOLD, size=11),
                 ft.Text(str(value) if value not in (None, "") else "-",
-                        size=12, selectable=True, expand=True),
+                        size=11, selectable=True, expand=True),
             ], spacing=8)
 
         travelers = self.db.get_travelers()
@@ -1205,7 +1112,7 @@ class BatchViewDialog:
 
         content = ft.Column(
             controls=[
-                ft.Text("Batch Information", size=13,
+                ft.Text("Batch Information", size=12,
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ft.Divider(),
                 row("ID", b.get("id", "")),
@@ -1230,8 +1137,8 @@ class BatchViewDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"📦 {b.get('batch_name', 'Batch')}",
-                          weight=ft.FontWeight.BOLD, size=16),
-            content=ft.Container(content=content, width=500,
+                          weight=ft.FontWeight.BOLD, size=15),
+            content=ft.Container(content=content, width=480,
                                  height=500, padding=10),
             actions=[
                 ft.Button(
@@ -1247,5 +1154,5 @@ class BatchViewDialog:
 
 
 # =================================================================================
-# SECTION 11 END (FLET 1.0.0 VERSION)
+# END — core/batches_tab.py
 # =================================================================================
