@@ -1,11 +1,12 @@
 # =================================================================================
 # SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED + MOBILE-RESPONSIVE
 # =================================================================================
-# v1.4 — Platform-aware narrow detection + dual-view (never blank)
-#   • _is_narrow() now uses page.platform (ANDROID/IOS) as primary signal
-#   • setup_ui() builds BOTH desktop table AND mobile cards; only one visible
-#   • refresh() re-enforces visibility toggle after every data reload
-#   • Preserved: v1.1 patches (18.1.A/B/C/D), v1.2 mobile layout
+# v1.5 — Clean single-view build (no grey box)
+#   • Builds ONLY the mobile card list OR ONLY the desktop table
+#     (chosen at setup_ui time, no dual-view visibility toggling)
+#   • _is_narrow() uses page.platform → page.width → default True
+#   • Delayed re-check rebuilds if platform/width reports late
+#   • Preserved: v1.1 patches, permission gate
 # =================================================================================
 
 import flet as ft
@@ -48,7 +49,6 @@ ROLE_DEFAULT_PERMISSIONS = {
 
 ROLE_OPTIONS = ["super_admin", "admin", "staff", "viewer"]
 
-# Mobile breakpoint — viewport width below this uses card layouts
 MOBILE_BREAKPOINT = 700
 
 
@@ -94,7 +94,6 @@ def _hash_password(password):
 
 
 def _user_has_permission(user, perm_key):
-    """Return True if `user` has `perm_key` (super_admin always True)."""
     if not user:
         return False
     role = _safe_str(user.get("role", "")).lower()
@@ -121,9 +120,6 @@ def _user_has_permission(user, perm_key):
 # =================================================================================
 class UsersTab(ft.Column):
 
-    # -----------------------------------------------------------------------------
-    # 18.1.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         super().__init__()
 
@@ -142,15 +138,11 @@ class UsersTab(ft.Column):
         self.status_label = None
         self._ui_built = False
         self._mobile_mode = False
-        self._table_view = None
-        self._card_view = None
 
-        # 🔒 DEFENSE-IN-DEPTH — refuse to build if user lacks manage_users
+        # 🔒 Permission gate
         if not _user_has_permission(self.current_user, "manage_users"):
             print(f"[USERS] ⛔ Access denied for user "
-                  f"'{self.current_user.get('username', '?')}' "
-                  f"(role={self.current_user.get('role', '?')}) — "
-                  f"missing 'manage_users' permission.")
+                  f"'{self.current_user.get('username', '?')}'")
             self._build_access_denied_ui()
             return
 
@@ -170,46 +162,37 @@ class UsersTab(ft.Column):
             traceback.print_exc()
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
-        # ---- Deferred re-check for late width/platform info ----
+        # Delayed re-check (if platform info arrives late)
         try:
             import threading
 
-            def _delayed_check():
+            def _delayed():
                 import time
-                time.sleep(1.0)
+                time.sleep(1.2)
                 try:
                     now_narrow = self._is_narrow()
-                    print(f"[USERS] delayed check: "
-                          f"page.width={getattr(self.page_ref, 'width', '?')} "
+                    print(f"[USERS] delayed check: narrow={now_narrow} "
+                          f"mobile_mode={self._mobile_mode} "
                           f"platform={getattr(self.page_ref, 'platform', '?')} "
-                          f"narrow={now_narrow} "
-                          f"mobile_mode={self._mobile_mode}")
+                          f"width={getattr(self.page_ref, 'width', '?')}")
                     if now_narrow != self._mobile_mode:
-                        print("[USERS] viewport mode changed — rebuilding")
+                        print("[USERS] mode changed → rebuilding")
                         self.controls.clear()
                         self.stats_labels.clear()
                         self.setup_ui()
                         self.refresh()
                 except Exception as _e:
-                    print(f"[USERS] delayed rebuild error: {_e}")
+                    print(f"[USERS] delayed error: {_e}")
 
-            threading.Thread(target=_delayed_check, daemon=True).start()
+            threading.Thread(target=_delayed, daemon=True).start()
         except Exception:
             pass
 
     # -----------------------------------------------------------------------------
-    # 18.1.1b — _is_narrow  (platform-aware)
+    # _is_narrow — platform-first
     # -----------------------------------------------------------------------------
     def _is_narrow(self):
-        """Detect narrow / mobile viewport.
-
-        Order of reliability:
-          1. page.platform == ANDROID / IOS  → mobile
-          2. page.width known and < breakpoint → mobile
-          3. page.window.width known and < breakpoint → mobile
-          4. default → True (cards always fit)
-        """
-        # 1) Platform signal (most reliable on Flet web)
+        # 1) Platform
         try:
             plat = getattr(self.page_ref, "platform", None)
             if plat is not None:
@@ -240,11 +223,11 @@ class UsersTab(ft.Column):
         except Exception:
             pass
 
-        # 4) default
+        # 4) safe default
         return True
 
     # -----------------------------------------------------------------------------
-    # 18.1.1c — _build_access_denied_ui
+    # Access denied / error UI
     # -----------------------------------------------------------------------------
     def _build_access_denied_ui(self):
         try:
@@ -257,14 +240,11 @@ class UsersTab(ft.Column):
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.RED_700),
                         ft.Text(
-                            "You do not have permission to manage users.\n"
-                            "Contact your administrator if you believe "
-                            "this is a mistake.",
+                            "You do not have permission to manage users.",
                             size=12, color=ft.Colors.GREY_600,
                             text_align=ft.TextAlign.CENTER),
-                    ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=12),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                       spacing=12),
                     padding=60,
                     alignment=ft.Alignment.CENTER,
                     expand=True,
@@ -275,9 +255,6 @@ class UsersTab(ft.Column):
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 18.1.2 — _build_error_ui
-    # -----------------------------------------------------------------------------
     def _build_error_ui(self, exc):
         try:
             self.controls = [
@@ -299,7 +276,7 @@ class UsersTab(ft.Column):
             pass
 
     # -----------------------------------------------------------------------------
-    # 18.1.3 — setup_ui  (renders BOTH views; only one visible)
+    # setup_ui — builds ONLY the correct view for the current mode
     # -----------------------------------------------------------------------------
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -333,7 +310,7 @@ class UsersTab(ft.Column):
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # ---- Stats cards ----
+        # ---- Stats ----
         stat_specs = [
             ("total",  "👥", "Total",         "#2563eb"),
             ("supers", "👑", "Super Admins",  "#d97706"),
@@ -393,44 +370,39 @@ class UsersTab(ft.Column):
             bgcolor=ft.Colors.WHITE, border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-        # ---- Desktop table ----
-        self.table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text(h, size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE))
-                for h in ["Username", "Full Name", "Email", "Role",
-                          "Perms", "Created", "Last Login", "Actions"]
-            ],
-            rows=[],
-            heading_row_color="#1e293b",
-            column_spacing=12,
-            data_row_min_height=44,
-            data_row_max_height=70)
-
-        # ---- Mobile card list ----
-        self.mobile_list = ft.Column(spacing=8)
-
-        # ---- Build BOTH views ----
-        table_view = ft.Container(
-            content=ft.ListView([self.table],
-                                expand=True, auto_scroll=False),
-            bgcolor=ft.Colors.WHITE, border_radius=10,
-            border=ft.Border.all(1, "#e2e8f0"),
-            padding=6, height=420)
-
-        card_view = ft.Container(content=self.mobile_list, padding=4)
-
-        # Only one visible at a time
+        # ---- Build ONLY the correct view ----
         if narrow:
-            table_view.visible = False
-            card_view.visible = True
+            # ---- MOBILE: card list only ----
+            self.mobile_list = ft.Column(spacing=8)
+            self.table = None
+            table_body = ft.Container(
+                content=self.mobile_list,
+                padding=2,
+            )
+            hint_text = "💡 Tap Edit/Delete on any card"
         else:
-            table_view.visible = True
-            card_view.visible = False
-
-        self._table_view = table_view
-        self._card_view = card_view
+            # ---- DESKTOP: table only ----
+            self.table = ft.DataTable(
+                columns=[
+                    ft.DataColumn(ft.Text(h, size=11,
+                                          weight=ft.FontWeight.BOLD,
+                                          color=ft.Colors.WHITE))
+                    for h in ["Username", "Full Name", "Email", "Role",
+                              "Perms", "Created", "Last Login", "Actions"]
+                ],
+                rows=[],
+                heading_row_color="#1e293b",
+                column_spacing=12,
+                data_row_min_height=44,
+                data_row_max_height=70)
+            self.mobile_list = None
+            table_body = ft.Container(
+                content=ft.Row([self.table],
+                               scroll=ft.ScrollMode.ADAPTIVE),
+                bgcolor=ft.Colors.WHITE,
+                border_radius=10,
+                padding=6)
+            hint_text = "💡 Click 🗑️ to delete a user"
 
         table_card = ft.Container(
             content=ft.Column([
@@ -440,14 +412,10 @@ class UsersTab(ft.Column):
                             weight=ft.FontWeight.BOLD,
                             color="#1e40af"),
                     ft.Container(expand=True),
-                    ft.Text(
-                        "💡 Tap row actions" if narrow
-                        else "💡 Click 🗑️ to delete a user",
-                        size=9, color=ft.Colors.GREY_500,
-                        italic=True),
+                    ft.Text(hint_text, size=9,
+                            color=ft.Colors.GREY_500, italic=True),
                 ], spacing=6),
-                table_view,
-                card_view,
+                table_body,
             ], spacing=8),
             padding=10 if narrow else 12,
             bgcolor=ft.Colors.WHITE, border_radius=12,
@@ -468,7 +436,7 @@ class UsersTab(ft.Column):
         return self
 
     # -----------------------------------------------------------------------------
-    # 18.1.3b — on_resize
+    # on_resize
     # -----------------------------------------------------------------------------
     def on_resize(self, e=None):
         try:
@@ -487,7 +455,7 @@ class UsersTab(ft.Column):
             print(f"[USERS] on_resize error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # 18.1.4 — refresh
+    # refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         if not self._ui_built and not self.status_label:
@@ -518,20 +486,8 @@ class UsersTab(ft.Column):
 
             print(f"[USERS] loaded {len(self.users)} users from DB")
 
-            self._render_table()
+            self._render()
             self._update_stats()
-
-            # ---- Re-enforce view visibility ----
-            try:
-                if self._table_view is not None and self._card_view is not None:
-                    if self._mobile_mode:
-                        self._table_view.visible = False
-                        self._card_view.visible = True
-                    else:
-                        self._table_view.visible = True
-                        self._card_view.visible = False
-            except Exception as _ve:
-                print(f"[USERS] view toggle failed: {_ve}")
 
             if self.status_label:
                 self.status_label.value = (
@@ -545,7 +501,7 @@ class UsersTab(ft.Column):
             self._show_status(f"❌ Load failed: {ex}", ft.Colors.RED_500)
 
     # -----------------------------------------------------------------------------
-    # 18.1.5 — _update_stats
+    # _update_stats
     # -----------------------------------------------------------------------------
     def _update_stats(self):
         total = len(self.users)
@@ -564,18 +520,21 @@ class UsersTab(ft.Column):
             self.stats_labels["staff"].value = str(staff)
 
     # -----------------------------------------------------------------------------
-    # 18.1.6 — _render_table
+    # _render — picks mobile OR desktop renderer
     # -----------------------------------------------------------------------------
-    def _render_table(self):
-        try:
-            self.table.rows.clear()
-        except Exception:
-            pass
-        try:
-            if self.mobile_list is not None:
-                self.mobile_list.controls.clear()
-        except Exception:
-            pass
+    def _render(self):
+        if self._mobile_mode:
+            self._render_mobile_cards()
+        else:
+            self._render_desktop_table()
+
+    # -----------------------------------------------------------------------------
+    # _render_desktop_table
+    # -----------------------------------------------------------------------------
+    def _render_desktop_table(self):
+        if self.table is None:
+            return
+        self.table.rows.clear()
 
         for u in self.users:
             username = u.get("username", "")
@@ -620,9 +579,6 @@ class UsersTab(ft.Column):
                     fresh = next(
                         (x for x in self.users if x.get("id") == _uid), None)
                     if fresh is None:
-                        self._show_status(
-                            "⚠️ User no longer exists — refreshing…",
-                            ft.Colors.ORANGE_700)
                         self.refresh()
                         return
                     self.open_edit_dialog(e, user=fresh)
@@ -633,9 +589,6 @@ class UsersTab(ft.Column):
                     fresh = next(
                         (x for x in self.users if x.get("id") == _uid), None)
                     if fresh is None:
-                        self._show_status(
-                            "⚠️ User no longer exists — refreshing…",
-                            ft.Colors.ORANGE_700)
                         self.refresh()
                         return
                     self._confirm_delete(fresh)
@@ -671,18 +624,10 @@ class UsersTab(ft.Column):
                 ft.DataCell(actions),
             ]))
 
-        # ---- Always render mobile cards ----
-        try:
-            self._render_mobile_cards()
-        except Exception as ex:
-            print(f"[USERS] mobile render failed: {ex}")
-
-        print(f"[USERS] rendered {len(self.table.rows)} table rows, "
-              f"{len(self.mobile_list.controls) if self.mobile_list else 0} "
-              f"mobile cards")
+        print(f"[USERS] rendered {len(self.table.rows)} desktop rows")
 
     # -----------------------------------------------------------------------------
-    # 18.1.6b — _render_mobile_cards
+    # _render_mobile_cards
     # -----------------------------------------------------------------------------
     def _render_mobile_cards(self):
         if self.mobile_list is None:
@@ -800,8 +745,10 @@ class UsersTab(ft.Column):
                 )
             )
 
+        print(f"[USERS] rendered {len(self.mobile_list.controls)} mobile cards")
+
     # -----------------------------------------------------------------------------
-    # 18.1.7 — open_add_dialog
+    # open_add_dialog / open_edit_dialog
     # -----------------------------------------------------------------------------
     def open_add_dialog(self, e=None):
         try:
@@ -816,9 +763,6 @@ class UsersTab(ft.Column):
             traceback.print_exc()
             self._show_status(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -----------------------------------------------------------------------------
-    # 18.1.8 — open_edit_dialog
-    # -----------------------------------------------------------------------------
     def open_edit_dialog(self, e=None, user=None):
         if user is None:
             self._show_status("⚠️ Select a user first.",
@@ -837,7 +781,7 @@ class UsersTab(ft.Column):
             self._show_status(f"❌ {ex}", ft.Colors.RED_500)
 
     # -----------------------------------------------------------------------------
-    # 18.1.9 — _confirm_delete
+    # _confirm_delete
     # -----------------------------------------------------------------------------
     def _confirm_delete(self, user):
         uid = user.get("id")
@@ -920,7 +864,7 @@ class UsersTab(ft.Column):
         self.page_ref.show_dialog(dialog)
 
     # -----------------------------------------------------------------------------
-    # 18.1.10 — Helpers
+    # Helpers
     # -----------------------------------------------------------------------------
     def _show_status(self, message, color=ft.Colors.GREY_700):
         if self.status_label:
@@ -960,9 +904,6 @@ class UserFormDialog:
 
         self._build()
 
-    # -----------------------------------------------------------------------------
-    # 18.2.1 — _build  (MOBILE-RESPONSIVE)
-    # -----------------------------------------------------------------------------
     def _build(self):
         u = self.user
 
@@ -1156,9 +1097,6 @@ class UserFormDialog:
 
         self._on_role_change(None, force_defaults=not self.is_edit)
 
-    # -----------------------------------------------------------------------------
-    # 18.2.2 — _on_role_change
-    # -----------------------------------------------------------------------------
     def _on_role_change(self, e=None, force_defaults=False):
         role = _safe_str(self.role_dropdown.value) or "staff"
 
@@ -1185,9 +1123,6 @@ class UserFormDialog:
 
         self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # 18.2.3 — _save
-    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             username = _safe_str(self.username_field.value)
@@ -1273,9 +1208,6 @@ class UserFormDialog:
             traceback.print_exc()
             self._snack(f"❌ Save failed: {ex}", ft.Colors.RED_500)
 
-    # -----------------------------------------------------------------------------
-    # 18.2.4 — _add_new
-    # -----------------------------------------------------------------------------
     def _add_new(self, data):
         if hasattr(self.db, "add_user"):
             try:
@@ -1308,9 +1240,6 @@ class UserFormDialog:
                                   ignore_index=True)
         self.db._save_df(self.db.users, "users.csv")
 
-    # -----------------------------------------------------------------------------
-    # 18.2.5 — _update_existing
-    # -----------------------------------------------------------------------------
     def _update_existing(self, data):
         uid = _safe_str(self.user.get("id"))
 
@@ -1348,9 +1277,6 @@ class UserFormDialog:
 
         self.db._save_df(self.db.users, "users.csv")
 
-    # -----------------------------------------------------------------------------
-    # 18.2.6 — show / close / _snack / _safe_update
-    # -----------------------------------------------------------------------------
     def show(self):
         try:
             self.page_ref.show_dialog(self.dialog)
@@ -1386,5 +1312,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END — USERS TAB (FLET 1.0 — v1.4)
+# SECTION 18 END — USERS TAB (FLET 1.0 — v1.5)
 # =================================================================================
