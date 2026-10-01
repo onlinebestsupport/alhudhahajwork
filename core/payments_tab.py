@@ -1,7 +1,8 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.3.1 — Syntax fix + Mobile-Responsive + Selectable Rows
+# v1.3.2 — Data-loading restored + Mobile-Responsive + Selectable Rows
+#   • FIXED: removed aggressive reload_*() loop in refresh() that wiped data
 #   • FIXED: "fbatch" typo → f"₹{batch_price:,.2f}"
 #   • MOBILE: card layout with full-width action buttons
 #   • DESKTOP: table with checkbox column for row selection
@@ -212,9 +213,9 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
+                # Refresh receipts/invoices if DB has the method (safe —
+                # does not touch payments cache)
                 try:
-                    if hasattr(self.db, "reload_payments"):
-                        self.db.reload_payments()
                     if hasattr(self.db, "reload_receipts"):
                         self.db.reload_receipts()
                     if hasattr(self.db, "reload_invoices"):
@@ -415,7 +416,7 @@ class PaymentsTab:
             ], spacing=8, run_spacing=8,
         )
 
-        # ---- DESKTOP table with selection checkbox ----
+        # ---- DESKTOP table ----
         self.table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("✔", size=11)),
@@ -477,7 +478,7 @@ class PaymentsTab:
         )
 
     # -----------------------------------------------------------------------------
-    # on_resize — switch layout when crossing breakpoint
+    # on_resize
     # -----------------------------------------------------------------------------
     def on_resize(self, e=None):
         try:
@@ -495,30 +496,36 @@ class PaymentsTab:
             print(f"[PAYMENTS] on_resize error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # refresh
+    # refresh — RESTORED original behavior (no aggressive reloads)
     # -----------------------------------------------------------------------------
     def refresh(self):
-        try:
-            for mn in ("reload_payments", "reload_receipts",
-                       "reload_invoices", "reload_travelers",
-                       "reload_batches"):
-                if hasattr(self.db, mn):
-                    try:
-                        getattr(self.db, mn)()
-                    except Exception as ex:
-                        print(f"[PAYMENTS] {mn} failed: {ex}")
+        """
+        Reload payments + related data from DB.
 
+        IMPORTANT: Do NOT call db.reload_payments() here. On some DB
+        implementations that method re-reads from disk and can wipe the
+        in-memory cache if the path/file is missing. The original tab
+        relied on db.get_payments() reading from the live cache.
+        """
+        try:
+            # ---- Payments ----
             self.payments = self.db.get_payments()
+            print(f"[PAYMENTS] loaded {len(self.payments)} payments")
+
+            # ---- Travelers ----
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
                           f"{t.get('last_name', '')}").strip() or "Unnamed"
                 for t in self.db.get_travelers()
             }
+
+            # ---- Receipts / Invoices / Batches ----
             self.receipts = {r['payment_id']: r
                              for r in self.db.get_receipts()}
             self.invoices = {i['id']: i for i in self.db.get_invoices()}
             self.batches = {b['id']: b for b in self.db.get_batches()}
 
+            # ---- Traveler → Batch mapping ----
             self.traveler_details = {}
             for t in self.db.get_travelers():
                 tid = t['id']
@@ -536,6 +543,11 @@ class PaymentsTab:
                         'batch_id': None,
                     }
 
+            print(f"[PAYMENTS] loaded {len(self.payments)} payments, "
+                  f"{len(self.travelers)} travelers, "
+                  f"{len(self.receipts)} receipts, "
+                  f"{len(self.invoices)} invoices")
+
             self.display_payments()
             self.update_summary_stats()
             try:
@@ -548,7 +560,7 @@ class PaymentsTab:
             traceback.print_exc()
 
     # -----------------------------------------------------------------------------
-    # _compute_pkg_inv_info — shared computation
+    # _compute_pkg_inv_info
     # -----------------------------------------------------------------------------
     def _compute_pkg_inv_info(self, p, traveler_paid):
         tid = p.get('traveler_id', '')
@@ -588,7 +600,7 @@ class PaymentsTab:
         return pkg_txt, pkg_color, inv_txt, inv_color
 
     # -----------------------------------------------------------------------------
-    # display_payments — branches to desktop table OR mobile cards
+    # display_payments
     # -----------------------------------------------------------------------------
     def display_payments(self, payments=None):
         if payments is None:
@@ -626,7 +638,7 @@ class PaymentsTab:
             pkg_txt, pkg_color, inv_txt, inv_color = \
                 self._compute_pkg_inv_info(p, traveler_paid)
 
-            # ------- DESKTOP ROW -------
+            # ------- closure makers -------
             def _make_edit(pp=p):
                 def h(e):
                     self.edit_payment(pp)
@@ -660,6 +672,7 @@ class PaymentsTab:
                     self._select_payment(pid)
                 return h
 
+            # ------- DESKTOP ROW -------
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
@@ -791,7 +804,7 @@ class PaymentsTab:
             )
 
     # -----------------------------------------------------------------------------
-    # _select_payment — toggle selection state
+    # _select_payment
     # -----------------------------------------------------------------------------
     def _select_payment(self, payment_id):
         if self.selected_payment_id == payment_id:
@@ -945,7 +958,7 @@ class PaymentsTab:
         self.page.show_dialog(dialog)
 
     # -----------------------------------------------------------------------------
-    # export_pdf_selected — act on selected row
+    # export_pdf_selected
     # -----------------------------------------------------------------------------
     def export_pdf_selected(self, e):
         p = self._get_selected_payment()
@@ -1110,7 +1123,7 @@ class PaymentsTab:
             self._snack(f"❌ PDF error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # print_receipt_selected — act on selected row
+    # print_receipt_selected
     # -----------------------------------------------------------------------------
     def print_receipt_selected(self, e):
         p = self._get_selected_payment()
@@ -1594,9 +1607,9 @@ class PaymentDialog:
             except Exception:
                 pass
 
+            # Only refresh receipts/invoices (NOT payments — that method
+            # was wiping cache on some setups)
             try:
-                if hasattr(self.db, "reload_payments"):
-                    self.db.reload_payments()
                 if hasattr(self.db, "reload_receipts"):
                     self.db.reload_receipts()
                 if hasattr(self.db, "reload_invoices"):
@@ -1637,5 +1650,5 @@ class PaymentDialog:
 
 
 # =================================================================================
-# SECTION 12 + 13 END (FLET 1.0.0 — MOBILE-RESPONSIVE + SELECTABLE)
+# SECTION 12 + 13 END (FLET 1.0.0 — DATA-LOADING FIXED + MOBILE-RESPONSIVE)
 # =================================================================================
