@@ -1,12 +1,16 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW
 # =================================================================================
-# UPDATED — 2026-10-01 (v2.1)
+# UPDATED — 2026-10-01 (v2.2)
 #   • Permission-based tab visibility
 #   • 🔄 Reload Data button + 💾 Storage Info in settings menu
 #   • Auto-refresh every 30s
 #   • Dashboard Quick Actions navigate to tabs via _on_navigate()
-#   • NEW: Al-Hudha logo image in the header (left side)
+#   • Al-Hudha logo image in the header (left side)
+#   • NEW: "🌐 Front Page" tab (permission: manage_settings)
+#          — opens the FrontPageSettingsTab for editing the marketing
+#            front page (hero, alert, features, packages, about,
+#            contact, social, footer)
 # =================================================================================
 
 import flet as ft
@@ -54,6 +58,12 @@ try:
     from core.users_tab import UsersTab
 except ImportError:
     UsersTab = None
+
+try:
+    from core.frontpage_settings_tab import FrontPageSettingsTab
+except ImportError as _e:
+    print(f"[IMPORT] frontpage_settings_tab failed: {_e}")
+    FrontPageSettingsTab = None
 
 # ---- Backup: try both filenames ----
 BackupTab = None
@@ -150,10 +160,10 @@ class MainWindowView:
         self.invoices_tab = None
         self.reports_tab = None
         self.users_tab = None
+        self.frontpage_tab = None       # ← NEW
         self.backup_tab = None
 
-        # Registry keyed by plain tab name (e.g. "Travelers", "Payments")
-        # Used by _on_navigate to find the right tab instance.
+        # Registry keyed by plain tab name
         self.tab_instances = {}
 
         self.tabs_control = None
@@ -163,10 +173,9 @@ class MainWindowView:
         self.root = None
 
     # =============================================================================
-    # 7.1.2 — Navigation callback (Dashboard → tab switch)
+    # 7.1.2 — Navigation callback
     # =============================================================================
     def _on_navigate(self, tab_name, action=None):
-        """Called by Dashboard Quick Action buttons."""
         print(f"[NAV] _on_navigate(tab_name='{tab_name}', action={action})")
 
         try:
@@ -174,7 +183,6 @@ class MainWindowView:
                 self._show_snack("⚠️ Tabs not initialized yet")
                 return
 
-            # Build lookup for visible tabs (labels have emoji prefixes)
             idx = None
             try:
                 tab_bar = self.tabs_control.content.controls[0]
@@ -202,7 +210,6 @@ class MainWindowView:
                 pass
             print(f"[NAV] Switched to '{tab_name}' (index {idx})")
 
-            # Optional: trigger the "add" action on the target tab
             if action == "add":
                 tab_inst = self.tab_instances.get(tab_name)
                 if tab_inst is None:
@@ -375,7 +382,7 @@ class MainWindowView:
                 ])
             self.page.show_dialog(d)
 
-        # ---- NEW: Logo image with emoji fallback ----
+        # ---- Logo image with emoji fallback ----
         logo_image = ft.Image(
             src="/static/logo.png",
             width=42, height=42,
@@ -387,7 +394,6 @@ class MainWindowView:
         header = ft.Container(
             content=ft.Row(
                 controls=[
-                    # ★ Al-Hudha logo ★
                     ft.Container(
                         content=logo_image,
                         width=42, height=42,
@@ -454,7 +460,6 @@ class MainWindowView:
             try:
                 print(f"[TAB] {plain_label}: building...")
 
-                # Dashboard gets on_navigate so its quick actions work
                 if cls is DashboardTab:
                     instance = cls(
                         self.page, self.db, self.current_user,
@@ -476,6 +481,8 @@ class MainWindowView:
                 traceback.print_exc()
                 return make_placeholder(f"{plain_label} (error)", icon)
 
+        # ---- Tab definitions (order matters!) ----
+        # ★ NEW: "🌐 Front Page" tab inserted before "💾 Backup"
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
              "view_dashboard",   DashboardTab),
@@ -493,6 +500,8 @@ class MainWindowView:
              "view_reports",     ReportsTab),
             ("👤 Users",     ft.Icons.PERSON,    "users_tab",
              "manage_users",     UsersTab),
+            ("🌐 Front Page", ft.Icons.PUBLIC,   "frontpage_tab",
+             "manage_settings",  FrontPageSettingsTab),   # ← NEW
             ("💾 Backup",    ft.Icons.BACKUP,    "backup_tab",
              "manage_backups",   BackupTab),
         ]
@@ -620,7 +629,9 @@ class MainWindowView:
     def refresh_all(self):
         for name in ('dashboard_tab', 'travelers_tab', 'batches_tab',
                      'payments_tab', 'receipts_tab', 'invoices_tab',
-                     'reports_tab', 'users_tab', 'backup_tab'):
+                     'reports_tab', 'users_tab',
+                     'frontpage_tab',       # ← NEW
+                     'backup_tab'):
             tab = getattr(self, name, None)
             if tab is not None and hasattr(tab, 'refresh'):
                 try:
@@ -662,7 +673,7 @@ class MainWindowView:
         self.page.show_dialog(dialog)
 
     # =============================================================================
-    # SnackBar helper — Flet 1.0 web-safe version
+    # SnackBar helper
     # =============================================================================
     def _show_snack(self, message):
         try:

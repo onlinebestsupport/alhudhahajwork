@@ -1,18 +1,18 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.7):
+# PATCHES APPLIED (v2.8):
 #   21.1.* — cloud detection, DB retry, SIGTERM, session persistence
 #   21.2.* — marketing page at "/", Flet admin at "/admin"
-#   21.2.5 — middleware favicon override (working)
-#   21.2.6 — NEW: pass a dedicated FLET_ASSETS_DIR to flet_fastapi.app()
-#            so Flet's built-in splash icon and favicon are overridden
-#            by our logo. Files needed:
-#              <FLET_ASSETS_DIR>/favicon.png
-#              <FLET_ASSETS_DIR>/icons/loading-animation.png
-#            This is the ONLY way to replace the pink loading arrow
-#            because Flet fetches the splash image from its compiled
-#            Flutter client, not via a URL route.
+#   21.2.5 — middleware favicon override
+#   21.2.6 — Flet splash icon override via assets_dir
+#   21.2.7 — NEW: two front-page APIs
+#              • GET /api/frontpage → returns the front page config JSON
+#                                    (from core/frontpage_config.py)
+#              • GET /api/batches   → returns open batches as packages
+#                                    filtered per the config
+#            The static/index.html fetches these at load time, so admin
+#            edits appear on the next page refresh — no redeploy needed.
 # =================================================================================
 
 import flet as ft
@@ -394,12 +394,9 @@ def flet_main(page: ft.Page):
 
 
 # =================================================================================
-# 21.4 — FAVICON MIDDLEWARE (fallback for browser tab)
+# 21.4 — FAVICON MIDDLEWARE
 # =================================================================================
 class FaviconOverrideMiddleware(BaseHTTPMiddleware):
-    """Intercepts favicon URL requests and returns the custom logo.
-    This handles the browser-tab favicon. The splash-screen icon is
-    handled separately via the Flet assets_dir (see _build_app)."""
     def __init__(self, app, logo_path: str):
         super().__init__(app)
         self.logo_path = logo_path
@@ -443,15 +440,13 @@ def _build_app() -> FastAPI:
     index_html = os.path.join(static_dir, "index.html")
     logo_path = os.path.join(static_dir, "logo.png")
 
-    # ★ Dedicated Flet assets folder for splash + favicon override
+    # Dedicated Flet assets folder for splash + favicon override
     flet_assets_dir = os.path.join(base_path, "flet_assets")
 
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
-    # ---- Auto-seed the Flet assets folder from static/logo.png ----
-    # This makes the splash icon work even if the user forgets to
-    # create the folder manually. Copies are made only if missing.
+    # Auto-seed the Flet assets folder from static/logo.png
     try:
         if os.path.exists(logo_path):
             fav = os.path.join(flet_assets_dir, "favicon.png")
@@ -474,12 +469,6 @@ def _build_app() -> FastAPI:
     _boot_log(f"Static dir      : {static_dir}")
     _boot_log(f"Downloads       : {downloads_dir}")
     _boot_log(f"Flet assets dir : {flet_assets_dir}")
-    _boot_log(f"Favicon         : "
-              f"{os.path.join(flet_assets_dir, 'favicon.png')} "
-              f"({'found' if os.path.exists(os.path.join(flet_assets_dir, 'favicon.png')) else 'MISSING'})")
-    _boot_log(f"Loading anim    : "
-              f"{os.path.join(flet_assets_dir, 'icons', 'loading-animation.png')} "
-              f"({'found' if os.path.exists(os.path.join(flet_assets_dir, 'icons', 'loading-animation.png')) else 'MISSING'})")
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
@@ -487,7 +476,9 @@ def _build_app() -> FastAPI:
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
     _boot_log("Favicon middleware installed")
 
-    # ---- File download endpoint ----
+    # -----------------------------------------------------------------------------
+    # 21.5.1 — File download endpoint
+    # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
         safe_name = os.path.basename(filename)
@@ -504,21 +495,95 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    # ---- Mount Flet admin app at /admin ----
-    # ★ KEY: pass assets_dir=flet_assets_dir so Flet picks up our
-    #        favicon.png and icons/loading-animation.png overrides.
-    #        Flet serves internal asset requests at /admin/assets/<file>
-    #        automatically from this folder.
+    # -----------------------------------------------------------------------------
+    # 21.5.2 — NEW: Front page config API
+    #            Returns the config JSON stored at
+    #            <base>/data/frontpage_config.json (admin editable)
+    # -----------------------------------------------------------------------------
+    @app.get("/api/frontpage")
+    async def api_frontpage():
+        try:
+            from core.frontpage_config import load_config
+            cfg = load_config()
+            return cfg
+        except Exception as e:
+            _boot_log(f"/api/frontpage failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # -----------------------------------------------------------------------------
+    # 21.5.3 — NEW: Batches as packages API
+    #            Returns the batches selected by the config, ready for
+    #            the front page to render as package cards.
+    # -----------------------------------------------------------------------------
+    @app.get("/api/batches")
+    async def api_batches():
+        try:
+            from core.frontpage_config import (
+                load_config, get_selected_batches)
+
+            cfg = load_config()
+
+            # Load raw batches from DB (if DB is unavailable, return [])
+            all_batches = []
+            if AppState.db_ready and AppState.db is not None:
+                try:
+                    all_batches = AppState.db.get_batches() or []
+                except Exception as e:
+                    _boot_log(f"api_batches get_batches failed: {e}")
+                    all_batches = []
+
+            selected = get_selected_batches(cfg, all_batches)
+
+            # Serialize to plain JSON-friendly dicts
+            packages = []
+            for b in selected:
+                try:
+                    price_val = float(b.get("price", 0) or 0)
+                except Exception:
+                    price_val = 0.0
+
+                packages.append({
+                    "id": str(b.get("id", "")),
+                    "name": str(b.get("batch_name", "Package")),
+                    "description": str(
+                        b.get("description", "") or
+                        "Complete Haj/Umrah package"),
+                    "price": price_val,
+                    "departure_date": str(b.get("departure_date", "") or ""),
+                    "return_date": str(b.get("return_date", "") or ""),
+                    "year": str(b.get("year", "") or ""),
+                    "tour_type_name": str(b.get("tour_type_name", "") or ""),
+                    "status": str(b.get("status", "") or ""),
+                    "total_seats": int(b.get("total_seats", 0) or 0),
+                })
+
+            _boot_log(f"/api/batches: returning {len(packages)} package(s)")
+            return {"success": True, "batches": packages,
+                    "count": len(packages)}
+        except Exception as e:
+            _boot_log(f"/api/batches failed: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # -----------------------------------------------------------------------------
+    # 21.5.4 — Mount Flet admin app at /admin
+    # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
-    _boot_log(f"Mounted Flet admin at /admin "
-              f"(assets_dir={flet_assets_dir})")
+    _boot_log(f"Mounted Flet admin at /admin (assets_dir={flet_assets_dir})")
 
-    # ---- Static assets at /static/* ----
+    # -----------------------------------------------------------------------------
+    # 21.5.5 — Static assets at /static/*
+    # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
-    # ---- Marketing front page at "/" ----
+    # -----------------------------------------------------------------------------
+    # 21.5.6 — Marketing front page at "/"
+    # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
@@ -561,6 +626,7 @@ print(f"🩹  Patch          : "
       f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
 print(f"🏠  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
 print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
+print(f"🔌  APIs           : /api/frontpage  /api/batches", flush=True)
 print("=" * 66, flush=True)
 
 _seed_volume_if_empty(base_path)

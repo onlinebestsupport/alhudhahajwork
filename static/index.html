@@ -33,7 +33,86 @@
             background: #ffffff;
         }
 
-        /* Top Bar */
+        /* ============ ALERT BANNER ============ */
+        .alert-banner {
+            color: white;
+            padding: 14px 0;
+            width: 100%;
+            z-index: 1001;
+            display: none;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+        }
+        .alert-banner.active { display: block; }
+        .alert-banner.pulse { animation: alertPulse 2s infinite; }
+        .alert-banner.blink { animation: alertBlink 1s infinite; }
+
+        @keyframes alertPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.9; }
+        }
+        @keyframes alertBlink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.75; }
+        }
+
+        .alert-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .alert-message {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex: 1;
+        }
+        .alert-message i {
+            font-size: 1.8rem;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
+        }
+        .alert-text { font-size: 1rem; font-weight: 500; }
+        .alert-link {
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 8px 22px;
+            border-radius: 50px;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            border: 2px solid transparent;
+            font-size: 0.9rem;
+        }
+        .alert-link:hover {
+            background: white;
+            color: #333;
+            transform: translateY(-2px);
+        }
+        .alert-close {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.5rem;
+            cursor: pointer;
+            opacity: 0.8;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+        .alert-close:hover {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.15);
+        }
+
+        /* ============ TOP BAR ============ */
         .top-bar {
             background: var(--primary-color);
             color: white;
@@ -53,10 +132,12 @@
         .contact-info { display: flex; gap: 20px; flex-wrap: wrap; }
         .contact-info span { display: flex; align-items: center; gap: 8px; }
         .contact-info a { color: white; text-decoration: none; }
+        .contact-info a:hover { text-decoration: underline; }
         .social-links { display: flex; gap: 15px; }
         .social-links a { color: white; font-size: 1.1rem; text-decoration: none; }
+        .social-links a:hover { transform: translateY(-2px); }
 
-        /* Navigation */
+        /* ============ NAVIGATION ============ */
         .navbar {
             background: white;
             box-shadow: 0 2px 20px rgba(0, 0, 0, 0.05);
@@ -117,7 +198,10 @@
             font-size: 0.9rem;
         }
         .btn-primary { background: var(--primary-color); color: white; }
-        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(30, 60, 114, 0.3); }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(30, 60, 114, 0.3);
+        }
         .btn-outline {
             background: transparent;
             color: var(--primary-color);
@@ -126,9 +210,14 @@
         .btn-outline:hover { background: var(--primary-color); color: white; }
         .btn-whatsapp { background: #25D366; color: white; }
         .btn-whatsapp:hover { background: #128C7E; }
-        .mobile-toggle { display: none; font-size: 1.5rem; cursor: pointer; color: var(--primary-color); }
+        .mobile-toggle {
+            display: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--primary-color);
+        }
 
-        /* Hero */
+        /* ============ HERO ============ */
         .hero {
             background: linear-gradient(135deg, rgba(30, 60, 114, 0.95), rgba(20, 40, 80, 0.95)),
                         url('https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=1950&q=80');
@@ -148,9 +237,11 @@
             font-family: 'Amiri', serif;
         }
         .hero p { font-size: 1.2rem; margin-bottom: 30px; line-height: 1.6; }
-        .hero-buttons { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
+        .hero-buttons {
+            display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;
+        }
 
-        /* Common */
+        /* ============ COMMON ============ */
         .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
         .section-header { text-align: center; margin-bottom: 50px; }
         .section-header h2 {
@@ -162,7 +253,7 @@
         }
         .section-header p { font-size: 1.05rem; color: var(--gray-color); }
 
-        /* Features */
+        /* ============ FEATURES ============ */
         .features-section { padding: 70px 0; }
         .features-grid {
             display: grid;
@@ -187,10 +278,18 @@
             color: white;
             font-size: 1.7rem;
         }
-        .feature-card h3 { font-size: 1.2rem; margin-bottom: 10px; color: var(--dark-color); }
-        .feature-card p { color: var(--gray-color); line-height: 1.5; font-size: 0.95rem; }
+        .feature-card h3 {
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+            color: var(--dark-color);
+        }
+        .feature-card p {
+            color: var(--gray-color);
+            line-height: 1.5;
+            font-size: 0.95rem;
+        }
 
-        /* Packages */
+        /* ============ PACKAGES ============ */
         .packages-section { padding: 70px 0; background: var(--lighter-color); }
         .packages-grid {
             display: grid;
@@ -203,6 +302,8 @@
             overflow: hidden;
             box-shadow: var(--card-shadow);
             transition: transform 0.3s ease;
+            display: flex;
+            flex-direction: column;
         }
         .package-card:hover { transform: translateY(-8px); }
         .package-header {
@@ -211,10 +312,18 @@
             padding: 28px 25px;
             text-align: center;
         }
-        .package-header h3 { font-size: 1.4rem; margin-bottom: 8px; font-family: 'Amiri', serif; }
+        .package-header h3 {
+            font-size: 1.35rem;
+            margin-bottom: 8px;
+            font-family: 'Amiri', serif;
+        }
         .package-price { font-size: 1.7rem; font-weight: 700; }
-        .package-body { padding: 25px; }
-        .package-features { list-style: none; margin-bottom: 20px; }
+        .package-body { padding: 25px; flex: 1; display: flex; flex-direction: column; }
+        .package-features {
+            list-style: none;
+            margin-bottom: 20px;
+            flex: 1;
+        }
         .package-features li {
             padding: 8px 0;
             display: flex;
@@ -225,9 +334,35 @@
         }
         .package-features li i { color: var(--success-color); width: 18px; }
         .package-actions { display: flex; gap: 8px; }
-        .package-actions .btn { flex: 1; justify-content: center; padding: 10px 12px; font-size: 0.85rem; }
+        .package-actions .btn {
+            flex: 1;
+            justify-content: center;
+            padding: 10px 12px;
+            font-size: 0.85rem;
+        }
+        .packages-empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-color);
+            font-size: 1.05rem;
+            grid-column: 1 / -1;
+        }
+        .loading-spinner {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-color);
+            grid-column: 1 / -1;
+        }
+        .loading-spinner i {
+            font-size: 2rem;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
 
-        /* About */
+        /* ============ ABOUT ============ */
         .about-section { padding: 70px 0; }
         .about-content {
             display: grid;
@@ -249,11 +384,19 @@
             margin-top: 30px;
         }
         .stat-item { text-align: center; }
-        .stat-number { font-size: 2.2rem; font-weight: 700; color: var(--primary-color); }
+        .stat-number {
+            font-size: 2.2rem;
+            font-weight: 700;
+            color: var(--primary-color);
+        }
         .stat-label { font-size: 0.9rem; color: var(--gray-color); }
-        .about-image img { width: 100%; border-radius: var(--border-radius); box-shadow: var(--card-shadow); }
+        .about-image img {
+            width: 100%;
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+        }
 
-        /* Contact */
+        /* ============ CONTACT ============ */
         .contact-section { padding: 70px 0; background: var(--lighter-color); }
         .contact-grid {
             display: grid;
@@ -278,11 +421,20 @@
             color: white;
             font-size: 1.5rem;
         }
-        .contact-card h3 { font-size: 1.1rem; margin-bottom: 12px; color: var(--dark-color); }
+        .contact-card h3 {
+            font-size: 1.1rem;
+            margin-bottom: 12px;
+            color: var(--dark-color);
+        }
         .contact-card p { color: var(--gray-color); margin-bottom: 5px; }
-        .contact-card a { color: var(--primary-color); text-decoration: none; font-weight: 600; }
+        .contact-card a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .contact-card a:hover { text-decoration: underline; }
 
-        /* Footer */
+        /* ============ FOOTER ============ */
         .footer { background: var(--dark-color); color: white; padding: 50px 0 25px; }
         .footer-content {
             display: grid;
@@ -291,7 +443,11 @@
             margin-bottom: 30px;
         }
         .footer-section h3 { margin-bottom: 15px; font-size: 1.05rem; }
-        .footer-section p { opacity: 0.8; line-height: 1.6; font-size: 0.9rem; }
+        .footer-section p {
+            opacity: 0.8;
+            line-height: 1.6;
+            font-size: 0.9rem;
+        }
         .footer-links { list-style: none; }
         .footer-links li { margin-bottom: 8px; }
         .footer-links a {
@@ -311,7 +467,7 @@
             opacity: 0.7;
         }
 
-        /* Floating WhatsApp */
+        /* ============ FLOATING WHATSAPP ============ */
         .floating-whatsapp {
             position: fixed;
             bottom: 25px; right: 25px;
@@ -328,7 +484,7 @@
         }
         .floating-whatsapp:hover { transform: scale(1.1); }
 
-        /* Mobile */
+        /* ============ MOBILE ============ */
         @media (max-width: 768px) {
             .mobile-toggle { display: block; }
             .nav-menu {
@@ -343,34 +499,49 @@
                 z-index: 1001;
             }
             .nav-menu.active { right: 0; }
-            .nav-links { flex-direction: column; align-items: center; margin-bottom: 25px; }
-            .nav-buttons { flex-direction: column; width: 100%; }
+            .nav-links {
+                flex-direction: column;
+                align-items: center;
+                margin-bottom: 25px;
+            }
+            .nav-buttons {
+                flex-direction: column;
+                width: 100%;
+            }
             .hero h1 { font-size: 2rem; }
             .hero p { font-size: 1rem; }
             .about-content { grid-template-columns: 1fr; }
             .top-bar-content { flex-direction: column; text-align: center; }
             .contact-info { flex-direction: column; align-items: center; }
+            .alert-content { flex-direction: column; text-align: center; }
+            .alert-message { flex-direction: column; text-align: center; }
+            .alert-message i { font-size: 2rem; }
         }
     </style>
 </head>
 <body>
 
-    <!-- Top Bar -->
-    <div class="top-bar">
-        <div class="top-bar-content">
-            <div class="contact-info">
-                <span><i class="fas fa-phone-alt"></i> <a href="tel:+919876543210">+91 98765 43210</a></span>
-                <span><i class="far fa-envelope"></i> <a href="mailto:info@alhudha.com">info@alhudha.com</a></span>
+    <!-- ALERT BANNER -->
+    <div id="alertBanner" class="alert-banner">
+        <div class="alert-content">
+            <div class="alert-message">
+                <i class="fas fa-exclamation-circle"></i>
+                <div class="alert-text" id="alertMessage"></div>
             </div>
-            <div class="social-links">
-                <a href="#" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>
-                <a href="#" aria-label="Instagram"><i class="fab fa-instagram"></i></a>
-                <a href="#" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>
-            </div>
+            <a href="#" id="alertLink" class="alert-link">Learn More</a>
+            <button class="alert-close" onclick="closeAlert()">&times;</button>
         </div>
     </div>
 
-    <!-- Navigation -->
+    <!-- TOP BAR -->
+    <div class="top-bar">
+        <div class="top-bar-content">
+            <div class="contact-info" id="topBarContact"></div>
+            <div class="social-links" id="topBarSocial"></div>
+        </div>
+    </div>
+
+    <!-- NAVIGATION -->
     <nav class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-brand">
@@ -397,141 +568,55 @@
         </div>
     </nav>
 
-    <!-- Hero -->
+    <!-- HERO -->
     <section class="hero">
         <div class="hero-content">
-            <h1>Your Journey to the Holy Land</h1>
-            <p>Experience the spiritual journey of a lifetime with our premium Haj and Umrah packages. Book early for best prices!</p>
+            <h1 id="heroHeading">Your Journey to the Holy Land</h1>
+            <p id="heroSubheading">Experience the spiritual journey of a lifetime...</p>
             <div class="hero-buttons">
-                <a href="#packages" class="btn btn-primary">View Packages</a>
-                <a href="https://wa.me/919876543210" target="_blank" class="btn btn-whatsapp">
-                    <i class="fab fa-whatsapp"></i> Chat on WhatsApp
+                <a href="#packages" class="btn btn-primary" id="heroButton">View Packages</a>
+                <a href="#" id="heroWhatsapp" target="_blank" class="btn btn-whatsapp">
+                    <i class="fab fa-whatsapp"></i> <span id="heroWhatsappText">Chat on WhatsApp</span>
                 </a>
             </div>
         </div>
     </section>
 
-    <!-- Features -->
-    <section class="features-section">
+    <!-- FEATURES -->
+    <section class="features-section" id="features">
         <div class="container">
             <div class="section-header">
-                <h2>Why Choose Alhudha?</h2>
-                <p>We provide the best services to make your spiritual journey comfortable and memorable</p>
+                <h2 id="featuresTitle">Why Choose Alhudha?</h2>
+                <p id="featuresSubtitle">We provide the best services to make your spiritual journey comfortable and memorable</p>
             </div>
-            <div class="features-grid">
-                <div class="feature-card">
-                    <div class="feature-icon"><i class="fas fa-mosque"></i></div>
-                    <h3>25+ Years Experience</h3>
-                    <p>Trusted by thousands of pilgrims worldwide</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon"><i class="fas fa-hotel"></i></div>
-                    <h3>Premium Accommodation</h3>
-                    <p>Hotels near Haram for your convenience</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon"><i class="fas fa-bus"></i></div>
-                    <h3>VIP Transportation</h3>
-                    <p>Comfortable travel between holy sites</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon"><i class="fas fa-users"></i></div>
-                    <h3>Expert Guides</h3>
-                    <p>Knowledgeable guides throughout your journey</p>
-                </div>
+            <div class="features-grid" id="featuresGrid">
+                <div class="loading-spinner"><i class="fas fa-circle-notch"></i></div>
             </div>
         </div>
     </section>
 
-    <!-- Packages -->
+    <!-- PACKAGES -->
     <section class="packages-section" id="packages">
         <div class="container">
             <div class="section-header">
-                <h2>Our Haj &amp; Umrah Packages</h2>
-                <p>Choose from our carefully designed packages for a blessed journey</p>
+                <h2 id="packagesTitle">Our Haj &amp; Umrah Packages</h2>
+                <p id="packagesSubtitle">Choose from our carefully designed packages for a blessed journey</p>
             </div>
-            <div class="packages-grid">
-                <div class="package-card">
-                    <div class="package-header">
-                        <h3><i class="fas fa-star"></i> Haj Platinum 2026</h3>
-                        <div class="package-price">₹8,50,000</div>
-                    </div>
-                    <div class="package-body">
-                        <ul class="package-features">
-                            <li><i class="fas fa-check-circle"></i> 5-star accommodation</li>
-                            <li><i class="fas fa-calendar"></i> Departure: June 2026</li>
-                            <li><i class="fas fa-clock"></i> Duration: 20 days</li>
-                        </ul>
-                        <div class="package-actions">
-                            <a href="https://wa.me/919876543210" target="_blank" class="btn btn-whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>
-                            <a href="mailto:info@alhudha.com" class="btn btn-primary"><i class="far fa-envelope"></i> Email</a>
-                        </div>
-                    </div>
-                </div>
-                <div class="package-card">
-                    <div class="package-header">
-                        <h3><i class="fas fa-mosque"></i> Haj Gold 2026</h3>
-                        <div class="package-price">₹5,50,000</div>
-                    </div>
-                    <div class="package-body">
-                        <ul class="package-features">
-                            <li><i class="fas fa-check-circle"></i> 4-star accommodation</li>
-                            <li><i class="fas fa-calendar"></i> Departure: June 2026</li>
-                            <li><i class="fas fa-clock"></i> Duration: 15 days</li>
-                        </ul>
-                        <div class="package-actions">
-                            <a href="https://wa.me/919876543210" target="_blank" class="btn btn-whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>
-                            <a href="mailto:info@alhudha.com" class="btn btn-primary"><i class="far fa-envelope"></i> Email</a>
-                        </div>
-                    </div>
-                </div>
-                <div class="package-card">
-                    <div class="package-header">
-                        <h3><i class="fas fa-star-and-crescent"></i> Umrah Ramadhan</h3>
-                        <div class="package-price">₹1,25,000</div>
-                    </div>
-                    <div class="package-body">
-                        <ul class="package-features">
-                            <li><i class="fas fa-check-circle"></i> Ramadhan special</li>
-                            <li><i class="fas fa-calendar"></i> Departure: Mar 2027</li>
-                            <li><i class="fas fa-clock"></i> Duration: 10 days</li>
-                        </ul>
-                        <div class="package-actions">
-                            <a href="https://wa.me/919876543210" target="_blank" class="btn btn-whatsapp"><i class="fab fa-whatsapp"></i> WhatsApp</a>
-                            <a href="mailto:info@alhudha.com" class="btn btn-primary"><i class="far fa-envelope"></i> Email</a>
-                        </div>
-                    </div>
-                </div>
+            <div class="packages-grid" id="packagesGrid">
+                <div class="loading-spinner"><i class="fas fa-circle-notch"></i></div>
             </div>
         </div>
     </section>
 
-    <!-- About -->
+    <!-- ABOUT -->
     <section class="about-section" id="about">
         <div class="container">
             <div class="about-content">
                 <div class="about-text">
-                    <h2>About Alhudha Haj Travel</h2>
-                    <p>With over 25 years of experience, Alhudha Haj Travel has been serving pilgrims with dedication and excellence. We understand the spiritual significance of this journey and strive to provide the best services.</p>
-                    <p>Our team of experienced guides ensures that all your religious obligations are fulfilled with ease, while our premium accommodations and transportation services provide comfort throughout your journey.</p>
-                    <div class="stats-grid">
-                        <div class="stat-item">
-                            <div class="stat-number">25+</div>
-                            <div class="stat-label">Years Experience</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-number">10k+</div>
-                            <div class="stat-label">Happy Pilgrims</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-number">50+</div>
-                            <div class="stat-label">Expert Guides</div>
-                        </div>
-                        <div class="stat-item">
-                            <div class="stat-number">100%</div>
-                            <div class="stat-label">Satisfaction</div>
-                        </div>
-                    </div>
+                    <h2 id="aboutHeading">About Alhudha Haj Travel</h2>
+                    <p id="aboutPara1"></p>
+                    <p id="aboutPara2"></p>
+                    <div class="stats-grid" id="statsGrid"></div>
                 </div>
                 <div class="about-image">
                     <img src="https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=800&q=80" alt="About Alhudha">
@@ -540,41 +625,24 @@
         </div>
     </section>
 
-    <!-- Contact -->
+    <!-- CONTACT -->
     <section class="contact-section" id="contact">
         <div class="container">
             <div class="section-header">
                 <h2>Contact Us</h2>
                 <p>We're here to help you with any questions about your journey</p>
             </div>
-            <div class="contact-grid">
-                <div class="contact-card">
-                    <div class="contact-icon"><i class="fas fa-phone-alt"></i></div>
-                    <h3>Phone</h3>
-                    <p><a href="tel:+919876543210">+91 98765 43210</a></p>
-                </div>
-                <div class="contact-card">
-                    <div class="contact-icon"><i class="far fa-envelope"></i></div>
-                    <h3>Email</h3>
-                    <p><a href="mailto:info@alhudha.com">info@alhudha.com</a></p>
-                </div>
-                <div class="contact-card">
-                    <div class="contact-icon"><i class="fas fa-map-marker-alt"></i></div>
-                    <h3>Office</h3>
-                    <p>123, Haj House</p>
-                    <p>Mumbai - 400001, India</p>
-                </div>
-            </div>
+            <div class="contact-grid" id="contactGrid"></div>
         </div>
     </section>
 
-    <!-- Footer -->
+    <!-- FOOTER -->
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
                 <div class="footer-section">
                     <h3>Alhudha Haj Travel</h3>
-                    <p>Your trusted partner for Haj and Umrah since 1998. We provide comprehensive services for pilgrims.</p>
+                    <p id="footerAbout"></p>
                 </div>
                 <div class="footer-section">
                     <h3>Quick Links</h3>
@@ -587,37 +655,446 @@
                 </div>
                 <div class="footer-section">
                     <h3>Contact Info</h3>
-                    <ul class="footer-links">
-                        <li><a href="tel:+919876543210"><i class="fas fa-phone-alt"></i> +91 98765 43210</a></li>
-                        <li><a href="mailto:info@alhudha.com"><i class="far fa-envelope"></i> info@alhudha.com</a></li>
-                        <li><a href="#"><i class="fas fa-map-marker-alt"></i> Mumbai, India</a></li>
-                    </ul>
+                    <ul class="footer-links" id="footerContact"></ul>
                 </div>
                 <div class="footer-section">
                     <h3>Follow Us</h3>
-                    <ul class="footer-links">
-                        <li><a href="#"><i class="fab fa-facebook-f"></i> Facebook</a></li>
-                        <li><a href="#"><i class="fab fa-instagram"></i> Instagram</a></li>
-                        <li><a href="#"><i class="fab fa-whatsapp"></i> WhatsApp</a></li>
-                    </ul>
+                    <ul class="footer-links" id="footerSocial"></ul>
                 </div>
             </div>
             <div class="footer-bottom">
-                <p>© 2026 Alhudha Haj Travel System. All rights reserved.</p>
+                <p id="footerCopyright"></p>
             </div>
         </div>
     </footer>
 
-    <!-- Floating WhatsApp -->
-    <a href="https://wa.me/919876543210" class="floating-whatsapp" target="_blank" aria-label="WhatsApp">
+    <!-- FLOATING WHATSAPP -->
+    <a href="#" id="floatingWhatsapp" class="floating-whatsapp" target="_blank" aria-label="WhatsApp">
         <i class="fab fa-whatsapp"></i>
     </a>
 
     <script>
+        // ============================================================
+        // STATE
+        // ============================================================
+        let CONFIG = null;
+        let BATCHES = [];
+
+        // ============================================================
+        // HELPERS
+        // ============================================================
+        function formatINR(amount) {
+            try {
+                const n = Number(amount) || 0;
+                return '₹' + n.toLocaleString('en-IN');
+            } catch (e) {
+                return '₹' + amount;
+            }
+        }
+
+        function formatDate(d) {
+            if (!d) return '';
+            try {
+                const dt = new Date(d);
+                if (isNaN(dt.getTime())) return d;
+                return dt.toLocaleDateString('en-IN', {
+                    day: '2-digit', month: 'short', year: 'numeric'
+                });
+            } catch (e) {
+                return d;
+            }
+        }
+
+        function safeText(s, fallback) {
+            if (s === null || s === undefined) return fallback || '';
+            const str = String(s).trim();
+            return str || (fallback || '');
+        }
+
+        function escapeHTML(s) {
+            if (s === null || s === undefined) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function whatsappURL(number, message) {
+            const clean = String(number || '').replace(/\D/g, '');
+            const base = `https://wa.me/${clean}`;
+            return message ? `${base}?text=${encodeURIComponent(message)}` : base;
+        }
+
+        // ============================================================
+        // FETCH CONFIG + BATCHES
+        // ============================================================
+        async function loadAll() {
+            // Fetch config and batches in parallel
+            const [cfgResult, bResult] = await Promise.allSettled([
+                fetch('/api/frontpage', { cache: 'no-store' }).then(r => r.json()),
+                fetch('/api/batches',   { cache: 'no-store' }).then(r => r.json()),
+            ]);
+
+            if (cfgResult.status === 'fulfilled' && cfgResult.value) {
+                CONFIG = cfgResult.value;
+            } else {
+                console.warn('Failed to load frontpage config', cfgResult);
+                CONFIG = {};
+            }
+
+            if (bResult.status === 'fulfilled'
+                && bResult.value
+                && bResult.value.success) {
+                BATCHES = bResult.value.batches || [];
+            } else {
+                console.warn('Failed to load batches', bResult);
+                BATCHES = [];
+            }
+
+            render();
+        }
+
+        // ============================================================
+        // RENDER EVERYTHING
+        // ============================================================
+        function render() {
+            renderAlert(CONFIG.alert || {});
+            renderHero(CONFIG.hero || {});
+            renderFeatures(CONFIG.features || []);
+            renderPackages(CONFIG.packages || {}, BATCHES);
+            renderAbout(CONFIG.about || {});
+            renderContact(CONFIG.contact || {});
+            renderFooter(CONFIG.footer || {}, CONFIG.contact || {});
+            setupWhatsApp(CONFIG.contact || {});
+            renderTopBar(CONFIG.contact || {}, CONFIG.social || {});
+        }
+
+        // ============================================================
+        // ALERT
+        // ============================================================
+        function renderAlert(a) {
+            const banner = document.getElementById('alertBanner');
+            const msgEl = document.getElementById('alertMessage');
+            const linkEl = document.getElementById('alertLink');
+
+            if (!a.enabled) {
+                banner.classList.remove('active');
+                banner.style.display = 'none';
+                return;
+            }
+
+            // If user closed it before, respect that
+            if (localStorage.getItem('alertClosed') === 'true') {
+                banner.classList.remove('active');
+                banner.style.display = 'none';
+                return;
+            }
+
+            msgEl.innerHTML = escapeHTML(a.message || '');
+
+            if (a.link && a.link !== '#') {
+                linkEl.href = a.link;
+                linkEl.style.display = 'inline-flex';
+            } else {
+                linkEl.style.display = 'none';
+            }
+
+            // Apply gradient from the configured color
+            const col = a.color || '#f39c12';
+            banner.style.background = `linear-gradient(135deg, ${col}, ${shadeColor(col, -20)})`;
+
+            // Reset animation classes
+            banner.classList.remove('pulse', 'blink');
+            if (a.style === 'pulse') banner.classList.add('pulse');
+            else if (a.style === 'blink') banner.classList.add('blink');
+
+            banner.classList.add('active');
+            banner.style.display = 'block';
+        }
+
+        function closeAlert() {
+            document.getElementById('alertBanner').style.display = 'none';
+            localStorage.setItem('alertClosed', 'true');
+            // Re-show after 1 hour
+            setTimeout(() => {
+                localStorage.removeItem('alertClosed');
+            }, 3600 * 1000);
+        }
+
+        function shadeColor(hex, percent) {
+            // Simple #RRGGBB shading. `percent` can be negative.
+            try {
+                let h = String(hex).replace('#', '');
+                if (h.length === 3) {
+                    h = h.split('').map(c => c + c).join('');
+                }
+                const num = parseInt(h, 16);
+                let r = (num >> 16) + Math.round(255 * percent / 100);
+                let g = ((num >> 8) & 0x00FF) + Math.round(255 * percent / 100);
+                let b = (num & 0x0000FF) + Math.round(255 * percent / 100);
+                r = Math.max(0, Math.min(255, r));
+                g = Math.max(0, Math.min(255, g));
+                b = Math.max(0, Math.min(255, b));
+                return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+            } catch (e) {
+                return hex;
+            }
+        }
+
+        // ============================================================
+        // HERO
+        // ============================================================
+        function renderHero(h) {
+            document.getElementById('heroHeading').textContent =
+                safeText(h.heading, 'Your Journey to the Holy Land');
+            document.getElementById('heroSubheading').textContent =
+                safeText(h.subheading, '');
+            document.getElementById('heroButton').textContent =
+                safeText(h.button_text, 'View Packages');
+            document.getElementById('heroWhatsappText').textContent =
+                safeText(h.whatsapp_text, 'Chat on WhatsApp');
+        }
+
+        // ============================================================
+        // FEATURES
+        // ============================================================
+        function renderFeatures(features) {
+            const grid = document.getElementById('featuresGrid');
+            grid.innerHTML = '';
+
+            if (!features || features.length === 0) {
+                grid.innerHTML = `
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas fa-mosque"></i></div>
+                        <h3>Trusted Service</h3>
+                        <p>Decades of experience serving pilgrims</p>
+                    </div>`;
+                return;
+            }
+
+            grid.innerHTML = features.map(f => {
+                const icon = safeText(f.icon, 'fa-check-circle');
+                const title = safeText(f.title, '');
+                const text = safeText(f.text, '');
+                return `
+                    <div class="feature-card">
+                        <div class="feature-icon"><i class="fas ${escapeHTML(icon)}"></i></div>
+                        <h3>${escapeHTML(title)}</h3>
+                        <p>${escapeHTML(text)}</p>
+                    </div>`;
+            }).join('');
+        }
+
+        // ============================================================
+        // PACKAGES (from real batches)
+        // ============================================================
+        function renderPackages(pcfg, batches) {
+            // Titles
+            document.getElementById('packagesTitle').textContent =
+                safeText(pcfg.title, 'Our Haj & Umrah Packages');
+            document.getElementById('packagesSubtitle').textContent =
+                safeText(pcfg.subtitle, '');
+
+            const grid = document.getElementById('packagesGrid');
+            grid.innerHTML = '';
+
+            if (!batches || batches.length === 0) {
+                grid.innerHTML = `
+                    <div class="packages-empty">
+                        <i class="fas fa-mosque" style="font-size:2rem;display:block;margin-bottom:15px;color:var(--primary-color)"></i>
+                        <p>Packages will be published soon. Please contact us for details.</p>
+                    </div>`;
+                return;
+            }
+
+            // Get contact for the CTAs
+            const whatsappNum = (CONFIG.contact || {}).whatsapp || '919876543210';
+            const emailAddr = (CONFIG.contact || {}).email || 'info@alhudha.com';
+
+            grid.innerHTML = batches.map(b => {
+                const name = safeText(b.name, 'Package');
+                const desc = safeText(b.description, 'Complete Haj/Umrah package');
+                const price = Number(b.price) || 0;
+                const dep = b.departure_date ? formatDate(b.departure_date) : 'TBA';
+                const ret = b.return_date ? formatDate(b.return_date) : '';
+                const seats = Number(b.total_seats) || 0;
+                const status = safeText(b.status, '');
+
+                const waMsg = `Hi, I'm interested in the "${name}" package. Please share more details.`;
+                const waUrl = whatsappURL(whatsappNum, waMsg);
+                const emailSub = `Package Inquiry: ${name}`;
+                const emailBody = `I am interested in the "${name}" package. Please share more details.`;
+                const emailUrl = `mailto:${emailAddr}?subject=${encodeURIComponent(emailSub)}&body=${encodeURIComponent(emailBody)}`;
+
+                // Extra feature lines depending on what's available
+                const lines = [];
+                lines.push(`<li><i class="fas fa-check-circle"></i> ${escapeHTML(desc)}</li>`);
+                if (dep) lines.push(`<li><i class="fas fa-calendar"></i> Departure: ${escapeHTML(dep)}</li>`);
+                if (ret) lines.push(`<li><i class="fas fa-calendar-check"></i> Return: ${escapeHTML(ret)}</li>`);
+                if (seats > 0) lines.push(`<li><i class="fas fa-users"></i> Seats available: ${seats}</li>`);
+                if (status) lines.push(`<li><i class="fas fa-circle-info"></i> Status: ${escapeHTML(status)}</li>`);
+
+                return `
+                    <div class="package-card">
+                        <div class="package-header">
+                            <h3><i class="fas fa-mosque"></i> ${escapeHTML(name)}</h3>
+                            <div class="package-price">${formatINR(price)}</div>
+                        </div>
+                        <div class="package-body">
+                            <ul class="package-features">
+                                ${lines.join('')}
+                            </ul>
+                            <div class="package-actions">
+                                <a href="${waUrl}" target="_blank" class="btn btn-whatsapp">
+                                    <i class="fab fa-whatsapp"></i> WhatsApp
+                                </a>
+                                <a href="${emailUrl}" class="btn btn-primary">
+                                    <i class="far fa-envelope"></i> Email
+                                </a>
+                            </div>
+                        </div>
+                    </div>`;
+            }).join('');
+        }
+
+        // ============================================================
+        // ABOUT
+        // ============================================================
+        function renderAbout(a) {
+            document.getElementById('aboutHeading').textContent =
+                safeText(a.heading, 'About Alhudha Haj Travel');
+            document.getElementById('aboutPara1').textContent = safeText(a.paragraph1, '');
+            document.getElementById('aboutPara2').textContent = safeText(a.paragraph2, '');
+
+            const statsGrid = document.getElementById('statsGrid');
+            const stats = a.stats || [];
+            if (stats.length === 0) {
+                statsGrid.innerHTML = '';
+                return;
+            }
+            statsGrid.innerHTML = stats.map(s => `
+                <div class="stat-item">
+                    <div class="stat-number">${escapeHTML(s.number || '')}</div>
+                    <div class="stat-label">${escapeHTML(s.label || '')}</div>
+                </div>`).join('');
+        }
+
+        // ============================================================
+        // CONTACT
+        // ============================================================
+        function renderContact(c) {
+            const grid = document.getElementById('contactGrid');
+            const phone = safeText(c.phone, '');
+            const phone2 = safeText(c.phone2, '');
+            const email = safeText(c.email, '');
+            const addr1 = safeText(c.address_line1, '');
+            const addr2 = safeText(c.address_line2, '');
+
+            const items = [];
+
+            if (phone || phone2) {
+                items.push(`
+                    <div class="contact-card">
+                        <div class="contact-icon"><i class="fas fa-phone-alt"></i></div>
+                        <h3>Phone</h3>
+                        ${phone ? `<p><a href="tel:${escapeHTML(phone)}">${escapeHTML(phone)}</a></p>` : ''}
+                        ${phone2 ? `<p><a href="tel:${escapeHTML(phone2)}">${escapeHTML(phone2)}</a></p>` : ''}
+                    </div>`);
+            }
+
+            if (email) {
+                items.push(`
+                    <div class="contact-card">
+                        <div class="contact-icon"><i class="far fa-envelope"></i></div>
+                        <h3>Email</h3>
+                        <p><a href="mailto:${escapeHTML(email)}">${escapeHTML(email)}</a></p>
+                    </div>`);
+            }
+
+            if (addr1 || addr2) {
+                items.push(`
+                    <div class="contact-card">
+                        <div class="contact-icon"><i class="fas fa-map-marker-alt"></i></div>
+                        <h3>Office</h3>
+                        ${addr1 ? `<p>${escapeHTML(addr1)}</p>` : ''}
+                        ${addr2 ? `<p>${escapeHTML(addr2)}</p>` : ''}
+                    </div>`);
+            }
+
+            grid.innerHTML = items.join('') ||
+                '<div class="packages-empty">Contact information coming soon.</div>';
+        }
+
+        // ============================================================
+        // FOOTER
+        // ============================================================
+        function renderFooter(f, c) {
+            document.getElementById('footerAbout').textContent =
+                safeText(f.about_text, '');
+            document.getElementById('footerCopyright').textContent =
+                safeText(f.copyright, `© ${new Date().getFullYear()} Alhudha Haj Travel. All rights reserved.`);
+
+            const footerContact = document.getElementById('footerContact');
+            const items = [];
+            if (c.phone) items.push(`<li><a href="tel:${escapeHTML(c.phone)}"><i class="fas fa-phone-alt"></i> ${escapeHTML(c.phone)}</a></li>`);
+            if (c.email) items.push(`<li><a href="mailto:${escapeHTML(c.email)}"><i class="far fa-envelope"></i> ${escapeHTML(c.email)}</a></li>`);
+            if (c.address_line2) items.push(`<li><a href="#"><i class="fas fa-map-marker-alt"></i> ${escapeHTML(c.address_line2)}</a></li>`);
+            footerContact.innerHTML = items.join('');
+
+            // Footer social
+            const footerSocial = document.getElementById('footerSocial');
+            const socItems = [];
+            if (c.facebook || (CONFIG.social || {}).facebook)
+                socItems.push(`<li><a href="${escapeHTML(c.facebook || CONFIG.social.facebook)}" target="_blank"><i class="fab fa-facebook-f"></i> Facebook</a></li>`);
+            if (c.instagram || (CONFIG.social || {}).instagram)
+                socItems.push(`<li><a href="${escapeHTML(c.instagram || CONFIG.social.instagram)}" target="_blank"><i class="fab fa-instagram"></i> Instagram</a></li>`);
+            if (c.whatsapp)
+                socItems.push(`<li><a href="${whatsappURL(c.whatsapp)}" target="_blank"><i class="fab fa-whatsapp"></i> WhatsApp</a></li>`);
+            footerSocial.innerHTML = socItems.join('');
+        }
+
+        // ============================================================
+        // TOP BAR
+        // ============================================================
+        function renderTopBar(c, s) {
+            const topBar = document.getElementById('topBarContact');
+            const items = [];
+            if (c.phone) items.push(`<span><i class="fas fa-phone-alt"></i> <a href="tel:${escapeHTML(c.phone)}">${escapeHTML(c.phone)}</a></span>`);
+            if (c.email) items.push(`<span><i class="far fa-envelope"></i> <a href="mailto:${escapeHTML(c.email)}">${escapeHTML(c.email)}</a></span>`);
+            topBar.innerHTML = items.join('');
+
+            const topBarSocial = document.getElementById('topBarSocial');
+            const socialItems = [];
+            if (s.facebook) socialItems.push(`<a href="${escapeHTML(s.facebook)}" target="_blank" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>`);
+            if (s.instagram) socialItems.push(`<a href="${escapeHTML(s.instagram)}" target="_blank" aria-label="Instagram"><i class="fab fa-instagram"></i></a>`);
+            if (c.whatsapp) socialItems.push(`<a href="${whatsappURL(c.whatsapp)}" target="_blank" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>`);
+            topBarSocial.innerHTML = socialItems.join('');
+        }
+
+        // ============================================================
+        // WHATSAPP BUTTONS
+        // ============================================================
+        function setupWhatsApp(c) {
+            const num = c.whatsapp || '919876543210';
+            const url = whatsappURL(num);
+            const heroWa = document.getElementById('heroWhatsapp');
+            const floatingWa = document.getElementById('floatingWhatsapp');
+            if (heroWa) heroWa.href = url;
+            if (floatingWa) floatingWa.href = url;
+        }
+
+        // ============================================================
+        // MOBILE MENU
+        // ============================================================
         function toggleMobileMenu() {
             document.getElementById('navMenu').classList.toggle('active');
         }
 
+        // ============================================================
+        // SMOOTH SCROLL
+        // ============================================================
         document.querySelectorAll('a[href^="#"]').forEach(a => {
             a.addEventListener('click', function (e) {
                 const target = document.querySelector(this.getAttribute('href'));
@@ -628,6 +1105,11 @@
                 }
             });
         });
+
+        // ============================================================
+        // BOOT
+        // ============================================================
+        document.addEventListener('DOMContentLoaded', loadAll);
     </script>
 
 </body>
