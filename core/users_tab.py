@@ -1,11 +1,11 @@
 # =================================================================================
 # SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED + MOBILE-RESPONSIVE
 # =================================================================================
-# v1.3 — Mobile-render fix
-#   • _is_narrow() defaults to True when width unknown (fixes grey box)
-#   • _render_table() ALWAYS renders mobile cards
-#   • Deferred re-check 700ms after __init__ to catch late width reports
-#   • Preserved: v1.1 patches (18.1.A/B/C/D) and v1.2 mobile layout
+# v1.4 — Platform-aware narrow detection + dual-view (never blank)
+#   • _is_narrow() now uses page.platform (ANDROID/IOS) as primary signal
+#   • setup_ui() builds BOTH desktop table AND mobile cards; only one visible
+#   • refresh() re-enforces visibility toggle after every data reload
+#   • Preserved: v1.1 patches (18.1.A/B/C/D), v1.2 mobile layout
 # =================================================================================
 
 import flet as ft
@@ -142,6 +142,8 @@ class UsersTab(ft.Column):
         self.status_label = None
         self._ui_built = False
         self._mobile_mode = False
+        self._table_view = None
+        self._card_view = None
 
         # 🔒 DEFENSE-IN-DEPTH — refuse to build if user lacks manage_users
         if not _user_has_permission(self.current_user, "manage_users"):
@@ -168,21 +170,22 @@ class UsersTab(ft.Column):
             traceback.print_exc()
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
-        # ---- Deferred re-check for late width reports (mobile web) ----
+        # ---- Deferred re-check for late width/platform info ----
         try:
             import threading
 
             def _delayed_check():
                 import time
-                time.sleep(0.7)
+                time.sleep(1.0)
                 try:
                     now_narrow = self._is_narrow()
-                    print(f"[USERS] delayed check: page.width="
-                          f"{getattr(self.page_ref, 'width', '?')} "
+                    print(f"[USERS] delayed check: "
+                          f"page.width={getattr(self.page_ref, 'width', '?')} "
+                          f"platform={getattr(self.page_ref, 'platform', '?')} "
                           f"narrow={now_narrow} "
                           f"mobile_mode={self._mobile_mode}")
-                    if now_narrow and not self._mobile_mode:
-                        print("[USERS] late mobile detection — rebuilding")
+                    if now_narrow != self._mobile_mode:
+                        print("[USERS] viewport mode changed — rebuilding")
                         self.controls.clear()
                         self.stats_labels.clear()
                         self.setup_ui()
@@ -195,27 +198,50 @@ class UsersTab(ft.Column):
             pass
 
     # -----------------------------------------------------------------------------
-    # 18.1.1b — _is_narrow  (fixed: safe default)
+    # 18.1.1b — _is_narrow  (platform-aware)
     # -----------------------------------------------------------------------------
     def _is_narrow(self):
-        """True when viewport width < MOBILE_BREAKPOINT.
+        """Detect narrow / mobile viewport.
 
-        Falls back to True when width is unknown (Flet web often reports
-        None during first render). Card layout always fits, so this is
-        the safer default.
+        Order of reliability:
+          1. page.platform == ANDROID / IOS  → mobile
+          2. page.width known and < breakpoint → mobile
+          3. page.window.width known and < breakpoint → mobile
+          4. default → True (cards always fit)
         """
+        # 1) Platform signal (most reliable on Flet web)
+        try:
+            plat = getattr(self.page_ref, "platform", None)
+            if plat is not None:
+                try:
+                    if plat in (ft.PagePlatform.ANDROID,
+                                ft.PagePlatform.IOS):
+                        return True
+                except Exception:
+                    pstr = str(plat).lower()
+                    if "android" in pstr or "ios" in pstr:
+                        return True
+        except Exception:
+            pass
+
+        # 2) page.width
         try:
             w = self.page_ref.width
-            if w is None:
-                try:
-                    w = self.page_ref.window.width
-                except Exception:
-                    w = None
-            if w is None:
-                return True   # safe default: mobile card layout
-            return w < MOBILE_BREAKPOINT
+            if w is not None and w > 0:
+                return w < MOBILE_BREAKPOINT
         except Exception:
-            return True
+            pass
+
+        # 3) window.width
+        try:
+            w = self.page_ref.window.width
+            if w is not None and w > 0:
+                return w < MOBILE_BREAKPOINT
+        except Exception:
+            pass
+
+        # 4) default
+        return True
 
     # -----------------------------------------------------------------------------
     # 18.1.1c — _build_access_denied_ui
@@ -273,11 +299,14 @@ class UsersTab(ft.Column):
             pass
 
     # -----------------------------------------------------------------------------
-    # 18.1.3 — setup_ui  (MOBILE-RESPONSIVE)
+    # 18.1.3 — setup_ui  (renders BOTH views; only one visible)
     # -----------------------------------------------------------------------------
     def setup_ui(self):
         narrow = self._is_narrow()
         self._mobile_mode = narrow
+        print(f"[USERS] setup_ui narrow={narrow} "
+              f"platform={getattr(self.page_ref, 'platform', '?')} "
+              f"width={getattr(self.page_ref, 'width', '?')}")
 
         # ---- Header ----
         header = ft.Container(
@@ -304,7 +333,7 @@ class UsersTab(ft.Column):
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # ---- Stats cards (responsive cols) ----
+        # ---- Stats cards ----
         stat_specs = [
             ("total",  "👥", "Total",         "#2563eb"),
             ("supers", "👑", "Super Admins",  "#d97706"),
@@ -382,18 +411,26 @@ class UsersTab(ft.Column):
         # ---- Mobile card list ----
         self.mobile_list = ft.Column(spacing=8)
 
+        # ---- Build BOTH views ----
+        table_view = ft.Container(
+            content=ft.ListView([self.table],
+                                expand=True, auto_scroll=False),
+            bgcolor=ft.Colors.WHITE, border_radius=10,
+            border=ft.Border.all(1, "#e2e8f0"),
+            padding=6, height=420)
+
+        card_view = ft.Container(content=self.mobile_list, padding=4)
+
+        # Only one visible at a time
         if narrow:
-            table_body = ft.Container(
-                content=self.mobile_list,
-                padding=4,
-            )
+            table_view.visible = False
+            card_view.visible = True
         else:
-            table_body = ft.Container(
-                content=ft.ListView([self.table],
-                                    expand=True, auto_scroll=False),
-                bgcolor=ft.Colors.WHITE, border_radius=10,
-                border=ft.Border.all(1, "#e2e8f0"),
-                padding=6, height=420)
+            table_view.visible = True
+            card_view.visible = False
+
+        self._table_view = table_view
+        self._card_view = card_view
 
         table_card = ft.Container(
             content=ft.Column([
@@ -409,7 +446,8 @@ class UsersTab(ft.Column):
                         size=9, color=ft.Colors.GREY_500,
                         italic=True),
                 ], spacing=6),
-                table_body,
+                table_view,
+                card_view,
             ], spacing=8),
             padding=10 if narrow else 12,
             bgcolor=ft.Colors.WHITE, border_radius=12,
@@ -483,6 +521,18 @@ class UsersTab(ft.Column):
             self._render_table()
             self._update_stats()
 
+            # ---- Re-enforce view visibility ----
+            try:
+                if self._table_view is not None and self._card_view is not None:
+                    if self._mobile_mode:
+                        self._table_view.visible = False
+                        self._card_view.visible = True
+                    else:
+                        self._table_view.visible = True
+                        self._card_view.visible = False
+            except Exception as _ve:
+                print(f"[USERS] view toggle failed: {_ve}")
+
             if self.status_label:
                 self.status_label.value = (
                     f"✅ Loaded {len(self.users)} users "
@@ -517,7 +567,6 @@ class UsersTab(ft.Column):
     # 18.1.6 — _render_table
     # -----------------------------------------------------------------------------
     def _render_table(self):
-        # Clear both views so re-render is always consistent
         try:
             self.table.rows.clear()
         except Exception:
@@ -622,7 +671,7 @@ class UsersTab(ft.Column):
                 ft.DataCell(actions),
             ]))
 
-        # ---- ALWAYS render mobile cards (harmless if unused) ----
+        # ---- Always render mobile cards ----
         try:
             self._render_mobile_cards()
         except Exception as ex:
@@ -636,7 +685,6 @@ class UsersTab(ft.Column):
     # 18.1.6b — _render_mobile_cards
     # -----------------------------------------------------------------------------
     def _render_mobile_cards(self):
-        """Render users as cards for narrow screens."""
         if self.mobile_list is None:
             return
         self.mobile_list.controls.clear()
@@ -920,15 +968,30 @@ class UserFormDialog:
 
         narrow = False
         try:
-            w = self.page_ref.width
-            if w is None:
+            plat = getattr(self.page_ref, "platform", None)
+            if plat is not None:
                 try:
-                    w = self.page_ref.window.width
+                    if plat in (ft.PagePlatform.ANDROID,
+                                ft.PagePlatform.IOS):
+                        narrow = True
                 except Exception:
-                    w = None
-            narrow = (w is None) or (w < MOBILE_BREAKPOINT)
+                    pstr = str(plat).lower()
+                    if "android" in pstr or "ios" in pstr:
+                        narrow = True
         except Exception:
-            narrow = True
+            pass
+
+        if not narrow:
+            try:
+                w = self.page_ref.width
+                if w is None:
+                    try:
+                        w = self.page_ref.window.width
+                    except Exception:
+                        w = None
+                narrow = (w is None) or (w < MOBILE_BREAKPOINT)
+            except Exception:
+                narrow = True
 
         self.username_field = ft.TextField(
             label="Username *",
@@ -1323,5 +1386,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END — USERS TAB (FLET 1.0 — MOBILE-RESPONSIVE)
+# SECTION 18 END — USERS TAB (FLET 1.0 — v1.4)
 # =================================================================================
