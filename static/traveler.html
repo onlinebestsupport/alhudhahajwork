@@ -1,18 +1,778 @@
-// ============================================================
-// CONFIG
-// ============================================================
-const API = {
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Traveler Portal — Alhudha Haj Travel</title>
+<link rel="icon" href="/static/logo.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+    --primary: #1e3c72;
+    --primary-light: #2a4d8c;
+    --primary-dark: #0f2b4f;
+    --accent: #7c3aed;
+    --success: #059669;
+    --warning: #f39c12;
+    --danger: #dc2626;
+    --info: #0ea5e9;
+    --dark: #0f172a;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --bg: #f1f5f9;
+    --card: #ffffff;
+    --radius: 14px;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.10);
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg);
+    color: var(--dark);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ============ TOP BAR ============ */
+.top-bar {
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    color: white;
+    padding: 14px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.top-bar-left { display: flex; align-items: center; gap: 14px; }
+
+.top-bar-logo {
+    width: 44px;
+    height: 44px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 4px;
+}
+.top-bar-logo img { width: 100%; height: 100%; object-fit: contain; }
+
+.top-bar-title { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
+.top-bar-subtitle { font-size: 0.72rem; opacity: 0.8; }
+
+.top-bar-right { display: flex; align-items: center; gap: 12px; }
+.user-greeting { font-size: 0.85rem; text-align: right; display: none; }
+.user-greeting .name { font-weight: 600; }
+.user-greeting .role { font-size: 0.7rem; opacity: 0.85; }
+
+.btn-logout {
+    background: rgba(255, 255, 255, 0.18);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.82rem;
+    cursor: pointer;
+    display: none;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.2s;
+    font-family: inherit;
+}
+.btn-logout:hover { background: rgba(255, 255, 255, 0.30); }
+
+/* ============ LOGIN ============ */
+.login-wrap {
+    min-height: calc(100vh - 72px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 30px 20px;
+}
+
+.login-card {
+    background: white;
+    border-radius: 20px;
+    padding: 44px 40px;
+    width: 100%;
+    max-width: 440px;
+    box-shadow: var(--shadow-lg);
+    border: 1px solid var(--border);
+}
+
+.login-header { text-align: center; margin-bottom: 30px; }
+.login-logo {
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 18px;
+    border-radius: 20px;
+    background: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid var(--border);
+    overflow: hidden;
+    padding: 6px;
+}
+.login-logo img { width: 100%; height: 100%; object-fit: contain; }
+.login-header h1 { font-size: 1.6rem; font-weight: 700; color: var(--primary); font-family: 'Amiri', serif; }
+.login-header p { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }
+
+.form-group { margin-bottom: 18px; }
+.form-label {
+    display: block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--dark);
+    margin-bottom: 6px;
+}
+.form-input {
+    width: 100%;
+    padding: 13px 16px;
+    font-size: 0.95rem;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    font-family: inherit;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    background: #fbfcfe;
+}
+.form-input:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(30, 60, 114, 0.12);
+    background: white;
+}
+
+.btn-primary-full {
+    width: 100%;
+    padding: 14px;
+    background: linear-gradient(135deg, var(--primary), var(--primary-light));
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-size: 1rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: transform 0.15s, box-shadow 0.2s;
+    font-family: inherit;
+    margin-top: 8px;
+}
+.btn-primary-full:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(30, 60, 114, 0.28); }
+.btn-primary-full:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+.login-error {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 11px 14px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    margin-bottom: 16px;
+    display: none;
+    border-left: 4px solid var(--danger);
+}
+.login-error.show { display: block; }
+
+.login-footer { text-align: center; margin-top: 24px; font-size: 0.78rem; color: var(--muted); }
+.login-footer a { color: var(--primary); text-decoration: none; font-weight: 600; }
+.login-footer a:hover { text-decoration: underline; }
+
+.login-help {
+    margin-top: 20px;
+    padding: 12px 14px;
+    background: #eff6ff;
+    border-radius: 10px;
+    font-size: 0.78rem;
+    color: #1e40af;
+    line-height: 1.5;
+    border-left: 4px solid #3b82f6;
+}
+
+/* ============ PORTAL ============ */
+.portal-wrap {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px 20px 60px;
+    display: none;
+}
+.portal-wrap.active { display: block; }
+
+.hero-card {
+    background: linear-gradient(135deg, var(--primary), var(--accent));
+    color: white;
+    border-radius: 20px;
+    padding: 32px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    box-shadow: var(--shadow-lg);
+    margin-bottom: 24px;
+    position: relative;
+    overflow: hidden;
+}
+.hero-card::before {
+    content: '';
+    position: absolute;
+    top: -50%; right: -20%;
+    width: 60%; height: 200%;
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.08) 0%, transparent 70%);
+}
+.hero-avatar {
+    width: 110px;
+    height: 110px;
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.15);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 3px solid rgba(255, 255, 255, 0.25);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 1;
+}
+.hero-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.hero-avatar .no-photo { font-size: 2.8rem; opacity: 0.5; }
+
+.hero-info { flex: 1; position: relative; z-index: 1; }
+.hero-info h2 { font-size: 1.6rem; font-weight: 700; font-family: 'Amiri', serif; margin-bottom: 4px; }
+.hero-info .traveler-id { font-size: 0.8rem; opacity: 0.85; margin-bottom: 12px; font-family: monospace; }
+
+.hero-badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.hero-badge {
+    background: rgba(255, 255, 255, 0.18);
+    padding: 5px 12px;
+    border-radius: 50px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* KPI */
+.kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+}
+.kpi-card {
+    background: white;
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    border-left: 5px solid var(--primary);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.kpi-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 700;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.kpi-value { font-size: 1.55rem; font-weight: 800; color: var(--dark); }
+.kpi-sub { font-size: 0.72rem; color: var(--muted); }
+.kpi-success { border-left-color: var(--success); }
+.kpi-success .kpi-value { color: var(--success); }
+.kpi-warn { border-left-color: var(--warning); }
+.kpi-warn .kpi-value { color: var(--warning); }
+.kpi-danger { border-left-color: var(--danger); }
+.kpi-danger .kpi-value { color: var(--danger); }
+.kpi-info { border-left-color: var(--info); }
+.kpi-info .kpi-value { color: var(--info); }
+.kpi-accent { border-left-color: var(--accent); }
+.kpi-accent .kpi-value { color: var(--accent); }
+
+/* CARD */
+.card {
+    background: white;
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow);
+    margin-bottom: 22px;
+}
+.card-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 18px;
+}
+.card-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+    background: rgba(30, 60, 114, 0.10);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.05rem;
+}
+.card-title { font-size: 1.05rem; font-weight: 700; color: var(--dark); }
+.card-subtitle { font-size: 0.78rem; color: var(--muted); }
+
+.info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 14px 24px;
+}
+.info-row { display: flex; flex-direction: column; gap: 3px; }
+.info-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    font-weight: 700;
+}
+.info-value { font-size: 0.93rem; color: var(--dark); font-weight: 500; word-break: break-word; }
+.info-value.empty { color: var(--muted); font-style: italic; }
+
+/* DOCS */
+.docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 14px;
+}
+.doc-card {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 12px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    transition: transform 0.15s, box-shadow 0.2s;
+    cursor: pointer;
+}
+.doc-card:hover { transform: translateY(-2px); box-shadow: var(--shadow); }
+.doc-card.missing { opacity: 0.55; cursor: not-allowed; }
+.doc-card.missing:hover { transform: none; }
+.doc-thumb {
+    width: 100%;
+    height: 90px;
+    border-radius: 8px;
+    background: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border: 1px solid var(--border);
+}
+.doc-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.doc-thumb .doc-icon { font-size: 2.2rem; color: var(--primary); }
+.doc-card.missing .doc-thumb .doc-icon { color: var(--muted); }
+.doc-label { font-size: 0.82rem; font-weight: 600; color: var(--dark); }
+.doc-status {
+    font-size: 0.7rem;
+    padding: 3px 10px;
+    border-radius: 50px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.doc-status.ok { background: #dcfce7; color: #166534; }
+.doc-status.miss { background: #f1f5f9; color: var(--muted); }
+
+/* TABLE */
+.table-wrap { overflow-x: auto; margin: 0 -8px; padding: 0 8px; }
+table.data-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+table.data-table th {
+    background: #f8fafc;
+    text-align: left;
+    padding: 11px 14px;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    font-weight: 700;
+    border-bottom: 2px solid var(--border);
+}
+table.data-table td {
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    color: var(--dark);
+}
+table.data-table tr:last-child td { border-bottom: none; }
+table.data-table tr:hover td { background: #f8fafc; }
+.amount-cell { font-weight: 700; color: var(--success); text-align: right; font-family: monospace; }
+.badge-status {
+    font-size: 0.72rem;
+    padding: 3px 10px;
+    border-radius: 50px;
+    font-weight: 700;
+    display: inline-block;
+}
+.badge-status.pending { background: #fef3c7; color: #92400e; }
+.badge-status.completed { background: #dcfce7; color: #166534; }
+.badge-status.failed { background: #fee2e2; color: #991b1b; }
+.badge-status.paid { background: #dcfce7; color: #166534; }
+
+.empty-state {
+    text-align: center;
+    padding: 30px 20px;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+.empty-state i { font-size: 2rem; display: block; margin-bottom: 10px; color: #cbd5e1; }
+
+/* INVOICE */
+.invoice-box { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.invoice-lines { display: flex; flex-direction: column; gap: 10px; }
+.invoice-line {
+    display: flex;
+    justify-content: space-between;
+    padding: 11px 0;
+    font-size: 0.9rem;
+    border-bottom: 1px dashed var(--border);
+}
+.invoice-line:last-child { border-bottom: none; }
+.invoice-line.discount { color: var(--danger); }
+.invoice-line.total {
+    font-size: 1.15rem;
+    font-weight: 800;
+    color: var(--primary);
+    padding-top: 16px;
+    border-top: 2px solid var(--border);
+    border-bottom: none;
+}
+.invoice-line .label { color: var(--muted); font-weight: 500; }
+.invoice-line .value { font-weight: 700; }
+
+/* MOBILE */
+@media (max-width: 640px) {
+    .top-bar { padding: 12px 14px; }
+    .top-bar-title { font-size: 0.95rem; }
+    .login-card { padding: 30px 22px; }
+    .portal-wrap { padding: 16px 12px 50px; }
+    .hero-card { flex-direction: column; text-align: center; padding: 24px 18px; }
+    .hero-badges { justify-content: center; }
+    .hero-info h2 { font-size: 1.3rem; }
+    .kpi-grid { grid-template-columns: 1fr 1fr; }
+    .kpi-value { font-size: 1.25rem; }
+    .card { padding: 18px 14px; }
+    .invoice-box { grid-template-columns: 1fr; }
+    .user-greeting { display: none !important; }
+}
+
+/* SPINNER */
+.spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-overlay {
+    display: none;
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--muted);
+}
+.loading-overlay.active { display: block; }
+.loading-overlay .big-spinner {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    border: 4px solid var(--border);
+    border-top-color: var(--primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 12px;
+}
+
+/* TOAST */
+.toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    padding: 14px 20px;
+    background: var(--dark);
+    color: white;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    transform: translateY(100px);
+    transition: transform 0.3s ease;
+    z-index: 999;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 90vw;
+}
+.toast.show { transform: translateY(0); }
+.toast.success { background: var(--success); }
+.toast.error { background: var(--danger); }
+
+/* DOC MODAL */
+.modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.75);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.modal-backdrop.active { display: flex; }
+.modal-content {
+    background: white;
+    border-radius: 12px;
+    max-width: 900px;
+    width: 100%;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+.modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.modal-title { font-weight: 700; font-size: 1rem; }
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--muted);
+    padding: 4px 10px;
+    border-radius: 6px;
+}
+.modal-close:hover { background: var(--bg); color: var(--dark); }
+.modal-body {
+    padding: 0;
+    flex: 1;
+    overflow: auto;
+    background: #f1f5f9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 400px;
+}
+.modal-body img { max-width: 100%; max-height: 75vh; display: block; }
+.modal-body iframe { width: 100%; height: 75vh; border: none; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+    <div class="top-bar-left">
+        <div class="top-bar-logo">
+            <img src="/static/logo.png" alt="Alhudha" onerror="this.style.display='none'">
+        </div>
+        <div>
+            <div class="top-bar-title">Traveler Portal</div>
+            <div class="top-bar-subtitle">Alhudha Haj Travel</div>
+        </div>
+    </div>
+    <div class="top-bar-right">
+        <div class="user-greeting" id="userGreeting">
+            <div class="name" id="greetingName"></div>
+            <div class="role" id="greetingRole"></div>
+        </div>
+        <button class="btn-logout" id="logoutBtn" onclick="doLogout()">
+            <i class="fas fa-sign-out-alt"></i> Logout
+        </button>
+    </div>
+</div>
+
+<div class="login-wrap" id="loginWrap">
+    <div class="login-card">
+        <div class="login-header">
+            <div class="login-logo">
+                <img src="/static/logo.png" alt="Alhudha" onerror="this.style.display='none'">
+            </div>
+            <h1>Traveler Login</h1>
+            <p>Access your Haj / Umrah journey details</p>
+        </div>
+
+        <div class="login-error" id="loginError"></div>
+
+        <form id="loginForm" onsubmit="return false;">
+            <div class="form-group">
+                <label class="form-label"><i class="fas fa-passport"></i> Passport Number</label>
+                <input type="text" class="form-input" id="passportInput" placeholder="e.g. W5844883" autocomplete="off" autocapitalize="characters" spellcheck="false">
+            </div>
+            <div class="form-group">
+                <label class="form-label"><i class="fas fa-key"></i> PIN</label>
+                <input type="password" class="form-input" id="pinInput" placeholder="Enter your PIN" autocomplete="off" inputmode="numeric">
+            </div>
+            <button type="submit" class="btn-primary-full" id="loginBtn" onclick="doLogin()">
+                <i class="fas fa-sign-in-alt"></i>
+                <span>Login</span>
+            </button>
+        </form>
+
+        <div class="login-help">
+            <i class="fas fa-info-circle"></i>
+            <strong>First time?</strong>
+            Your PIN is set by the Alhudha office when your file is created. Contact us if you don't know your PIN.
+        </div>
+
+        <div class="login-footer">
+            <a href="/">&larr; Back to Homepage</a>
+        </div>
+    </div>
+</div>
+
+<div class="portal-wrap" id="portalWrap">
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="big-spinner"></div>
+        <div>Loading your details&hellip;</div>
+    </div>
+
+    <div id="portalContent" style="display:none">
+        <div class="hero-card">
+            <div class="hero-avatar" id="heroAvatar">
+                <div class="no-photo">&#128100;</div>
+            </div>
+            <div class="hero-info">
+                <h2 id="heroName">&mdash;</h2>
+                <div class="traveler-id" id="heroId">&mdash;</div>
+                <div class="hero-badges" id="heroBadges"></div>
+            </div>
+        </div>
+
+        <div class="kpi-grid" id="kpiGrid"></div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-icon"><i class="fas fa-user"></i></div>
+                <div>
+                    <div class="card-title">Personal Information</div>
+                    <div class="card-subtitle">Your registered details</div>
+                </div>
+            </div>
+            <div class="info-grid" id="profileGrid"></div>
+        </div>
+
+        <div class="card" id="batchCard">
+            <div class="card-header">
+                <div class="card-icon"><i class="fas fa-box"></i></div>
+                <div>
+                    <div class="card-title">Package / Batch</div>
+                    <div class="card-subtitle">Your Haj / Umrah package</div>
+                </div>
+            </div>
+            <div class="info-grid" id="batchGrid"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-icon"><i class="fas fa-folder-open"></i></div>
+                <div>
+                    <div class="card-title">Uploaded Documents</div>
+                    <div class="card-subtitle">Click any document to view</div>
+                </div>
+            </div>
+            <div class="docs-grid" id="docsGrid"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div class="card-icon"><i class="fas fa-rupee-sign"></i></div>
+                <div>
+                    <div class="card-title">Payment History</div>
+                    <div class="card-subtitle" id="paymentsSubtitle"></div>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Method</th>
+                            <th>Receipt No</th>
+                            <th>Transaction ID</th>
+                            <th style="text-align:right">Amount</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="paymentsBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card" id="invoiceCard">
+            <div class="card-header">
+                <div class="card-icon"><i class="fas fa-file-invoice"></i></div>
+                <div>
+                    <div class="card-title">Invoice Details</div>
+                    <div class="card-subtitle" id="invoiceSubtitle"></div>
+                </div>
+            </div>
+            <div class="invoice-box">
+                <div class="invoice-lines" id="invoiceLines"></div>
+                <div>
+                    <div class="invoice-lines" id="invoiceMeta"></div>
+                </div>
+            </div>
+        </div>
+
+        <div style="text-align:center;padding:20px 0;color:var(--muted);font-size:0.8rem">
+            <i class="fas fa-shield-alt"></i>
+            Your data is protected. Only you and Alhudha staff can see this.
+        </div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-backdrop" id="docModal" onclick="closeDocModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <div class="modal-title" id="docModalTitle">Document</div>
+            <button class="modal-close" onclick="closeDocModal(event)">&times;</button>
+        </div>
+        <div class="modal-body" id="docModalBody"></div>
+    </div>
+</div>
+
+<script>
+var API = {
     login:  '/api/traveler/login',
     logout: '/api/traveler/logout',
     me:     '/api/traveler/me',
-    doc:    (key) => `/api/traveler/document/${key}`,
+    doc:    function(key) { return '/api/traveler/document/' + key; }
 };
 
-let currentData = null;
+var currentData = null;
 
-// ============================================================
-// HELPERS
-// ============================================================
 function $(id) { return document.getElementById(id); }
 
 function escapeHTML(s) {
@@ -27,43 +787,33 @@ function escapeHTML(s) {
 
 function fmtINR(v) {
     try {
-        const n = Number(v) || 0;
-        return '₹' + n.toLocaleString('en-IN', {
+        var n = Number(v) || 0;
+        return '\u20B9' + n.toLocaleString('en-IN', {
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
         });
-    } catch (e) { return '₹' + v; }
+    } catch (e) { return '\u20B9' + v; }
 }
 
 function fmtINR0(v) {
     try {
-        const n = Number(v) || 0;
-        return '₹' + Math.round(n).toLocaleString('en-IN');
-    } catch (e) { return '₹' + v; }
-}
-
-function fmtValue(item) {
-    if (item === null || item === undefined) return '—';
-    if (typeof item === 'object') {
-        if (item.is_currency) return fmtINR(item.value);
-        if (item.is_percent) return item.value + '%';
-        return escapeHTML(String(item.value));
-    }
-    return escapeHTML(String(item));
+        var n = Number(v) || 0;
+        return '\u20B9' + Math.round(n).toLocaleString('en-IN');
+    } catch (e) { return '\u20B9' + v; }
 }
 
 function showToast(msg, type) {
-    const el = $('toast');
+    var el = $('toast');
     el.textContent = msg;
     el.className = 'toast show ' + (type || '');
     clearTimeout(el._timeout);
-    el._timeout = setTimeout(() => {
+    el._timeout = setTimeout(function() {
         el.className = 'toast';
     }, 3200);
 }
 
 function showLoginError(msg) {
-    const el = $('loginError');
+    var el = $('loginError');
     el.textContent = msg;
     el.classList.add('show');
 }
@@ -73,24 +823,21 @@ function clearLoginError() {
 }
 
 function setLoginLoading(loading) {
-    const btn = $('loginBtn');
+    var btn = $('loginBtn');
     if (loading) {
         btn.disabled = true;
-        btn.innerHTML = '<span class="spinner"></span> <span>Signing in…</span>';
+        btn.innerHTML = '<span class="spinner"></span> <span>Signing in&hellip;</span>';
     } else {
         btn.disabled = false;
         btn.innerHTML = '<i class="fas fa-sign-in-alt"></i> <span>Login</span>';
     }
 }
 
-// ============================================================
-// LOGIN / LOGOUT
-// ============================================================
 async function doLogin() {
     clearLoginError();
 
-    const passport = ($('passportInput').value || '').trim().toUpperCase();
-    const pin = ($('pinInput').value || '').trim();
+    var passport = ($('passportInput').value || '').trim().toUpperCase();
+    var pin = ($('pinInput').value || '').trim();
 
     if (!passport) {
         showLoginError('Please enter your passport number.');
@@ -106,7 +853,7 @@ async function doLogin() {
     setLoginLoading(true);
 
     try {
-        const res = await fetch(API.login, {
+        var res = await fetch(API.login, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
@@ -114,11 +861,11 @@ async function doLogin() {
         });
 
         if (!res.ok) {
-            let msg = 'Login failed. Please try again.';
+            var msg = 'Login failed. Please try again.';
             try {
-                const data = await res.json();
+                var data = await res.json();
                 if (data && data.detail) msg = data.detail;
-            } catch (e) {}
+            } catch (e) { /* ignore */ }
             showLoginError(msg);
             setLoginLoading(false);
             return;
@@ -158,348 +905,6 @@ async function doLogout() {
     showToast('You have been logged out.', 'success');
 }
 
-// ============================================================
-// LOAD TRAVELER DATA
-// ============================================================
 async function loadTravelerData() {
     $('loadingOverlay').classList.add('active');
-    $('portalContent').style.display = 'none';
-
-    try {
-        const res = await fetch(API.me, {
-            credentials: 'same-origin',
-            cache: 'no-store'
-        });
-
-        if (res.status === 401) {
-            currentData = null;
-            $('portalWrap').classList.remove('active');
-            $('loginWrap').style.display = 'flex';
-            $('userGreeting').style.display = 'none';
-            $('logoutBtn').style.display = 'none';
-            setLoginLoading(false);
-            showLoginError('Session expired. Please log in again.');
-            return;
-        }
-
-        if (!res.ok) {
-            throw new Error('Failed to fetch data (HTTP ' + res.status + ')');
-        }
-
-        const payload = await res.json();
-        currentData = payload.data || {};
-
-        renderPortal(currentData);
-
-        $('loadingOverlay').classList.remove('active');
-        $('portalContent').style.display = 'block';
-    } catch (err) {
-        console.error(err);
-        $('loadingOverlay').innerHTML =
-            '<div style="color:var(--danger);font-size:1rem">' +
-            '<i class="fas fa-exclamation-circle"></i> ' +
-            escapeHTML(err.message || 'Could not load your data.') +
-            ' — <a href="#" onclick="loadTravelerData();return false;" ' +
-            'style="color:var(--primary)">Retry</a>' +
-            '</div>';
-    }
-}
-
-// ============================================================
-// RENDER PORTAL — fully dynamic
-// ============================================================
-function renderPortal(data) {
-    renderHero(data);
-    renderKPIs(data);
-    renderFieldsCard('profileGrid', data.personal_fields || []);
-    renderBatch(data);
-    renderDocuments(data);
-    renderPayments(data);
-    renderInvoice(data);
-}
-
-// ---------- HERO ----------
-function renderHero(data) {
-    const t = data.traveler || {};
-    const name = t.full_name || 'Traveler';
-    $('heroName').textContent = name;
-    $('heroId').textContent = t.id || '—';
-    $('greetingName').textContent = name;
-    $('greetingRole').textContent = 'Traveler';
-
-    const photoDoc = (data.documents || [])
-        .find(d => d.key === 'photo' && d.exists);
-    const avatar = $('heroAvatar');
-    if (photoDoc) {
-        avatar.innerHTML =
-            `<img src="${photoDoc.url}?t=${Date.now()}" alt="${escapeHTML(name)}" ` +
-            `onerror="this.parentElement.innerHTML='<div class=\\'no-photo\\'>👤</div>'">`;
-    } else {
-        avatar.innerHTML = '<div class="no-photo">👤</div>';
-    }
-
-    const badges = [];
-    if (t.passport_no) {
-        badges.push(`<span class="hero-badge"><i class="fas fa-passport"></i> ${escapeHTML(t.passport_no)}</span>`);
-    }
-    if (t.status) {
-        badges.push(`<span class="hero-badge"><i class="fas fa-circle"></i> ${escapeHTML(t.status)}</span>`);
-    }
-    if (data.batch && data.batch.batch_name) {
-        badges.push(`<span class="hero-badge"><i class="fas fa-box"></i> ${escapeHTML(data.batch.batch_name)}</span>`);
-    }
-    if (data.batch && data.batch.days_to_departure !== null
-        && data.batch.days_to_departure !== undefined
-        && data.batch.days_to_departure > 0) {
-        badges.push(`<span class="hero-badge"><i class="fas fa-plane-departure"></i> ${data.batch.days_to_departure} days to departure</span>`);
-    }
-    $('heroBadges').innerHTML = badges.join('');
-}
-
-// ---------- KPIs ----------
-function renderKPIs(data) {
-    const kpis = data.kpis || [];
-    $('kpiGrid').innerHTML = kpis.map(k => {
-        let valStr;
-        if (k.is_currency) {
-            valStr = fmtINR0(k.value);
-        } else if (k.is_percent) {
-            valStr = k.value + '%';
-        } else {
-            valStr = escapeHTML(String(k.value));
-        }
-        return `<div class="kpi-card kpi-${k.tone || ''}">
-            <div class="kpi-label"><i class="fas fa-${k.icon || 'circle'}"></i> ${escapeHTML(k.label)}</div>
-            <div class="kpi-value">${valStr}</div>
-            <div class="kpi-sub">${escapeHTML(k.sub || '')}</div>
-        </div>`;
-    }).join('');
-}
-
-// ---------- Generic field grid ----------
-function renderFieldsCard(targetId, fields) {
-    const grid = $(targetId);
-    if (!grid) return;
-
-    if (!fields || fields.length === 0) {
-        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">' +
-            '<i class="fas fa-inbox"></i><div>No information available.</div></div>';
-        return;
-    }
-
-    grid.innerHTML = fields.map(f => {
-        let val;
-        if (f.value === null || f.value === undefined || f.value === '') {
-            val = '<span class="info-value empty">Not provided</span>';
-        } else if (f.is_currency) {
-            val = `<span class="info-value">${fmtINR(f.value)}</span>`;
-        } else {
-            val = `<span class="info-value">${escapeHTML(String(f.value))}</span>`;
-        }
-        return `<div class="info-row">
-            <div class="info-label">${escapeHTML(f.label)}</div>
-            ${val}
-        </div>`;
-    }).join('');
-}
-
-// ---------- BATCH ----------
-function renderBatch(data) {
-    const fields = data.batch_fields || [];
-    const grid = $('batchGrid');
-
-    if (!data.batch || fields.length === 0) {
-        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">' +
-            '<i class="fas fa-box-open"></i>' +
-            '<div>No package assigned yet.</div></div>';
-        return;
-    }
-
-    grid.innerHTML = fields.map(f => {
-        let val;
-        if (f.is_currency) {
-            val = `<span class="info-value">${fmtINR(f.value)}</span>`;
-        } else if (!f.value) {
-            val = '<span class="info-value empty">Not set</span>';
-        } else {
-            val = `<span class="info-value">${escapeHTML(String(f.value))}</span>`;
-        }
-        return `<div class="info-row">
-            <div class="info-label">${escapeHTML(f.label)}</div>
-            ${val}
-        </div>`;
-    }).join('');
-}
-
-// ---------- DOCUMENTS ----------
-function renderDocuments(data) {
-    const docs = data.documents || [];
-    const grid = $('docsGrid');
-
-    if (docs.length === 0) {
-        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">' +
-            '<i class="fas fa-folder-open"></i><div>No documents uploaded.</div></div>';
-        return;
-    }
-
-    grid.innerHTML = docs.map(d => {
-        const cls = d.exists ? '' : ' missing';
-        const thumb = d.exists && d.is_image
-            ? `<img src="${d.url}?t=${Date.now()}" alt="${escapeHTML(d.label)}" loading="lazy">`
-            : `<div class="doc-icon"><i class="fas ${d.exists ? (d.filename && d.filename.endsWith('.pdf') ? 'fa-file-pdf' : 'fa-file-image') : 'fa-file'}"></i></div>`;
-        const status = d.exists
-            ? '<span class="doc-status ok"><i class="fas fa-check"></i> Uploaded</span>'
-            : '<span class="doc-status miss"><i class="fas fa-times"></i> Not uploaded</span>';
-        const click = d.exists
-            ? `onclick="openDoc('${d.key}', '${escapeHTML(d.label)}')"`
-            : '';
-        return `<div class="doc-card${cls}" ${click}>
-            <div class="doc-thumb">${thumb}</div>
-            <div class="doc-label">${escapeHTML(d.label)}</div>
-            ${status}
-        </div>`;
-    }).join('');
-}
-
-// ---------- PAYMENTS ----------
-function renderPayments(data) {
-    const payments = data.payments || [];
-    const body = $('paymentsBody');
-
-    $('paymentsSubtitle').textContent =
-        `${payments.length} payment${payments.length === 1 ? '' : 's'} recorded`;
-
-    if (payments.length === 0) {
-        body.innerHTML =
-            '<tr><td colspan="6" class="empty-state">' +
-            '<i class="fas fa-receipt"></i>' +
-            '<div>No payments recorded yet.</div>' +
-            '</td></tr>';
-        return;
-    }
-
-    body.innerHTML = payments.map(p => {
-        const status = String(p.status || '').toLowerCase();
-        return `<tr>
-            <td>${escapeHTML(p.date_display || p.date || '—')}</td>
-            <td>${escapeHTML(p.method || '—')}</td>
-            <td><code style="font-size:0.78rem">${escapeHTML(p.receipt_no || '—')}</code></td>
-            <td><code style="font-size:0.78rem">${escapeHTML(p.transaction_id || '—')}</code></td>
-            <td class="amount-cell">${fmtINR(p.amount)}</td>
-            <td><span class="badge-status ${escapeHTML(status)}">${escapeHTML(p.status || 'completed')}</span></td>
-        </tr>`;
-    }).join('');
-}
-
-// ---------- INVOICE ----------
-function renderInvoice(data) {
-    const inv = data.invoice;
-    const lines = $('invoiceLines');
-    const meta = $('invoiceMeta');
-
-    if (!inv) {
-        lines.innerHTML = '<div class="empty-state">' +
-            '<i class="fas fa-file-invoice"></i>' +
-            '<div>No invoice generated yet.</div></div>';
-        meta.innerHTML = '';
-        $('invoiceSubtitle').textContent = '';
-        return;
-    }
-
-    $('invoiceSubtitle').textContent =
-        `Invoice ${inv.invoice_no} · ${inv.issue_date_display || ''}`;
-
-    meta.innerHTML = `
-        <div class="invoice-line"><span class="label">Invoice No</span>
-            <span class="value">${escapeHTML(inv.invoice_no)}</span></div>
-        <div class="invoice-line"><span class="label">Issue Date</span>
-            <span class="value">${escapeHTML(inv.issue_date_display || '—')}</span></div>
-        <div class="invoice-line"><span class="label">Due Date</span>
-            <span class="value">${escapeHTML(inv.due_date_display || '—')}</span></div>
-        <div class="invoice-line"><span class="label">Status</span>
-            <span class="value"><span class="badge-status ${escapeHTML(String(inv.status || '').toLowerCase())}">${escapeHTML(inv.status || '—')}</span></span></div>
-    `;
-
-    const items = data.invoice_line_items || [];
-    lines.innerHTML = items.map(it => {
-        const cls = it.tone === 'total' ? 'total'
-            : (it.tone === 'danger' ? 'discount' : '');
-        let valStr = it.is_currency ? fmtINR(it.value) : escapeHTML(String(it.value));
-        if (it.value < 0 && it.is_currency) {
-            valStr = '− ' + fmtINR(Math.abs(it.value));
-        }
-        return `<div class="invoice-line ${cls}">
-            <span class="label">${escapeHTML(it.label)}</span>
-            <span class="value">${valStr}</span>
-        </div>`;
-    }).join('');
-}
-
-// ============================================================
-// DOCUMENT MODAL
-// ============================================================
-function openDoc(key, label) {
-    const modal = $('docModal');
-    const body = $('docModalBody');
-    $('docModalTitle').textContent = label;
-
-    const url = API.doc(key) + '?t=' + Date.now();
-    body.innerHTML = `<img src="${url}" alt="${escapeHTML(label)}"
-        onerror="this.outerHTML='<iframe src=&quot;${url}&quot;></iframe>'">`;
-    modal.classList.add('active');
-}
-
-function closeDocModal(e) {
-    if (e && e.target && e.target.id !== 'docModal') return;
-    $('docModal').classList.remove('active');
-    $('docModalBody').innerHTML = '';
-}
-
-// ============================================================
-// AUTO-LOGIN ON LOAD
-// ============================================================
-async function bootstrap() {
-    try {
-        const res = await fetch(API.me, {
-            credentials: 'same-origin',
-            cache: 'no-store'
-        });
-        if (res.ok) {
-            const payload = await res.json();
-            currentData = payload.data || {};
-            $('loginWrap').style.display = 'none';
-            $('portalWrap').classList.add('active');
-            $('userGreeting').style.display = 'block';
-            $('logoutBtn').style.display = 'inline-flex';
-            renderPortal(currentData);
-            $('portalContent').style.display = 'block';
-            $('loadingOverlay').classList.remove('active');
-            return;
-        }
-    } catch (e) { /* not logged in */ }
-
-    $('loginWrap').style.display = 'flex';
-    $('passportInput').focus();
-}
-
-// ---- Enter key submits the form ----
-document.addEventListener('DOMContentLoaded', () => {
-    $('passportInput').addEventListener('keypress', e => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            $('pinInput').focus();
-        }
-    });
-    $('pinInput').addEventListener('keypress', e => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            doLogin();
-        }
-    });
-
-    document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') closeDocModal({ target: { id: 'docModal' } });
-    });
-
-    bootstrap();
-});
+    $('loadingOverlay').innerHTML = '<div class="big-spinner"></div><div>
