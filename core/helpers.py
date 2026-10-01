@@ -161,8 +161,8 @@ def send_file_to_user(page, filepath, label="Download"):
     Cloud-aware file delivery.
 
     On web (Railway / Render / Fly):
-      • Copy the file into <base>/static/downloads/
-      • Return a URL path like "/static/downloads/foo.pdf"
+      • Copy the file into <base>/download/
+      • Return a URL path like "/download/foo.pdf"
       • Caller then does page.launch_url(url) → browser downloads it
 
     On desktop:
@@ -201,7 +201,7 @@ def send_file_to_user(page, filepath, label="Download"):
             shutil.copy2(filepath, dest)
 
             # Flet serves assets_dir at /static/... — return the URL path
-            return f"/static/downloads/{fname}"
+            return f"/download/{fname}"
 
         except Exception as ex:
             print(f"[send_file_to_user] web copy failed: {ex}")
