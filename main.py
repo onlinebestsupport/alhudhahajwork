@@ -1,24 +1,33 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.1):
-#   • FastAPI + uvicorn (proper file download support)
-#   • /download/{filename} endpoint with Content-Disposition
-#   • SEED: on boot, populate empty volume from bundled seed_data/
-#   • Destroyed-session patch at import time (narrow)
-#   • Cloud-aware startup banner + graceful SIGTERM
+# PATCHES APPLIED (v2.3):
+#   21.1.A — Cloud environment detection
+#   21.1.B — Defensive window-close handler
+#   21.1.C — Flet 1.0 window sizing
+#   21.1.D — DB error page + retry with backoff
+#   21.1.E — Graceful SIGTERM handling
+#   21.1.F — Narrow destroyed-session patch (import time)
+#   21.1.G — Ensure static/downloads/ exists
+#   21.1.H — SEED: populate empty volume from seed_data/
+#   21.1.I — Session persistence via client_storage (login survives refresh)
+#   21.2.0 — NEW: Marketing front page at "/" (static/index.html)
+#   21.2.1 — NEW: Flet admin app mounted at "/admin"
+#   21.2.2 — NEW: /static/* serves logo.png and other assets
 # =================================================================================
 
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
 import sys
 import signal
 import logging
 import shutil
+import asyncio
 from datetime import datetime
 
 from core.helpers import get_app_base_path
@@ -32,6 +41,9 @@ from core.main_window import MainWindowView
 # =================================================================================
 APP_PORT = int(os.getenv("PORT", 8000))
 APP_HOST = "0.0.0.0"
+
+# Storage key for the persisted session in browser client storage
+SESSION_KEY = "alhudha_session_user_id"
 
 
 def _detect_platform() -> str:
@@ -63,9 +75,12 @@ _PATCH_INSTALLED = False
 
 
 def _patch_page_update():
+    """Patch Page.update() to swallow ONLY destroyed-session RuntimeErrors.
+    All other exceptions propagate normally so UI bugs aren't hidden."""
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
+
     Page = None
     for path in ("flet.controls.page", "flet.page", "flet"):
         try:
@@ -76,9 +91,11 @@ def _patch_page_update():
                 break
         except Exception:
             continue
+
     if Page is None:
         _boot_log("❌ Could not locate Page class")
         return
+
     try:
         _original_update = Page.update
 
@@ -110,11 +127,7 @@ class AppState:
 
 
 def _seed_volume_if_empty(base_path: str):
-    """
-    If the data folder (usually a Railway Volume) is missing CSVs,
-    copy them from the bundled seed_data/ folder inside the image.
-    Safe to run on every startup — skips files that already exist.
-    """
+    """Populate empty volume from bundled seed_data/ if needed."""
     try:
         data_dir = os.path.join(base_path, "data")
         seed_dir = os.path.join(base_path, "seed_data")
@@ -192,10 +205,81 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.3 — FLET APP ENTRY POINT
+# 21.2.5 — SESSION PERSISTENCE helpers (browser client storage)
+# =================================================================================
+def _find_user_by_id(db, user_id):
+    """Look up a user dict by ID (returns None if not found)."""
+    try:
+        for u in db.get_users():
+            if str(u.get("id")) == str(user_id):
+                return dict(u)
+    except Exception as e:
+        print(f"[SESSION] find_user_by_id failed: {e}")
+    return None
+
+
+async def _save_session(page, user):
+    """Persist the logged-in user ID in the browser's client storage."""
+    try:
+        uid = user.get("id") if user else None
+        if not uid:
+            return
+        storage = getattr(page, "client_storage", None)
+        if storage is None:
+            print("[SESSION] client_storage not available on page")
+            return
+        result = storage.set(SESSION_KEY, str(uid))
+        if asyncio.iscoroutine(result):
+            await result
+        print(f"[SESSION] Saved user_id={uid}")
+    except Exception as e:
+        print(f"[SESSION] save failed: {e}")
+
+
+async def _load_session(page):
+    """Read the persisted user ID from client storage → user dict or None."""
+    try:
+        storage = getattr(page, "client_storage", None)
+        if storage is None:
+            return None
+        result = storage.get(SESSION_KEY)
+        if asyncio.iscoroutine(result):
+            uid = await result
+        else:
+            uid = result
+        if not uid:
+            return None
+        user = _find_user_by_id(AppState.db, uid)
+        if user:
+            print(f"[SESSION] Restored user_id={uid} "
+                  f"({user.get('username')})")
+        else:
+            print(f"[SESSION] Stored user_id={uid} no longer exists")
+        return user
+    except Exception as e:
+        print(f"[SESSION] load failed: {e}")
+        return None
+
+
+async def _clear_session(page):
+    """Remove the persisted session."""
+    try:
+        storage = getattr(page, "client_storage", None)
+        if storage is None:
+            return
+        result = storage.remove(SESSION_KEY)
+        if asyncio.iscoroutine(result):
+            await result
+        print("[SESSION] Cleared")
+    except Exception as e:
+        print(f"[SESSION] clear failed: {e}")
+
+
+# =================================================================================
+# 21.3 — FLET ADMIN APP ENTRY POINT (mounted at /admin)
 # =================================================================================
 def flet_main(page: ft.Page):
-    page.title = "Alhudha Haj Travel System"
+    page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
@@ -209,6 +293,7 @@ def flet_main(page: ft.Page):
         except Exception:
             pass
 
+    # ---- DB failure page ----
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -233,6 +318,7 @@ def flet_main(page: ft.Page):
         page.update()
         return
 
+    # ---- Per-session state ----
     state = {"user": None}
 
     def _close_window():
@@ -258,6 +344,13 @@ def flet_main(page: ft.Page):
 
     def on_login_success(user):
         state["user"] = user
+        try:
+            page.run_task(_save_session, page, user)
+        except Exception:
+            try:
+                page.run_task(lambda: _save_session(page, user))
+            except Exception as e:
+                print(f"[SESSION] schedule save failed: {e}")
         show_main_window(user)
 
     def on_logout():
@@ -268,6 +361,10 @@ def flet_main(page: ft.Page):
             except Exception:
                 pass
         state["user"] = None
+        try:
+            page.run_task(_clear_session, page)
+        except Exception:
+            pass
         show_login()
 
     def show_main_window(user):
@@ -283,23 +380,48 @@ def flet_main(page: ft.Page):
         except Exception as ex:
             _boot_log(f"show_main_window update failed: {ex}")
 
-    show_login()
+    async def _bootstrap():
+        try:
+            restored = await _load_session(page)
+        except Exception as e:
+            print(f"[SESSION] bootstrap failed: {e}")
+            restored = None
+
+        if restored:
+            state["user"] = restored
+            show_main_window(restored)
+        else:
+            show_login()
+
+    try:
+        page.run_task(_bootstrap)
+    except Exception as ex:
+        print(f"[SESSION] run_task bootstrap failed: {ex}")
+        show_login()
 
 
 # =================================================================================
-# 21.4 — FASTAPI SETUP + DOWNLOAD ENDPOINT
+# 21.4 — FASTAPI SETUP: marketing at "/", Flet at "/admin"
 # =================================================================================
 def _build_app() -> FastAPI:
     base_path = get_app_base_path()
     static_dir = os.path.join(base_path, "static")
     downloads_dir = os.path.join(static_dir, "downloads")
+    index_html = os.path.join(static_dir, "index.html")
+
     os.makedirs(downloads_dir, exist_ok=True)
 
+    _boot_log(f"Base path   : {base_path}")
     _boot_log(f"Static dir  : {static_dir}")
     _boot_log(f"Downloads   : {downloads_dir}")
+    _boot_log(f"Index HTML  : {index_html} "
+              f"({'found' if os.path.exists(index_html) else 'MISSING'})")
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
+    # -----------------------------------------------------------------------------
+    # 21.4.1 — File download endpoint (/download/<filename>)
+    # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
         safe_name = os.path.basename(filename)
@@ -316,23 +438,42 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    app.mount("/", flet_fastapi.app(flet_main, assets_dir=static_dir))
+    # -----------------------------------------------------------------------------
+    # 21.4.2 — Static assets at /static/* (logo, index.html, etc.)
+    # -----------------------------------------------------------------------------
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    # -----------------------------------------------------------------------------
+    # 21.4.3 — Marketing front page at "/"
+    # -----------------------------------------------------------------------------
+    @app.get("/")
+    async def root():
+        if os.path.exists(index_html):
+            return FileResponse(index_html, media_type="text/html")
+        # Fallback: no marketing page → go to admin
+        _boot_log("No index.html — redirecting / to /admin")
+        return RedirectResponse(url="/admin")
+
+    # -----------------------------------------------------------------------------
+    # 21.4.4 — Flet admin app mounted at "/admin"
+    #             Mounted LAST so /, /static, /download are not swallowed.
+    # -----------------------------------------------------------------------------
+    admin_app = flet_fastapi.app(flet_main, assets_dir=static_dir)
+    app.mount("/admin", admin_app)
+
     return app
 
 
 # =================================================================================
 # 21.5 — ENTRY POINT
 # =================================================================================
-# Resolve base path FIRST (handles the /app/data → /app correction)
 base_path = get_app_base_path()
 
-# Ensure dirs exist
 static_dir = os.path.join(base_path, "static")
 os.makedirs(static_dir, exist_ok=True)
 os.makedirs(os.path.join(static_dir, "downloads"), exist_ok=True)
 os.makedirs(os.path.join(base_path, "data"), exist_ok=True)
 
-# Print startup banner
 _boot_log(f"Launching — host={APP_HOST} port={APP_PORT} platform={PLATFORM}")
 
 print("=" * 66, flush=True)
@@ -348,16 +489,14 @@ print(f"🕐  Started    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flus
 if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
     print(f"💾  Volume     : {os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
 print(f"🩹  Patch      : {'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
+print(f"🏠  Front page : http://{APP_HOST}:{APP_PORT}/", flush=True)
+print(f"🔐  Admin app  : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print("=" * 66, flush=True)
 
-# SEED the volume if empty
 _seed_volume_if_empty(base_path)
-
-# Initialize DB
 _init_db()
 _install_signal_handlers()
 
-# Build FastAPI app (uvicorn imports `app` from this module)
 app = _build_app()
 
 

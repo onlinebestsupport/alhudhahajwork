@@ -1,14 +1,12 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW
 # =================================================================================
-# UPDATED — 2026-10-01 (Cloud-ready, v2.0)
-#   • Permission-based tab visibility (unchanged)
-#   • 🔄 Reload Data button in header (unchanged)
-#   • 💾 Storage Info in settings menu (unchanged)
-#   • Auto-refresh every 30s (unchanged)
-#   • NEW: Dashboard Quick Action buttons now navigate to the correct
-#          tab via self._on_navigate(tab_name, action). If action="add",
-#          the target tab's add-dialog opens automatically.
+# UPDATED — 2026-10-01 (v2.1)
+#   • Permission-based tab visibility
+#   • 🔄 Reload Data button + 💾 Storage Info in settings menu
+#   • Auto-refresh every 30s
+#   • Dashboard Quick Actions navigate to tabs via _on_navigate()
+#   • NEW: Al-Hudha logo image in the header (left side)
 # =================================================================================
 
 import flet as ft
@@ -78,7 +76,7 @@ except ImportError:
 
 
 # =================================================================================
-# PERMISSION HELPERS (tab filtering)
+# PERMISSION HELPERS
 # =================================================================================
 ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": {
@@ -135,6 +133,9 @@ def _user_has_permission(user, perm_key):
 # =================================================================================
 class MainWindowView:
 
+    # -----------------------------------------------------------------------------
+    # 7.1.1 — __init__
+    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user, on_logout=None):
         self.page = page
         self.db = db
@@ -151,7 +152,7 @@ class MainWindowView:
         self.users_tab = None
         self.backup_tab = None
 
-        # NEW: registry keyed by plain tab name (e.g. "Travelers", "Payments")
+        # Registry keyed by plain tab name (e.g. "Travelers", "Payments")
         # Used by _on_navigate to find the right tab instance.
         self.tab_instances = {}
 
@@ -162,29 +163,18 @@ class MainWindowView:
         self.root = None
 
     # =============================================================================
-    # 7.1.1 — NEW: Navigation callback (called by Dashboard Quick Actions)
+    # 7.1.2 — Navigation callback (Dashboard → tab switch)
     # =============================================================================
     def _on_navigate(self, tab_name, action=None):
-        """
-        Called by Dashboard Quick Action buttons.
-
-        Args:
-            tab_name: plain name, e.g. "Travelers", "Payments",
-                      "Invoices", "Reports".
-            action:   optional string like "add" — if set, we call the
-                      target tab's add/open dialog method after switching.
-        """
+        """Called by Dashboard Quick Action buttons."""
         print(f"[NAV] _on_navigate(tab_name='{tab_name}', action={action})")
 
         try:
-            # ----- Find the tab index in the visible tab list -----
             if self.tabs_control is None:
                 self._show_snack("⚠️ Tabs not initialized yet")
                 return
 
-            # The visible tab labels include emoji prefixes like
-            # "📊 Dashboard", "👥 Travelers", etc. Build a lookup that
-            # matches by plain-name suffix.
+            # Build lookup for visible tabs (labels have emoji prefixes)
             idx = None
             try:
                 tab_bar = self.tabs_control.content.controls[0]
@@ -193,7 +183,6 @@ class MainWindowView:
                 visible_labels = []
 
             for i, lbl in enumerate(visible_labels):
-                # Strip the leading emoji + space
                 plain = lbl.split(" ", 1)[-1] if " " in lbl else lbl
                 if plain == tab_name:
                     idx = i
@@ -206,7 +195,6 @@ class MainWindowView:
                     f"⚠️ '{tab_name}' tab is not visible to you")
                 return
 
-            # ----- Switch to the tab -----
             self.tabs_control.selected_index = idx
             try:
                 self.page.update()
@@ -214,20 +202,19 @@ class MainWindowView:
                 pass
             print(f"[NAV] Switched to '{tab_name}' (index {idx})")
 
-            # ----- Optional: trigger the "add" action on the tab -----
+            # Optional: trigger the "add" action on the target tab
             if action == "add":
                 tab_inst = self.tab_instances.get(tab_name)
                 if tab_inst is None:
                     print(f"[NAV] No instance registered for '{tab_name}'")
                     return
 
-                # Try common add-dialog method names, in order
                 for method_name in (
                     "open_add_dialog",
                     "open_create_dialog",
                     "add_record",
                     "add_new",
-                    "open_manual_invoice",  # Invoices-specific
+                    "open_manual_invoice",
                 ):
                     fn = getattr(tab_inst, method_name, None)
                     if callable(fn):
@@ -249,7 +236,7 @@ class MainWindowView:
             self._show_snack(f"⚠️ Navigation error: {ex}")
 
     # =============================================================================
-    # build()
+    # 7.1.3 — build()
     # =============================================================================
     def build(self):
         company_name = "Alhudha Haj Travel"
@@ -388,11 +375,24 @@ class MainWindowView:
                 ])
             self.page.show_dialog(d)
 
+        # ---- NEW: Logo image with emoji fallback ----
+        logo_image = ft.Image(
+            src="/static/logo.png",
+            width=42, height=42,
+            fit=ft.BoxFit.CONTAIN,
+            error_content=ft.Icon(ft.Icons.TRAVEL_EXPLORE,
+                                  color=ft.Colors.WHITE, size=28),
+        )
+
         header = ft.Container(
             content=ft.Row(
                 controls=[
-                    ft.Icon(ft.Icons.TRAVEL_EXPLORE,
-                            color=ft.Colors.WHITE, size=28),
+                    # ★ Al-Hudha logo ★
+                    ft.Container(
+                        content=logo_image,
+                        width=42, height=42,
+                        alignment=ft.Alignment.CENTER,
+                    ),
                     ft.Column(
                         controls=[
                             ft.Text("Alhudha Haj Travel System",
@@ -454,8 +454,7 @@ class MainWindowView:
             try:
                 print(f"[TAB] {plain_label}: building...")
 
-                # NEW: pass on_navigate for Dashboard, so its quick
-                # action buttons can switch tabs.
+                # Dashboard gets on_navigate so its quick actions work
                 if cls is DashboardTab:
                     instance = cls(
                         self.page, self.db, self.current_user,
@@ -465,7 +464,6 @@ class MainWindowView:
                         self.page, self.db, self.current_user)
 
                 setattr(self, attr_name, instance)
-                # NEW: register in tab_instances for navigation lookups
                 self.tab_instances[plain_label] = instance
 
                 content = instance.build()
@@ -671,7 +669,6 @@ class MainWindowView:
             self.page.show_dialog(
                 ft.SnackBar(content=ft.Text(message)))
         except Exception:
-            # Legacy fallback
             try:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(message))

@@ -1,13 +1,11 @@
 # =================================================================================
 # nixpacks.toml — Alhudha Haj Travel System (Railway deployment)
 # =================================================================================
-# Flet 1.0 web app. Runs as uvicorn/starlette — no desktop GUI needed.
-# =================================================================================
 
 [phases.setup]
 nixPkgs = [
     "python311",
-    "libgtk-3",     # safety net for flet-desktop import-time deps
+    "libgtk-3",
 ]
 
 [phases.install]
