@@ -1,15 +1,15 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# Actions use a single compact ⋮ popup menu (always visible)
-#
-# PATCHES APPLIED (v1.1):
-#   14.1.A — refresh()   : force DB reload before reading (fresh cache)
-#   14.1.B — display_invoices(): action menu captures invoice ID, re-fetches
-#                                latest row before every handler (no stale dict)
-#   14.3.A — InvoiceModifyDialog.save() : prefer db.update_invoice()
-#   14.3.B — Cascade: status → paid creates/syncs payment record
-#   14.3.C — Cascade: status leaves paid → deletes auto-created payment
+# v1.2 — Mobile-Responsive
+#   • Stat cards 2-per-row on mobile
+#   • Tax bar stacks on narrow screens
+#   • Toolbar + filters use ResponsiveRow
+#   • Table wrapped in horizontal scroll
+#   • All original patches preserved:
+#       14.1.A — refresh() reload before read
+#       14.1.B — action menu re-fetches invoice on click
+#       14.3.A/B/C — cascade paid status (create/delete auto payment)
 # =================================================================================
 
 import flet as ft
@@ -63,10 +63,9 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.1 — setup_ui
+    # 14.1.1 — setup_ui  (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
-        # ---- TAX INFO BAR ----
         tax = self.settings_manager.get_tax_settings()
         try:
             gst_rate = float(tax.get('gst_percentage', 18))
@@ -76,11 +75,10 @@ class InvoicesTab:
             tcs_rate = 0.1
 
         self.tax_info_label = ft.Text(
-            f"CURRENT TAX RATES: GST {gst_rate}% | TCS {tcs_rate}% | "
-            f"Rounding: <0.50 DOWN, ≥0.50 UP",
-            size=13, weight=ft.FontWeight.BOLD,
+            f"GST {gst_rate}%  |  TCS {tcs_rate}%",
+            size=11, weight=ft.FontWeight.BOLD,
             color="#FFD700",
-            font_family="Consolas")
+            no_wrap=False, max_lines=2)
 
         def refresh_tax(e):
             self.update_tax_display()
@@ -93,25 +91,36 @@ class InvoicesTab:
             dlg.show()
 
         tax_bar = ft.Container(
-            content=ft.Row(
+            content=ft.ResponsiveRow(
                 controls=[
-                    ft.Text("💰", size=22),
-                    self.tax_info_label,
-                    ft.Container(expand=True),
-                    ft.Button(
-                        content=ft.Text("🔄 REFRESH TAX RATES", size=11,
-                                        weight=ft.FontWeight.BOLD),
-                        on_click=refresh_tax, height=38,
-                        bgcolor="#f39c12", color=ft.Colors.WHITE),
-                    ft.Button(
-                        content=ft.Text("⚙️ TAX SETTINGS", size=11,
-                                        weight=ft.FontWeight.BOLD),
-                        on_click=open_tax_settings, height=38,
-                        bgcolor="#2ecc71", color=ft.Colors.WHITE),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Text("💰", size=18),
+                            self.tax_info_label,
+                        ], spacing=6),
+                        col={"xs": 12, "sm": 12, "md": 6}),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Button(
+                                content=ft.Text("🔄 Refresh",
+                                                size=10,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=ft.Colors.WHITE),
+                                on_click=refresh_tax, height=34,
+                                bgcolor="#f39c12"),
+                            ft.Button(
+                                content=ft.Text("⚙️ Settings",
+                                                size=10,
+                                                weight=ft.FontWeight.BOLD,
+                                                color=ft.Colors.WHITE),
+                                on_click=open_tax_settings, height=34,
+                                bgcolor="#2ecc71"),
+                        ], spacing=6, alignment=ft.MainAxisAlignment.END),
+                        col={"xs": 12, "sm": 12, "md": 6}),
                 ],
-                spacing=10,
+                spacing=8, run_spacing=8,
             ),
-            padding=ft.Padding.symmetric(horizontal=15, vertical=10),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -121,49 +130,57 @@ class InvoicesTab:
 
         # ---- STAT CARDS ----
         stat_configs = [
-            ("total_invoices",   "📊 Total Invoices",    "#3498db"),
-            ("pending",          "⏳ Invoice Pending",   "#f39c12"),
-            ("paid",             "✅ Paid",              "#27ae60"),
-            ("discount",         "🎁 Total Discount",    "#c2185b"),
-            ("tcs",              "💰 Total TCS",         "#9b59b6"),
-            ("package_pending",  "📦 Package Pending",   "#e74c3c"),
+            ("total_invoices",   "📊 Invoices",   "#3498db"),
+            ("pending",          "⏳ Pending",    "#f39c12"),
+            ("paid",             "✅ Paid",       "#27ae60"),
+            ("discount",         "🎁 Discount",   "#c2185b"),
+            ("tcs",              "💰 TCS",        "#9b59b6"),
+            ("package_pending",  "📦 Pkg Pend",   "#e74c3c"),
         ]
 
         stat_cards = []
         for key, label, color in stat_configs:
-            value_label = ft.Text("0", size=16,
+            value_label = ft.Text("0", size=14,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stat_labels[key] = value_label
             card = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(label, size=10, color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD),
+                        ft.Text(label, size=9, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                no_wrap=False, max_lines=2),
                         value_label,
                     ],
                     spacing=2,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=10,
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment.TOP_CENTER,
-                    end=ft.Alignment.BOTTOM_CENTER,
-                    colors=[color, self._darken(color)]),
+                padding=8,
+                bgcolor=color,
                 border_radius=10,
-                expand=True, height=72,
+                height=64,
             )
             stat_cards.append(card)
 
-        stats_row = ft.Row(controls=stat_cards, spacing=8)
+        stats_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=c,
+                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                for c in stat_cards
+            ],
+            spacing=6, run_spacing=6,
+        )
 
         # ---- TOOLBAR ----
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
-                                weight=ft.FontWeight.BOLD),
-                on_click=handler, height=38,
-                bgcolor=color, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                on_click=handler, height=40,
+                bgcolor=color,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)))
 
@@ -171,57 +188,65 @@ class InvoicesTab:
             label="Status",
             options=[
                 ft.dropdown.Option(key="All", text="All"),
-                ft.dropdown.Option(key="pending", text="pending"),
-                ft.dropdown.Option(key="paid", text="paid"),
-                ft.dropdown.Option(key="overdue", text="overdue"),
-                ft.dropdown.Option(key="cancelled", text="cancelled"),
+                ft.dropdown.Option(key="pending", text="Pending"),
+                ft.dropdown.Option(key="paid", text="Paid"),
+                ft.dropdown.Option(key="overdue", text="Overdue"),
+                ft.dropdown.Option(key="cancelled", text="Cancelled"),
             ],
-            value="All", width=140, height=48, text_size=12)
+            value="All", height=48, text_size=11)
         self.status_filter.on_change = self.apply_filters
 
         self.search_input = ft.TextField(
-            hint_text="🔍 Search invoice no or traveler...",
-            width=280, height=48,
-            content_padding=ft.Padding.symmetric(horizontal=12, vertical=8))
+            hint_text="🔍 Search invoice or traveler...",
+            height=48, text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
         self.search_input.on_change = self.apply_filters
 
-        toolbar = ft.Row(
+        toolbar = ft.ResponsiveRow(
             controls=[
-                _tb("➕ Generate Invoice", "#27ae60", self.generate_invoice),
-                _tb("🧾 Manual Create", "#f39c12", self.open_manual_invoice),
-                self.status_filter,
-                self.search_input,
+                ft.Container(
+                    content=_tb("➕ Generate Invoice", "#27ae60",
+                                self.generate_invoice),
+                    col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(
+                    content=_tb("🧾 Manual Create", "#f39c12",
+                                self.open_manual_invoice),
+                    col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(content=self.status_filter,
+                             col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(content=self.search_input,
+                             col={"xs": 12, "sm": 12, "md": 4}),
             ],
-            spacing=8, wrap=True,
+            spacing=8, run_spacing=8,
         )
 
-        # ---- TABLE (Actions first — 1 compact menu button) ----
+        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("⋮")),           # Actions (menu icon)
-                ft.DataColumn(ft.Text("Invoice No")),
-                ft.DataColumn(ft.Text("Date")),
-                ft.DataColumn(ft.Text("Traveler")),
-                ft.DataColumn(ft.Text("Base Amt")),
-                ft.DataColumn(ft.Text("Disc%")),
-                ft.DataColumn(ft.Text("Disc Amt")),
-                ft.DataColumn(ft.Text("Taxable")),
-                ft.DataColumn(ft.Text("GST%")),
-                ft.DataColumn(ft.Text("GST Amt")),
-                ft.DataColumn(ft.Text("TCS%")),
-                ft.DataColumn(ft.Text("TCS Amt")),
-                ft.DataColumn(ft.Text("Total")),
-                ft.DataColumn(ft.Text("Rounded")),
-                ft.DataColumn(ft.Text("Due")),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Pkg Pend")),
+                ft.DataColumn(ft.Text("⋮", size=11)),
+                ft.DataColumn(ft.Text("Invoice", size=11)),
+                ft.DataColumn(ft.Text("Date", size=11)),
+                ft.DataColumn(ft.Text("Traveler", size=11)),
+                ft.DataColumn(ft.Text("Base", size=11)),
+                ft.DataColumn(ft.Text("Disc%", size=11)),
+                ft.DataColumn(ft.Text("Disc", size=11)),
+                ft.DataColumn(ft.Text("Taxable", size=11)),
+                ft.DataColumn(ft.Text("GST%", size=11)),
+                ft.DataColumn(ft.Text("GST", size=11)),
+                ft.DataColumn(ft.Text("TCS%", size=11)),
+                ft.DataColumn(ft.Text("TCS", size=11)),
+                ft.DataColumn(ft.Text("Total", size=11)),
+                ft.DataColumn(ft.Text("Rounded", size=11)),
+                ft.DataColumn(ft.Text("Due", size=11)),
+                ft.DataColumn(ft.Text("Status", size=11)),
+                ft.DataColumn(ft.Text("Pkg Pend", size=11)),
             ],
             rows=[],
             column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
             heading_row_height=40,
-            data_row_min_height=46,
-            data_row_max_height=58,
+            data_row_min_height=44,
+            data_row_max_height=56,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
             vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
@@ -234,21 +259,20 @@ class InvoicesTab:
                 controls=[
                     tax_bar,
                     stats_row,
-                    ft.Container(content=toolbar, padding=10,
+                    ft.Container(content=toolbar, padding=8,
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Row([self.table],
+                                       scroll=ft.ScrollMode.ADAPTIVE),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10,
                         padding=10),
                 ],
-                spacing=12,
+                spacing=10,
                 scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15, bgcolor="#f0f2f5", expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
     def _darken(self, color):
@@ -309,22 +333,17 @@ class InvoicesTab:
             gst_rate = 18.0
             tcs_rate = 0.1
         self.tax_info_label.value = (
-            f"CURRENT TAX RATES: GST {gst_rate}% | TCS {tcs_rate}% | "
-            f"Rounding: <0.50 DOWN, ≥0.50 UP")
+            f"GST {gst_rate}%  |  TCS {tcs_rate}%")
         try:
             self.page.update()
         except Exception:
             pass
 
     # =============================================================================
-    # 14.1.3 — refresh  (PATCH 14.1.A: force DB reload before reading)
+    # 14.1.3 — refresh  (PATCH 14.1.A preserved)
     # =============================================================================
     def refresh(self, e=None):
         try:
-            # ---- PATCH 14.1.A: fresh cache reload ----
-            # Other tabs (payments, receipts, batches) may have written to
-            # disk since our last read. Re-hydrate the DB so every get_*
-            # call below returns current data — not a stale in-memory snapshot.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -379,8 +398,7 @@ class InvoicesTab:
 
     # =============================================================================
     # 14.1.4 — display_invoices
-    #   (compact ⋮ menu; PATCH 14.1.B: capture invoice ID, re-fetch latest
-    #    dict on every action so no stale snapshot is ever passed to a dialog)
+    #   PATCH 14.1.B: capture invoice ID, re-fetch on every action
     # =============================================================================
     def display_invoices(self, invoices=None):
         if invoices is None:
@@ -430,14 +448,11 @@ class InvoicesTab:
                 pkg_txt = "N/A"
                 pkg_color = "#95a5a6"
 
-            # ------------------------------------------------------------
-            # PATCH 14.1.B — capture ID (not dict), re-fetch before dispatch
-            # ------------------------------------------------------------
+            # PATCH 14.1.B — capture ID, re-fetch before dispatch
             inv_id = inv.get('id')
 
             def _make_actions_menu(_inv_id=inv_id):
                 def _fresh():
-                    """Return the latest in-memory version of this invoice."""
                     return next(
                         (x for x in self.invoices
                          if x.get('id') == _inv_id), None)
@@ -456,7 +471,7 @@ class InvoicesTab:
                 return ft.PopupMenuButton(
                     icon=ft.Icons.MORE_VERT,
                     icon_color="#3498db",
-                    icon_size=22,
+                    icon_size=20,
                     tooltip="Invoice Actions",
                     items=[
                         ft.PopupMenuItem(
@@ -484,11 +499,11 @@ class InvoicesTab:
 
             self.table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(_make_actions_menu()),         # ← MENU
-                    ft.DataCell(ft.Text(inv_no, size=10,
+                    ft.DataCell(_make_actions_menu()),
+                    ft.DataCell(ft.Text(inv_no[:16], size=10,
                                         weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(traveler_name, size=11)),
+                    ft.DataCell(ft.Text(traveler_name[:18], size=10)),
                     ft.DataCell(ft.Text(f"₹{base:,.0f}", size=10)),
                     ft.DataCell(ft.Text(
                         f"{disc_pct:.1f}%", size=10,
@@ -540,13 +555,25 @@ class InvoicesTab:
             if bp > 0 and bp - paid_amt > 0:
                 pkg_pending += bp - paid_amt
 
+        def _short(v):
+            try:
+                n = float(v)
+            except Exception:
+                return "₹0"
+            if n >= 10000000:
+                return f"₹{n/10000000:.2f}Cr"
+            if n >= 100000:
+                return f"₹{n/100000:.2f}L"
+            if n >= 1000:
+                return f"₹{n/1000:.1f}K"
+            return f"₹{n:,.0f}"
+
         self.stat_labels['total_invoices'].value = str(total_inv)
-        self.stat_labels['pending'].value = format_currency_indian(pending)
-        self.stat_labels['paid'].value = format_currency_indian(paid)
-        self.stat_labels['discount'].value = format_currency_indian(discount)
-        self.stat_labels['tcs'].value = format_currency_indian(tcs)
-        self.stat_labels['package_pending'].value = format_currency_indian(
-            pkg_pending)
+        self.stat_labels['pending'].value = _short(pending)
+        self.stat_labels['paid'].value = _short(paid)
+        self.stat_labels['discount'].value = _short(discount)
+        self.stat_labels['tcs'].value = _short(tcs)
+        self.stat_labels['package_pending'].value = _short(pkg_pending)
 
     # =============================================================================
     # 14.1.6 — Filter
@@ -612,9 +639,10 @@ class InvoicesTab:
                 self._snack(f"❌ {ex}")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("Delete Invoice?"),
+            title=ft.Text("Delete Invoice?", size=14),
             content=ft.Text(
-                f"Delete invoice {invoice.get('invoice_no', 'N/A')}?"),
+                f"Delete invoice {invoice.get('invoice_no', 'N/A')}?",
+                size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -631,7 +659,7 @@ class InvoicesTab:
         dlg.show()
 
     # =============================================================================
-    # 14.1.8 — Export PDF
+    # 14.1.8 — Export PDF  (all logic preserved)
     # =============================================================================
     def export_invoice_to_pdf(self, invoice):
         try:
@@ -713,7 +741,6 @@ class InvoicesTab:
                                    fontSize=10, fontName='Helvetica-Bold',
                                    alignment=TA_RIGHT, leading=12)
 
-            # HEADER
             logo_path = data['logo_path']
             logo_img = None
             if logo_path and os.path.exists(logo_path):
@@ -1358,9 +1385,6 @@ class InvoiceDialog:
         self.setup_ui()
         self.load_tax_rates()
 
-    # -----------------------------------------------------------------------------
-    # 14.2.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         traveler_opts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
@@ -1370,7 +1394,7 @@ class InvoiceDialog:
                 pp = t.get('passport_no', '')
                 label = f"{name} ({pp})" if pp else name
                 traveler_opts.append(
-                    ft.dropdown.Option(key=str(t['id']), text=label))
+                    ft.dropdown.Option(key=str(t['id']), text=label[:60]))
         except Exception:
             pass
 
@@ -1468,9 +1492,9 @@ class InvoiceDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("📄 Generate Invoice",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=600, height=720, padding=10),
+                                 width=560, height=680, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1479,9 +1503,6 @@ class InvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # -----------------------------------------------------------------------------
-    # 14.2.2 — load_tax_rates
-    # -----------------------------------------------------------------------------
     def load_tax_rates(self):
         tax = self.settings_manager.get_tax_settings()
         try:
@@ -1495,9 +1516,6 @@ class InvoiceDialog:
         self.tcs_field.value = str(tcs)
         self.recalculate(None)
 
-    # -----------------------------------------------------------------------------
-    # 14.2.3 — on_traveler_change
-    # -----------------------------------------------------------------------------
     def on_traveler_change(self, e):
         tid = self.traveler_dd.value
         if not tid:
@@ -1532,9 +1550,6 @@ class InvoiceDialog:
             self.generate_btn.disabled = True
         self.recalculate(None)
 
-    # -----------------------------------------------------------------------------
-    # 14.2.4 — on_disc_type_change
-    # -----------------------------------------------------------------------------
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
             self.discount_value.label = "🎁 Discount Amount (₹)"
@@ -1547,9 +1562,6 @@ class InvoiceDialog:
             pass
         self.recalculate(None)
 
-    # -----------------------------------------------------------------------------
-    # 14.2.5 — recalculate
-    # -----------------------------------------------------------------------------
     def recalculate(self, e):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1603,9 +1615,6 @@ class InvoiceDialog:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 14.2.6 — save
-    # -----------------------------------------------------------------------------
     def save(self, e):
         tid = self.traveler_dd.value
         if not tid:
@@ -1669,8 +1678,7 @@ class InvoiceDialog:
 
 
 # =================================================================================
-# 14.3 — CLASS: InvoiceModifyDialog
-#   PATCHES 14.3.A / B / C — prefer db.update_invoice(), cascade paid status
+# 14.3 — CLASS: InvoiceModifyDialog  (PATCHES 14.3.A/B/C preserved)
 # =================================================================================
 class InvoiceModifyDialog:
 
@@ -1698,9 +1706,6 @@ class InvoiceModifyDialog:
         self.setup_ui()
         self.load_data()
 
-    # -----------------------------------------------------------------------------
-    # 14.3.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         self.amount_field = ft.TextField(
             label="Base Amount (₹)", height=48, text_size=12)
@@ -1774,9 +1779,9 @@ class InvoiceModifyDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Modify Invoice",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=560, height=650, padding=10),
+                                 width=520, height=620, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1787,9 +1792,6 @@ class InvoiceModifyDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # -----------------------------------------------------------------------------
-    # 14.3.2 — load_data
-    # -----------------------------------------------------------------------------
     def load_data(self):
         inv = self.invoice
         self.amount_field.value = f"{self._f(inv.get('amount', 0)):.2f}"
@@ -1820,9 +1822,6 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             return d
 
-    # -----------------------------------------------------------------------------
-    # 14.3.3 — recalc
-    # -----------------------------------------------------------------------------
     def recalc(self, e=None):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1874,14 +1873,10 @@ class InvoiceModifyDialog:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 14.3.4 — save  (PATCH 14.3.A: prefer db.update_invoice)
-    # -----------------------------------------------------------------------------
     def save(self, e):
         try:
             c = self._computed
             if not c:
-                # ensure recalc ran at least once
                 self.recalc(None)
                 c = self._computed
 
@@ -1903,8 +1898,6 @@ class InvoiceModifyDialog:
                 'notes': (self.notes_field.value or '').strip(),
             }
 
-            # ---- PATCH 14.3.A: use DB method when available so cascade
-            #      hooks / audit fields fire consistently ----
             if hasattr(self.db, "update_invoice"):
                 self.db.update_invoice(self.invoice['id'], **update)
             else:
@@ -1913,7 +1906,6 @@ class InvoiceModifyDialog:
                         self.db.invoices['id'] == self.invoice['id'], k] = v
                 self.db._save_df(self.db.invoices, "invoices.csv")
 
-            # ---- PATCH 14.3.B / 14.3.C: cascade status change ----
             tid = self.invoice.get('traveler_id', '')
             inv_id = self.invoice.get('id')
             try:
@@ -1941,16 +1933,10 @@ class InvoiceModifyDialog:
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 14.3.5 — _cascade_mark_paid  (PATCH 14.3.B)
-    #   When invoice status flips to 'paid', create/sync the payment record
-    #   so traveler_paid + Pkg-Pending stay consistent across tabs.
-    # -----------------------------------------------------------------------------
     def _cascade_mark_paid(self, traveler_id, invoice_id, amount):
         if not traveler_id or amount is None or amount <= 0:
             return
         try:
-            # Look for an existing payment linked to this invoice
             existing = None
             try:
                 payments = self.db.get_payments(traveler_id) or []
@@ -1962,7 +1948,6 @@ class InvoiceModifyDialog:
                     break
 
             if existing:
-                # Sync amount if drifted
                 try:
                     cur = float(existing.get('amount', 0) or 0)
                 except Exception:
@@ -1989,13 +1974,10 @@ class InvoiceModifyDialog:
                 }
                 if hasattr(self.db, "add_payment"):
                     try:
-                        # Support both signatures: add_payment(dict) or
-                        # add_payment(**kwargs)
                         self.db.add_payment(payload)
                     except TypeError:
                         self.db.add_payment(**payload)
                 else:
-                    # Very old schema — append to DataFrame directly
                     try:
                         self.db.payments = pd.concat(
                             [self.db.payments,
@@ -2007,11 +1989,6 @@ class InvoiceModifyDialog:
         except Exception as ex:
             print(f"[cascade_mark_paid] {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 14.3.6 — _cascade_unmark_paid  (PATCH 14.3.C)
-    #   Status moved OUT of 'paid' → delete only auto-generated payments
-    #   (never delete a real payment the user entered manually).
-    # -----------------------------------------------------------------------------
     def _cascade_unmark_paid(self, traveler_id, invoice_id):
         if not traveler_id:
             return
@@ -2081,9 +2058,6 @@ class InvoiceDetailsDialog:
         except (ValueError, TypeError):
             return d
 
-    # -----------------------------------------------------------------------------
-    # 14.4.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         inv = self.invoice
         tid = inv.get('traveler_id', '')
@@ -2120,17 +2094,17 @@ class InvoiceDetailsDialog:
         def row(label, value, color=None):
             return ft.Row([
                 ft.Text(label, width=180,
-                        weight=ft.FontWeight.BOLD, size=12),
-                ft.Text(str(value), size=12, expand=True, selectable=True,
+                        weight=ft.FontWeight.BOLD, size=11),
+                ft.Text(str(value), size=11, expand=True, selectable=True,
                         color=color),
             ], spacing=8)
 
         content = ft.Column(
             controls=[
-                ft.Text(company_name, size=16,
+                ft.Text(company_name, size=15,
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ft.Text(f"Invoice: {inv.get('invoice_no', '')}",
-                        size=13, weight=ft.FontWeight.BOLD),
+                        size=12, weight=ft.FontWeight.BOLD),
                 ft.Divider(height=8),
                 row("Date", self._fmt(inv.get('issue_date', ''))),
                 row("Due Date", self._fmt(inv.get('due_date', ''))),
@@ -2159,9 +2133,9 @@ class InvoiceDetailsDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"📄 {inv.get('invoice_no', 'Invoice')}",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(content=content,
-                                 width=600, height=600, padding=10),
+                                 width=520, height=560, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -2203,9 +2177,6 @@ class ManualInvoiceDialog:
         self.dialog = None
         self.setup_ui()
 
-    # -----------------------------------------------------------------------------
-    # 14.5.1 — setup_ui
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         topts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
@@ -2213,12 +2184,12 @@ class ManualInvoiceDialog:
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
                 topts.append(ft.dropdown.Option(
-                    key=str(t['id']), text=name))
+                    key=str(t['id']), text=name[:50]))
         except Exception:
             pass
         self.traveler_dd = ft.Dropdown(
             label="Traveler", options=topts, value="",
-            width=200, height=48, text_size=12)
+            height=48, text_size=12)
 
         bopts = [ft.dropdown.Option(key="", text="Select Batch")]
         try:
@@ -2231,37 +2202,35 @@ class ManualInvoiceDialog:
             pass
         self.package_dd = ft.Dropdown(
             label="Package", options=bopts, value="",
-            width=280, height=48, text_size=12)
+            height=48, text_size=12)
 
         self.invoice_date = ft.TextField(
-            label="Invoice Date (YYYY-MM-DD)",
+            label="Invoice Date",
             value=datetime.now().strftime("%Y-%m-%d"),
-            width=200, height=48, text_size=12)
+            height=48, text_size=12)
 
         self.cust_name = ft.TextField(
-            label="Customer Name *", width=200, height=48, text_size=12)
+            label="Customer Name *", height=48, text_size=12)
         self.cust_phone = ft.TextField(
-            label="Phone *", width=180, height=48, text_size=12)
+            label="Phone *", height=48, text_size=12)
         self.cust_email = ft.TextField(
-            label="Email", width=220, height=48, text_size=12)
+            label="Email", height=48, text_size=12)
 
         self.items_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("#")),
-                ft.DataColumn(ft.Text("Item")),
-                ft.DataColumn(ft.Text("Rate")),
-                ft.DataColumn(ft.Text("Qty")),
-                ft.DataColumn(ft.Text("Amount")),
-                ft.DataColumn(ft.Text("Disc%")),
-                ft.DataColumn(ft.Text("Taxable")),
-                ft.DataColumn(ft.Text("CGST")),
-                ft.DataColumn(ft.Text("SGST")),
-                ft.DataColumn(ft.Text("Total")),
-                ft.DataColumn(ft.Text("")),
+                ft.DataColumn(ft.Text("#", size=11)),
+                ft.DataColumn(ft.Text("Item", size=11)),
+                ft.DataColumn(ft.Text("Rate", size=11)),
+                ft.DataColumn(ft.Text("Qty", size=11)),
+                ft.DataColumn(ft.Text("Amount", size=11)),
+                ft.DataColumn(ft.Text("Disc%", size=11)),
+                ft.DataColumn(ft.Text("Taxable", size=11)),
+                ft.DataColumn(ft.Text("Total", size=11)),
+                ft.DataColumn(ft.Text("", size=11)),
             ],
             rows=[], heading_row_color=ft.Colors.BLUE_GREY_800,
             heading_row_height=36, data_row_min_height=40,
-            column_spacing=10,
+            column_spacing=8,
         )
 
         self.sub_lbl = ft.Text("Package Cost: ₹0.00", size=12,
@@ -2315,20 +2284,38 @@ class ManualInvoiceDialog:
 
         content = ft.Column(
             controls=[
-                ft.Text("🧾 Manual Invoice Creator", size=16,
+                ft.Text("🧾 Manual Invoice Creator", size=15,
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
-                ft.Row([self.invoice_date, self.traveler_dd],
-                       spacing=10),
-                ft.Row([self.cust_name, self.cust_phone, self.cust_email],
-                       spacing=10, wrap=True),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.invoice_date,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                        ft.Container(content=self.traveler_dd,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                    ], spacing=8, run_spacing=8),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.cust_name,
+                                     col={"xs": 12, "sm": 4, "md": 4}),
+                        ft.Container(content=self.cust_phone,
+                                     col={"xs": 6, "sm": 4, "md": 4}),
+                        ft.Container(content=self.cust_email,
+                                     col={"xs": 6, "sm": 4, "md": 4}),
+                    ], spacing=8, run_spacing=8),
                 ft.Divider(),
-                ft.Row([self.package_dd, add_btn], spacing=10),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.package_dd,
+                                     col={"xs": 12, "sm": 8, "md": 9}),
+                        ft.Container(content=add_btn,
+                                     col={"xs": 12, "sm": 4, "md": 3}),
+                    ], spacing=8, run_spacing=8),
                 ft.Container(
-                    content=ft.Column([self.items_table],
-                                      scroll=ft.ScrollMode.AUTO),
+                    content=ft.Row([self.items_table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
                     bgcolor=ft.Colors.GREY_50,
                     border=ft.Border.all(1, ft.Colors.GREY_300),
-                    border_radius=8, padding=5, height=280),
+                    border_radius=8, padding=5, height=240),
                 ft.Divider(),
                 self.sub_lbl, self.disc_lbl,
                 self.taxable_lbl, self.total_lbl,
@@ -2338,9 +2325,9 @@ class ManualInvoiceDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("🧾 Manual Invoice",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=900, height=720, padding=10),
+                                 width=760, height=680, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2349,9 +2336,6 @@ class ManualInvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # -----------------------------------------------------------------------------
-    # 14.5.2 — refresh_items
-    # -----------------------------------------------------------------------------
     def refresh_items(self):
         self.items_table.rows.clear()
         for i, item in enumerate(self.item_rows):
@@ -2377,18 +2361,17 @@ class ManualInvoiceDialog:
 
             self.items_table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(i + 1))),
-                    ft.DataCell(ft.Text(item['item'])),
-                    ft.DataCell(ft.Text(f"₹{rate:,.0f}")),
-                    ft.DataCell(ft.Text(str(qty))),
-                    ft.DataCell(ft.Text(f"₹{amount:,.0f}")),
-                    ft.DataCell(ft.Text(f"{item['discount_percent']:.1f}%")),
-                    ft.DataCell(ft.Text(f"₹{taxable:,.0f}")),
-                    ft.DataCell(ft.Text(f"₹{cgst:,.0f}")),
-                    ft.DataCell(ft.Text(f"₹{sgst:,.0f}")),
-                    ft.DataCell(ft.Text(f"₹{total:,.0f}")),
+                    ft.DataCell(ft.Text(str(i + 1), size=10)),
+                    ft.DataCell(ft.Text(item['item'][:20], size=10)),
+                    ft.DataCell(ft.Text(f"₹{rate:,.0f}", size=10)),
+                    ft.DataCell(ft.Text(str(qty), size=10)),
+                    ft.DataCell(ft.Text(f"₹{amount:,.0f}", size=10)),
+                    ft.DataCell(ft.Text(
+                        f"{item['discount_percent']:.1f}%", size=10)),
+                    ft.DataCell(ft.Text(f"₹{taxable:,.0f}", size=10)),
+                    ft.DataCell(ft.Text(f"₹{total:,.0f}", size=10)),
                     ft.DataCell(ft.IconButton(
-                        icon=ft.Icons.DELETE, icon_size=16,
+                        icon=ft.Icons.DELETE, icon_size=14,
                         icon_color="#e74c3c",
                         on_click=rm())),
                 ]))
@@ -2416,9 +2399,6 @@ class ManualInvoiceDialog:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 14.5.3 — generate_invoice
-    # -----------------------------------------------------------------------------
     def generate_invoice(self):
         if not self.item_rows:
             self._snack("⚠️ Add at least one item")
