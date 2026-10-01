@@ -1,13 +1,13 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.5 — Data Loading Fixed + Row Tap Selection
-#   • FIXED: refresh() no longer calls db.reload_payments() (was wiping cache
-#            on Railway because the CSV path differs from volume mount path)
+# v1.6 — Flet 1.0.0 compatible
+#   • FIXED: DataRow(on_select_change=...) — correct parameter name for Flet 1.0.0
+#   • FIXED: refresh() no longer calls db.reload_payments() (was wiping cache)
 #   • FIXED: dialogs no longer call db.reload_payments() on save
-#   • ADDED: on_select_changed on each DataRow → tap row to edit
-#   • ADDED: hint text "💡 Tap any row to edit"
-#   • Action icons 16 → 18 for easier tap on phones
+#   • ADDED: Tap any row → opens Edit dialog
+#   • ADDED: hint text above table
+#   • Action icons 16 → 18 for easier tapping on mobile
 # =================================================================================
 
 import flet as ft
@@ -197,7 +197,7 @@ class PaymentEditDialog:
                     pass
 
                 # NOTE: We do NOT call db.reload_payments() here.
-                # The DB's own update_payment() already updates its cache.
+                # update_payment() already updates the DB's in-memory cache.
 
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
@@ -424,15 +424,15 @@ class PaymentsTab:
         )
 
     # -----------------------------------------------------------------------------
-    # refresh — DATA LOADING FIXED (no destructive reloads)
+    # refresh — DATA LOADING (no destructive reloads)
     # -----------------------------------------------------------------------------
     def refresh(self):
         """
         Load payments + related data from the in-memory DB cache.
 
-        IMPORTANT: We deliberately do NOT call db.reload_payments() etc.
+        IMPORTANT: We do NOT call db.reload_payments() etc. here.
         On Railway those methods re-read from a fixed CSV path that may
-        differ from the actual volume path → cache gets wiped → tab
+        differ from the volume-mount path → cache gets wiped → tab
         shows all zeros.
         """
         try:
@@ -577,6 +577,7 @@ class PaymentsTab:
             )
 
             # -------- ROW TAP → open Edit dialog --------
+            # Flet 1.0.0 uses `on_select_change` (singular).
             def _on_row_tap(e, pp=p):
                 try:
                     print(f"[PAYMENTS] Row tapped: {pp.get('id')}")
@@ -587,7 +588,7 @@ class PaymentsTab:
 
             self.table.rows.append(
                 ft.DataRow(
-                    on_select_changed=_on_row_tap,
+                    on_select_change=_on_row_tap,      # ✅ Flet 1.0.0
                     cells=[
                         ft.DataCell(ft.Text(date_str, size=10)),
                         ft.DataCell(ft.Text(traveler_name[:18], size=10,
