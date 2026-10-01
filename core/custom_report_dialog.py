@@ -1,20 +1,17 @@
 # =================================================================================
-# SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0)
+# SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, Mobile-Responsive)
 # =================================================================================
-# 17.0 — SECTION OVERVIEW
-# ---------------------------------------------------------------------------------
-# UPDATED — 2026-09-30 (Cloud-ready)
-#   • Exports now serve files via HTTP (send_file_to_user) instead of
-#     file:/// URLs which break on the web.
-#   • _open_local_file() calls removed from exports — replaced with
-#     browser-friendly URLs.
-#   • generate_preview() forces a reload of payments.csv, invoices.csv,
-#     travelers.csv from disk so reports always show fresh data.
+# v1.2 — Mobile-Responsive
+#   • Header: compact, close button stays visible
+#   • Filters card: wraps to 1-2 fields per row on mobile
+#   • Body split: side-by-side on desktop, stacked on mobile
+#   • Left column selector: full-width on mobile, fixed on desktop
+#   • Preview area: shorter height on mobile
+#   • Buttons: wrap to 2 per row on mobile
+#   • Dialog width/height clamp to viewport
+#   • All original business logic preserved verbatim
 # =================================================================================
 
-# =================================================================================
-# 17.1 — IMPORTS
-# =================================================================================
 import os
 import sys
 import csv
@@ -114,7 +111,6 @@ def _assets_export_dir(sub):
 
 
 def _open_local_file(path):
-    """Desktop-only. On web this does nothing."""
     print(f"[WEB] _open_local_file is disabled on web. File: {path}")
     return False
 
@@ -367,7 +363,7 @@ def _dyn_label(key, n):
 
 
 # =================================================================================
-# 17.2 — CLASS: ColumnOrderDialog
+# 17.2 — CLASS: ColumnOrderDialog  (Mobile-Responsive)
 # =================================================================================
 class ColumnOrderDialog:
 
@@ -414,11 +410,11 @@ class ColumnOrderDialog:
     def setup_ui(self):
         header = ft.Container(
             content=ft.Row([
-                ft.Text("📌", size=20),
-                ft.Text("Reorder Columns", size=14,
+                ft.Text("📌", size=18),
+                ft.Text("Reorder Columns", size=13,
                         weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
             ], spacing=8),
-            padding=ft.Padding.symmetric(horizontal=18, vertical=12),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -466,41 +462,47 @@ class ColumnOrderDialog:
             except Exception:
                 pass
 
+        # Mobile-friendly dialog: 90vw x 80vh, capped at 480x560
+        pw = self.page.width or 400
+        ph = self.page.height or 700
+        dlg_w = max(300, min(480, pw - 30))
+        dlg_h = max(400, min(560, ph - 100))
+
         content = ft.Container(
             content=ft.Column([
                 header,
-                ft.Text("Click a row, then Up/Down to reorder",
+                ft.Text("Tap a row, then use Up/Down to reorder",
                         size=11, color=ft.Colors.GREY_600, italic=True),
                 ft.Container(
                     content=ft.Column([self._list],
                                       scroll=ft.ScrollMode.AUTO,
                                       expand=True),
-                    height=380, padding=6,
+                    height=320, padding=6,
                     border=ft.Border.all(1, ft.Colors.GREY_200),
                     border_radius=8),
             ], spacing=10),
-            width=520, height=500, padding=6)
+            width=dlg_w, height=dlg_h, padding=6)
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("📌  Reorder Columns",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=14),
             content=content,
             actions=[
-                ft.Button(content=ft.Text("⬆  Move Up"),
-                          on_click=move_up, height=38,
+                ft.Button(content=ft.Text("⬆  Up", size=11),
+                          on_click=move_up, height=34,
                           bgcolor="#2563eb", color=ft.Colors.WHITE),
-                ft.Button(content=ft.Text("⬇  Move Down"),
-                          on_click=move_down, height=38,
+                ft.Button(content=ft.Text("⬇  Down", size=11),
+                          on_click=move_down, height=34,
                           bgcolor="#2563eb", color=ft.Colors.WHITE),
-                ft.Button(content=ft.Text("🔄  Reset"),
-                          on_click=reset_order, height=38,
+                ft.Button(content=ft.Text("🔄  Reset", size=11),
+                          on_click=reset_order, height=34,
                           bgcolor="#d97706", color=ft.Colors.WHITE),
-                ft.TextButton(content=ft.Text("Cancel"),
-                              on_click=cancel),
-                ft.Button(content=ft.Text("✅  Apply Order"),
+                ft.Button(content=ft.Text("✅  Apply", size=11),
                           on_click=apply,
                           bgcolor="#059669", color=ft.Colors.WHITE),
+                ft.TextButton(content=ft.Text("Cancel", size=11),
+                              on_click=cancel),
             ],
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
@@ -509,7 +511,7 @@ class ColumnOrderDialog:
 
 
 # =================================================================================
-# 17.3 — CLASS: CustomReportDialog
+# 17.3 — CLASS: CustomReportDialog  (Mobile-Responsive)
 # =================================================================================
 class CustomReportDialog:
 
@@ -564,6 +566,10 @@ class CustomReportDialog:
         self.status_label = None
         self.record_count_label = None
         self.dialog = None
+
+        # Layout containers we need to re-style for mobile
+        self._left_panel_container = None
+        self._body_responsive_row = None
 
         self._load_live_tax_rates()
         self._refresh_invoice_caches()
@@ -706,7 +712,7 @@ class CustomReportDialog:
         return None
 
     # =============================================================================
-    # 17.3.1f — _is_invoice_paid_for_payment   (FIX-PAID-CASCADE)
+    # 17.3.1f — _is_invoice_paid_for_payment
     # =============================================================================
     def _is_invoice_paid_for_payment(self, payment, traveler_id):
         try:
@@ -726,7 +732,7 @@ class CustomReportDialog:
         return False
 
     # =============================================================================
-    # 17.3.1g — _get_payment_share   (FIX-PER-INVOICE-SHARE)
+    # 17.3.1g — _get_payment_share
     # =============================================================================
     def _get_payment_share(self, payment, traveler_id):
         amt = 0.0
@@ -767,7 +773,7 @@ class CustomReportDialog:
         }
 
     # =============================================================================
-    # 17.3.1h — _get_invoice_share   (aggregate fallback)
+    # 17.3.1h — _get_invoice_share
     # =============================================================================
     def _get_invoice_share(self, traveler_id, payment_amount):
         data = self.traveler_invoice_data.get(traveler_id)
@@ -963,26 +969,27 @@ class CustomReportDialog:
         return '\n'.join(lines)
 
     # =============================================================================
-    # 17.3.3 — setup_ui
+    # 17.3.3 — setup_ui   (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
         header = ft.Container(
             content=ft.Row([
-                ft.Text("📊", size=26),
+                ft.Text("📊", size=22),
                 ft.Column([
-                    ft.Text("Custom Report Generator", size=16,
+                    ft.Text("Custom Report Generator", size=14,
                             weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
-                    ft.Text("Traveler Summary (wide) OR Payment Ledger "
-                            "(long) — with accurate per-invoice tax shares",
-                            size=10, color=ft.Colors.BLUE_100),
+                            color=ft.Colors.WHITE,
+                            no_wrap=False, max_lines=2),
+                    ft.Text("Traveler Summary OR Payment Ledger",
+                            size=9, color=ft.Colors.BLUE_100),
                 ], spacing=2, expand=True),
                 ft.IconButton(icon=ft.Icons.CLOSE,
                               icon_color=ft.Colors.WHITE,
+                              icon_size=20,
                               tooltip="Close",
                               on_click=lambda e: self.reject()),
-            ], spacing=10),
-            padding=ft.Padding.symmetric(horizontal=20, vertical=12),
+            ], spacing=8),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -991,12 +998,19 @@ class CustomReportDialog:
 
         left_panel = self.setup_left_panel()
         right_panel = self.setup_right_panel()
+
+        # Responsive split: stacked on mobile, side-by-side on desktop
+        self._body_responsive_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=left_panel,
+                             col={"xs": 12, "sm": 12, "md": 4, "lg": 4}),
+                ft.Container(content=right_panel,
+                             col={"xs": 12, "sm": 12, "md": 8, "lg": 8}),
+            ],
+            spacing=12, run_spacing=12,
+        )
         body = ft.Container(
-            content=ft.Row(
-                [left_panel, right_panel],
-                spacing=12,
-                vertical_alignment=ft.CrossAxisAlignment.START,
-                expand=True),
+            content=self._body_responsive_row,
             expand=True)
 
         filters_card = self.setup_filters()
@@ -1005,8 +1019,8 @@ class CustomReportDialog:
 
         pw = self.page.width or 1400
         ph = self.page.height or 900
-        init_w = max(900, min(1400, pw - 40))
-        init_h = max(560, min(780, ph - 80))
+        init_w = max(340, min(1400, pw - 30))
+        init_h = max(500, min(800, ph - 60))
 
         dialog_content = ft.Container(
             content=ft.Column([
@@ -1015,24 +1029,24 @@ class CustomReportDialog:
                 body,
                 buttons,
                 status,
-            ], spacing=12, expand=True),
+            ], spacing=10, expand=True),
             width=init_w, height=init_h, padding=4)
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("📊 Custom Report Generator",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=dialog_content,
             actions=[],
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
     # =============================================================================
-    # 17.3.4 — setup_left_panel
+    # 17.3.4 — setup_left_panel   (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_left_panel(self):
         column_group_title = ft.Text(
-            "📋  Select Columns  (Traveler Summary mode)",
-            size=13, weight=ft.FontWeight.BOLD, color="#1e3a8a")
+            "📋  Select Columns",
+            size=12, weight=ft.FontWeight.BOLD, color="#1e3a8a")
         self.column_group_title = column_group_title
 
         self.column_tabs = ft.Tabs(
@@ -1042,10 +1056,10 @@ class CustomReportDialog:
             expand=True,
             content=ft.Column([
                 ft.TabBar(tabs=[
-                    ft.Tab(label="👥  Travelers"),
-                    ft.Tab(label="📦  Batches"),
-                    ft.Tab(label="💰  Payments"),
-                ]),
+                    ft.Tab(label="👥 Travelers"),
+                    ft.Tab(label="📦 Batches"),
+                    ft.Tab(label="💰 Payments"),
+                ], scrollable=True),
                 ft.TabBarView(expand=True, controls=[
                     self.setup_traveler_tab(),
                     self.setup_batch_tab(),
@@ -1053,7 +1067,8 @@ class CustomReportDialog:
                 ]),
             ], expand=True))
 
-        return ft.Container(
+        # On mobile: full-width, shorter. On desktop: fixed 380px, 560 tall.
+        self._left_panel_container = ft.Container(
             content=ft.Column([
                 column_group_title,
                 ft.Container(
@@ -1065,8 +1080,8 @@ class CustomReportDialog:
             padding=10, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1.5, "#dbeafe"),
             border_radius=10,
-            width=390,
-            height=560)
+            height=460)
+        return self._left_panel_container
 
     # =============================================================================
     # 17.3.5 — setup_traveler_tab
@@ -1092,20 +1107,20 @@ class CustomReportDialog:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Button(content=ft.Text("✓  Select All", size=11,
+                    ft.Button(content=ft.Text("✓ All", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_all, height=32,
+                              on_click=_all, height=30,
                               bgcolor="#059669", color=ft.Colors.WHITE,
                               expand=True),
-                    ft.Button(content=ft.Text("✗  Clear All", size=11,
+                    ft.Button(content=ft.Text("✗ Clear", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_clear, height=32,
+                              on_click=_clear, height=30,
                               bgcolor="#dc2626", color=ft.Colors.WHITE,
                               expand=True),
                 ], spacing=6),
                 lv,
             ], spacing=6, expand=True),
-            padding=10, expand=True)
+            padding=8, expand=True)
 
     # =============================================================================
     # 17.3.6 — setup_batch_tab
@@ -1131,20 +1146,20 @@ class CustomReportDialog:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Button(content=ft.Text("✓  Select All", size=11,
+                    ft.Button(content=ft.Text("✓ All", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_all, height=32,
+                              on_click=_all, height=30,
                               bgcolor="#059669", color=ft.Colors.WHITE,
                               expand=True),
-                    ft.Button(content=ft.Text("✗  Clear All", size=11,
+                    ft.Button(content=ft.Text("✗ Clear", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_clear, height=32,
+                              on_click=_clear, height=30,
                               bgcolor="#dc2626", color=ft.Colors.WHITE,
                               expand=True),
                 ], spacing=6),
                 lv,
             ], spacing=6, expand=True),
-            padding=10, expand=True)
+            padding=8, expand=True)
 
     # =============================================================================
     # 17.3.7 — setup_payment_tab
@@ -1170,20 +1185,20 @@ class CustomReportDialog:
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Button(content=ft.Text("✓  Select All", size=11,
+                    ft.Button(content=ft.Text("✓ All", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_all, height=32,
+                              on_click=_all, height=30,
                               bgcolor="#059669", color=ft.Colors.WHITE,
                               expand=True),
-                    ft.Button(content=ft.Text("✗  Clear All", size=11,
+                    ft.Button(content=ft.Text("✗ Clear", size=11,
                                               weight=ft.FontWeight.BOLD),
-                              on_click=_clear, height=32,
+                              on_click=_clear, height=30,
                               bgcolor="#dc2626", color=ft.Colors.WHITE,
                               expand=True),
                 ], spacing=6),
                 lv,
             ], spacing=6, expand=True),
-            padding=10, expand=True)
+            padding=8, expand=True)
 
     # =============================================================================
     # 17.3.8 — setup_right_panel
@@ -1196,41 +1211,40 @@ class CustomReportDialog:
             padding=0, expand=True)
 
     # =============================================================================
-    # 17.3.9 — setup_filters
+    # 17.3.9 — setup_filters   (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_filters(self):
         self.report_format_dropdown = ft.Dropdown(
             label="Report Format",
             options=[
                 ft.dropdown.Option("summary",
-                                   "📋  Traveler Summary (wide)"),
+                                   "📋 Traveler Summary"),
                 ft.dropdown.Option("ledger",
-                                   "🧾  Payment Ledger (long)"),
+                                   "🧾 Payment Ledger"),
             ],
-            value="summary", width=280, text_size=12,
-            content_padding=10)
+            value="summary", text_size=12, content_padding=8)
         self.report_format_dropdown.on_change = self._on_report_format_changed
 
         self.reg_date_from = ft.TextField(
-            label="From (dd/mm/yyyy)",
+            label="From",
             value=(datetime.now() - timedelta(days=90)
                    ).strftime("%d/%m/%Y"),
-            width=170, text_size=12, content_padding=10)
+            text_size=12, content_padding=8)
         self.reg_date_to = ft.TextField(
-            label="To (dd/mm/yyyy)",
+            label="To",
             value=datetime.now().strftime("%d/%m/%Y"),
-            width=170, text_size=12, content_padding=10)
+            text_size=12, content_padding=8)
 
         self.batch_filter_combo = ft.Dropdown(
-            label="Batch Filter",
+            label="Batch",
             options=[ft.dropdown.Option("", "All Batches")],
-            value="", width=170, text_size=12, content_padding=10)
+            value="", text_size=12, content_padding=8)
         try:
             for batch in self.db.get_batches():
                 self.batch_filter_combo.options.append(
                     ft.dropdown.Option(
                         batch['id'],
-                        batch.get('batch_name', 'Unknown')))
+                        batch.get('batch_name', 'Unknown')[:30]))
         except Exception:
             pass
 
@@ -1238,25 +1252,25 @@ class CustomReportDialog:
             label="Traveler Status",
             options=[ft.dropdown.Option(x) for x in
                      ["All", "Active", "Inactive", "Completed"]],
-            value="All", width=140, text_size=12, content_padding=10)
+            value="All", text_size=12, content_padding=8)
 
         self.payment_method_filter = ft.Dropdown(
-            label="Payment Method",
+            label="Method",
             options=[ft.dropdown.Option(x) for x in
                      ["All", "Bank Transfer", "Cash", "Card", "UPI",
                       "Cheque", "NEFT", "RTGS", "IMPS"]],
-            value="All", width=160, text_size=12, content_padding=10)
+            value="All", text_size=12, content_padding=8)
 
         self.payment_status_filter = ft.Dropdown(
-            label="Payment Status",
+            label="Pay Status",
             options=[ft.dropdown.Option(x) for x in
                      ["All", "completed", "pending", "failed", "refunded"]],
-            value="All", width=150, text_size=12, content_padding=10)
+            value="All", text_size=12, content_padding=8)
 
         self.min_amount_input = ft.TextField(
-            label="Min ₹", width=110, text_size=12, content_padding=10)
+            label="Min ₹", text_size=12, content_padding=8)
         self.max_amount_input = ft.TextField(
-            label="Max ₹", width=110, text_size=12, content_padding=10)
+            label="Max ₹", text_size=12, content_padding=8)
 
         def _quick(days):
             def _h(e):
@@ -1267,40 +1281,56 @@ class CustomReportDialog:
                 self.generate_preview(None)
             return _h
 
+        def _qbtn(label, days):
+            return ft.Button(
+                content=ft.Text(label, size=10),
+                on_click=_quick(days), height=32,
+                bgcolor="#e0f2fe", color="#0369a1")
+
+        # Responsive rows for filters
+        row1 = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=self.report_format_dropdown,
+                             col={"xs": 12, "sm": 6, "md": 4}),
+                ft.Container(content=self.reg_date_from,
+                             col={"xs": 6, "sm": 3, "md": 2}),
+                ft.Container(content=self.reg_date_to,
+                             col={"xs": 6, "sm": 3, "md": 2}),
+            ], spacing=8, run_spacing=8)
+
+        quick_btns = ft.Row([
+            _qbtn("Today", 0), _qbtn("Week", 7),
+            _qbtn("Month", 30), _qbtn("3M", 90),
+        ], spacing=6, wrap=True)
+
+        row2 = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=self.batch_filter_combo,
+                             col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(content=self.status_filter,
+                             col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(content=self.payment_method_filter,
+                             col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(content=self.payment_status_filter,
+                             col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(content=self.min_amount_input,
+                             col={"xs": 6, "sm": 3, "md": 1}),
+                ft.Container(content=self.max_amount_input,
+                             col={"xs": 6, "sm": 3, "md": 1}),
+            ], spacing=8, run_spacing=8)
+
         return ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Text("🔍", size=16),
-                    ft.Text("Report Format & Filters", size=13,
+                    ft.Text("🔍", size=14),
+                    ft.Text("Filters", size=12,
                             weight=ft.FontWeight.BOLD, color="#1e3a8a"),
                 ], spacing=6),
-                ft.Row([
-                    self.report_format_dropdown,
-                    self.reg_date_from,
-                    self.reg_date_to,
-                    ft.Button(content=ft.Text("Today", size=11),
-                              on_click=_quick(0), height=36,
-                              bgcolor="#e0f2fe", color="#0369a1"),
-                    ft.Button(content=ft.Text("Week", size=11),
-                              on_click=_quick(7), height=36,
-                              bgcolor="#e0f2fe", color="#0369a1"),
-                    ft.Button(content=ft.Text("Month", size=11),
-                              on_click=_quick(30), height=36,
-                              bgcolor="#e0f2fe", color="#0369a1"),
-                    ft.Button(content=ft.Text("3M", size=11),
-                              on_click=_quick(90), height=36,
-                              bgcolor="#e0f2fe", color="#0369a1"),
-                ], spacing=8, wrap=True),
-                ft.Row([
-                    self.batch_filter_combo,
-                    self.status_filter,
-                    self.payment_method_filter,
-                    self.payment_status_filter,
-                    self.min_amount_input,
-                    self.max_amount_input,
-                ], spacing=8, wrap=True),
-            ], spacing=10),
-            padding=12, bgcolor=ft.Colors.WHITE,
+                row1,
+                quick_btns,
+                row2,
+            ], spacing=8),
+            padding=10, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1, "#dbeafe"),
             border_radius=10)
 
@@ -1313,21 +1343,24 @@ class CustomReportDialog:
             self.current_report_mode = mode
             if mode == 'ledger':
                 self.column_group_title.value = (
-                    "📋  Columns  (auto-managed in Payment Ledger mode)")
+                    "📋  Columns (auto-managed)")
                 self.column_group_title.color = "#6b7280"
             else:
                 self.column_group_title.value = (
-                    "📋  Select Columns  (Traveler Summary mode)")
+                    "📋  Select Columns")
                 self.column_group_title.color = "#1e3a8a"
             self.page.update()
         except Exception as ex:
             print(f"[CR] _on_report_format_changed error: {ex}")
 
     # =============================================================================
-    # 17.3.10 — setup_preview
+    # 17.3.10 — setup_preview   (MOBILE-RESPONSIVE: shorter height)
     # =============================================================================
     def setup_preview(self):
-        PREVIEW_H = 380
+        pw = self.page.width or 1000
+        # Shorter on mobile
+        PREVIEW_H = 260 if pw < 700 else 380
+
         self.preview_table = ft.DataTable(
             columns=[ft.DataColumn(ft.Text("Preview", size=11,
                                            weight=ft.FontWeight.BOLD,
@@ -1335,8 +1368,8 @@ class CustomReportDialog:
             rows=[],
             heading_row_color="#1e293b",
             column_spacing=14,
-            data_row_min_height=46,
-            data_row_max_height=70)
+            data_row_min_height=42,
+            data_row_max_height=64)
 
         inner_col = ft.Column(
             controls=[self.preview_table],
@@ -1362,67 +1395,85 @@ class CustomReportDialog:
             content=ft.Column([
                 ft.Row([
                     ft.Text("📄", size=14),
-                    ft.Text("Report Preview", size=13,
+                    ft.Text("Report Preview", size=12,
                             weight=ft.FontWeight.BOLD, color="#1e3a8a"),
                     ft.Container(expand=True),
-                    ft.Text("↔ scroll inside", size=9,
+                    ft.Text("↔ scroll", size=9,
                             color=ft.Colors.GREY_500, italic=True),
                 ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 self._preview_body,
             ], spacing=8, expand=True),
-            padding=12, bgcolor=ft.Colors.WHITE,
+            padding=10, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1, "#dbeafe"),
             border_radius=10, expand=True)
 
     # =============================================================================
-    # 17.3.11 — setup_buttons
+    # 17.3.11 — setup_buttons   (MOBILE-RESPONSIVE: 2 per row)
     # =============================================================================
     def setup_buttons(self):
         def _btn(label, icon, color, handler):
             return ft.Button(
                 content=ft.Row([
-                    ft.Icon(icon, size=16, color=ft.Colors.WHITE),
-                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
+                    ft.Icon(icon, size=14, color=ft.Colors.WHITE),
+                    ft.Text(label, size=11, weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE,
+                            no_wrap=True,
+                            overflow=ft.TextOverflow.ELLIPSIS),
                 ], spacing=6, tight=True),
-                on_click=handler, height=42, bgcolor=color)
+                on_click=handler, height=40, bgcolor=color)
 
-        return ft.Row([
-            _btn("Generate Preview", ft.Icons.REFRESH, "#2563eb",
-                 self.generate_preview),
-            _btn("Force Reload CSV", ft.Icons.DOWNLOAD, "#0ea5e9",
-                 self._force_reload_csv),
-            _btn("Diagnose", ft.Icons.BUG_REPORT, "#f59e0b",
-                 self._diagnose),
-            _btn("Reorder Columns", ft.Icons.SORT, "#7c3aed",
-                 self.open_column_ordering_dialog),
-            _btn("Export Excel", ft.Icons.TABLE_CHART, "#059669",
-                 self.export_to_excel),
-            _btn("Export CSV", ft.Icons.DESCRIPTION, "#0891b2",
-                 self.export_to_csv),
-            _btn("Export PDF", ft.Icons.PICTURE_AS_PDF, "#dc2626",
-                 self.export_to_pdf),
-            ft.TextButton(content=ft.Text("Close"),
-                          on_click=lambda e: self.reject()),
-        ], spacing=8, wrap=True)
+        items = [
+            (_btn("Generate", ft.Icons.REFRESH, "#2563eb",
+                  self.generate_preview), 6),
+            (_btn("Reload CSV", ft.Icons.DOWNLOAD, "#0ea5e9",
+                  self._force_reload_csv), 6),
+            (_btn("Diagnose", ft.Icons.BUG_REPORT, "#f59e0b",
+                  self._diagnose), 6),
+            (_btn("Reorder", ft.Icons.SORT, "#7c3aed",
+                  self.open_column_ordering_dialog), 6),
+            (_btn("Excel", ft.Icons.TABLE_CHART, "#059669",
+                  self.export_to_excel), 6),
+            (_btn("CSV", ft.Icons.DESCRIPTION, "#0891b2",
+                  self.export_to_csv), 6),
+            (_btn("PDF", ft.Icons.PICTURE_AS_PDF, "#dc2626",
+                  self.export_to_pdf), 6),
+        ]
+
+        controls = [
+            ft.Container(content=item[0],
+                         col={"xs": item[1], "sm": item[1], "md": 2})
+            for item in items
+        ]
+        close_btn = ft.Container(
+            content=ft.TextButton(content=ft.Text("Close", size=11),
+                                  on_click=lambda e: self.reject()),
+            col={"xs": 12, "sm": 6, "md": 2})
+
+        return ft.ResponsiveRow(
+            controls=controls + [close_btn],
+            spacing=6, run_spacing=6)
 
     # =============================================================================
     # 17.3.12 — setup_status
     # =============================================================================
     def setup_status(self):
-        self.status_icon = ft.Text("✅", size=14)
+        self.status_icon = ft.Text("✅", size=13)
         self.status_label = ft.Text(
-            "Ready. Pick a report format and click 'Generate Preview'",
-            size=12, color="#059669", weight=ft.FontWeight.BOLD)
+            "Ready. Pick format & click Generate",
+            size=11, color="#059669", weight=ft.FontWeight.BOLD,
+            max_lines=2, no_wrap=False)
         self.record_count_label = ft.Text(
-            "", size=11, color="#6b7280")
+            "", size=10, color="#6b7280")
 
-        return ft.Row([
-            self.status_icon,
-            self.status_label,
-            ft.Container(expand=True),
-            self.record_count_label,
-        ], spacing=8)
+        return ft.Container(
+            content=ft.Row([
+                self.status_icon,
+                ft.Container(content=self.status_label, expand=True),
+                self.record_count_label,
+            ], spacing=6),
+            padding=8, bgcolor="#f9fafb",
+            border=ft.Border.all(1, "#e5e7eb"),
+            border_radius=8)
 
     # =============================================================================
     # 17.3.13 — create_checkbox_group
@@ -1518,8 +1569,7 @@ class CustomReportDialog:
     def open_column_ordering_dialog(self, e=None):
         if self.current_report_mode == 'ledger':
             self._snack("ℹ️ In Payment Ledger mode, columns are managed "
-                        "automatically. Switch to 'Traveler Summary' "
-                        "to reorder columns.", "#3b82f6")
+                        "automatically.", "#3b82f6")
             return
         if self.selected_columns:
             selected = self.selected_columns
@@ -1618,7 +1668,7 @@ class CustomReportDialog:
                     self.batch_filter_combo.options.append(
                         ft.dropdown.Option(
                             batch['id'],
-                            batch.get('batch_name', 'Unknown')))
+                            batch.get('batch_name', 'Unknown')[:30]))
             except Exception:
                 pass
         except Exception as e:
@@ -1632,7 +1682,6 @@ class CustomReportDialog:
         try:
             print("[CR] 🔃 FORCE RELOAD from CSV …")
 
-            # Ask DB to reload its cache
             try:
                 if hasattr(self.db, "reload_all"):
                     self.db.reload_all()
@@ -1721,11 +1770,10 @@ class CustomReportDialog:
             self._snack(f"❌ Diagnose failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19 — generate_preview   (UPDATED: forces DB reload first)
+    # 17.3.19 — generate_preview   (FIX-FRESH-DATA preserved)
     # =============================================================================
     def generate_preview(self, e=None):
         try:
-            # ✅ Force fresh reload of payments, invoices, and travelers
             try:
                 if hasattr(self.db, "reload_payments"):
                     self.db.reload_payments()
@@ -1964,17 +2012,16 @@ class CustomReportDialog:
             if has_payment_cols:
                 self._set_status(
                     "✅",
-                    f"Traveler Summary generated — {max_slots} payment "
-                    f"slot(s) per traveler — tax shown as per-invoice share",
+                    f"Traveler Summary — {max_slots} payment slot(s)",
                     "#059669")
             else:
                 self._set_status("✅",
-                                 "Traveler Summary generated successfully!",
+                                 "Traveler Summary generated!",
                                  "#059669")
             if self.record_count_label:
                 self.record_count_label.value = (
                     f"📊 {len(report_data)} travelers | "
-                    f"{len(final_columns)} columns")
+                    f"{len(final_columns)} cols")
             try:
                 self.page.update()
             except Exception:
@@ -1985,7 +2032,7 @@ class CustomReportDialog:
             self._snack(f"Could not generate report: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19b — _generate_ledger_preview   (FIX-PAID-CASCADE)
+    # 17.3.19b — _generate_ledger_preview
     # =============================================================================
     def _generate_ledger_preview(self):
         try:
@@ -2173,13 +2220,11 @@ class CustomReportDialog:
 
             self._set_status(
                 "✅",
-                f"Payment Ledger generated — {len(report_data)} payment "
-                f"row(s) with per-invoice tax share and outstanding balance",
+                f"Payment Ledger — {len(report_data)} row(s)",
                 "#059669")
             if self.record_count_label:
                 self.record_count_label.value = (
-                    f"🧾 {len(report_data)} payments | "
-                    f"{len(ledger_columns)} ledger columns")
+                    f"🧾 {len(report_data)} payments")
             try:
                 self.page.update()
             except Exception:
@@ -2190,7 +2235,7 @@ class CustomReportDialog:
             self._set_status("❌", f"Ledger error: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.20 — _build_row_wide   (FIX-PAID-CASCADE)
+    # 17.3.20 — _build_row_wide   (all logic preserved)
     # =============================================================================
     def _build_row_wide(self, traveler_cols, batch_cols, payment_cols,
                         traveler, batch, payments, max_slots):
@@ -2542,7 +2587,7 @@ class CustomReportDialog:
         return ''
 
     # =============================================================================
-    # 17.3.22 — display_preview
+    # 17.3.22 — display_preview   (MOBILE-RESPONSIVE: narrower columns)
     # =============================================================================
     def display_preview(self, selected, report_data):
         try:
@@ -2554,15 +2599,20 @@ class CustomReportDialog:
         if not selected or not report_data:
             return
 
+        pw = self.page.width or 1000
+        col_min = 100 if pw < 700 else 130
+        col_pad = 8 if pw < 700 else 10
+
         total_w = 0
-        spacing = 14
+        spacing = 10 if pw < 700 else 14
         for col in selected:
             lbl = col['label']
-            w = 150 if lbl == 'Photo' else max(130, len(lbl) * 10)
+            w = 100 if lbl == 'Photo' else max(col_min,
+                                               len(lbl) * col_pad)
             total_w += w
             self.preview_table.columns.append(
                 ft.DataColumn(ft.Container(
-                    content=ft.Text(lbl, size=11,
+                    content=ft.Text(lbl, size=10,
                                     weight=ft.FontWeight.BOLD,
                                     color=ft.Colors.WHITE,
                                     no_wrap=True),
@@ -2572,7 +2622,6 @@ class CustomReportDialog:
         total_w += 60
         total_w = max(total_w, 900)
         self._preview_inner.width = total_w
-        print(f"[CR] preview width={total_w}, cols={len(selected)}")
 
         for row in report_data:
             cells = []
@@ -2587,14 +2636,14 @@ class CustomReportDialog:
                     if uri:
                         cells.append(ft.DataCell(ft.Container(
                             content=ft.Image(
-                                src=uri, width=44, height=44,
+                                src=uri, width=38, height=38,
                                 fit=ft.BoxFit.COVER,
                                 border_radius=6),
                             padding=2,
                             alignment=ft.Alignment.CENTER)))
                     else:
                         cells.append(ft.DataCell(ft.Text(
-                            "❌ No Photo", size=10,
+                            "—", size=10,
                             color=ft.Colors.RED_400,
                             text_align=ft.TextAlign.CENTER)))
                     continue
@@ -2602,7 +2651,7 @@ class CustomReportDialog:
                 is_money = _is_money_label(lbl)
                 cells.append(ft.DataCell(ft.Text(
                     str(v) if v not in (None, '') else '',
-                    size=11,
+                    size=10,
                     color='#0f172a' if not is_money else '#1e40af',
                     weight=(ft.FontWeight.BOLD if is_money else None),
                     text_align=(ft.TextAlign.RIGHT if is_money
@@ -2610,7 +2659,7 @@ class CustomReportDialog:
             self.preview_table.rows.append(ft.DataRow(cells=cells))
 
     # =============================================================================
-    # 17.3.23 — export_to_excel   (UPDATED: serves via HTTP)
+    # 17.3.23 — export_to_excel   (FIX-CLOUD-EXPORTS preserved)
     # =============================================================================
     def export_to_excel(self, e=None):
         if not self.report_data:
@@ -2754,7 +2803,6 @@ class CustomReportDialog:
 
             wb.save(str(path))
 
-            # ✅ Serve via HTTP (works on web)
             url = send_file_to_user(self.page, str(path), "Excel Report")
             self._snack(f"✅ Excel saved → {path}", "#059669")
             if url:
@@ -2767,7 +2815,7 @@ class CustomReportDialog:
             self._snack(f"❌ Excel export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.24 — export_to_csv   (UPDATED: serves via HTTP)
+    # 17.3.24 — export_to_csv
     # =============================================================================
     def export_to_csv(self, e=None):
         if not self.report_data:
@@ -2849,7 +2897,7 @@ class CustomReportDialog:
             self._snack(f"❌ CSV export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.25 — export_to_pdf   (UPDATED: serves via HTTP)
+    # 17.3.25 — export_to_pdf
     # =============================================================================
     def export_to_pdf(self, e=None):
         if not self.report_data:
@@ -2878,7 +2926,7 @@ class CustomReportDialog:
             self._snack(f"❌ PDF export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.26 — generate_pdf_report
+    # 17.3.26 — generate_pdf_report   (all logic preserved)
     # =============================================================================
     def generate_pdf_report(self, filepath, selected, report_data):
         try:
@@ -3151,23 +3199,20 @@ class CustomReportDialog:
 # =================================================================================
 # 17.4 — MAINTENANCE WARNINGS
 # =================================================================================
-# 17.4.1  — FIX-CLOUD-EXPORTS (2026-09-30):
-#              Exports (Excel / CSV / PDF) now use send_file_to_user() to
-#              serve files via HTTP. Previously they used file:/// URLs
-#              which browsers block for security. Downloads work on both
-#              local and Railway deployments.
-# 17.4.2  — FIX-FRESH-DATA (2026-09-30):
-#              generate_preview() forces reload of payments.csv,
-#              invoices.csv, travelers.csv from disk before generating.
-#              This ensures reports always show the latest data (fixes
-#              the Meera multi-payment bug).
-# 17.4.3  — All other fixes from previous revisions preserved:
-#              FIX-PAID-CASCADE, FIX-PER-INVOICE-SHARE, FIX-DYNAMIC-PAY-
-#              DYNAMIC, FIX-CSV-AUTHORITY, FIX-TAX-INVOICE-SOURCE,
-#              FIX-TAX-DOUBLE-COUNT, FIX-SLOT-PAY-COLUMNS, FIX-INR-FORMAT,
-#              FIX-EXACT-PCT, FIX-PAYMENT-LEDGER, FIX-ADV-FILTERS,
-#              FIX-OUTSTANDING-BAL, FIX-PRO-UI, FIX-LEDGER-AUTOCOLS,
-#              FIX-SUMMARY-OUTSTANDING, FIX-EXCEL-PDF-META.
+# 17.4.1  — FIX-CLOUD-EXPORTS : exports use send_file_to_user (HTTP)
+# 17.4.2  — FIX-FRESH-DATA    : generate_preview() reloads CSVs first
+# 17.4.3  — All prior fixes preserved (paid-cascade, per-invoice share,
+#              dynamic payments, CSV authority, tax-in-source,
+#              slot columns, INR format, ledger, filters, outstanding,
+#              pro UI, ledger auto-columns, summary outstanding,
+#              excel/pdf meta).
+# 17.4.4  — MOBILE-RESPONSIVE (v1.2):
+#              • Header compact with visible Close button
+#              • Filters wrap to 1-2 per row on xs
+#              • Left/Right panels stack on mobile via ResponsiveRow
+#              • Preview height shrinks on narrow screens
+#              • Action buttons 2 per row on mobile
+#              • Dialog clamps to viewport width/height
 # =================================================================================
-# SECTION 17 END — CUSTOM REPORT DIALOG
+# SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION)
 # =================================================================================
