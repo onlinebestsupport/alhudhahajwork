@@ -1,34 +1,11 @@
 # =================================================================================
 # SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED + MOBILE-RESPONSIVE
 # =================================================================================
-# Fixes applied (v1.1):
-#   18.0 — Flet 1.0 makes `page` a read-only property on all controls.
-#          We store the incoming page argument as `self.page_ref`.
-#   18.1 — DEFENSE-IN-DEPTH: UsersTab refuses to render its UI if the
-#          current user lacks the `manage_users` permission.
-#
-# PATCHES APPLIED (v1.1):
-#   18.1.A — refresh()              : force DB reload before reading (fresh cache)
-#   18.1.B — _render_table()        : action handlers re-fetch user by ID
-#                                     before dispatch (no stale dict)
-#   18.1.C — UserFormDialog._snack(): use page.show_dialog(SnackBar) — the
-#                                     deprecated page.snack_bar attribute is
-#                                     unreliable in Flet 1.0 web mode
-#   18.1.D — _update_existing()     : prefer db.update_user() when available
-#
-# PATCHES APPLIED (v1.2 — MOBILE-RESPONSIVE):
-#   18.2.A — setup_ui()             : responsive header, stat cols xs:6, 
-#                                     wrapped toolbar, card-list container
-#   18.2.B — _render_table()        : branches to _render_mobile_cards()
-#   18.2.C — _render_mobile_cards() : NEW — card layout for narrow screens
-#   18.2.D — UserFormDialog._build(): expand on narrow, stacked password fields
-#   18.2.E — on_resize()            : NEW — re-render when viewport crosses 
-#                                     700px
-#
-# SECURITY NOTE:
-#   Passwords use unsalted SHA-256 (legacy). Migration to bcrypt/argon2
-#   is a separate task — changing it here would invalidate every existing
-#   password hash in production.
+# v1.3 — Mobile-render fix
+#   • _is_narrow() defaults to True when width unknown (fixes grey box)
+#   • _render_table() ALWAYS renders mobile cards
+#   • Deferred re-check 700ms after __init__ to catch late width reports
+#   • Preserved: v1.1 patches (18.1.A/B/C/D) and v1.2 mobile layout
 # =================================================================================
 
 import flet as ft
@@ -117,46 +94,25 @@ def _hash_password(password):
 
 
 def _user_has_permission(user, perm_key):
-    """
-    Return True if `user` has `perm_key`.
-
-    Rules:
-      • super_admin always returns True (bypasses everything)
-      • Otherwise, parse the user's `permissions` field (JSON list,
-        pipe-separated string, or a real list/set) and check membership.
-      • If permissions are empty, fall back to the role's defaults.
-    """
+    """Return True if `user` has `perm_key` (super_admin always True)."""
     if not user:
         return False
-
     role = _safe_str(user.get("role", "")).lower()
-
-    # Super admin bypass
     if role == "super_admin":
         return True
-
     raw = user.get("permissions", "")
-
-    # Already a list / set / tuple
     if isinstance(raw, (list, set, tuple, frozenset)):
         return perm_key in raw
-
     s = _safe_str(raw)
-
     if not s:
-        # Fall back to role defaults
         defaults = ROLE_DEFAULT_PERMISSIONS.get(
             role, ROLE_DEFAULT_PERMISSIONS["viewer"])
         return perm_key in defaults
-
-    # JSON list form
     if s.startswith("["):
         try:
             return perm_key in set(json.loads(s))
         except Exception:
             pass
-
-    # Pipe-separated form
     return perm_key in {x.strip() for x in s.split("|") if x.strip()}
 
 
@@ -166,12 +122,11 @@ def _user_has_permission(user, perm_key):
 class UsersTab(ft.Column):
 
     # -----------------------------------------------------------------------------
-    # 18.1.1 — __init__  ✅ PERMISSION GATE + self.page_ref
+    # 18.1.1 — __init__
     # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         super().__init__()
 
-        # Store our own reference to page (Flet 1.0: page is read-only)
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
@@ -213,22 +168,59 @@ class UsersTab(ft.Column):
             traceback.print_exc()
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
+        # ---- Deferred re-check for late width reports (mobile web) ----
+        try:
+            import threading
+
+            def _delayed_check():
+                import time
+                time.sleep(0.7)
+                try:
+                    now_narrow = self._is_narrow()
+                    print(f"[USERS] delayed check: page.width="
+                          f"{getattr(self.page_ref, 'width', '?')} "
+                          f"narrow={now_narrow} "
+                          f"mobile_mode={self._mobile_mode}")
+                    if now_narrow and not self._mobile_mode:
+                        print("[USERS] late mobile detection — rebuilding")
+                        self.controls.clear()
+                        self.stats_labels.clear()
+                        self.setup_ui()
+                        self.refresh()
+                except Exception as _e:
+                    print(f"[USERS] delayed rebuild error: {_e}")
+
+            threading.Thread(target=_delayed_check, daemon=True).start()
+        except Exception:
+            pass
+
     # -----------------------------------------------------------------------------
-    # 18.1.1b — _is_narrow
+    # 18.1.1b — _is_narrow  (fixed: safe default)
     # -----------------------------------------------------------------------------
     def _is_narrow(self):
-        """True when viewport width < MOBILE_BREAKPOINT."""
+        """True when viewport width < MOBILE_BREAKPOINT.
+
+        Falls back to True when width is unknown (Flet web often reports
+        None during first render). Card layout always fits, so this is
+        the safer default.
+        """
         try:
-            w = self.page_ref.width or 1200
+            w = self.page_ref.width
+            if w is None:
+                try:
+                    w = self.page_ref.window.width
+                except Exception:
+                    w = None
+            if w is None:
+                return True   # safe default: mobile card layout
             return w < MOBILE_BREAKPOINT
         except Exception:
-            return False
+            return True
 
     # -----------------------------------------------------------------------------
     # 18.1.1c — _build_access_denied_ui
     # -----------------------------------------------------------------------------
     def _build_access_denied_ui(self):
-        """Render a clean 'Access Denied' placeholder instead of the tab UI."""
         try:
             self.controls = [
                 ft.Container(
@@ -438,16 +430,14 @@ class UsersTab(ft.Column):
         return self
 
     # -----------------------------------------------------------------------------
-    # 18.1.3b — on_resize  (NEW — re-render when viewport crosses breakpoint)
+    # 18.1.3b — on_resize
     # -----------------------------------------------------------------------------
     def on_resize(self, e=None):
-        """Re-evaluate layout when viewport changes."""
         try:
             new_narrow = self._is_narrow()
             if new_narrow != self._mobile_mode:
                 print(f"[USERS] viewport changed → "
                       f"{'mobile' if new_narrow else 'desktop'}")
-                # Clear and rebuild
                 self.controls.clear()
                 self.stats_labels.clear()
                 self.setup_ui()
@@ -459,15 +449,13 @@ class UsersTab(ft.Column):
             print(f"[USERS] on_resize error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # 18.1.4 — refresh  (PATCH 18.1.A: force DB reload before reading)
+    # 18.1.4 — refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
-        # 🔒 Safety: refuse if access was denied
         if not self._ui_built and not self.status_label:
             return
 
         try:
-            # ---- PATCH 18.1.A: fresh cache reload ----
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -527,10 +515,18 @@ class UsersTab(ft.Column):
 
     # -----------------------------------------------------------------------------
     # 18.1.6 — _render_table
-    #   PATCH 18.1.B: action handlers re-fetch by ID before dispatch
     # -----------------------------------------------------------------------------
     def _render_table(self):
-        self.table.rows.clear()
+        # Clear both views so re-render is always consistent
+        try:
+            self.table.rows.clear()
+        except Exception:
+            pass
+        try:
+            if self.mobile_list is not None:
+                self.mobile_list.controls.clear()
+        except Exception:
+            pass
 
         for u in self.users:
             username = u.get("username", "")
@@ -570,7 +566,6 @@ class UsersTab(ft.Column):
 
             is_self = (uid == self.current_user.get("id"))
 
-            # PATCH 18.1.B — capture ID, re-fetch fresh row on click
             def _make_edit(_uid=uid):
                 def h(e):
                     fresh = next(
@@ -627,17 +622,18 @@ class UsersTab(ft.Column):
                 ft.DataCell(actions),
             ]))
 
-        # Branch rendering by viewport
-        if self._mobile_mode:
-            try:
-                self._render_mobile_cards()
-            except Exception as ex:
-                print(f"[USERS] mobile render failed: {ex}")
+        # ---- ALWAYS render mobile cards (harmless if unused) ----
+        try:
+            self._render_mobile_cards()
+        except Exception as ex:
+            print(f"[USERS] mobile render failed: {ex}")
 
-        print(f"[USERS] rendered {len(self.table.rows)} rows")
+        print(f"[USERS] rendered {len(self.table.rows)} table rows, "
+              f"{len(self.mobile_list.controls) if self.mobile_list else 0} "
+              f"mobile cards")
 
     # -----------------------------------------------------------------------------
-    # 18.1.6b — _render_mobile_cards  (NEW)
+    # 18.1.6b — _render_mobile_cards
     # -----------------------------------------------------------------------------
     def _render_mobile_cards(self):
         """Render users as cards for narrow screens."""
@@ -688,7 +684,6 @@ class UsersTab(ft.Column):
             self.mobile_list.controls.append(
                 ft.Container(
                     content=ft.Column([
-                        # Row 1: username + role badge
                         ft.Row([
                             ft.Text(username, size=13,
                                     weight=ft.FontWeight.BOLD,
@@ -707,7 +702,6 @@ class UsersTab(ft.Column):
                                 border_radius=10),
                         ], spacing=8),
 
-                        # Row 2: name + email
                         ft.Text(full_name or "—", size=11,
                                 color=ft.Colors.GREY_700,
                                 max_lines=1,
@@ -717,7 +711,6 @@ class UsersTab(ft.Column):
                                 max_lines=1,
                                 overflow=ft.TextOverflow.ELLIPSIS),
 
-                        # Row 3: meta
                         ft.Row([
                             ft.Text(f"🔑 {perm_count} perms", size=9,
                                     color="#1e40af"),
@@ -727,7 +720,6 @@ class UsersTab(ft.Column):
                                     color=ft.Colors.GREY_600),
                         ], spacing=10, wrap=True),
 
-                        # Row 4: actions
                         ft.Row([
                             ft.TextButton(
                                 content=ft.Row([
@@ -896,7 +888,7 @@ class UsersTab(ft.Column):
 
 
 # =================================================================================
-# 18.2 — CLASS: UserFormDialog  ✅ uses self.page_ref, mobile-responsive
+# 18.2 — CLASS: UserFormDialog
 # =================================================================================
 class UserFormDialog:
 
@@ -926,14 +918,18 @@ class UserFormDialog:
     def _build(self):
         u = self.user
 
-        # Detect narrow viewport
         narrow = False
         try:
-            narrow = (self.page_ref.width or 1200) < MOBILE_BREAKPOINT
+            w = self.page_ref.width
+            if w is None:
+                try:
+                    w = self.page_ref.window.width
+                except Exception:
+                    w = None
+            narrow = (w is None) or (w < MOBILE_BREAKPOINT)
         except Exception:
-            pass
+            narrow = True
 
-        # Credentials
         self.username_field = ft.TextField(
             label="Username *",
             value=_safe_str(u.get("username")),
@@ -953,7 +949,6 @@ class UserFormDialog:
             prefix_icon=ft.Icons.LOCK_OUTLINE,
             text_size=12, content_padding=12)
 
-        # Stack password fields on narrow, side-by-side on desktop
         pw_row = (
             ft.Column([
                 self.password_field,
@@ -979,7 +974,6 @@ class UserFormDialog:
             bgcolor="#f0f9ff", border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
-        # Profile
         self.full_name_field = ft.TextField(
             label="Full Name *",
             value=_safe_str(u.get("full_name")),
@@ -1014,7 +1008,6 @@ class UserFormDialog:
             bgcolor="#f5f3ff", border_radius=10,
             border=ft.Border.all(1, "#ddd6fe"))
 
-        # Permissions
         current_perms = _parse_permissions(
             u.get("permissions", ""),
             u.get("role", "staff"))
@@ -1065,7 +1058,6 @@ class UserFormDialog:
             bgcolor="#f0fdf4", border_radius=10,
             border=ft.Border.all(1, "#bbf7d0"))
 
-        # Body — expand on narrow, fixed size on desktop
         body = ft.Container(
             content=ft.Column([
                 credentials_section,
@@ -1254,12 +1246,11 @@ class UserFormDialog:
         self.db._save_df(self.db.users, "users.csv")
 
     # -----------------------------------------------------------------------------
-    # 18.2.5 — _update_existing  (PATCH 18.1.D: prefer db.update_user)
+    # 18.2.5 — _update_existing
     # -----------------------------------------------------------------------------
     def _update_existing(self, data):
         uid = _safe_str(self.user.get("id"))
 
-        # ---- PATCH 18.1.D: prefer DB accessor ----
         if hasattr(self.db, "update_user"):
             try:
                 self.db.update_user(uid, **data)
@@ -1296,7 +1287,6 @@ class UserFormDialog:
 
     # -----------------------------------------------------------------------------
     # 18.2.6 — show / close / _snack / _safe_update
-    #   PATCH 18.1.C: SnackBar via show_dialog (Flet 1.0 web-safe)
     # -----------------------------------------------------------------------------
     def show(self):
         try:
@@ -1311,14 +1301,12 @@ class UserFormDialog:
             pass
 
     def _snack(self, message, color=ft.Colors.GREEN_600):
-        # PATCH 18.1.C: Flet 1.0 deprecated `page.snack_bar`
         try:
             self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(message), bgcolor=color))
             return
         except Exception:
             pass
-        # Fallback for very old Flet builds
         try:
             self.page_ref.snack_bar = ft.SnackBar(
                 content=ft.Text(message), bgcolor=color)
