@@ -1,5 +1,5 @@
 # =================================================================================
-# SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED + CLOUD-READY
+# SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED + CLOUD-READY + MOBILE-RESPONSIVE
 # =================================================================================
 # Purpose: Backup management — Create, Restore, Delete, Import, Refresh, Download.
 #
@@ -11,6 +11,15 @@
 #   • NEW (cloud): Download button in Actions column
 #   • NEW (cloud): Cloud-mode warning banner
 #   • NEW (cloud): FilePicker registration is idempotent
+#
+# PATCHES APPLIED (v1.2 — MOBILE-RESPONSIVE):
+#   20.2.A — setup_ui()              : responsive header, stacked actions, 
+#                                      card-list container
+#   20.2.B — _display_backups()      : branches to _render_mobile_backups()
+#   20.2.C — _render_mobile_backups(): NEW — card layout with 
+#                                      download/restore/delete
+#   20.2.D — on_resize()             : NEW — re-render when viewport crosses 
+#                                      700px
 # =================================================================================
 
 import os
@@ -28,6 +37,10 @@ try:
 except ImportError:
     def send_file_to_user(page, path, label="Download"):
         return None
+
+
+# Mobile breakpoint — viewport width below this uses card layouts
+MOBILE_BREAKPOINT = 700
 
 
 # =================================================================================
@@ -50,10 +63,12 @@ class BackupView(ft.Column):
 
         # UI state
         self.table = None
+        self.mobile_list = None
         self.backup_count_label = None
         self.folder_path_label = None
         self.status_label = None
         self.backup_files = []
+        self._mobile_mode = False
 
         # File picker (Flet 1.0)
         self.file_picker = ft.FilePicker()
@@ -72,6 +87,16 @@ class BackupView(ft.Column):
         except Exception as e:
             print(f"[BACKUP] refresh FAILED: {e}")
             traceback.print_exc()
+
+    # -----------------------------------------------------------------------------
+    # 20.1.1b — _is_narrow
+    # -----------------------------------------------------------------------------
+    def _is_narrow(self):
+        """True when viewport width < MOBILE_BREAKPOINT."""
+        try:
+            return (self.page_ref.width or 1200) < MOBILE_BREAKPOINT
+        except Exception:
+            return False
 
     # -----------------------------------------------------------------------------
     # 20.1.2 — _build_error_ui
@@ -105,7 +130,7 @@ class BackupView(ft.Column):
         return d
 
     def _legacy_backup_dir(self):
-        """Old location created by _ensure_dirs() — may hold leftover backups."""
+        """Old location created by _ensure_dirs() — may hold leftovers."""
         return self.db.data_dir.parent / "backups"
 
     def _scan_all_dirs(self):
@@ -119,7 +144,8 @@ class BackupView(ft.Column):
 
         try:
             d2 = self._legacy_backup_dir()
-            if d2.exists() and d2.resolve() != self._backup_dir().resolve():
+            if d2.exists() and \
+                    d2.resolve() != self._backup_dir().resolve():
                 dirs.append(d2)
         except Exception:
             pass
@@ -127,22 +153,31 @@ class BackupView(ft.Column):
         return dirs
 
     # =============================================================================
-    # 20.1.4 — setup_ui
+    # 20.1.4 — setup_ui  (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
+        narrow = self._is_narrow()
+        self._mobile_mode = narrow
+
         # ---- Header ----
         header = ft.Container(
             content=ft.Row([
-                ft.Text("💾", size=26),
+                ft.Text("💾", size=22 if narrow else 26),
                 ft.Column([
-                    ft.Text("Backup Management", size=16,
+                    ft.Text("Backup Management",
+                            size=14 if narrow else 16,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.WHITE),
-                    ft.Text("Create, restore and manage database backups",
-                            size=10, color=ft.Colors.BLUE_100),
+                    ft.Text("Create, restore and manage backups",
+                            size=9 if narrow else 10,
+                            color=ft.Colors.BLUE_100,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
                 ], spacing=2, expand=True),
-            ], spacing=12),
-            padding=ft.Padding.symmetric(horizontal=22, vertical=14),
+            ], spacing=8 if narrow else 12),
+            padding=ft.Padding.symmetric(
+                horizontal=12 if narrow else 22,
+                vertical=10 if narrow else 14),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -152,38 +187,49 @@ class BackupView(ft.Column):
         # ---- Cloud info banner ----
         cloud_note = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.CLOUD, size=18, color="#d97706"),
+                ft.Icon(ft.Icons.CLOUD, size=16 if narrow else 18,
+                        color="#d97706"),
                 ft.Column([
                     ft.Text("Cloud storage note",
                             size=10, weight=ft.FontWeight.BOLD,
                             color="#92400e"),
                     ft.Text(
-                        "Backups are saved on the server. Use the "
-                        "⬇️ Download button to save a copy to your PC. "
-                        "Without a Railway Volume, server backups "
-                        "are cleared when the app restarts.",
-                        size=10, color="#92400e"),
+                        ("Use ⬇️ to save to your PC. Backups clear on "
+                         "restart without a Volume.")
+                        if narrow else
+                        ("Backups are saved on the server. Use the "
+                         "⬇️ Download button to save a copy to your PC. "
+                         "Without a Railway Volume, server backups "
+                         "are cleared when the app restarts."),
+                        size=9 if narrow else 10,
+                        color="#92400e"),
                 ], spacing=2, expand=True),
-            ], spacing=10),
-            padding=12, bgcolor="#fef3c7",
+            ], spacing=8 if narrow else 10),
+            padding=10 if narrow else 12,
+            bgcolor="#fef3c7",
             border_radius=10,
             border=ft.Border.all(1, "#fcd34d"))
 
         # ---- Folder path banner ----
         self.folder_path_label = ft.Text(
-            "", size=11, color="#1e40af", italic=True, selectable=True)
+            "", size=10 if narrow else 11, color="#1e40af",
+            italic=True, selectable=True, max_lines=2,
+            overflow=ft.TextOverflow.ELLIPSIS)
 
         folder_banner = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.FOLDER_OPEN, size=18, color="#1e40af"),
+                ft.Icon(ft.Icons.FOLDER_OPEN, size=16 if narrow else 18,
+                        color="#1e40af"),
                 ft.Column([
-                    ft.Text("Backup folder location",
-                            size=10, weight=ft.FontWeight.BOLD,
+                    ft.Text("Backup folder",
+                            size=9 if narrow else 10,
+                            weight=ft.FontWeight.BOLD,
                             color=ft.Colors.GREY_700),
                     self.folder_path_label,
                 ], spacing=2, expand=True),
-            ], spacing=10),
-            padding=12, bgcolor="#f0f9ff",
+            ], spacing=8 if narrow else 10),
+            padding=10 if narrow else 12,
+            bgcolor="#f0f9ff",
             border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
@@ -191,55 +237,70 @@ class BackupView(ft.Column):
         def _action_btn(label, icon, color, handler):
             return ft.Button(
                 content=ft.Row([
-                    ft.Icon(icon, size=18, color=ft.Colors.WHITE),
-                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
+                    ft.Icon(icon, size=16 if narrow else 18,
                             color=ft.Colors.WHITE),
-                ], spacing=8, tight=True),
-                on_click=handler, height=46, bgcolor=color)
+                    ft.Text(label, size=11 if narrow else 12,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE),
+                ], spacing=6, tight=True,
+                   alignment=ft.MainAxisAlignment.CENTER),
+                on_click=handler,
+                height=44 if narrow else 46,
+                bgcolor=color,
+                expand=narrow)
 
-        actions_row = ft.Row([
-            _action_btn("Create New Backup", ft.Icons.SAVE, "#059669",
-                        self.create_backup),
-            _action_btn("Refresh List", ft.Icons.REFRESH, "#2563eb",
-                        self.refresh),
-            _action_btn("Show Folder Path", ft.Icons.FOLDER_OPEN, "#7c3aed",
-                        self.open_folder),
-        ], spacing=10, wrap=True)
+        if narrow:
+            actions_block = ft.Column([
+                _action_btn("Create New Backup", ft.Icons.SAVE,
+                            "#059669", self.create_backup),
+                ft.Row([
+                    _action_btn("Refresh", ft.Icons.REFRESH,
+                                "#2563eb", self.refresh),
+                    _action_btn("Folder", ft.Icons.FOLDER_OPEN,
+                                "#7c3aed", self.open_folder),
+                ], spacing=8),
+            ], spacing=8)
+        else:
+            actions_block = ft.Row([
+                _action_btn("Create New Backup", ft.Icons.SAVE,
+                            "#059669", self.create_backup),
+                _action_btn("Refresh List", ft.Icons.REFRESH,
+                            "#2563eb", self.refresh),
+                _action_btn("Show Folder Path", ft.Icons.FOLDER_OPEN,
+                            "#7c3aed", self.open_folder),
+            ], spacing=10, wrap=True)
 
-        # ---- Backup table ----
+        # ---- Desktop table ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("#", size=11,
+                ft.DataColumn(ft.Text(h, size=11,
                                       weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Date", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("File Name", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Size", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Status", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Location", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Actions", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
+                                      color=ft.Colors.WHITE))
+                for h in ["#", "Date", "File Name", "Size", "Status",
+                          "Location", "Actions"]
             ],
             rows=[],
             heading_row_color="#1e293b",
-            column_spacing=14,
+            column_spacing=12,
             data_row_min_height=44,
             data_row_max_height=70)
 
-        self.backup_count_label = ft.Text("Total: 0 backups", size=11,
-                                          weight=ft.FontWeight.BOLD,
-                                          color="#1e40af")
+        # ---- Mobile card list ----
+        self.mobile_list = ft.Column(spacing=8)
+
+        if narrow:
+            table_body = ft.Container(content=self.mobile_list, padding=4)
+        else:
+            table_body = ft.Container(
+                content=ft.ListView([self.table],
+                                    expand=True, auto_scroll=False),
+                bgcolor=ft.Colors.WHITE, border_radius=10,
+                border=ft.Border.all(1, "#e2e8f0"),
+                padding=6, height=420)
+
+        self.backup_count_label = ft.Text(
+            "Total: 0 backups", size=11,
+            weight=ft.FontWeight.BOLD, color="#1e40af")
 
         table_card = ft.Container(
             content=ft.Column([
@@ -250,14 +311,10 @@ class BackupView(ft.Column):
                     ft.Container(expand=True),
                     self.backup_count_label,
                 ], spacing=6),
-                ft.Container(
-                    content=ft.ListView([self.table], expand=True,
-                                        auto_scroll=False),
-                    bgcolor=ft.Colors.WHITE, border_radius=10,
-                    border=ft.Border.all(1, "#e2e8f0"),
-                    padding=6, height=380),
+                table_body,
             ], spacing=8),
-            padding=12, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=10 if narrow else 12,
+            bgcolor=ft.Colors.WHITE, border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
         # ---- Status label ----
@@ -268,7 +325,7 @@ class BackupView(ft.Column):
             header,
             cloud_note,
             folder_banner,
-            actions_row,
+            actions_block,
             table_card,
             self.status_label,
         ]
@@ -299,6 +356,25 @@ class BackupView(ft.Column):
             print(f"[BACKUP] file picker registration failed: {ex}")
 
     # =============================================================================
+    # 20.1.5b — on_resize  (NEW — re-render when viewport crosses breakpoint)
+    # =============================================================================
+    def on_resize(self, e=None):
+        """Re-evaluate layout when viewport changes."""
+        try:
+            new_narrow = self._is_narrow()
+            if new_narrow != self._mobile_mode:
+                print(f"[BACKUP] viewport changed → "
+                      f"{'mobile' if new_narrow else 'desktop'}")
+                self.controls.clear()
+                self.setup_ui()
+                try:
+                    self.refresh()
+                except Exception as ex:
+                    print(f"[BACKUP] refresh after resize failed: {ex}")
+        except Exception as ex:
+            print(f"[BACKUP] on_resize error: {ex}")
+
+    # =============================================================================
     # 20.1.6 — refresh (scan ALL known backup folders)
     # =============================================================================
     def refresh(self, e=None):
@@ -316,7 +392,8 @@ class BackupView(ft.Column):
                 if not self.db.backup_history.empty:
                     history_names = {
                         Path(str(h)).name
-                        for h in self.db.backup_history["backup_file"].tolist()
+                        for h in self.db.backup_history[
+                            "backup_file"].tolist()
                     }
             except Exception as ex:
                 print(f"[BACKUP] history parse error: {ex}")
@@ -331,7 +408,8 @@ class BackupView(ft.Column):
                         self.backup_files.append({
                             "file_path": str(file),
                             "file_name": file.name,
-                            "file_date": datetime.fromtimestamp(stat.st_mtime),
+                            "file_date": datetime.fromtimestamp(
+                                stat.st_mtime),
                             "file_size": stat.st_size,
                             "folder": str(folder),
                             "in_history": file.name in history_names,
@@ -371,7 +449,7 @@ class BackupView(ft.Column):
                               ft.Colors.RED_500)
 
     # =============================================================================
-    # 20.1.7 — _display_backups  (UPDATED: added Download button)
+    # 20.1.7 — _display_backups  (branches to mobile renderer)
     # =============================================================================
     def _display_backups(self):
         self.table.rows.clear()
@@ -435,8 +513,108 @@ class BackupView(ft.Column):
             self.backup_count_label.value = (
                 f"Total: {len(self.backup_files)} backups")
 
+        # Branch to mobile renderer
+        if self._mobile_mode:
+            try:
+                self._render_mobile_backups()
+            except Exception as ex:
+                print(f"[BACKUP] mobile render failed: {ex}")
+
     # =============================================================================
-    # 20.1.7b — _download_backup  (NEW: cloud-friendly download)
+    # 20.1.7b — _render_mobile_backups  (NEW — card layout)
+    # =============================================================================
+    def _render_mobile_backups(self):
+        """Render backup list as cards for narrow screens."""
+        if self.mobile_list is None:
+            return
+        self.mobile_list.controls.clear()
+
+        for i, backup in enumerate(self.backup_files):
+            date_str = backup["file_date"].strftime("%Y-%m-%d %H:%M")
+            size = backup["file_size"]
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size/1024:.1f} KB"
+            else:
+                size_str = f"{size/(1024*1024):.2f} MB"
+
+            status_color = ("#059669"
+                            if backup["status"] == "Registered"
+                            else "#d97706")
+
+            def _download(e, b=backup):
+                self._download_backup(b)
+
+            def _restore(e, b=backup):
+                self._confirm_restore(b)
+
+            def _delete(e, b=backup):
+                self._confirm_delete(b)
+
+            self.mobile_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        # Row 1: index + file name + status
+                        ft.Row([
+                            ft.Container(
+                                content=ft.Text(
+                                    f"#{i+1}", size=9,
+                                    color=ft.Colors.WHITE,
+                                    weight=ft.FontWeight.BOLD),
+                                padding=ft.Padding.symmetric(
+                                    horizontal=6, vertical=2),
+                                bgcolor="#1e40af",
+                                border_radius=6),
+                            ft.Text(backup["file_name"], size=11,
+                                    weight=ft.FontWeight.BOLD,
+                                    expand=True, max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(backup["status"], size=9,
+                                    color=status_color,
+                                    weight=ft.FontWeight.BOLD),
+                        ], spacing=6),
+
+                        # Row 2: date + size + folder
+                        ft.Row([
+                            ft.Text(f"📅 {date_str}", size=9,
+                                    color=ft.Colors.GREY_600),
+                            ft.Text(f"💾 {size_str}", size=9,
+                                    color=ft.Colors.GREY_600),
+                            ft.Text(
+                                f"📁 {Path(backup['folder']).name}",
+                                size=9, color=ft.Colors.GREY_600),
+                        ], spacing=8, wrap=True),
+
+                        # Row 3: actions
+                        ft.Row([
+                            ft.IconButton(
+                                ft.Icons.DOWNLOAD, icon_size=20,
+                                icon_color="#2563eb",
+                                tooltip="Download",
+                                on_click=_download),
+                            ft.IconButton(
+                                ft.Icons.RESTORE, icon_size=20,
+                                icon_color="#d97706",
+                                tooltip="Restore",
+                                on_click=_restore),
+                            ft.IconButton(
+                                ft.Icons.DELETE, icon_size=20,
+                                icon_color="#dc2626",
+                                tooltip="Delete",
+                                on_click=_delete),
+                        ], spacing=0,
+                           alignment=ft.MainAxisAlignment.END),
+                    ], spacing=6),
+                    padding=12,
+                    bgcolor=ft.Colors.WHITE,
+                    border_radius=10,
+                    border=ft.Border.all(1, "#e2e8f0"),
+                )
+            )
+
+    # =============================================================================
+    # 20.1.7c — _download_backup  (cloud-friendly download)
     # =============================================================================
     def _download_backup(self, backup):
         """Copy the backup to /static and open the browser download URL."""
@@ -447,7 +625,8 @@ class BackupView(ft.Column):
                             ft.Colors.RED_500)
                 return
 
-            url = send_file_to_user(self.page_ref, path, backup["file_name"])
+            url = send_file_to_user(
+                self.page_ref, path, backup["file_name"])
             if url:
                 try:
                     self.page_ref.launch_url(url)
@@ -493,12 +672,11 @@ class BackupView(ft.Column):
 
                 self.refresh()
 
-                # Confirm with path shown
                 self._snack(
                     f"✅ Backup created: {Path(backup_path).name}",
                     ft.Colors.GREEN_700)
 
-                # Show a second dialog with the full path so user knows
+                # Show full path so user knows where it went
                 info = ft.AlertDialog(
                     modal=True,
                     title=ft.Row([
@@ -720,9 +898,12 @@ class BackupView(ft.Column):
                         f"This cannot be undone.",
                         size=12),
                 ft.Container(
-                    content=ft.Text(backup["file_path"], size=10,
-                                    selectable=True,
-                                    color=ft.Colors.GREY_600),
+                    content=ft.Text(
+                        backup["file_path"], size=10,
+                        selectable=True,
+                        color=ft.Colors.GREY_600,
+                        max_lines=3,
+                        overflow=ft.TextOverflow.ELLIPSIS),
                     padding=6, bgcolor="#f1f5f9", border_radius=4),
             ], spacing=6, tight=True),
             actions=[
@@ -742,7 +923,7 @@ class BackupView(ft.Column):
         self.page_ref.show_dialog(dialog)
 
     # =============================================================================
-    # 20.1.11 — open_folder   (UPDATED: web-friendly)
+    # 20.1.11 — open_folder  (web-friendly)
     # =============================================================================
     def open_folder(self, e=None):
         """Show the folder path in a dialog (web-safe)."""
@@ -799,12 +980,17 @@ class BackupView(ft.Column):
 
     def _snack(self, message, color=ft.Colors.GREEN_700):
         try:
-            self.page_ref.snack_bar = ft.SnackBar(
-                content=ft.Text(message), bgcolor=color)
-            self.page_ref.snack_bar.open = True
-            self.page_ref.update()
+            self.page_ref.show_dialog(
+                ft.SnackBar(content=ft.Text(message), bgcolor=color))
         except Exception:
-            pass
+            # Fallback for old Flet builds
+            try:
+                self.page_ref.snack_bar = ft.SnackBar(
+                    content=ft.Text(message), bgcolor=color)
+                self.page_ref.snack_bar.open = True
+                self.page_ref.update()
+            except Exception:
+                pass
 
     def _safe_update(self):
         try:
@@ -820,5 +1006,5 @@ BackupTab = BackupView
 
 
 # =================================================================================
-# SECTION 20 END
+# SECTION 20 END — BACKUP TAB (FLET 1.0 — MOBILE-RESPONSIVE)
 # =================================================================================
