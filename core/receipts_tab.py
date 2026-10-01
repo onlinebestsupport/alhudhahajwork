@@ -1,22 +1,15 @@
 # =================================================================================
 # SECTION 15 (FLET 1.0.0 VERSION) — RECEIPTS TAB
 # =================================================================================
-# PATCHES APPLIED (v1.1):
-#   15.1.A — refresh()         : force DB reload before reading (fresh cache)
-#   15.1.B — display_receipts(): Pkg-Pending now always computed from ALL
-#                                receipts (was incorrectly using filtered
-#                                subset → fake larger pending on date filter)
-#   15.1.C — display_receipts(): action buttons capture receipt ID, re-fetch
-#                                latest dict before dispatch (no stale row)
-#   15.1.D — delete_receipt()  : prefer db.delete_receipt(); warn user about
-#                                linked payment (payment is NOT auto-deleted)
-#
-# CASCADE NOTE:
-#   Receipts sit *downstream* of payments. Deleting a receipt here does NOT
-#   auto-delete the parent payment — that would surprise the user in the
-#   Payments tab. Instead we surface a warning. Auto-created payments (from
-#   InvoiceModifyDialog cascade) are tagged 'Auto (invoice status)' and can
-#   be cleaned up in the Payments tab.
+# v1.2 — Mobile-Responsive
+#   • Stat cards 2-per-row on mobile, 5-per-row on desktop
+#   • Toolbar + filter bar use ResponsiveRow
+#   • Table wrapped in horizontal scroll
+#   • All original patches preserved:
+#       15.1.A — fresh DB reload
+#       15.1.B — lifetime Pkg-Pending (uses ALL receipts, not filter)
+#       15.1.C — action buttons re-fetch fresh dict on click
+#       15.1.D — delete warns about linked payment
 # =================================================================================
 
 import flet as ft
@@ -44,10 +37,10 @@ class ReceiptsTab:
         self.current_user = current_user
 
         self.receipts = []
-        self.travelers = {}          # id -> {name, passport, batch_id}
-        self.payments = {}           # id -> payment
-        self.invoices = {}           # id -> invoice
-        self.batches = {}            # id -> batch
+        self.travelers = {}
+        self.payments = {}
+        self.invoices = {}
+        self.batches = {}
 
         self.stat_labels = {}
         self.traveler_filter = None
@@ -65,119 +58,133 @@ class ReceiptsTab:
         return self.root
 
     # =============================================================================
-    # 15.1.1 — setup_ui
+    # 15.1.1 — setup_ui  (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
         # ---- TOOLBAR ----
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
-                                weight=ft.FontWeight.BOLD),
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
                 on_click=handler, height=38,
-                bgcolor=color, color=ft.Colors.WHITE,
+                bgcolor=color,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
         toolbar = ft.Row(
-            controls=[
-                _tb("🔄 Refresh", "#3498db", self.refresh),
-            ], spacing=8, wrap=True,
+            controls=[_tb("🔄 Refresh", "#3498db", self.refresh)],
+            spacing=8, wrap=True,
         )
 
         # ---- FILTER BAR ----
         self.traveler_filter = ft.Dropdown(
-            label="Traveler", options=[
-                ft.dropdown.Option(key="", text="All Travelers")],
-            value="", width=240, height=48, text_size=12)
+            label="Traveler",
+            options=[ft.dropdown.Option(key="", text="All Travelers")],
+            value="", height=48, text_size=11)
         self.traveler_filter.on_change = self.apply_filters
 
         self.search_input = ft.TextField(
             hint_text="🔍 Search receipt no, amount, or invoice...",
-            width=280, height=48,
-            content_padding=ft.Padding.symmetric(horizontal=12, vertical=8))
+            height=48, text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
         self.search_input.on_change = self.apply_filters
 
         self.date_from = ft.TextField(
-            label="From (YYYY-MM-DD)",
+            label="From",
             value=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
-            width=170, height=48, text_size=12)
+            height=48, text_size=11)
         self.date_from.on_change = self.apply_filters
 
         self.date_to = ft.TextField(
-            label="To (YYYY-MM-DD)",
+            label="To",
             value=datetime.now().strftime("%Y-%m-%d"),
-            width=170, height=48, text_size=12)
+            height=48, text_size=11)
         self.date_to.on_change = self.apply_filters
 
-        filter_bar = ft.Row(
+        filter_bar = ft.ResponsiveRow(
             controls=[
-                self.traveler_filter,
-                self.search_input,
-                self.date_from,
-                self.date_to,
-            ], spacing=10, wrap=True)
+                ft.Container(content=self.traveler_filter,
+                             col={"xs": 12, "sm": 6, "md": 3}),
+                ft.Container(content=self.search_input,
+                             col={"xs": 12, "sm": 6, "md": 3}),
+                ft.Container(content=self.date_from,
+                             col={"xs": 6, "sm": 6, "md": 3}),
+                ft.Container(content=self.date_to,
+                             col={"xs": 6, "sm": 6, "md": 3}),
+            ],
+            spacing=8, run_spacing=8,
+        )
 
         # ---- STAT CARDS ----
         stat_configs = [
-            ("total_receipts",  "📊 Total Receipts",  "#3498db"),
-            ("total_amount",    "💰 Total Amount",    "#27ae60"),
-            ("today",           "📅 Today's Receipts", "#f39c12"),
-            ("package_pending", "📦 Package Pending", "#e74c3c"),
-            ("invoice_pending", "📄 Invoice Pending", "#e67e22"),
+            ("total_receipts",  "📊 Receipts",   "#3498db"),
+            ("total_amount",    "💰 Amount",     "#27ae60"),
+            ("today",           "📅 Today",      "#f39c12"),
+            ("package_pending", "📦 Pkg Pend",   "#e74c3c"),
+            ("invoice_pending", "📄 Inv Pend",   "#e67e22"),
         ]
 
         stat_cards = []
         for key, label, color in stat_configs:
-            value_label = ft.Text("0", size=15,
+            value_label = ft.Text("0", size=14,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stat_labels[key] = value_label
             card = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(label, size=10, color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD),
+                        ft.Text(label, size=9, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                no_wrap=False, max_lines=2),
                         value_label,
                     ],
                     spacing=2,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=10,
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment.TOP_CENTER,
-                    end=ft.Alignment.BOTTOM_CENTER,
-                    colors=[color, self._darken(color)]),
-                border_radius=10, expand=True, height=72,
+                padding=8,
+                bgcolor=color,
+                border_radius=10,
+                height=64,
             )
             stat_cards.append(card)
 
-        stats_row = ft.Row(controls=stat_cards, spacing=8)
+        stats_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=c,
+                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                for c in stat_cards
+            ],
+            spacing=6, run_spacing=6,
+        )
 
         self.filtered_count_label = ft.Text(
-            "🔍 Showing: 0 receipts", size=12,
+            "🔍 Showing: 0 receipts", size=11,
             weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_800)
 
         # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Receipt No")),
-                ft.DataColumn(ft.Text("Date")),
-                ft.DataColumn(ft.Text("Traveler")),
-                ft.DataColumn(ft.Text("Passport")),
-                ft.DataColumn(ft.Text("Method")),
-                ft.DataColumn(ft.Text("Amount")),
-                ft.DataColumn(ft.Text("Invoice No")),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Pkg Pending")),
-                ft.DataColumn(ft.Text("Inv Pending")),
-                ft.DataColumn(ft.Text("Actions")),
+                ft.DataColumn(ft.Text("Receipt", size=11)),
+                ft.DataColumn(ft.Text("Date", size=11)),
+                ft.DataColumn(ft.Text("Traveler", size=11)),
+                ft.DataColumn(ft.Text("Passport", size=11)),
+                ft.DataColumn(ft.Text("Method", size=11)),
+                ft.DataColumn(ft.Text("Amount", size=11)),
+                ft.DataColumn(ft.Text("Invoice", size=11)),
+                ft.DataColumn(ft.Text("Status", size=11)),
+                ft.DataColumn(ft.Text("Pkg Pend", size=11)),
+                ft.DataColumn(ft.Text("Inv Pend", size=11)),
+                ft.DataColumn(ft.Text("Actions", size=11)),
             ],
-            rows=[], column_spacing=12,
+            rows=[], column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=42,
-            data_row_min_height=48,
-            data_row_max_height=60,
+            heading_row_height=40,
+            data_row_min_height=44,
+            data_row_max_height=58,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
             vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
@@ -188,24 +195,25 @@ class ReceiptsTab:
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Container(content=toolbar, padding=10,
+                    ft.Container(content=toolbar, padding=8,
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
-                    ft.Container(content=filter_bar, padding=10,
+                    ft.Container(content=filter_bar, padding=8,
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     stats_row,
                     self.filtered_count_label,
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Row(
+                            [self.table],
+                            scroll=ft.ScrollMode.ADAPTIVE,
+                        ),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10, padding=10),
                 ],
-                spacing=12, scroll=ft.ScrollMode.AUTO,
+                spacing=10, scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15, bgcolor="#f0f2f5", expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
     def _darken(self, color):
@@ -233,14 +241,10 @@ class ReceiptsTab:
             return d
 
     # =============================================================================
-    # 15.1.2 — refresh  (PATCH 15.1.A: force DB reload before reading)
+    # 15.1.2 — refresh  (PATCH 15.1.A preserved)
     # =============================================================================
     def refresh(self, e=None):
         try:
-            # ---- PATCH 15.1.A: fresh cache reload ----
-            # Payments tab / Invoices tab / Batches tab may have written
-            # to disk since our last read. Re-hydrate so get_* returns
-            # current data, not a stale in-memory snapshot.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -265,12 +269,11 @@ class ReceiptsTab:
             self.invoices = {i['id']: i for i in self.db.get_invoices()}
             self.batches = {b['id']: b for b in self.db.get_batches()}
 
-            # Traveler filter options
             opts = [ft.dropdown.Option(key="", text="All Travelers")]
             for tid, info in self.travelers.items():
                 label = (f"{info['name']} ({info['passport']})"
                          if info['passport'] else info['name'])
-                opts.append(ft.dropdown.Option(key=tid, text=label))
+                opts.append(ft.dropdown.Option(key=tid, text=label[:60]))
             self.traveler_filter.options = opts
 
             self.display_receipts()
@@ -283,22 +286,16 @@ class ReceiptsTab:
 
     # =============================================================================
     # 15.1.3 — display_receipts
-    #   PATCH 15.1.B: traveler_paid computed from ALL receipts (lifetime),
-    #                 not just the currently-filtered subset
+    #   PATCH 15.1.B: traveler_paid computed from ALL receipts (lifetime)
     #   PATCH 15.1.C: action buttons capture receipt ID, re-fetch on click
     # =============================================================================
     def display_receipts(self, receipts=None):
         if receipts is None:
             receipts = self.receipts
 
-        # ----------------------------------------------------------------
-        # PATCH 15.1.B — lifetime paid totals from ALL receipts.
-        # Filtering by date previously made the Pkg Pending column
-        # wildly inaccurate (e.g. show ₹2,00,000 pending when the
-        # traveler had actually paid in full months earlier).
-        # ----------------------------------------------------------------
+        # PATCH 15.1.B — lifetime paid totals from ALL receipts
         traveler_paid = {}
-        for r in self.receipts:            # ← NOT the filtered list
+        for r in self.receipts:
             p = self.payments.get(r.get('payment_id', ''), {})
             tid = p.get('traveler_id', '')
             if tid:
@@ -343,11 +340,12 @@ class ReceiptsTab:
 
             if batch_price > 0:
                 if pkg_pending <= 0:
-                    pkg_txt = "✅ Fully Paid"
+                    pkg_txt = "✅ Paid"
                     pkg_color = "#27ae60"
                 else:
                     pkg_txt = f"₹{pkg_pending:,.0f}"
-                    pkg_color = ("#e67e22" if pkg_pending < batch_price * 0.5
+                    pkg_color = ("#e67e22"
+                                 if pkg_pending < batch_price * 0.5
                                  else "#e74c3c")
             else:
                 pkg_txt = "N/A"
@@ -363,10 +361,7 @@ class ReceiptsTab:
                 inv_txt = "N/A"
                 inv_color = "#95a5a6"
 
-            # ------------------------------------------------------------
-            # PATCH 15.1.C — capture receipt ID, re-fetch on click so a
-            # refresh between render and click never passes a stale dict.
-            # ------------------------------------------------------------
+            # PATCH 15.1.C — capture receipt ID, re-fetch on click
             r_id = r.get('id')
 
             def _make_actions(_rid=r_id):
@@ -390,22 +385,22 @@ class ReceiptsTab:
                     controls=[
                         ft.IconButton(
                             icon=ft.Icons.VISIBILITY,
-                            icon_color="#3498db", icon_size=18,
+                            icon_color="#3498db", icon_size=16,
                             tooltip="View",
                             on_click=_wrap(self.view_receipt_details)),
                         ft.IconButton(
                             icon=ft.Icons.PICTURE_AS_PDF,
-                            icon_color="#e74c3c", icon_size=18,
-                            tooltip="Export PDF",
+                            icon_color="#e74c3c", icon_size=16,
+                            tooltip="PDF",
                             on_click=_wrap(self.export_single_receipt_pdf)),
                         ft.IconButton(
                             icon=ft.Icons.PRINT,
-                            icon_color="#9b59b6", icon_size=18,
+                            icon_color="#9b59b6", icon_size=16,
                             tooltip="Print",
                             on_click=_wrap(self.print_single_receipt)),
                         ft.IconButton(
                             icon=ft.Icons.DELETE,
-                            icon_color="#95a5a6", icon_size=18,
+                            icon_color="#95a5a6", icon_size=16,
                             tooltip="Delete",
                             on_click=_wrap(self.delete_receipt)),
                     ], spacing=0,
@@ -414,16 +409,16 @@ class ReceiptsTab:
             self.table.rows.append(
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(
-                        self.safe_str(r.get('receipt_no', '')),
-                        size=11, weight=ft.FontWeight.BOLD)),
+                        self.safe_str(r.get('receipt_no', ''))[:16],
+                        size=10, weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(tname, size=11)),
+                    ft.DataCell(ft.Text(tname[:18], size=10)),
                     ft.DataCell(ft.Text(tpassport, size=10)),
-                    ft.DataCell(ft.Text(method, size=10)),
+                    ft.DataCell(ft.Text(method[:12], size=10)),
                     ft.DataCell(ft.Text(
-                        f"₹{amount:,.2f}", size=11,
+                        f"₹{amount:,.0f}", size=10,
                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(inv_no, size=10)),
+                    ft.DataCell(ft.Text(inv_no[:14], size=10)),
                     ft.DataCell(ft.Text(status, size=10,
                                         color=status_color,
                                         weight=ft.FontWeight.BOLD)),
@@ -450,7 +445,6 @@ class ReceiptsTab:
             self._f(r.get('amount', 0)) for r in self.receipts
             if str(r.get('receipt_date', '')).startswith(today))
 
-        # Package pending — always lifetime (uses self.receipts)
         traveler_paid = {}
         for r in self.receipts:
             p = self.payments.get(r.get('payment_id', ''), {})
@@ -475,14 +469,24 @@ class ReceiptsTab:
                 inv_pending_total += self._f(
                     inv.get('rounded_total', inv.get('total_amount', 0)))
 
+        def _short(v):
+            try:
+                n = float(v)
+            except Exception:
+                return "₹0"
+            if n >= 10000000:
+                return f"₹{n/10000000:.2f}Cr"
+            if n >= 100000:
+                return f"₹{n/100000:.2f}L"
+            if n >= 1000:
+                return f"₹{n/1000:.1f}K"
+            return f"₹{n:,.0f}"
+
         self.stat_labels['total_receipts'].value = str(total)
-        self.stat_labels['total_amount'].value = format_currency_indian(
-            total_amount)
-        self.stat_labels['today'].value = format_currency_indian(today_amount)
-        self.stat_labels['package_pending'].value = format_currency_indian(
-            pkg_pending_total)
-        self.stat_labels['invoice_pending'].value = format_currency_indian(
-            inv_pending_total)
+        self.stat_labels['total_amount'].value = _short(total_amount)
+        self.stat_labels['today'].value = _short(today_amount)
+        self.stat_labels['package_pending'].value = _short(pkg_pending_total)
+        self.stat_labels['invoice_pending'].value = _short(inv_pending_total)
 
     # =============================================================================
     # 15.1.5 — Filter
@@ -552,7 +556,6 @@ class ReceiptsTab:
             batch_price = self._f(b.get('price', 0))
             batch_name = b.get('batch_name', 'No Batch')
 
-        # Lifetime paid from ALL receipts
         total_paid = 0
         for r in self.receipts:
             pr = self.payments.get(r.get('payment_id', ''), {})
@@ -611,11 +614,11 @@ class ReceiptsTab:
 
         dialog = ft.AlertDialog(
             title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(
-                content=ft.Text(details, size=12,
+                content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
-                width=620, height=480, padding=10),
+                width=520, height=460, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -748,10 +751,7 @@ class ReceiptsTab:
 
     # =============================================================================
     # 15.1.9 — Delete
-    #   PATCH 15.1.D — prefer db.delete_receipt(); surface linked-payment
-    #                  warning so the user can clean up the Payments tab
-    #                  if needed. Receipts do NOT auto-delete their parent
-    #                  payment — that must be an explicit user action.
+    #   PATCH 15.1.D preserved
     # =============================================================================
     def delete_receipt(self, receipt):
         payment_id = receipt.get('payment_id', '')
@@ -772,7 +772,6 @@ class ReceiptsTab:
 
         def confirm(ev):
             try:
-                # PATCH 15.1.D — prefer DB method
                 if hasattr(self.db, "delete_receipt"):
                     self.db.delete_receipt(receipt['id'])
                 else:
@@ -792,8 +791,8 @@ class ReceiptsTab:
                 self._snack(f"❌ {ex}")
 
         dialog = ft.AlertDialog(
-            title=ft.Text("Delete Receipt?"),
-            content=ft.Text(warn_text),
+            title=ft.Text("Delete Receipt?", size=14),
+            content=ft.Text(warn_text, size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
