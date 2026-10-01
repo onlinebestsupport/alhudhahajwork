@@ -1,5 +1,5 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED
+# SECTION 18 — USERS TAB (FLET 1.0) — FIXED + PERMISSION GATED + MOBILE-RESPONSIVE
 # =================================================================================
 # Fixes applied (v1.1):
 #   18.0 — Flet 1.0 makes `page` a read-only property on all controls.
@@ -15,6 +15,15 @@
 #                                     deprecated page.snack_bar attribute is
 #                                     unreliable in Flet 1.0 web mode
 #   18.1.D — _update_existing()     : prefer db.update_user() when available
+#
+# PATCHES APPLIED (v1.2 — MOBILE-RESPONSIVE):
+#   18.2.A — setup_ui()             : responsive header, stat cols xs:6, 
+#                                     wrapped toolbar, card-list container
+#   18.2.B — _render_table()        : branches to _render_mobile_cards()
+#   18.2.C — _render_mobile_cards() : NEW — card layout for narrow screens
+#   18.2.D — UserFormDialog._build(): expand on narrow, stacked password fields
+#   18.2.E — on_resize()            : NEW — re-render when viewport crosses 
+#                                     700px
 #
 # SECURITY NOTE:
 #   Passwords use unsalted SHA-256 (legacy). Migration to bcrypt/argon2
@@ -61,6 +70,9 @@ ROLE_DEFAULT_PERMISSIONS = {
 }
 
 ROLE_OPTIONS = ["super_admin", "admin", "staff", "viewer"]
+
+# Mobile breakpoint — viewport width below this uses card layouts
+MOBILE_BREAKPOINT = 700
 
 
 # =================================================================================
@@ -170,9 +182,11 @@ class UsersTab(ft.Column):
         self.spacing = 12
 
         self.table = None
+        self.mobile_list = None
         self.stats_labels = {}
         self.status_label = None
         self._ui_built = False
+        self._mobile_mode = False
 
         # 🔒 DEFENSE-IN-DEPTH — refuse to build if user lacks manage_users
         if not _user_has_permission(self.current_user, "manage_users"):
@@ -200,7 +214,18 @@ class UsersTab(ft.Column):
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
     # -----------------------------------------------------------------------------
-    # 18.1.1b — _build_access_denied_ui
+    # 18.1.1b — _is_narrow
+    # -----------------------------------------------------------------------------
+    def _is_narrow(self):
+        """True when viewport width < MOBILE_BREAKPOINT."""
+        try:
+            w = self.page_ref.width or 1200
+            return w < MOBILE_BREAKPOINT
+        except Exception:
+            return False
+
+    # -----------------------------------------------------------------------------
+    # 18.1.1c — _build_access_denied_ui
     # -----------------------------------------------------------------------------
     def _build_access_denied_ui(self):
         """Render a clean 'Access Denied' placeholder instead of the tab UI."""
@@ -256,114 +281,127 @@ class UsersTab(ft.Column):
             pass
 
     # -----------------------------------------------------------------------------
-    # 18.1.3 — setup_ui
+    # 18.1.3 — setup_ui  (MOBILE-RESPONSIVE)
     # -----------------------------------------------------------------------------
     def setup_ui(self):
-        # Header
+        narrow = self._is_narrow()
+        self._mobile_mode = narrow
+
+        # ---- Header ----
         header = ft.Container(
             content=ft.Row([
-                ft.Text("👤", size=26),
+                ft.Text("👤", size=22 if narrow else 26),
                 ft.Column([
-                    ft.Text("User Management", size=16,
+                    ft.Text("User Management",
+                            size=14 if narrow else 16,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.WHITE),
-                    ft.Text("Manage system users, roles and permissions",
-                            size=10, color=ft.Colors.BLUE_100),
+                    ft.Text("Manage users, roles and permissions",
+                            size=9 if narrow else 10,
+                            color=ft.Colors.BLUE_100,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
                 ], spacing=2, expand=True),
-            ], spacing=12),
-            padding=ft.Padding.symmetric(horizontal=22, vertical=14),
+            ], spacing=8 if narrow else 12),
+            padding=ft.Padding.symmetric(
+                horizontal=12 if narrow else 22,
+                vertical=10 if narrow else 14),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # Stats cards
+        # ---- Stats cards (responsive cols) ----
         stat_specs = [
-            ("total",  "👥", "Total Users",     "#2563eb"),
-            ("supers", "👑", "Super Admins",    "#d97706"),
-            ("admins", "🛡️", "Admins",          "#7c3aed"),
-            ("staff",  "🧑", "Staff / Viewers", "#059669"),
+            ("total",  "👥", "Total",         "#2563eb"),
+            ("supers", "👑", "Super Admins",  "#d97706"),
+            ("admins", "🛡️", "Admins",        "#7c3aed"),
+            ("staff",  "🧑", "Staff/Viewers", "#059669"),
         ]
         stat_cards = []
         for key, icon, label, color in stat_specs:
-            value = ft.Text("0", size=20, weight=ft.FontWeight.BOLD,
+            value = ft.Text("0", size=18 if narrow else 20,
+                            weight=ft.FontWeight.BOLD,
                             color=color)
             self.stats_labels[key] = value
             stat_cards.append(ft.Container(
                 content=ft.Column([
                     ft.Row([
-                        ft.Text(icon, size=16),
-                        ft.Text(label, size=11,
+                        ft.Text(icon, size=14 if narrow else 16),
+                        ft.Text(label, size=10 if narrow else 11,
                                 weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.GREY_600),
-                    ], spacing=6),
+                                color=ft.Colors.GREY_600,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                    ], spacing=4),
                     value,
-                ], spacing=4),
-                padding=12, bgcolor=ft.Colors.WHITE, border_radius=10,
+                ], spacing=2),
+                padding=10 if narrow else 12,
+                bgcolor=ft.Colors.WHITE, border_radius=10,
                 border=ft.Border.only(left=ft.BorderSide(4, color)),
-                col={"sm": 6, "md": 3}))
+                col={"xs": 6, "sm": 6, "md": 3}))
 
-        stats_row = ft.ResponsiveRow(stat_cards, spacing=10,
-                                     run_spacing=10)
+        stats_row = ft.ResponsiveRow(stat_cards, spacing=8, run_spacing=8)
 
-        # Toolbar
-        def _tb(label, icon, color, handler):
-            return ft.Button(
-                content=ft.Row([
-                    ft.Icon(icon, size=16, color=ft.Colors.WHITE),
-                    ft.Text(label, size=12, weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
-                ], spacing=6, tight=True),
-                on_click=handler, height=42, bgcolor=color)
+        # ---- Toolbar ----
+        add_btn = ft.Button(
+            content=ft.Row([
+                ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
+                ft.Text("Add User", size=12,
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.WHITE),
+            ], spacing=6, tight=True,
+               alignment=ft.MainAxisAlignment.CENTER),
+            on_click=self.open_add_dialog,
+            height=42, bgcolor="#059669",
+            expand=narrow)
 
         toolbar = ft.Container(
             content=ft.Row([
-                _tb("Add User", ft.Icons.ADD, "#059669",
-                    self.open_add_dialog),
-                ft.Container(expand=True),
+                add_btn,
+                ft.Container(expand=not narrow),
                 ft.IconButton(icon=ft.Icons.REFRESH,
                               icon_color="#2563eb",
                               tooltip="Refresh list",
                               on_click=self.refresh),
-            ], spacing=10),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+            ], spacing=8, wrap=True),
+            padding=ft.Padding.symmetric(
+                horizontal=10 if narrow else 14,
+                vertical=8 if narrow else 10),
             bgcolor=ft.Colors.WHITE, border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-        # Table
+        # ---- Desktop table ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Username", size=11,
+                ft.DataColumn(ft.Text(h, size=11,
                                       weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Full Name", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Email", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Role", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Permissions", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Created", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Last Login", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text("Actions", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
+                                      color=ft.Colors.WHITE))
+                for h in ["Username", "Full Name", "Email", "Role",
+                          "Perms", "Created", "Last Login", "Actions"]
             ],
             rows=[],
             heading_row_color="#1e293b",
-            column_spacing=14,
+            column_spacing=12,
             data_row_min_height=44,
             data_row_max_height=70)
+
+        # ---- Mobile card list ----
+        self.mobile_list = ft.Column(spacing=8)
+
+        if narrow:
+            table_body = ft.Container(
+                content=self.mobile_list,
+                padding=4,
+            )
+        else:
+            table_body = ft.Container(
+                content=ft.ListView([self.table],
+                                    expand=True, auto_scroll=False),
+                bgcolor=ft.Colors.WHITE, border_radius=10,
+                border=ft.Border.all(1, "#e2e8f0"),
+                padding=6, height=420)
 
         table_card = ft.Container(
             content=ft.Column([
@@ -373,17 +411,16 @@ class UsersTab(ft.Column):
                             weight=ft.FontWeight.BOLD,
                             color="#1e40af"),
                     ft.Container(expand=True),
-                    ft.Text("💡 Click the 🗑️ icon to delete a user",
-                            size=9, color=ft.Colors.GREY_500, italic=True),
+                    ft.Text(
+                        "💡 Tap row actions" if narrow
+                        else "💡 Click 🗑️ to delete a user",
+                        size=9, color=ft.Colors.GREY_500,
+                        italic=True),
                 ], spacing=6),
-                ft.Container(
-                    content=ft.ListView([self.table], expand=True,
-                                        auto_scroll=False),
-                    bgcolor=ft.Colors.WHITE, border_radius=10,
-                    border=ft.Border.all(1, "#e2e8f0"),
-                    padding=6, height=380),
+                table_body,
             ], spacing=8),
-            padding=12, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=10 if narrow else 12,
+            bgcolor=ft.Colors.WHITE, border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
         self.status_label = ft.Text("Ready.", size=10,
@@ -401,6 +438,27 @@ class UsersTab(ft.Column):
         return self
 
     # -----------------------------------------------------------------------------
+    # 18.1.3b — on_resize  (NEW — re-render when viewport crosses breakpoint)
+    # -----------------------------------------------------------------------------
+    def on_resize(self, e=None):
+        """Re-evaluate layout when viewport changes."""
+        try:
+            new_narrow = self._is_narrow()
+            if new_narrow != self._mobile_mode:
+                print(f"[USERS] viewport changed → "
+                      f"{'mobile' if new_narrow else 'desktop'}")
+                # Clear and rebuild
+                self.controls.clear()
+                self.stats_labels.clear()
+                self.setup_ui()
+                try:
+                    self.refresh()
+                except Exception as ex:
+                    print(f"[USERS] refresh after resize failed: {ex}")
+        except Exception as ex:
+            print(f"[USERS] on_resize error: {ex}")
+
+    # -----------------------------------------------------------------------------
     # 18.1.4 — refresh  (PATCH 18.1.A: force DB reload before reading)
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
@@ -410,9 +468,6 @@ class UsersTab(ft.Column):
 
         try:
             # ---- PATCH 18.1.A: fresh cache reload ----
-            # Another admin session on Railway might have edited users
-            # since this tab was opened. Re-hydrate so get_users() returns
-            # current data, not a stale in-memory snapshot.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -436,9 +491,6 @@ class UsersTab(ft.Column):
                 self.users.append(clean)
 
             print(f"[USERS] loaded {len(self.users)} users from DB")
-            for u in self.users[:3]:
-                print(f"[USERS] sample: username={u.get('username','?')}, "
-                      f"role={u.get('role','?')}")
 
             self._render_table()
             self._update_stats()
@@ -518,19 +570,15 @@ class UsersTab(ft.Column):
 
             is_self = (uid == self.current_user.get("id"))
 
-            # ------------------------------------------------------------
-            # PATCH 18.1.B — capture ID, re-fetch fresh row on click.
-            # Prevents acting on a stale snapshot if a refresh occurred
-            # between render and click.
-            # ------------------------------------------------------------
+            # PATCH 18.1.B — capture ID, re-fetch fresh row on click
             def _make_edit(_uid=uid):
                 def h(e):
                     fresh = next(
                         (x for x in self.users if x.get("id") == _uid), None)
                     if fresh is None:
-                        self._show_status("⚠️ User no longer exists — "
-                                          "refreshing…",
-                                          ft.Colors.ORANGE_700)
+                        self._show_status(
+                            "⚠️ User no longer exists — refreshing…",
+                            ft.Colors.ORANGE_700)
                         self.refresh()
                         return
                     self.open_edit_dialog(e, user=fresh)
@@ -541,9 +589,9 @@ class UsersTab(ft.Column):
                     fresh = next(
                         (x for x in self.users if x.get("id") == _uid), None)
                     if fresh is None:
-                        self._show_status("⚠️ User no longer exists — "
-                                          "refreshing…",
-                                          ft.Colors.ORANGE_700)
+                        self._show_status(
+                            "⚠️ User no longer exists — refreshing…",
+                            ft.Colors.ORANGE_700)
                         self.refresh()
                         return
                     self._confirm_delete(fresh)
@@ -554,12 +602,13 @@ class UsersTab(ft.Column):
                               icon_color="#2563eb",
                               tooltip="Edit user",
                               on_click=_make_edit()),
-                ft.IconButton(icon=ft.Icons.DELETE, icon_size=18,
-                              icon_color="#dc2626" if not is_self else "#cbd5e1",
-                              tooltip=("Cannot delete self"
-                                       if is_self else "Delete user"),
-                              disabled=is_self,
-                              on_click=_make_delete()),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE, icon_size=18,
+                    icon_color="#dc2626" if not is_self else "#cbd5e1",
+                    tooltip=("Cannot delete self"
+                             if is_self else "Delete user"),
+                    disabled=is_self,
+                    on_click=_make_delete()),
             ], spacing=0)
 
             self.table.rows.append(ft.DataRow(cells=[
@@ -578,7 +627,138 @@ class UsersTab(ft.Column):
                 ft.DataCell(actions),
             ]))
 
+        # Branch rendering by viewport
+        if self._mobile_mode:
+            try:
+                self._render_mobile_cards()
+            except Exception as ex:
+                print(f"[USERS] mobile render failed: {ex}")
+
         print(f"[USERS] rendered {len(self.table.rows)} rows")
+
+    # -----------------------------------------------------------------------------
+    # 18.1.6b — _render_mobile_cards  (NEW)
+    # -----------------------------------------------------------------------------
+    def _render_mobile_cards(self):
+        """Render users as cards for narrow screens."""
+        if self.mobile_list is None:
+            return
+        self.mobile_list.controls.clear()
+
+        for u in self.users:
+            username = u.get("username", "")
+            full_name = u.get("full_name", "")
+            email = u.get("email", "")
+            role = u.get("role", "staff")
+            created = u.get("created_at", "")[:10] or "—"
+            last_login = u.get("last_login", "")[:10] or "Never"
+            uid = u.get("id")
+
+            perms = _parse_permissions(u.get("permissions", ""), role)
+            perm_count = len(perms)
+
+            role_lower = role.lower()
+            if role_lower == "super_admin":
+                role_color, role_icon = "#d97706", "👑"
+            elif role_lower == "admin":
+                role_color, role_icon = "#7c3aed", "🛡️"
+            elif role_lower == "staff":
+                role_color, role_icon = "#059669", "🧑"
+            else:
+                role_color, role_icon = "#64748b", "👁️"
+
+            is_self = (uid == self.current_user.get("id"))
+
+            def _edit(e, _uid=uid):
+                fresh = next((x for x in self.users
+                              if x.get("id") == _uid), None)
+                if fresh:
+                    self.open_edit_dialog(e, user=fresh)
+                else:
+                    self.refresh()
+
+            def _delete(e, _uid=uid):
+                fresh = next((x for x in self.users
+                              if x.get("id") == _uid), None)
+                if fresh:
+                    self._confirm_delete(fresh)
+                else:
+                    self.refresh()
+
+            self.mobile_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        # Row 1: username + role badge
+                        ft.Row([
+                            ft.Text(username, size=13,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#0f172a",
+                                    expand=True,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Container(
+                                content=ft.Text(
+                                    f"{role_icon} {role}", size=9,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=ft.Colors.WHITE),
+                                padding=ft.Padding.symmetric(
+                                    horizontal=8, vertical=3),
+                                bgcolor=role_color,
+                                border_radius=10),
+                        ], spacing=8),
+
+                        # Row 2: name + email
+                        ft.Text(full_name or "—", size=11,
+                                color=ft.Colors.GREY_700,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(email or "—", size=10,
+                                color=ft.Colors.GREY_500,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+
+                        # Row 3: meta
+                        ft.Row([
+                            ft.Text(f"🔑 {perm_count} perms", size=9,
+                                    color="#1e40af"),
+                            ft.Text(f"📅 {created}", size=9,
+                                    color=ft.Colors.GREY_600),
+                            ft.Text(f"🕒 {last_login}", size=9,
+                                    color=ft.Colors.GREY_600),
+                        ], spacing=10, wrap=True),
+
+                        # Row 4: actions
+                        ft.Row([
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.EDIT, size=14,
+                                            color="#2563eb"),
+                                    ft.Text("Edit", size=11,
+                                            color="#2563eb"),
+                                ], spacing=4, tight=True),
+                                on_click=_edit),
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.DELETE, size=14,
+                                            color="#dc2626"
+                                            if not is_self
+                                            else "#cbd5e1"),
+                                    ft.Text("Delete", size=11,
+                                            color="#dc2626"
+                                            if not is_self
+                                            else "#cbd5e1"),
+                                ], spacing=4, tight=True),
+                                disabled=is_self,
+                                on_click=_delete),
+                        ], spacing=4,
+                           alignment=ft.MainAxisAlignment.END),
+                    ], spacing=6),
+                    padding=12,
+                    bgcolor=ft.Colors.WHITE,
+                    border_radius=10,
+                    border=ft.Border.all(1, "#e2e8f0"),
+                )
+            )
 
     # -----------------------------------------------------------------------------
     # 18.1.7 — open_add_dialog
@@ -716,12 +896,11 @@ class UsersTab(ft.Column):
 
 
 # =================================================================================
-# 18.2 — CLASS: UserFormDialog  ✅ uses self.page_ref
+# 18.2 — CLASS: UserFormDialog  ✅ uses self.page_ref, mobile-responsive
 # =================================================================================
 class UserFormDialog:
 
     def __init__(self, page, db, current_user, user=None, on_save=None):
-        # ✅ FIX — use self.page_ref
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
@@ -742,10 +921,17 @@ class UserFormDialog:
         self._build()
 
     # -----------------------------------------------------------------------------
-    # 18.2.1 — _build
+    # 18.2.1 — _build  (MOBILE-RESPONSIVE)
     # -----------------------------------------------------------------------------
     def _build(self):
         u = self.user
+
+        # Detect narrow viewport
+        narrow = False
+        try:
+            narrow = (self.page_ref.width or 1200) < MOBILE_BREAKPOINT
+        except Exception:
+            pass
 
         # Credentials
         self.username_field = ft.TextField(
@@ -767,6 +953,18 @@ class UserFormDialog:
             prefix_icon=ft.Icons.LOCK_OUTLINE,
             text_size=12, content_padding=12)
 
+        # Stack password fields on narrow, side-by-side on desktop
+        pw_row = (
+            ft.Column([
+                self.password_field,
+                self.confirm_password_field,
+            ], spacing=8)
+            if narrow else
+            ft.Row([self.password_field,
+                    self.confirm_password_field],
+                   spacing=8)
+        )
+
         credentials_section = ft.Container(
             content=ft.Column([
                 ft.Row([
@@ -775,11 +973,10 @@ class UserFormDialog:
                             weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ], spacing=6),
                 self.username_field,
-                ft.Row([self.password_field,
-                        self.confirm_password_field],
-                       spacing=8),
+                pw_row,
             ], spacing=8),
-            padding=12, bgcolor="#f0f9ff", border_radius=10,
+            padding=10 if narrow else 12,
+            bgcolor="#f0f9ff", border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
         # Profile
@@ -813,7 +1010,8 @@ class UserFormDialog:
                 self.email_field,
                 self.role_dropdown,
             ], spacing=8),
-            padding=12, bgcolor="#f5f3ff", border_radius=10,
+            padding=10 if narrow else 12,
+            bgcolor="#f5f3ff", border_radius=10,
             border=ft.Border.all(1, "#ddd6fe"))
 
         # Permissions
@@ -829,7 +1027,8 @@ class UserFormDialog:
                 label_style=ft.TextStyle(size=11))
             self.permission_checkboxes[key] = cb
             perm_grid.controls.append(
-                ft.Container(content=cb, col={"sm": 12, "md": 6}))
+                ft.Container(content=cb,
+                             col={"xs": 12, "sm": 12, "md": 6}))
 
         self.perm_note = ft.Text(
             "ℹ️  Permissions are auto-set based on role.",
@@ -837,12 +1036,14 @@ class UserFormDialog:
 
         def _select_all(e):
             for cb in self.permission_checkboxes.values():
-                cb.value = True
+                if not cb.disabled:
+                    cb.value = True
             self._safe_update()
 
         def _clear_all(e):
             for cb in self.permission_checkboxes.values():
-                cb.value = False
+                if not cb.disabled:
+                    cb.value = False
             self._safe_update()
 
         perm_section = ft.Container(
@@ -860,23 +1061,30 @@ class UserFormDialog:
                 self.perm_note,
                 perm_grid,
             ], spacing=6),
-            padding=12, bgcolor="#f0fdf4", border_radius=10,
+            padding=10 if narrow else 12,
+            bgcolor="#f0fdf4", border_radius=10,
             border=ft.Border.all(1, "#bbf7d0"))
 
+        # Body — expand on narrow, fixed size on desktop
         body = ft.Container(
             content=ft.Column([
                 credentials_section,
                 profile_section,
                 perm_section,
             ], spacing=10, scroll=ft.ScrollMode.AUTO),
-            width=640, height=560, padding=6)
+            width=640 if not narrow else None,
+            height=560 if not narrow else None,
+            expand=narrow,
+            padding=6)
 
         title = "✏️  Edit User" if self.is_edit else "➕  Add New User"
 
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            title=ft.Text(title, weight=ft.FontWeight.BOLD,
+                          size=15 if narrow else 18),
             content=body,
+            content_padding=10 if narrow else 20,
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.close()),
@@ -929,7 +1137,8 @@ class UserFormDialog:
         try:
             username = _safe_str(self.username_field.value)
             if not username:
-                self._snack("⚠️ Username is required.", ft.Colors.RED_500)
+                self._snack("⚠️ Username is required.",
+                            ft.Colors.RED_500)
                 return
 
             full_name = _safe_str(self.full_name_field.value)
@@ -963,8 +1172,9 @@ class UserFormDialog:
                 if other_id == this_id:
                     continue
                 if _safe_str(u.get("username")).lower() == username.lower():
-                    self._snack(f"⚠️ Username '{username}' already exists.",
-                                ft.Colors.RED_500)
+                    self._snack(
+                        f"⚠️ Username '{username}' already exists.",
+                        ft.Colors.RED_500)
                     return
 
             perms = {k for k, cb in self.permission_checkboxes.items()
@@ -1049,19 +1259,18 @@ class UserFormDialog:
     def _update_existing(self, data):
         uid = _safe_str(self.user.get("id"))
 
-        # ---- PATCH 18.1.D: prefer DB accessor so audit / validation
-        # hooks in db.update_user() fire consistently ----
+        # ---- PATCH 18.1.D: prefer DB accessor ----
         if hasattr(self.db, "update_user"):
             try:
                 self.db.update_user(uid, **data)
                 return
             except TypeError:
-                # Some DB signatures take a dict instead of kwargs
                 try:
                     self.db.update_user(uid, data)
                     return
                 except Exception as ex:
-                    print(f"[USERS] db.update_user(dict) failed: {ex}; fallback")
+                    print(f"[USERS] db.update_user(dict) failed: "
+                          f"{ex}; fallback")
             except Exception as ex:
                 print(f"[USERS] db.update_user failed: {ex}; fallback")
 
@@ -1078,8 +1287,10 @@ class UserFormDialog:
             if key in data and key in self.db.users.columns:
                 self.db.users.loc[mask, key] = data[key]
 
-        if "password_hash" in data and "password_hash" in self.db.users.columns:
-            self.db.users.loc[mask, "password_hash"] = data["password_hash"]
+        if "password_hash" in data and \
+                "password_hash" in self.db.users.columns:
+            self.db.users.loc[mask, "password_hash"] = \
+                data["password_hash"]
 
         self.db._save_df(self.db.users, "users.csv")
 
@@ -1100,15 +1311,14 @@ class UserFormDialog:
             pass
 
     def _snack(self, message, color=ft.Colors.GREEN_600):
-        # ---- PATCH 18.1.C: Flet 1.0 deprecated `page.snack_bar`.
-        # Use show_dialog(SnackBar) — the reliable path in web mode ----
+        # PATCH 18.1.C: Flet 1.0 deprecated `page.snack_bar`
         try:
             self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(message), bgcolor=color))
             return
         except Exception:
             pass
-        # Last-resort fallback for very old Flet builds
+        # Fallback for very old Flet builds
         try:
             self.page_ref.snack_bar = ft.SnackBar(
                 content=ft.Text(message), bgcolor=color)
@@ -1125,5 +1335,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END — USERS TAB (FLET 1.0.0 VERSION)
+# SECTION 18 END — USERS TAB (FLET 1.0 — MOBILE-RESPONSIVE)
 # =================================================================================
