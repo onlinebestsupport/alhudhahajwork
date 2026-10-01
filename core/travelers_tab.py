@@ -1,12 +1,14 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.2 — Mobile-responsive + numeric-string cleaning
-#   • _clean_number_string() strips ".0" from PIN/mobile/aadhaar
-#   • Stat cards use ResponsiveRow (2 per row on mobile)
-#   • Toolbar buttons use ResponsiveRow
-#   • Table wrapped in horizontal scroll
-#   • Dialogs sized for mobile (full-width, taller)
+# v1.3 — Row Selection + Data-Loading Safety
+#   • Row tap SELECTS (does not open edit)
+#   • Toolbar PDF / Print act on selected row
+#   • on_select_change (correct Flet 1.0.0 param)
+#   • Icons 16 → 18 for easier tap
+#   • refresh() no longer calls db.reload_travelers() / reload_batches()
+#   • Dialogs no longer call reload_travelers() on save
+#   • All original features preserved
 # =================================================================================
 
 import flet as ft
@@ -72,6 +74,10 @@ class TravelersTab:
         self.prev_btn = None
         self.next_btn = None
         self.root = None
+        self.selection_label = None
+
+        # Currently selected traveler (for toolbar PDF/Print)
+        self._selected_traveler_id = None
 
         self.setup_ui()
         self.refresh()
@@ -191,6 +197,7 @@ class TravelersTab:
         # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11)),
                 ft.DataColumn(ft.Text("#", size=11)),
                 ft.DataColumn(ft.Text("Name", size=11)),
                 ft.DataColumn(ft.Text("Passport", size=11)),
@@ -246,6 +253,11 @@ class TravelersTab:
             spacing=8,
         )
 
+        self.selection_label = ft.Text("", size=10,
+                                       color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD,
+                                       italic=True)
+
         # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
@@ -255,10 +267,19 @@ class TravelersTab:
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Row(
-                            [self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE,
-                        ),
+                        content=ft.Column([
+                            ft.Text("💡 Tap a row to SELECT it, then use "
+                                    "toolbar 📄 PDF / 🖨️ Print. "
+                                    "Use ✏️ icon in Actions column to edit.",
+                                    size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            self.selection_label,
+                            ft.Row(
+                                [self.table],
+                                scroll=ft.ScrollMode.ADAPTIVE,
+                            ),
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10,
                         padding=10,
@@ -305,18 +326,18 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # 8.4 — refresh
+    # 8.4 — refresh  (no destructive reloads)
     # =============================================================================
     def refresh(self):
-        try:
-            try:
-                if hasattr(self.db, "reload_travelers"):
-                    self.db.reload_travelers()
-                if hasattr(self.db, "reload_batches"):
-                    self.db.reload_batches()
-            except Exception as ex:
-                print(f"[TRAVELERS] reload failed: {ex}")
+        """
+        Load travelers from the in-memory DB cache.
 
+        IMPORTANT: Do NOT call db.reload_travelers() here.
+        On Railway, reload_*() reads from a fixed CSV path that may differ
+        from the volume mount → cache gets wiped → tab shows zeros.
+        The DB layer's get_travelers() already returns live data.
+        """
+        try:
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
 
@@ -335,9 +356,15 @@ class TravelersTab:
 
             self.filtered_travelers = self.travelers[:]
             self.current_page = 1
+            print(f"[TRAVELERS] loaded {len(self.travelers)} travelers, "
+                  f"{len(self.batches)} batches")
+
             self.display_travelers()
             self.update_stats()
-            self.page.update()
+            try:
+                self.page.update()
+            except Exception:
+                pass
         except Exception as ex:
             print(f"Travelers refresh error: {ex}")
             import traceback
@@ -353,6 +380,7 @@ class TravelersTab:
 
         self.table.rows.clear()
         for i, t in enumerate(page_items):
+            tid = t.get('id')
             passport = _clean_number_string(t.get('passport_no', '-'))
             expiry = t.get('passport_expiry_date', '')
             try:
@@ -404,48 +432,115 @@ class TravelersTab:
                 controls=[
                     ft.IconButton(
                         icon=ft.Icons.VISIBILITY,
-                        icon_color="#3498db", icon_size=16,
+                        icon_color="#3498db", icon_size=18,
                         tooltip="View",
                         on_click=lambda e, tt=t: self.view_traveler(tt)),
                     ft.IconButton(
                         icon=ft.Icons.EDIT,
-                        icon_color="#f39c12", icon_size=16,
+                        icon_color="#f39c12", icon_size=18,
                         tooltip="Edit",
                         on_click=lambda e, tt=t: self.open_edit_dialog(tt)),
                     ft.IconButton(
                         icon=ft.Icons.DELETE,
-                        icon_color="#e74c3c", icon_size=16,
+                        icon_color="#e74c3c", icon_size=18,
                         tooltip="Delete",
                         on_click=lambda e, tt=t: self.delete_traveler(tt)),
                 ],
                 spacing=0,
             )
 
+            is_selected = (self._selected_traveler_id == tid)
+
+            # -------- ROW TAP → SELECT (not edit) --------
+            def _on_row_tap(e, tt=t, tid=tid):
+                try:
+                    self._select_traveler(tid)
+                except Exception as ex:
+                    print(f"[TRAVELERS] row tap error: {ex}")
+
             self.table.rows.append(
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(start + i + 1), size=10)),
-                    ft.DataCell(ft.Text(
-                        f"{t.get('first_name', '')} "
-                        f"{t.get('last_name', '')}".strip() or 'N/A',
-                        size=11, weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(
-                        f"{passport}\nExp: {exp_disp}", size=10)),
-                    ft.DataCell(ft.Text(
-                        _clean_number_string(t.get('mobile', '-')) or '-',
-                        size=10)),
-                    ft.DataCell(ft.Text(
-                        str(t.get('batch_name', 'Not Assigned')),
-                        size=10, color="#0064c8",
-                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(ret_disp, size=10)),
-                    ft.DataCell(ft.Text(
-                        status, size=10, color=status_color,
-                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Row(controls=doc_controls, spacing=1)),
-                    ft.DataCell(actions),
-                ]))
+                ft.DataRow(
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
+                    cells=[
+                        # Selection indicator
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
+                        ft.DataCell(ft.Text(str(start + i + 1), size=10)),
+                        ft.DataCell(ft.Text(
+                            f"{t.get('first_name', '')} "
+                            f"{t.get('last_name', '')}".strip() or 'N/A',
+                            size=11, weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(
+                            f"{passport}\nExp: {exp_disp}", size=10)),
+                        ft.DataCell(ft.Text(
+                            _clean_number_string(t.get('mobile', '-')) or '-',
+                            size=10)),
+                        ft.DataCell(ft.Text(
+                            str(t.get('batch_name', 'Not Assigned')),
+                            size=10, color="#0064c8",
+                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(ret_disp, size=10)),
+                        ft.DataCell(ft.Text(
+                            status, size=10, color=status_color,
+                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Row(controls=doc_controls, spacing=1)),
+                        ft.DataCell(actions),
+                    ]))
 
         self.update_pagination()
+
+    # =============================================================================
+    # 8.5b — _select_traveler
+    # =============================================================================
+    def _select_traveler(self, traveler_id):
+        if self._selected_traveler_id == traveler_id:
+            self._selected_traveler_id = None
+        else:
+            self._selected_traveler_id = traveler_id
+
+        # Update selection label
+        if self.selection_label:
+            if self._selected_traveler_id:
+                t = next((x for x in self.travelers
+                          if x.get('id') == self._selected_traveler_id), None)
+                if t:
+                    self.selection_label.value = (
+                        f"✅ Selected: "
+                        f"{t.get('first_name','')} "
+                        f"{t.get('last_name','')} | "
+                        f"Passport: {_clean_number_string(t.get('passport_no',''))} | "
+                        f"Batch: {t.get('batch_name','')}")
+                else:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        self.display_travelers()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    # =============================================================================
+    # 8.5c — _get_selected_traveler
+    # =============================================================================
+    def _get_selected_traveler(self):
+        if not self._selected_traveler_id:
+            return None
+        return next((t for t in self.travelers
+                     if t.get('id') == self._selected_traveler_id), None)
 
     # =============================================================================
     # 8.6 — Pagination
@@ -557,12 +652,6 @@ class TravelersTab:
                     f"{traveler.get('last_name','')}")
                 self.page.pop_dialog()
 
-                try:
-                    if hasattr(self.db, "reload_travelers"):
-                        self.db.reload_travelers()
-                except Exception:
-                    pass
-
                 self.refresh()
                 self._snack(
                     f"✅ Deleted {traveler.get('first_name','')} "
@@ -612,7 +701,7 @@ class TravelersTab:
             self._snack(f"⚠️ Could not open: {ex}")
 
     # =============================================================================
-    # 8.11 — Exports
+    # 8.11 — Exports (toolbar actions now act on selection when applicable)
     # =============================================================================
     def export_to_excel(self, e):
         if not self.travelers:
@@ -684,9 +773,18 @@ class TravelersTab:
             self._snack(f"❌ Export error: {ex}")
 
     def export_to_pdf(self, e):
-        if not self.travelers:
-            self._snack("⚠️ No travelers to export")
-            return
+        # If a row is selected, export only that traveler
+        selected = self._get_selected_traveler()
+        if selected:
+            travelers_to_export = [selected]
+            suffix = "selected_traveler"
+        else:
+            if not self.travelers:
+                self._snack("⚠️ No travelers to export")
+                return
+            travelers_to_export = self.travelers
+            suffix = "travelers"
+
         try:
             from reportlab.lib.pagesizes import landscape, A4
             from reportlab.platypus import (
@@ -699,7 +797,7 @@ class TravelersTab:
             base = get_app_base_path()
             exports_dir = Path(base) / "exports"
             exports_dir.mkdir(exist_ok=True)
-            filename = (f"travelers_"
+            filename = (f"{suffix}_"
                         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
             file_path = exports_dir / filename
 
@@ -730,7 +828,7 @@ class TravelersTab:
                       'Batch', 'Return', 'Status', 'Vaccine']
             header = [Paragraph(f"<b>{f}</b>", cell_style) for f in fields]
             data = [header]
-            for t in self.travelers:
+            for t in travelers_to_export:
                 row = [
                     t.get('id', ''),
                     f"{t.get('first_name','')} "
@@ -759,14 +857,18 @@ class TravelersTab:
             ]))
 
             elements.append(Paragraph(company_name, title_style))
-            elements.append(Paragraph("Travelers List", title_style))
+            elements.append(Paragraph(
+                ("Selected Traveler" if selected else "Travelers List"),
+                title_style))
             elements.append(Spacer(1, 15))
             elements.append(table)
             doc.build(elements)
 
             url = send_file_to_user(self.page, str(file_path),
                                     "Travelers PDF")
-            self._snack("✅ PDF exported")
+            self._snack(f"✅ PDF exported "
+                        f"({len(travelers_to_export)} traveler"
+                        f"{'s' if len(travelers_to_export) != 1 else ''})")
             if url:
                 try:
                     self.page.launch_url(url)
@@ -778,7 +880,17 @@ class TravelersTab:
             self._snack(f"❌ PDF error: {ex}")
 
     def print_table(self, e):
-        self._snack("ℹ️ Use your browser's Ctrl+P to print this page")
+        selected = self._get_selected_traveler()
+        if selected:
+            self._snack(
+                f"🖨️ Selected: {selected.get('first_name','')} "
+                f"{selected.get('last_name','')} — "
+                f"opening PDF to print…")
+            # Reuse PDF export → user prints from browser
+            self.export_to_pdf(e)
+        else:
+            self._snack("⚠️ Tap a row to select, then tap 🖨️ Print. "
+                        "Or use Ctrl+P for the full page.")
 
     def bulk_upload_csv(self, e):
         self._snack("ℹ️ Bulk upload — coming soon")
@@ -1234,13 +1346,8 @@ class TravelerDialog:
             except Exception:
                 pass
 
-            try:
-                if hasattr(self.db, "reload_travelers"):
-                    self.db.reload_travelers()
-                if hasattr(self.db, "reload_batches"):
-                    self.db.reload_batches()
-            except Exception:
-                pass
+            # NOTE: Do NOT call reload_travelers() here.
+            # add_traveler() / update_traveler() already update the cache.
 
             self.page.pop_dialog()
             self._snack(f"✅ {msg} successfully")
