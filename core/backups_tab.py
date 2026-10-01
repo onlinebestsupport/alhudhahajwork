@@ -1,8 +1,9 @@
 # =================================================================================
 # SECTION 20 — BACKUP TAB (FLET 1.0) — FIXED + CLOUD-READY + MOBILE-RESPONSIVE
 # =================================================================================
-# v1.3 — Row Selection
-#   • ADDED: Tap any row → SELECTS (highlights the backup)
+# v1.3.1 — Row Selection + Syntax Fix
+#   • FIXED: column list-comprehension syntax error
+#   • ADDED: Tap any row → SELECTS the backup
 #   • ADDED: Toolbar Download/Restore/Delete act on selected row
 #   • ADDED: "Sel" column with ✓ marker
 #   • FIXED: on_select_change (correct Flet 1.0.0 param)
@@ -277,18 +278,21 @@ class BackupView(ft.Column):
                             "#7c3aed", self.open_folder),
             ], spacing=10, wrap=True)
 
-        # ---- Desktop table ----
+        # ---- Desktop table (columns built explicitly) ----
+        _cols = [
+            ft.DataColumn(ft.Text("Sel", size=11,
+                                  weight=ft.FontWeight.BOLD,
+                                  color=ft.Colors.WHITE)),
+        ]
+        for _h in ["#", "Date", "File Name", "Size", "Status",
+                   "Location", "Actions"]:
+            _cols.append(
+                ft.DataColumn(ft.Text(_h, size=11,
+                                      weight=ft.FontWeight.BOLD,
+                                      color=ft.Colors.WHITE)))
+
         self.table = ft.DataTable(
-            columns=[
-                ft.DataColumn(ft.Text("Sel", size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE)),
-                ft.DataColumn(ft.Text(h, size=11,
-                                      weight=ft.FontWeight.BOLD,
-                                      color=ft.Colors.WHITE))
-                for h in ["#", "Date", "File Name", "Size", "Status",
-                          "Location", "Actions"]
-            ],
+            columns=_cols,
             rows=[],
             heading_row_color="#1e293b",
             column_spacing=12,
@@ -515,7 +519,6 @@ class BackupView(ft.Column):
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -747,7 +750,7 @@ class BackupView(ft.Column):
         self._confirm_delete(b)
 
     # =============================================================================
-    # 20.1.7e — _download_backup  (cloud-friendly download)
+    # 20.1.7e — _download_backup
     # =============================================================================
     def _download_backup(self, backup):
         """Copy the backup to /static and open the browser download URL."""
@@ -809,7 +812,6 @@ class BackupView(ft.Column):
                     f"✅ Backup created: {Path(backup_path).name}",
                     ft.Colors.GREEN_700)
 
-                # Show full path so user knows where it went
                 info = ft.AlertDialog(
                     modal=True,
                     title=ft.Row([
@@ -915,7 +917,6 @@ class BackupView(ft.Column):
                     "✅ Restore complete. Reloading data…",
                     ft.Colors.GREEN_700)
 
-                # Try to reload DB caches so views pick up new data
                 try:
                     if hasattr(self.db, "reload_all"):
                         self.db.reload_all()
@@ -990,7 +991,6 @@ class BackupView(ft.Column):
                 if os.path.exists(path):
                     os.remove(path)
 
-                # Remove from history CSV if present
                 if not self.db.backup_history.empty:
                     mask = (self.db.backup_history["backup_file"]
                             .apply(lambda x: Path(str(x)).name ==
@@ -1116,7 +1116,6 @@ class BackupView(ft.Column):
             self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(message), bgcolor=color))
         except Exception:
-            # Fallback for old Flet builds
             try:
                 self.page_ref.snack_bar = ft.SnackBar(
                     content=ft.Text(message), bgcolor=color)
