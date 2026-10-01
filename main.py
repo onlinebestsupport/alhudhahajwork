@@ -49,6 +49,7 @@ def _detect_platform() -> str:
 PLATFORM = _detect_platform()
 IS_CLOUD = PLATFORM != "Local / Desktop"
 
+
 # Simple print-based logger — always shows on Railway
 def _boot_log(msg: str):
     print(f"[BOOT] {msg}", flush=True)

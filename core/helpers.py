@@ -1,10 +1,6 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0.0, cloud-ready)
 # =================================================================================
-# This is a COMPLETE drop-in replacement. If your current helpers.py has extra
-# functions not listed here, keep them — just ensure send_file_to_user() is
-# the version below.
-# =================================================================================
 
 import os
 import sys
@@ -148,7 +144,6 @@ def round_as_per_rules(value):
         return 0
     if v != v:
         return 0
-    # half-up rounding
     import math
     return int(math.floor(v + 0.5))
 
@@ -173,7 +168,6 @@ def send_file_to_user(page, filepath, label="Download"):
     if not filepath or not os.path.exists(filepath):
         return None
 
-    # ---- Detect web mode ----
     is_web = bool(
         os.getenv("PORT")
         or os.getenv("RAILWAY_ENVIRONMENT")
@@ -190,7 +184,6 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
-            # Avoid collision: if a different-size file exists, add timestamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -200,14 +193,12 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            # Flet serves assets_dir at /static/... — return the URL path
             return f"/static/downloads/{fname}"
 
         except Exception as ex:
             print(f"[send_file_to_user] web copy failed: {ex}")
             return None
 
-    # ---- Desktop fallback ----
     try:
         return f"file://{os.path.abspath(filepath)}"
     except Exception as ex:
@@ -216,7 +207,7 @@ def send_file_to_user(page, filepath, label="Download"):
 
 
 # =================================================================================
-# Convenience: base64 image data URI (used by reports_tab / travel docs)
+# photo_data_uri — inline base64 image for reports
 # =================================================================================
 def photo_data_uri(path):
     """Return a data:image/... URI for a local image, or None."""

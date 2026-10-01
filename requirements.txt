@@ -3,26 +3,35 @@
 # =================================================================================
 # Flet 1.x is REQUIRED — the codebase uses the 1.0 API.
 # Do NOT downgrade below 1.0.0.
+#
+# NOTE ON FLET-CHART VERSIONS:
+#   flet and flet-charts are versioned in LOCKSTEP. If flet is 1.0.x,
+#   flet-charts must also be 1.0.x (NOT 0.1.x — that line never existed
+#   on PyPI). Both pins below allow patch updates within the 1.0 line.
+#
+#   If flet-charts ever fails to resolve again, comment it out — the
+#   dashboard falls back to matplotlib automatically (see
+#   _CHART_ENGINE logic in core/dashboard_tab.py).
 # =================================================================================
 
-# ---- Flet ----
+# ---- Flet (MUST stay 1.x — codebase uses 1.0 API) ----
 flet~=1.0
 
-# ---- Flet charts plugin (dashboard uses it if available) ----
-flet-charts~=0.1
+# ---- Flet charts plugin (lockstep with flet 1.x) ----
+flet-charts~=1.0
 
-# ---- Matplotlib (fallback chart engine) ----
+# ---- Matplotlib (fallback chart engine, always available) ----
 matplotlib~=3.8
 
 # ---- Data ----
 pandas~=2.0
 numpy~=1.24
 
-# ---- PDF generation ----
+# ---- PDF generation (server-side) ----
 reportlab~=4.0
 
-# ---- Excel export ----
+# ---- Excel export (server-side) ----
 openpyxl~=3.1
 
-# ---- Image processing ----
+# ---- Image processing (Excel logo embedding) ----
 Pillow~=10.0
