@@ -1,20 +1,26 @@
 # =================================================================================
-# core/helpers.py — Shared utilities (Flet 1.0 + FastAPI, cloud-ready)
+# core/helpers.py — Shared utilities (Flet 1.0.3 + FastAPI, cloud-ready)
 # =================================================================================
-# v3.0 — Download trigger uses JavaScript anchor injection.
-#        This is the ONLY method that works reliably in every modern browser
-#        when the download URL is known AFTER an async server round-trip.
+# PATCHES APPLIED (v3.1):
+#   • send_file_to_user returns None and triggers download itself
+#   • _trigger_download_js handles Flet 1.0.x async run_javascript()
+#     (the coroutine is scheduled on the running event loop)
+#   • Fallback to launch_url(_self) if JS injection fails
+#   • Absolute URL built from RAILWAY_PUBLIC_DOMAIN
 # =================================================================================
 
 import os
 import sys
 import shutil
-import json
 import base64
-from pathlib import Path
+import asyncio
+import inspect
 from datetime import datetime
 
 
+# =================================================================================
+# get_app_base_path — resolve the project root
+# =================================================================================
 def get_app_base_path():
     """Resolve project root (cloud-aware)."""
     for env_key in ("RAILWAY_VOLUME_MOUNT_PATH", "DATA_ROOT"):
@@ -38,6 +44,9 @@ def get_app_base_path():
     return os.path.dirname(here)
 
 
+# =================================================================================
+# number_to_words_indian
+# =================================================================================
 def number_to_words_indian(number):
     """Convert integer to Indian English words (Rupees ... Only)."""
     try:
@@ -90,6 +99,9 @@ def number_to_words_indian(number):
     return (" ".join(parts).strip() or "Zero") + " Rupees Only"
 
 
+# =================================================================================
+# format_currency_indian
+# =================================================================================
 def format_currency_indian(amount):
     """Return a string like '₹ 12,34,567.89'."""
     if amount is None:
@@ -119,6 +131,9 @@ def format_currency_indian(amount):
     return f"-{out}" if negative else out
 
 
+# =================================================================================
+# round_as_per_rules
+# =================================================================================
 def round_as_per_rules(value):
     """Round half up to the nearest integer."""
     try:
@@ -132,7 +147,7 @@ def round_as_per_rules(value):
 
 
 # =================================================================================
-# INTERNAL — trigger a download in the browser
+# _trigger_download_js — internal download trigger
 # =================================================================================
 def _trigger_download_js(page, url):
     """
@@ -141,11 +156,14 @@ def _trigger_download_js(page, url):
     Flet 1.0.x's run_javascript() is ASYNC — calling it synchronously
     creates a coroutine that never runs. This version schedules the
     coroutine on the running event loop.
-    """
-    import asyncio
-    import inspect
 
+    Fallback order:
+      1. page.run_javascript(js)  — schedule coroutine on loop
+      2. page.launch_url(url, web_window_name="_self")
+      3. page.launch_url(url)
+    """
     if page is None:
+        print("[download] page is None — skipping")
         return False
 
     safe_url = url.replace("'", "%27")
@@ -164,20 +182,21 @@ def _trigger_download_js(page, url):
         "})();"
     )
 
-    # ---- Try run_javascript (async in Flet 1.0.x) ----
+    # ---- Method 1: run_javascript (async in Flet 1.0.x) ----
     run_js = getattr(page, "run_javascript", None)
     if run_js is not None:
         try:
             result = run_js(js)
-            # If it returned a coroutine, schedule it on the event loop
+
+            # Flet 1.0.x returns a coroutine — schedule it on the loop
             if inspect.iscoroutine(result):
                 try:
                     loop = asyncio.get_running_loop()
                     loop.create_task(result)
-                    print(f"[download] JS scheduled on running loop: {url}")
+                    print(f"[download] JS scheduled on loop: {url}")
                     return True
                 except RuntimeError:
-                    # No running loop — spin one up
+                    # No running loop — spin one up (rare in web mode)
                     asyncio.run(result)
                     print(f"[download] JS ran synchronously: {url}")
                     return True
@@ -185,16 +204,16 @@ def _trigger_download_js(page, url):
                 # Sync result — Flet executed it inline
                 print(f"[download] JS executed inline: {url}")
                 return True
+
         except TypeError as ex:
             print(f"[download] run_javascript TypeError: {ex}")
         except Exception as ex:
             print(f"[download] run_javascript failed: {ex}")
 
-    # ---- Fallback: launch_url ----
+    # ---- Method 2: launch_url with _self ----
     launch = getattr(page, "launch_url", None)
     if launch is not None:
         try:
-            # Try with explicit target
             try:
                 result = launch(url, web_window_name="_self")
             except TypeError:
@@ -211,24 +230,26 @@ def _trigger_download_js(page, url):
         except Exception as ex:
             print(f"[download] launch_url failed: {ex}")
 
+    print("[download] all methods failed")
     return False
 
+
 # =================================================================================
-# send_file_to_user — the one function all tabs call
+# send_file_to_user — the function all tabs call
 # =================================================================================
 def send_file_to_user(page, filepath, label="Download"):
     """
     Cloud-aware file delivery.
 
     Web mode:
-      1. Copy file into <base>/static/downloads/
-      2. Build absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
-      3. Trigger browser download via JS anchor injection
-      4. Return None (callers' `if url:` blocks skip — no double-launch)
+      1. Copy the file into <base>/static/downloads/
+      2. Build an absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
+      3. Trigger the browser download via JS anchor injection
+      4. Return None (so callers' `if url:` blocks skip double-launch)
 
-    Desktop mode:
-      • Launch the local file with the OS default app
-      • Return None
+    Desktop:
+      • Launch the file with the OS default app.
+      • Return None.
     """
     if not filepath or not os.path.exists(filepath):
         print(f"[send_file_to_user] file missing: {filepath}")
@@ -250,8 +271,7 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
-            # Collision handling: if a different file with same name exists,
-            # add a timestamp so we don't overwrite
+            # Collision: if a different file with same name exists, add stamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -261,19 +281,18 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            # Build the absolute URL — JS anchor needs a full URL
+            # Build absolute URL for the FastAPI /download endpoint
             domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
             if domain:
                 url = f"https://{domain}/download/{fname}"
             else:
-                # Fallback for local dev or unknown domains
                 url = f"/download/{fname}"
 
             print(f"[send_file_to_user] copied -> {dest}")
             print(f"[send_file_to_user] url    = {url}")
 
             _trigger_download_js(page, url)
-            return None  # callers' `if url:` blocks skip
+            return None
 
         except Exception as ex:
             import traceback
@@ -284,14 +303,20 @@ def send_file_to_user(page, filepath, label="Download"):
     # Desktop fallback
     try:
         if page is not None:
-            page.launch_url(f"file://{os.path.abspath(filepath)}")
+            result = page.launch_url(f"file://{os.path.abspath(filepath)}")
+            if inspect.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    asyncio.run(result)
     except Exception as ex:
         print(f"[send_file_to_user] desktop failed: {ex}")
     return None
 
 
 # =================================================================================
-# photo_data_uri — inline base64 image for reports
+# photo_data_uri — inline base64 image
 # =================================================================================
 def photo_data_uri(path):
     """Return a data:image/... URI for a local image, or None."""
