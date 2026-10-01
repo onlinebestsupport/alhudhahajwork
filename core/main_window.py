@@ -1,12 +1,14 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW
 # =================================================================================
-# UPDATED — 2026-09-30 (Cloud-ready)
-#   • Permission-based tab visibility (kept from previous version)
-#   • NEW: 🔄 Reload Data button in header — forces DB cache refresh
-#   • NEW: 💾 Storage Info in settings menu — shows data folder diagnostics
-#   • Auto-refresh now refreshes ALL visible tabs (not just Dashboard)
-#   • Small cosmetic improvements to the header
+# UPDATED — 2026-10-01 (Cloud-ready, v2.0)
+#   • Permission-based tab visibility (unchanged)
+#   • 🔄 Reload Data button in header (unchanged)
+#   • 💾 Storage Info in settings menu (unchanged)
+#   • Auto-refresh every 30s (unchanged)
+#   • NEW: Dashboard Quick Action buttons now navigate to the correct
+#          tab via self._on_navigate(tab_name, action). If action="add",
+#          the target tab's add-dialog opens automatically.
 # =================================================================================
 
 import flet as ft
@@ -99,48 +101,32 @@ ROLE_DEFAULT_PERMISSIONS = {
 
 
 def _user_has_permission(user, perm_key):
-    """
-    Return True if `user` has the given permission key.
-
-    Rules:
-      • super_admin bypasses all checks.
-      • If the user's `permissions` field is a list/set/tuple, check
-        membership directly.
-      • If it is a JSON list string, parse it.
-      • If it is a pipe-separated string, split and check.
-      • If it is empty, fall back to role defaults.
-    """
+    """Return True if `user` has the given permission key."""
     if not user:
         return False
 
     role = str(user.get("role", "")).strip().lower()
-
-    # Super admin — always has everything
     if role == "super_admin":
         return True
 
     raw = user.get("permissions", "")
 
-    # Already a Python collection
     if isinstance(raw, (list, set, tuple, frozenset)):
         return perm_key in raw
 
     s = str(raw).strip() if raw else ""
 
-    # Empty → fall back to role defaults
     if not s:
         defaults = ROLE_DEFAULT_PERMISSIONS.get(
             role, ROLE_DEFAULT_PERMISSIONS["viewer"])
         return perm_key in defaults
 
-    # JSON list form:  ["view_dashboard", "manage_travelers"]
     if s.startswith("["):
         try:
             return perm_key in set(json.loads(s))
         except Exception:
             pass
 
-    # Pipe-separated form:  view_dashboard|manage_travelers
     return perm_key in {x.strip() for x in s.split("|") if x.strip()}
 
 
@@ -165,11 +151,102 @@ class MainWindowView:
         self.users_tab = None
         self.backup_tab = None
 
+        # NEW: registry keyed by plain tab name (e.g. "Travelers", "Payments")
+        # Used by _on_navigate to find the right tab instance.
+        self.tab_instances = {}
+
         self.tabs_control = None
         self.status_time_label = None
         self._clock_running = False
         self._refresh_running = False
         self.root = None
+
+    # =============================================================================
+    # 7.1.1 — NEW: Navigation callback (called by Dashboard Quick Actions)
+    # =============================================================================
+    def _on_navigate(self, tab_name, action=None):
+        """
+        Called by Dashboard Quick Action buttons.
+
+        Args:
+            tab_name: plain name, e.g. "Travelers", "Payments",
+                      "Invoices", "Reports".
+            action:   optional string like "add" — if set, we call the
+                      target tab's add/open dialog method after switching.
+        """
+        print(f"[NAV] _on_navigate(tab_name='{tab_name}', action={action})")
+
+        try:
+            # ----- Find the tab index in the visible tab list -----
+            if self.tabs_control is None:
+                self._show_snack("⚠️ Tabs not initialized yet")
+                return
+
+            # The visible tab labels include emoji prefixes like
+            # "📊 Dashboard", "👥 Travelers", etc. Build a lookup that
+            # matches by plain-name suffix.
+            idx = None
+            try:
+                tab_bar = self.tabs_control.content.controls[0]
+                visible_labels = [t.label for t in tab_bar.tabs]
+            except Exception:
+                visible_labels = []
+
+            for i, lbl in enumerate(visible_labels):
+                # Strip the leading emoji + space
+                plain = lbl.split(" ", 1)[-1] if " " in lbl else lbl
+                if plain == tab_name:
+                    idx = i
+                    break
+
+            if idx is None:
+                print(f"[NAV] '{tab_name}' not in visible tabs: "
+                      f"{visible_labels}")
+                self._show_snack(
+                    f"⚠️ '{tab_name}' tab is not visible to you")
+                return
+
+            # ----- Switch to the tab -----
+            self.tabs_control.selected_index = idx
+            try:
+                self.page.update()
+            except Exception:
+                pass
+            print(f"[NAV] Switched to '{tab_name}' (index {idx})")
+
+            # ----- Optional: trigger the "add" action on the tab -----
+            if action == "add":
+                tab_inst = self.tab_instances.get(tab_name)
+                if tab_inst is None:
+                    print(f"[NAV] No instance registered for '{tab_name}'")
+                    return
+
+                # Try common add-dialog method names, in order
+                for method_name in (
+                    "open_add_dialog",
+                    "open_create_dialog",
+                    "add_record",
+                    "add_new",
+                    "open_manual_invoice",  # Invoices-specific
+                ):
+                    fn = getattr(tab_inst, method_name, None)
+                    if callable(fn):
+                        try:
+                            fn(None)
+                            print(f"[NAV] Called {tab_name}."
+                                  f"{method_name}()")
+                        except Exception as ex:
+                            print(f"[NAV] {tab_name}.{method_name} "
+                                  f"failed: {ex}")
+                        break
+                else:
+                    print(f"[NAV] No add-method found on '{tab_name}'")
+
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            print(f"[NAV] _on_navigate failed: {ex}")
+            self._show_snack(f"⚠️ Navigation error: {ex}")
 
     # =============================================================================
     # build()
@@ -189,9 +266,8 @@ class MainWindowView:
         user_role = self.current_user.get('role', 'user')
 
         # =====================================================================
-        # HEADER — settings menu, refresh, reload data, logout
+        # HEADER
         # =====================================================================
-
         def open_settings(e):
             if CompanySettingsDialog is None:
                 self._show_snack("⚠️ Settings dialog not available")
@@ -208,7 +284,6 @@ class MainWindowView:
             self._show_snack("🔄 Refreshed")
 
         def reload_click(e):
-            """Force reload every CSV from disk (fixes stale cache)."""
             try:
                 if hasattr(self.db, "reload_all"):
                     self.db.reload_all()
@@ -219,7 +294,6 @@ class MainWindowView:
                 self._show_snack(f"❌ Reload failed: {ex}")
 
         def storage_info_click(e):
-            """Show data folder diagnostics (for cloud debugging)."""
             try:
                 if hasattr(self.db, "get_data_folder_info"):
                     info = self.db.get_data_folder_info()
@@ -352,9 +426,8 @@ class MainWindowView:
             bgcolor=ft.Colors.BLUE_800)
 
         # =====================================================================
-        # TABS — permission-filtered
+        # TABS
         # =====================================================================
-
         def make_placeholder(label, icon):
             return ft.Container(
                 content=ft.Column(
@@ -373,23 +446,37 @@ class MainWindowView:
                 expand=True,
                 padding=50)
 
-        def build_tab_content(cls, label, icon, attr_name):
+        def build_tab_content(cls, plain_label, icon, attr_name):
+            """Instantiate a tab class; register in tab_instances."""
             if cls is None:
-                print(f"[TAB] {label}: no module (placeholder shown)")
-                return make_placeholder(label, icon)
+                print(f"[TAB] {plain_label}: no module (placeholder shown)")
+                return make_placeholder(plain_label, icon)
             try:
-                print(f"[TAB] {label}: building...")
-                instance = cls(self.page, self.db, self.current_user)
+                print(f"[TAB] {plain_label}: building...")
+
+                # NEW: pass on_navigate for Dashboard, so its quick
+                # action buttons can switch tabs.
+                if cls is DashboardTab:
+                    instance = cls(
+                        self.page, self.db, self.current_user,
+                        on_navigate=self._on_navigate)
+                else:
+                    instance = cls(
+                        self.page, self.db, self.current_user)
+
                 setattr(self, attr_name, instance)
+                # NEW: register in tab_instances for navigation lookups
+                self.tab_instances[plain_label] = instance
+
                 content = instance.build()
-                print(f"[TAB] {label}: ✅ SUCCESS "
+                print(f"[TAB] {plain_label}: ✅ SUCCESS "
                       f"({type(content).__name__})")
                 return content
             except Exception as ex:
                 import traceback
-                print(f"[TAB] {label}: ❌ FAILED: {ex}")
+                print(f"[TAB] {plain_label}: ❌ FAILED: {ex}")
                 traceback.print_exc()
-                return make_placeholder(f"{label} (error)", icon)
+                return make_placeholder(f"{plain_label} (error)", icon)
 
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
@@ -489,7 +576,7 @@ class MainWindowView:
         return self.root
 
     # =============================================================================
-    # Live clock (1-second interval)
+    # Live clock
     # =============================================================================
     async def _clock_loop(self):
         if self._clock_running:
@@ -511,7 +598,7 @@ class MainWindowView:
             self._clock_running = False
 
     # =============================================================================
-    # Auto-refresh every 30s — refreshes ALL visible tabs
+    # Auto-refresh every 30s
     # =============================================================================
     async def _auto_refresh_loop(self):
         if self._refresh_running:
@@ -577,15 +664,21 @@ class MainWindowView:
         self.page.show_dialog(dialog)
 
     # =============================================================================
-    # SnackBar helper
+    # SnackBar helper — Flet 1.0 web-safe version
     # =============================================================================
     def _show_snack(self, message):
         try:
-            self.page.snack_bar = ft.SnackBar(content=ft.Text(message))
-            self.page.snack_bar.open = True
-            self.page.update()
-        except Exception as ex:
-            print(f"[SNACK] {message} ({ex})")
+            self.page.show_dialog(
+                ft.SnackBar(content=ft.Text(message)))
+        except Exception:
+            # Legacy fallback
+            try:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(message))
+                self.page.snack_bar.open = True
+                self.page.update()
+            except Exception as ex:
+                print(f"[SNACK] {message} ({ex})")
 
 
 # =================================================================================

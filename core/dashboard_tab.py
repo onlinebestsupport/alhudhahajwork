@@ -1,22 +1,13 @@
 # =================================================================================
-# core/dashboard_tab.py — DashboardTab (Flet 1.0 — fully corrected, self-contained)
+# core/dashboard_tab.py — DashboardTab (Flet 1.0 — fully corrected)
 # =================================================================================
-# PATCHES APPLIED (v1.1):
-#   6.1.A — refresh()              : force DB reload before reading (fresh cache)
-#   6.1.B — _get_sales_last_days() : read via db.get_payments() so chart data
-#                                    is always current, never from a stale
-#                                    DataFrame attribute
-#   6.1.C — update_activity_log()  : read via db.get_activity_log() when
-#                                    available, so recent activity reflects
-#                                    actions taken in other tabs (invoice
-#                                    modify, receipt delete, etc.)
-#
-# CASCADE NOTE (dashboard is the reader, not writer):
-#   This tab aggregates from travelers, batches, payments, invoices, and
-#   receipts. Every one of those tabs now flushes CSV on save. Adding
-#   db.reload() at the top of refresh() guarantees the dashboard always
-#   shows current totals even if the user landed here after editing
-#   another tab without a hard refresh.
+# PATCHES APPLIED (v1.2):
+#   6.1.A — refresh()              : force DB reload before reading
+#   6.1.B — _get_sales_last_days() : read via db.get_payments()
+#   6.1.C — update_activity_log()  : read via db.get_activity_log()
+#   6.1.D — Quick Action buttons now navigate to the correct tab
+#           (and optionally open the "add" dialog on that tab).
+#           Requires MainWindowView to pass on_navigate callback.
 # =================================================================================
 
 import asyncio
@@ -47,7 +38,7 @@ except Exception:
 
 
 # =================================================================================
-# 6.0 — Inline helper (replaces core.helpers.format_currency_indian)
+# 6.0 — Inline helper
 # =================================================================================
 def format_currency_indian(amount):
     if amount is None or (isinstance(amount, float) and math.isnan(amount)):
@@ -76,18 +67,24 @@ def format_currency_indian(amount):
 # =================================================================================
 class DashboardTab:
     """Dashboard tab. Interface:
-       __init__(page, db, current_user)
+       __init__(page, db, current_user, on_navigate=None)
        .build()   → returns a Flet control
        .refresh() → reload data
+
+       on_navigate: callback(tab_name, action=None) → switches to a tab.
+                    tab_name examples: "Travelers", "Payments",
+                    "Invoices", "Reports".
+                    action examples: "add", None.
     """
 
     # -----------------------------------------------------------------------------
     # 6.1.1 — __init__
     # -----------------------------------------------------------------------------
-    def __init__(self, page: ft.Page, db, current_user):
+    def __init__(self, page: ft.Page, db, current_user, on_navigate=None):
         self.page = page
         self.db = db
         self.current_user = current_user
+        self.on_navigate = on_navigate
 
         self.date_label = None
         self.time_label = None
@@ -144,7 +141,6 @@ class DashboardTab:
     # 6.1.2 — setup_ui
     # -----------------------------------------------------------------------------
     def setup_ui(self):
-        # ---- Company name (defensive — read from db) ----
         company_name = "Alhudha Haj Travel"
         try:
             if not self.db.company_settings.empty:
@@ -154,7 +150,6 @@ class DashboardTab:
         except Exception:
             pass
 
-        # ---- Tax rates ----
         gst_rate, tcs_rate = 18.0, 0.1
         try:
             tax_file = self.db.data_dir / "tax_settings.csv"
@@ -166,7 +161,6 @@ class DashboardTab:
         except Exception:
             pass
 
-        # ---- HEADER ----
         self.date_label = ft.Text("", size=10, weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.YELLOW_300)
         self.time_label = ft.Text("", size=20, weight=ft.FontWeight.BOLD,
@@ -224,7 +218,6 @@ class DashboardTab:
             border_radius=15,
         )
 
-        # ---- STAT CARDS ----
         card_configs = [
             ("total_travelers",        "👥", "Total Travelers",   "#3498db"),
             ("active_batches",         "📦", "Active Batches",    "#2ecc71"),
@@ -249,7 +242,6 @@ class DashboardTab:
             spacing=12,
         )
 
-        # ---- QUICK ACTIONS ----
         def _action_btn(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD),
@@ -278,10 +270,8 @@ class DashboardTab:
             padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
-        # ---- CHART ----
         chart_section = self._build_chart_section()
 
-        # ---- TOP BATCHES ----
         self.top_batches_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Rank")),
@@ -312,7 +302,6 @@ class DashboardTab:
             padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
-        # ---- BATCH SUMMARY ----
         self.batch_summary_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Batch")),
@@ -344,7 +333,6 @@ class DashboardTab:
             padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
-        # ---- ACTIVITY LOG ----
         self.activity_table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Time")),
@@ -374,7 +362,6 @@ class DashboardTab:
             padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
-        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -390,10 +377,9 @@ class DashboardTab:
         self._start_clock()
 
     # -----------------------------------------------------------------------------
-    # 6.1.3 — Clock (safe start with fallbacks)
+    # 6.1.3 — Clock
     # -----------------------------------------------------------------------------
     def _start_clock(self):
-        # Preferred: asyncio task via page.run_task
         try:
             if hasattr(self.page, "run_task") and self.page.run_task:
                 self.page.run_task(self._clock_loop)
@@ -401,7 +387,6 @@ class DashboardTab:
         except Exception as e:
             print(f"[CLOCK] page.run_task failed: {e}")
 
-        # Fallback: background thread
         try:
             t = threading.Thread(target=self._clock_thread_loop, daemon=True)
             t.start()
@@ -543,15 +528,10 @@ class DashboardTab:
         )
 
     # -----------------------------------------------------------------------------
-    # 6.1.6 — REFRESH  (PATCH 6.1.A: force DB reload before reading)
+    # 6.1.6 — REFRESH
     # -----------------------------------------------------------------------------
     def refresh(self):
         try:
-            # ---- PATCH 6.1.A: fresh cache reload ----
-            # The user may have just edited a batch price, generated an
-            # invoice, or recorded a payment in another tab. Re-hydrate
-            # the DB so every get_* call and DataFrame attribute below
-            # returns current data.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -599,10 +579,8 @@ class DashboardTab:
                         inv.get("rounded_total",
                                 inv.get("total_amount", 0)) or 0)
 
-            # ---- Update stat cards ----
             self._set_stat("total_travelers", f"{len(travelers):,}")
 
-            # ★ Case-insensitive active batch count ★
             _active_statuses = {"open", "closing soon"}
             active_count = len([
                 b for b in batches
@@ -740,14 +718,10 @@ class DashboardTab:
                 ]))
 
     # -----------------------------------------------------------------------------
-    # 6.1.9 — ACTIVITY LOG  (PATCH 6.1.C: prefer db.get_activity_log())
+    # 6.1.9 — ACTIVITY LOG
     # -----------------------------------------------------------------------------
     def update_activity_log(self):
         try:
-            # ---- PATCH 6.1.C: prefer DB accessor so we always see the
-            # latest log — including entries written by other tabs
-            # (invoice modify, receipt delete, batch edit) since the last
-            # full page reload ----
             log_df = None
             if hasattr(self.db, "get_activity_log"):
                 try:
@@ -885,12 +859,9 @@ class DashboardTab:
             print(f"matplotlib chart error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # 6.1.11 — _get_sales_last_days  (PATCH 6.1.B: read via accessor)
+    # 6.1.11 — _get_sales_last_days
     # -----------------------------------------------------------------------------
     def _get_sales_last_days(self, days):
-        # ---- PATCH 6.1.B: read via get_payments() so we never touch a
-        # stale in-memory DataFrame attribute. Falls back to direct
-        # access if the accessor is missing (older DB schema). ----
         payments = None
         if hasattr(self.db, "get_payments"):
             try:
@@ -922,27 +893,55 @@ class DashboardTab:
         return daily
 
     # -----------------------------------------------------------------------------
-    # 6.1.12 — QUICK ACTIONS
+    # 6.1.12 — QUICK ACTIONS  ★ PATCH 6.1.D
     # -----------------------------------------------------------------------------
-    def _not_ready(self, feature):
-        def handler(e):
+    def _goto_tab(self, tab_name, action=None):
+        """
+        Navigate the MainWindow to a specific tab.
+
+        `tab_name` — display name shown in the nav bar, e.g. "Travelers".
+        `action`   — optional action for the target tab, e.g. "add".
+
+        The MainWindow must pass us an `on_navigate` callback at init
+        time. If it's missing, we show a helpful snackbar.
+        """
+        print(f"[DASHBOARD] QuickAction → tab='{tab_name}' action={action}")
+
+        if self.on_navigate is None:
             self.page.show_dialog(ft.SnackBar(
-                content=ft.Text(f"⏳ {feature} will be available soon"),
+                content=ft.Text(
+                    f"⚠️ Please open the '{tab_name}' tab from the top menu."
+                ),
                 bgcolor=ft.Colors.ORANGE_700,
             ))
-        return handler
+            return
+
+        try:
+            self.on_navigate(tab_name, action)
+        except TypeError:
+            # Callback only takes tab_name
+            try:
+                self.on_navigate(tab_name)
+            except Exception as ex:
+                print(f"[DASHBOARD] on_navigate failed: {ex}")
+        except Exception as ex:
+            print(f"[DASHBOARD] on_navigate failed: {ex}")
+            self.page.show_dialog(ft.SnackBar(
+                content=ft.Text(f"⚠️ Navigation error: {ex}"),
+                bgcolor=ft.Colors.RED_600,
+            ))
 
     def add_traveler(self, e):
-        self._not_ready("Add Traveler")(e)
+        self._goto_tab("Travelers", "add")
 
     def record_payment(self, e):
-        self._not_ready("Record Payment")(e)
+        self._goto_tab("Payments", "add")
 
     def create_invoice(self, e):
-        self._not_ready("Create Invoice")(e)
+        self._goto_tab("Invoices", "add")
 
     def generate_report(self, e):
-        self._not_ready("Generate Report")(e)
+        self._goto_tab("Reports")
 
 
 # =================================================================================
