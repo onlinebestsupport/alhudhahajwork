@@ -1,0 +1,2 @@
+id,invoice_no,traveler_id,batch_id,amount,gst_percentage,gst_amount,tcs_percentage,tcs_amount,total_amount,rounded_total,issue_date,due_date,status,notes,discount_percentage,discount_amount,taxable_value
+HAJ/INV/2027/010,INV-202609-0001,HAJ/TRV/2027/002,HAJ/BCH/2027/001,830999.0,5.0,40616.25,2.0,17058.825,870000.075,870000.0,2026-09-19T15:32:40.529193,2026-10-19T15:32:40.529193,paid,,2.247174786010573,18674.0,812325.0

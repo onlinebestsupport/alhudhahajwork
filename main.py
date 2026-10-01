@@ -1,15 +1,12 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.0):
-#   • Switched from ft.run() to FastAPI + uvicorn for proper file download
-#     support via FileResponse + Content-Disposition.
-#   • Added /download/<filename> endpoint that serves files from
-#     static/downloads/ with forced download headers.
-#   • Destroyed-session patch applied at import time (narrow — only
-#     swallows the harmless post-tab-close RuntimeError).
-#   • Cloud-aware startup banner.
-#   • Graceful SIGTERM handling.
+# PATCHES APPLIED (v2.1):
+#   • FastAPI + uvicorn (proper file download support)
+#   • /download/{filename} endpoint with Content-Disposition
+#   • SEED: on boot, populate empty volume from bundled seed_data/
+#   • Destroyed-session patch at import time (narrow)
+#   • Cloud-aware startup banner + graceful SIGTERM
 # =================================================================================
 
 import flet as ft
@@ -21,6 +18,7 @@ import os
 import sys
 import signal
 import logging
+import shutil
 from datetime import datetime
 
 from core.helpers import get_app_base_path
@@ -59,7 +57,7 @@ def _boot_log(msg: str):
 
 
 # =================================================================================
-# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors ONLY
+# 21.1.5 — MONKEY-PATCH: swallow destroyed-session errors only
 # =================================================================================
 _PATCH_INSTALLED = False
 
@@ -111,8 +109,42 @@ class AppState:
     db_error = ""
 
 
+def _seed_volume_if_empty(base_path: str):
+    """
+    If the data folder (usually a Railway Volume) is missing CSVs,
+    copy them from the bundled seed_data/ folder inside the image.
+    Safe to run on every startup — skips files that already exist.
+    """
+    try:
+        data_dir = os.path.join(base_path, "data")
+        seed_dir = os.path.join(base_path, "seed_data")
+        os.makedirs(data_dir, exist_ok=True)
+
+        if not os.path.isdir(seed_dir):
+            print(f"[SEED] No seed_data folder at {seed_dir}", flush=True)
+            return
+
+        seeded = []
+        for fname in os.listdir(seed_dir):
+            if not fname.endswith(".csv"):
+                continue
+            dest = os.path.join(data_dir, fname)
+            if os.path.exists(dest):
+                continue
+            shutil.copy2(os.path.join(seed_dir, fname), dest)
+            seeded.append(fname)
+
+        if seeded:
+            print(f"[SEED] Copied {len(seeded)} file(s) to {data_dir}: "
+                  f"{seeded}", flush=True)
+        else:
+            print(f"[SEED] Volume already populated — no seeding needed",
+                  flush=True)
+    except Exception as e:
+        print(f"[SEED] Failed: {e}", flush=True)
+
+
 def _init_db():
-    """Initialize database with retry + backoff."""
     import time
     max_retries = 3
     for attempt in range(1, max_retries + 1):
@@ -268,12 +300,9 @@ def _build_app() -> FastAPI:
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
-    # ---- File download endpoint ----
-    # This is what send_file_to_user() will return URLs for.
-    # FileResponse + Content-Disposition forces browser download.
     @app.get("/download/{filename}")
     async def download_file(filename: str):
-        safe_name = os.path.basename(filename)  # prevent path traversal
+        safe_name = os.path.basename(filename)
         filepath = os.path.join(downloads_dir, safe_name)
         if not os.path.exists(filepath):
             _boot_log(f"Download 404: {filepath}")
@@ -287,26 +316,23 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    # ---- Flet app mounted at root ----
-    # assets_dir is still passed for images/fonts used inside the UI,
-    # but downloads now go through /download/ instead of /assets/.
     app.mount("/", flet_fastapi.app(flet_main, assets_dir=static_dir))
-
     return app
 
 
 # =================================================================================
 # 21.5 — ENTRY POINT
 # =================================================================================
-# Init DB and app at module level so uvicorn can import `app`
-_init_db()
-_install_signal_handlers()
-
+# Resolve base path FIRST (handles the /app/data → /app correction)
 base_path = get_app_base_path()
+
+# Ensure dirs exist
 static_dir = os.path.join(base_path, "static")
 os.makedirs(static_dir, exist_ok=True)
 os.makedirs(os.path.join(static_dir, "downloads"), exist_ok=True)
+os.makedirs(os.path.join(base_path, "data"), exist_ok=True)
 
+# Print startup banner
 _boot_log(f"Launching — host={APP_HOST} port={APP_PORT} platform={PLATFORM}")
 
 print("=" * 66, flush=True)
@@ -324,8 +350,16 @@ if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
 print(f"🩹  Patch      : {'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
 print("=" * 66, flush=True)
 
-# `app` must be module-level for uvicorn
+# SEED the volume if empty
+_seed_volume_if_empty(base_path)
+
+# Initialize DB
+_init_db()
+_install_signal_handlers()
+
+# Build FastAPI app (uvicorn imports `app` from this module)
 app = _build_app()
+
 
 if __name__ == "__main__":
     uvicorn.run(

@@ -1,13 +1,11 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0.3 + FastAPI, cloud-ready)
 # =================================================================================
-# PATCHES APPLIED (v3.4):
-#   • Page.launch_url() was REMOVED in Flet 1.0.0. Replacement is
-#     ft.UrlLauncher().launch_url() — an async method.
-#   • Parameter renamed: web_window_name → web_only_window_name
-#   • Uses page.run_task() to schedule the async launch_url call.
-#   • Popup blocker workaround: uses web_only_window_name="_self" which
-#     navigates the current tab (not a new popup), so the browser allows it.
+# PATCHES APPLIED (v3.5):
+#   • get_app_base_path() strips trailing "/data" so RAILWAY_VOLUME_MOUNT_PATH
+#     = /app/data doesn't become /app/data/data downstream.
+#   • _trigger_download_js uses ft.UrlLauncher() (Flet 1.0.3 API).
+#   • send_file_to_user copies into /app/static/downloads and returns None.
 # =================================================================================
 
 import os
@@ -19,14 +17,29 @@ import inspect
 from datetime import datetime
 
 
+# =================================================================================
+# get_app_base_path — resolve the project root (cloud-aware, no double-path)
+# =================================================================================
 def get_app_base_path():
-    """Resolve project root (cloud-aware)."""
+    """
+    Resolve project root (cloud-aware).
+
+    If RAILWAY_VOLUME_MOUNT_PATH points to a folder named 'data'
+    (e.g. /app/data), return its PARENT (/app) so downstream
+    os.path.join(base, "data") still resolves to the volume mount.
+    Prevents the /app/data/data double-path bug.
+    """
     for env_key in ("RAILWAY_VOLUME_MOUNT_PATH", "DATA_ROOT"):
         candidate = os.environ.get(env_key)
         if candidate and os.path.isdir(candidate):
-            return candidate
+            normalized = os.path.normpath(candidate)
+            if os.path.basename(normalized) == "data":
+                return os.path.dirname(normalized)
+            return normalized
+
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
+
     here = os.path.dirname(os.path.abspath(__file__))
     cur = here
     for _ in range(6):
@@ -40,6 +53,9 @@ def get_app_base_path():
     return os.path.dirname(here)
 
 
+# =================================================================================
+# number_to_words_indian
+# =================================================================================
 def number_to_words_indian(number):
     """Convert integer to Indian English words (Rupees ... Only)."""
     try:
@@ -90,6 +106,9 @@ def number_to_words_indian(number):
     return (" ".join(parts).strip() or "Zero") + " Rupees Only"
 
 
+# =================================================================================
+# format_currency_indian
+# =================================================================================
 def format_currency_indian(amount):
     """Return a string like '₹ 12,34,567.89'."""
     if amount is None:
@@ -118,6 +137,9 @@ def format_currency_indian(amount):
     return f"-{out}" if negative else out
 
 
+# =================================================================================
+# round_as_per_rules
+# =================================================================================
 def round_as_per_rules(value):
     """Round half up to the nearest integer."""
     try:
@@ -131,23 +153,19 @@ def round_as_per_rules(value):
 
 
 # =================================================================================
-# _trigger_download_js — schedules the browser download
+# _trigger_download_js — schedules the browser download (Flet 1.0.3)
 # =================================================================================
 def _trigger_download_js(page, url):
     """
-    Trigger a browser download for `url`.
+    Trigger a browser download via ft.UrlLauncher().launch_url().
 
-    In Flet 1.0.3:
-      • page.launch_url() was REMOVED
-      • Replacement is ft.UrlLauncher().launch_url() — an async method
-      • Parameter is web_only_window_name (not web_window_name)
+    Flet 1.0.3 removed Page.launch_url(). The replacement is:
+        launcher = ft.UrlLauncher()
+        await launcher.launch_url(url, web_only_window_name="_self")
 
-    The UrlLauncher is created fresh (Flet removed page.url_launcher).
-    _self target navigates the current tab — no popup blocker.
-
-    Because the FastAPI /download endpoint sends Content-Disposition:
-    attachment, navigating to the URL downloads the file and keeps the
-    user on the current page.
+    Because the FastAPI /download endpoint sets Content-Disposition:
+    attachment, navigating the current tab downloads the file and stays
+    on the app page (no popup blocker).
     """
     import flet as ft
 
@@ -156,6 +174,7 @@ def _trigger_download_js(page, url):
         return False
 
     async def _do_launch():
+        # Attempt 1: _self (current tab — no popup)
         try:
             launcher = ft.UrlLauncher()
             await launcher.launch_url(
@@ -170,20 +189,7 @@ def _trigger_download_js(page, url):
         except Exception as ex:
             print(f"[download] _self exception: {ex}")
 
-        # Fallback 1: try with _blank
-        try:
-            launcher = ft.UrlLauncher()
-            await launcher.launch_url(
-                url,
-                mode=ft.LaunchMode.EXTERNAL_APPLICATION,
-                web_only_window_name="_blank",
-            )
-            print(f"[download] ✅ UrlLauncher(_blank) OK: {url}")
-            return
-        except Exception as ex:
-            print(f"[download] _blank exception: {ex}")
-
-        # Fallback 2: try default (no mode)
+        # Attempt 2: default (no explicit target)
         try:
             launcher = ft.UrlLauncher()
             await launcher.launch_url(url)
@@ -194,10 +200,9 @@ def _trigger_download_js(page, url):
 
         print("[download] ❌ all UrlLauncher methods failed")
 
-    # ---- Schedule via page.run_task (Flet 1.0.x official scheduler) ----
     run_task = getattr(page, "run_task", None)
     if run_task is None:
-        print("[download] ⚠️ page.run_task MISSING — trying sync")
+        print("[download] ⚠️ page.run_task MISSING — trying sync fallback")
         try:
             launcher = ft.UrlLauncher()
             result = launcher.launch_url(
@@ -234,13 +239,13 @@ def send_file_to_user(page, filepath, label="Download"):
     Cloud-aware file delivery.
 
     Web mode:
-      1. Copy the file into <base>/static/downloads/
-      2. Build an absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
+      1. Copy file into <base>/static/downloads/
+      2. Build absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
       3. Trigger browser download via UrlLauncher
-      4. Return None (so callers' `if url:` blocks skip double-launch)
+      4. Return None (callers' `if url:` blocks skip double-launch)
 
     Desktop:
-      • Launch the file with the OS default app.
+      • Set page.url to file:// URI
     """
     if not filepath or not os.path.exists(filepath):
         print(f"[send_file_to_user] file missing: {filepath}")
