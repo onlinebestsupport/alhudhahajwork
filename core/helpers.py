@@ -1,6 +1,12 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0.0, cloud-ready)
 # =================================================================================
+# PATCHES APPLIED (v1.2):
+#   • send_file_to_user returns /assets/downloads/... (Flet 1.0 asset URL)
+#     Flet 1.0 serves `assets_dir` at /assets/, NOT /static/. The folder on
+#     disk is still called "static/" (that's just the source dir name), but
+#     the URL the browser fetches must be prefixed with /assets/.
+# =================================================================================
 
 import os
 import sys
@@ -156,8 +162,9 @@ def send_file_to_user(page, filepath, label="Download"):
     Cloud-aware file delivery.
 
     On web (Railway / Render / Fly):
-      • Copy the file into <base>/static/downloads/
-      • Return a URL path like "/static/downloads/foo.pdf"
+      • Copy the file into <base>/static/downloads/  (source folder)
+      • Return a URL path like "/assets/downloads/foo.pdf"
+        (Flet 1.0 serves `assets_dir` at /assets/, NOT /static/)
       • Caller then does page.launch_url(url) → browser downloads it
 
     On desktop:
@@ -168,6 +175,7 @@ def send_file_to_user(page, filepath, label="Download"):
     if not filepath or not os.path.exists(filepath):
         return None
 
+    # ---- Detect web mode ----
     is_web = bool(
         os.getenv("PORT")
         or os.getenv("RAILWAY_ENVIRONMENT")
@@ -184,6 +192,7 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
+            # Avoid collision: if a different-size file exists, add timestamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -193,12 +202,18 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            return f"/static/downloads/{fname}"
+            # ─────────────────────────────────────────────────────────
+            # CRITICAL: Flet 1.0 serves `assets_dir` at /assets/, NOT
+            # /static/. The folder on disk is still called "static/",
+            # but the URL the browser must request is /assets/...
+            # ─────────────────────────────────────────────────────────
+            return f"/assets/downloads/{fname}"
 
         except Exception as ex:
             print(f"[send_file_to_user] web copy failed: {ex}")
             return None
 
+    # ---- Desktop fallback ----
     try:
         return f"file://{os.path.abspath(filepath)}"
     except Exception as ex:
