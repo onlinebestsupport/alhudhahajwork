@@ -1,13 +1,11 @@
 # =================================================================================
-# core/dashboard_tab.py — DashboardTab (Flet 1.0 — fully corrected)
+# core/dashboard_tab.py — DashboardTab (Flet 1.0, mobile-responsive)
 # =================================================================================
-# PATCHES APPLIED (v1.2):
-#   6.1.A — refresh()              : force DB reload before reading
-#   6.1.B — _get_sales_last_days() : read via db.get_payments()
-#   6.1.C — update_activity_log()  : read via db.get_activity_log()
-#   6.1.D — Quick Action buttons now navigate to the correct tab
-#           (and optionally open the "add" dialog on that tab).
-#           Requires MainWindowView to pass on_navigate callback.
+# v1.3 — Mobile-friendly layout:
+#   • Header stacks cleanly on narrow screens
+#   • Stat cards use ResponsiveRow (2 per row mobile, 4 per row desktop)
+#   • Quick action buttons stack full-width on mobile
+#   • Removed problematic gradients that broke on some mobile browsers
 # =================================================================================
 
 import asyncio
@@ -19,8 +17,6 @@ from datetime import datetime, timedelta
 
 import flet as ft
 
-# ---- Optional chart engine ----
-_CHART_ENGINE = None
 try:
     import flet_charts as fch
     _CHART_ENGINE = "flet_charts"
@@ -37,9 +33,6 @@ except Exception:
     MatplotlibChart = None
 
 
-# =================================================================================
-# 6.0 — Inline helper
-# =================================================================================
 def format_currency_indian(amount):
     if amount is None or (isinstance(amount, float) and math.isnan(amount)):
         return "₹ 0.00"
@@ -55,31 +48,15 @@ def format_currency_indian(amount):
         last_three = integer_part[-3:]
         remaining = integer_part[:-3]
         remaining = ",".join(
-            [remaining[max(i - 2, 0):i] for i in range(len(remaining), 0, -2)][::-1]
-        )
+            [remaining[max(i - 2, 0):i]
+             for i in range(len(remaining), 0, -2)][::-1])
         integer_part = f"{remaining},{last_three}"
     formatted = f"₹ {integer_part}.{fractional_part}"
     return f"-{formatted}" if is_negative else formatted
 
 
-# =================================================================================
-# 6.1 — CLASS: DashboardTab
-# =================================================================================
 class DashboardTab:
-    """Dashboard tab. Interface:
-       __init__(page, db, current_user, on_navigate=None)
-       .build()   → returns a Flet control
-       .refresh() → reload data
 
-       on_navigate: callback(tab_name, action=None) → switches to a tab.
-                    tab_name examples: "Travelers", "Payments",
-                    "Invoices", "Reports".
-                    action examples: "add", None.
-    """
-
-    # -----------------------------------------------------------------------------
-    # 6.1.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user, on_navigate=None):
         self.page = page
         self.db = db
@@ -137,9 +114,9 @@ class DashboardTab:
         except Exception:
             return ""
 
-    # -----------------------------------------------------------------------------
-    # 6.1.2 — setup_ui
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # setup_ui
+    # =============================================================================
     def setup_ui(self):
         company_name = "Alhudha Haj Travel"
         try:
@@ -163,61 +140,72 @@ class DashboardTab:
 
         self.date_label = ft.Text("", size=10, weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.YELLOW_300)
-        self.time_label = ft.Text("", size=20, weight=ft.FontWeight.BOLD,
+        self.time_label = ft.Text("", size=16, weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
         self.update_time()
 
+        # ---- Mobile-aware header ----
         header = ft.Container(
-            content=ft.Row(
+            content=ft.Column(
                 controls=[
-                    ft.Text("🕋", size=38),
-                    ft.Column(
+                    ft.Row(
                         controls=[
-                            ft.Text(company_name, size=18,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=ft.Colors.WHITE),
-                            ft.Text("🕌 Pilgrimage & Travel Management System",
-                                    size=10, color=ft.Colors.BLUE_100),
+                            ft.Text("🕋", size=28),
+                            ft.Column(
+                                controls=[
+                                    ft.Text(company_name, size=14,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=ft.Colors.WHITE,
+                                            no_wrap=True,
+                                            overflow=ft.TextOverflow.ELLIPSIS),
+                                    ft.Text("Pilgrimage & Travel System",
+                                            size=9,
+                                            color=ft.Colors.BLUE_100),
+                                ],
+                                spacing=2, expand=True,
+                            ),
+                            ft.Container(
+                                content=ft.Column(
+                                    controls=[self.date_label,
+                                              self.time_label],
+                                    spacing=0,
+                                    horizontal_alignment=ft.CrossAxisAlignment.END,
+                                ),
+                                padding=ft.Padding.symmetric(
+                                    horizontal=10, vertical=4),
+                                bgcolor=ft.Colors.with_opacity(0.25,
+                                                               ft.Colors.BLACK),
+                                border_radius=10,
+                            ),
                         ],
-                        spacing=2, expand=True,
+                        spacing=10,
                     ),
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.date_label, self.time_label],
-                            spacing=0,
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        ),
-                        padding=ft.Padding.symmetric(horizontal=14, vertical=6),
-                        bgcolor=ft.Colors.with_opacity(0.25, ft.Colors.BLACK),
-                        border_radius=12,
-                    ),
-                    ft.Container(
-                        content=ft.Column(
+                        content=ft.Row(
                             controls=[
-                                ft.Text("TAX RATES", size=9,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=ft.Colors.YELLOW_300),
-                                ft.Text(f"GST {gst_rate}%", size=13,
+                                ft.Text(f"GST {gst_rate}%", size=10,
                                         weight=ft.FontWeight.BOLD,
                                         color=ft.Colors.WHITE),
+                                ft.Container(width=8),
                                 ft.Text(f"TCS {tcs_rate}%", size=10,
                                         color=ft.Colors.BLUE_100),
                             ],
-                            spacing=0,
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=4,
                         ),
-                        padding=ft.Padding.symmetric(horizontal=12, vertical=6),
-                        bgcolor=ft.Colors.with_opacity(0.25, ft.Colors.BLACK),
-                        border_radius=12,
+                        padding=ft.Padding.symmetric(horizontal=10, vertical=4),
+                        bgcolor=ft.Colors.with_opacity(0.25,
+                                                       ft.Colors.BLACK),
+                        border_radius=10,
                     ),
                 ],
-                spacing=15,
+                spacing=8,
             ),
-            padding=ft.Padding.symmetric(horizontal=20, vertical=15),
+            padding=ft.Padding.symmetric(horizontal=14, vertical=12),
             bgcolor="#1a252f",
             border_radius=15,
         )
 
+        # ---- Stat cards ----
         card_configs = [
             ("total_travelers",        "👥", "Total Travelers",   "#3498db"),
             ("active_batches",         "📦", "Active Batches",    "#2ecc71"),
@@ -234,64 +222,97 @@ class DashboardTab:
             card = self._create_card(icon, title, color, key)
             (cards_row1 if i < 4 else cards_row2).append(card)
 
+        # ---- Mobile-friendly: 2 per row on xs, 4 per row on md+ ----
         cards_section = ft.Column(
             controls=[
-                ft.Row(controls=cards_row1, spacing=12),
-                ft.Row(controls=cards_row2, spacing=12),
+                ft.ResponsiveRow(
+                    controls=[self._wrap_card(c) for c in cards_row1],
+                    spacing=8, run_spacing=8),
+                ft.ResponsiveRow(
+                    controls=[self._wrap_card(c) for c in cards_row2],
+                    spacing=8, run_spacing=8),
             ],
-            spacing=12,
+            spacing=10,
         )
 
+        # ---- Quick Actions ----
         def _action_btn(label, color, handler):
             return ft.Button(
-                content=ft.Text(label, size=12, weight=ft.FontWeight.BOLD),
-                on_click=handler, height=45,
-                bgcolor=color, color=ft.Colors.WHITE,
+                content=ft.Text(label, size=12,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                on_click=handler,
+                height=44,
+                bgcolor=color,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=10)),
             )
 
         actions_container = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Text("⚡ Quick Actions", size=15,
+                    ft.Text("⚡ Quick Actions", size=14,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.BLUE_GREY_800),
-                    ft.Row(
+                    ft.ResponsiveRow(
                         controls=[
-                            _action_btn("➕ Add Traveler",    "#3498db", self.add_traveler),
-                            _action_btn("💰 Record Payment",  "#27ae60", self.record_payment),
-                            _action_btn("📄 Create Invoice",  "#f39c12", self.create_invoice),
-                            _action_btn("📊 Generate Report", "#9b59b6", self.generate_report),
+                            ft.Container(
+                                content=_action_btn("➕ Add Traveler",
+                                                    "#3498db",
+                                                    self.add_traveler),
+                                col={"xs": 12, "sm": 6, "md": 3}),
+                            ft.Container(
+                                content=_action_btn("💰 Record Payment",
+                                                    "#27ae60",
+                                                    self.record_payment),
+                                col={"xs": 12, "sm": 6, "md": 3}),
+                            ft.Container(
+                                content=_action_btn("📄 Create Invoice",
+                                                    "#f39c12",
+                                                    self.create_invoice),
+                                col={"xs": 12, "sm": 6, "md": 3}),
+                            ft.Container(
+                                content=_action_btn("📊 Generate Report",
+                                                    "#9b59b6",
+                                                    self.generate_report),
+                                col={"xs": 12, "sm": 6, "md": 3}),
                         ],
-                        spacing=12, wrap=True,
+                        spacing=8, run_spacing=8,
                     ),
                 ],
                 spacing=10,
             ),
-            padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
         chart_section = self._build_chart_section()
 
+        # ---- Top Batches ----
         self.top_batches_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Rank")),
-                ft.DataColumn(ft.Text("Batch Name")),
-                ft.DataColumn(ft.Text("Type")),
-                ft.DataColumn(ft.Text("Booked")),
-                ft.DataColumn(ft.Text("Available")),
+                ft.DataColumn(ft.Text("Rank", size=11)),
+                ft.DataColumn(ft.Text("Batch Name", size=11)),
+                ft.DataColumn(ft.Text("Type", size=11)),
+                ft.DataColumn(ft.Text("Booked", size=11)),
+                ft.DataColumn(ft.Text("Available", size=11)),
             ],
             rows=[], heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=40, data_row_min_height=40, column_spacing=20,
+            heading_row_height=38, data_row_min_height=38,
+            column_spacing=12,
         )
         top_batches_section = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Text("🏆 Top Batches by Bookings", size=14,
+                    ft.Text("🏆 Top Batches by Bookings", size=13,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.BLUE_GREY_800),
                     ft.Container(
-                        content=ft.Column([self.top_batches_table],
-                                          scroll=ft.ScrollMode.AUTO),
+                        content=ft.Row(
+                            [self.top_batches_table],
+                            scroll=ft.ScrollMode.ADAPTIVE,
+                        ),
                         bgcolor=ft.Colors.GREY_50, border_radius=10,
                         border=ft.Border.all(1, ft.Colors.GREY_300),
                         padding=8,
@@ -299,30 +320,34 @@ class DashboardTab:
                 ],
                 spacing=10,
             ),
-            padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
+        # ---- Batch Summary ----
         self.batch_summary_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Batch")),
-                ft.DataColumn(ft.Text("Type")),
-                ft.DataColumn(ft.Text("Year")),
-                ft.DataColumn(ft.Text("Seats")),
-                ft.DataColumn(ft.Text("Booked")),
-                ft.DataColumn(ft.Text("Available")),
+                ft.DataColumn(ft.Text("Batch", size=11)),
+                ft.DataColumn(ft.Text("Type", size=11)),
+                ft.DataColumn(ft.Text("Year", size=11)),
+                ft.DataColumn(ft.Text("Seats", size=11)),
+                ft.DataColumn(ft.Text("Booked", size=11)),
+                ft.DataColumn(ft.Text("Available", size=11)),
             ],
             rows=[], heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=40, data_row_min_height=38, column_spacing=20,
+            heading_row_height=38, data_row_min_height=36,
+            column_spacing=12,
         )
         batch_summary_section = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Text("📊 Batch Summary", size=14,
+                    ft.Text("📊 Batch Summary", size=13,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.BLUE_GREY_800),
                     ft.Container(
-                        content=ft.Column([self.batch_summary_table],
-                                          scroll=ft.ScrollMode.AUTO),
+                        content=ft.Row(
+                            [self.batch_summary_table],
+                            scroll=ft.ScrollMode.ADAPTIVE,
+                        ),
                         bgcolor=ft.Colors.GREY_50, border_radius=10,
                         border=ft.Border.all(1, ft.Colors.GREY_300),
                         padding=8,
@@ -330,28 +355,32 @@ class DashboardTab:
                 ],
                 spacing=10,
             ),
-            padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
+        # ---- Activity Log ----
         self.activity_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Time")),
-                ft.DataColumn(ft.Text("User")),
-                ft.DataColumn(ft.Text("Action")),
-                ft.DataColumn(ft.Text("Details")),
+                ft.DataColumn(ft.Text("Time", size=11)),
+                ft.DataColumn(ft.Text("User", size=11)),
+                ft.DataColumn(ft.Text("Action", size=11)),
+                ft.DataColumn(ft.Text("Details", size=11)),
             ],
             rows=[], heading_row_color=ft.Colors.BLUE_GREY_700,
-            heading_row_height=38, data_row_min_height=36, column_spacing=20,
+            heading_row_height=36, data_row_min_height=34,
+            column_spacing=12,
         )
         activity_section = ft.Container(
             content=ft.Column(
                 controls=[
-                    ft.Text("📋 Recent Activity", size=14,
+                    ft.Text("📋 Recent Activity", size=13,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.BLUE_GREY_800),
                     ft.Container(
-                        content=ft.Column([self.activity_table],
-                                          scroll=ft.ScrollMode.AUTO),
+                        content=ft.Row(
+                            [self.activity_table],
+                            scroll=ft.ScrollMode.ADAPTIVE,
+                        ),
                         bgcolor=ft.Colors.GREY_50, border_radius=10,
                         border=ft.Border.all(1, ft.Colors.GREY_300),
                         padding=8,
@@ -359,9 +388,10 @@ class DashboardTab:
                 ],
                 spacing=10,
             ),
-            padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
+        # ---- Root ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -369,15 +399,30 @@ class DashboardTab:
                     chart_section, top_batches_section,
                     batch_summary_section, activity_section,
                 ],
-                spacing=15, scroll=ft.ScrollMode.AUTO,
+                spacing=12, scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15, bgcolor="#f0f2f5", expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
         self._start_clock()
 
     # -----------------------------------------------------------------------------
-    # 6.1.3 — Clock
+    # Helper — wrap a stat card for ResponsiveRow
+    # -----------------------------------------------------------------------------
+    def _wrap_card(self, card):
+        """Wrap a stat card for ResponsiveRow — 2 per row mobile,
+        4 per row desktop."""
+        try:
+            card.expand = False
+        except Exception:
+            pass
+        return ft.Container(
+            content=card,
+            col={"xs": 6, "sm": 6, "md": 3, "lg": 3, "xl": 3},
+        )
+
+    # -----------------------------------------------------------------------------
+    # Clock
     # -----------------------------------------------------------------------------
     def _start_clock(self):
         try:
@@ -427,14 +472,14 @@ class DashboardTab:
         try:
             now = datetime.now()
             if self.date_label:
-                self.date_label.value = now.strftime("%a, %b %d, %Y")
+                self.date_label.value = now.strftime("%a, %b %d")
             if self.time_label:
-                self.time_label.value = now.strftime("%I:%M:%S %p")
+                self.time_label.value = now.strftime("%I:%M %p")
         except Exception:
             pass
 
     # -----------------------------------------------------------------------------
-    # 6.1.4 — Chart section builder
+    # Chart section
     # -----------------------------------------------------------------------------
     def _build_chart_section(self):
         chart_content = None
@@ -448,12 +493,14 @@ class DashboardTab:
                         left=ft.BorderSide(1, ft.Colors.GREY_300),
                     ),
                     horizontal_grid_lines=fch.ChartGridLines(
-                        color=ft.Colors.GREY_300, width=1, dash_pattern=[3, 3]),
+                        color=ft.Colors.GREY_300, width=1,
+                        dash_pattern=[3, 3]),
                     tooltip=fch.BarChartTooltip(
-                        bgcolor=ft.Colors.with_opacity(0.85, ft.Colors.BLUE_GREY_800),
+                        bgcolor=ft.Colors.with_opacity(0.85,
+                                                       ft.Colors.BLUE_GREY_800),
                         border_radius=ft.BorderRadius.all(6),
                     ),
-                    max_y=100, interactive=True, expand=True, height=280,
+                    max_y=100, interactive=True, expand=True, height=240,
                 )
                 chart_content = self.sales_chart
             except Exception as e:
@@ -462,7 +509,7 @@ class DashboardTab:
 
         if chart_content is None and _MPL_AVAILABLE:
             try:
-                self.chart_container = ft.Container(height=280)
+                self.chart_container = ft.Container(height=240)
                 chart_content = self.chart_container
             except Exception as e:
                 print(f"[CHART] matplotlib init failed: {e}")
@@ -470,11 +517,11 @@ class DashboardTab:
 
         if chart_content is None:
             chart_content = ft.Container(
-                height=280,
+                height=200,
                 content=ft.Text(
-                    "Charts unavailable — install `flet-charts` or `matplotlib`.",
-                    color=ft.Colors.GREY_500,
-                ),
+                    "Charts unavailable — install flet-charts.",
+                    color=ft.Colors.GREY_500, size=12,
+                    text_align=ft.TextAlign.CENTER),
                 alignment=ft.Alignment.CENTER,
             )
 
@@ -482,20 +529,20 @@ class DashboardTab:
             content=ft.Column(
                 controls=[
                     ft.Row(controls=[
-                        ft.Text("📈", size=20),
+                        ft.Text("📈", size=18),
                         ft.Text("Sales Overview (Last 7 Days)",
-                                size=14, weight=ft.FontWeight.BOLD,
+                                size=13, weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.BLUE_GREY_800),
                     ], spacing=8),
                     chart_content,
                 ],
                 spacing=10,
             ),
-            padding=15, bgcolor=ft.Colors.WHITE, border_radius=12,
+            padding=14, bgcolor=ft.Colors.WHITE, border_radius=12,
         )
 
     # -----------------------------------------------------------------------------
-    # 6.1.5 — Card factory
+    # Card factory
     # -----------------------------------------------------------------------------
     def _create_card(self, icon, title, color, key):
         value_label = ft.Text("0", size=18,
@@ -506,29 +553,32 @@ class DashboardTab:
             content=ft.Row(
                 controls=[
                     ft.Container(
-                        content=ft.Text(icon, size=22),
-                        width=45, height=45,
+                        content=ft.Text(icon, size=20),
+                        width=40, height=40,
                         alignment=ft.Alignment.CENTER,
                         bgcolor=ft.Colors.with_opacity(0.15, color),
                         border_radius=10,
                     ),
                     ft.Column(
                         controls=[
-                            ft.Text(title, size=10, color=ft.Colors.GREY_600),
+                            ft.Text(title, size=10,
+                                    color=ft.Colors.GREY_600,
+                                    no_wrap=False,
+                                    max_lines=2),
                             value_label,
                         ],
                         spacing=1, expand=True,
                     ),
                 ],
-                spacing=10,
+                spacing=8,
             ),
-            padding=12, bgcolor=ft.Colors.WHITE, border_radius=12,
-            border=ft.Border.only(left=ft.BorderSide(6, color)),
-            expand=True, height=85,
+            padding=10, bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.only(left=ft.BorderSide(4, color)),
+            height=80,
         )
 
     # -----------------------------------------------------------------------------
-    # 6.1.6 — REFRESH
+    # Refresh
     # -----------------------------------------------------------------------------
     def refresh(self):
         try:
@@ -541,16 +591,20 @@ class DashboardTab:
                 print(f"[DashboardTab.refresh] reload skipped: {_re}")
 
             travelers = self.db.get_travelers()
-            batches   = self.db.get_batches()
-            payments  = self.db.get_payments()
-            invoices  = self.db.get_invoices()
-            receipts  = self.db.get_receipts()
+            batches = self.db.get_batches()
+            payments = self.db.get_payments()
+            invoices = self.db.get_invoices()
+            receipts = self.db.get_receipts()
 
-            total_seats     = sum(int(float(b.get("total_seats", 0) or 0)) for b in batches)
-            available_seats = sum(int(float(b.get("available_seats", 0) or 0)) for b in batches)
-            total_payments  = sum(float(p.get("amount", 0) or 0) for p in payments)
+            total_seats = sum(int(float(b.get("total_seats", 0) or 0))
+                              for b in batches)
+            available_seats = sum(int(float(b.get("available_seats", 0) or 0))
+                                  for b in batches)
+            total_payments = sum(float(p.get("amount", 0) or 0)
+                                 for p in payments)
 
-            batch_prices = {b["id"]: float(b.get("price", 0) or 0) for b in batches}
+            batch_prices = {b["id"]: float(b.get("price", 0) or 0)
+                            for b in batches}
             traveler_batch_map = {}
             for t in travelers:
                 bid = t.get("batch_id")
@@ -563,7 +617,8 @@ class DashboardTab:
                 tid = p.get("traveler_id")
                 if tid:
                     traveler_paid[tid] = (
-                        traveler_paid.get(tid, 0) + float(p.get("amount", 0) or 0))
+                        traveler_paid.get(tid, 0)
+                        + float(p.get("amount", 0) or 0))
 
             total_package_pending = 0
             for tid, info in traveler_batch_map.items():
@@ -587,10 +642,10 @@ class DashboardTab:
                 if str(b.get("status", "")).strip().lower() in _active_statuses
             ])
             self._set_stat("active_batches", str(active_count))
-
             self._set_stat("total_seats", f"{total_seats:,}")
             self._set_stat("available_seats", f"{available_seats:,}")
-            self._set_stat("total_payments", format_currency_indian(total_payments))
+            self._set_stat("total_payments",
+                           format_currency_indian(total_payments))
             self._set_stat("pending_amount_package",
                            format_currency_indian(total_package_pending))
             self._set_stat("pending_amount_invoice",
@@ -631,9 +686,6 @@ class DashboardTab:
         if ctrl:
             ctrl.value = str(value)
 
-    # -----------------------------------------------------------------------------
-    # 6.1.7 — TOP BATCHES
-    # -----------------------------------------------------------------------------
     def update_top_batches(self, batches, travelers):
         counts = {}
         for t in travelers:
@@ -650,7 +702,8 @@ class DashboardTab:
                     "name": b.get("batch_name", "Unknown"),
                     "type": b.get("tour_type_name", ""),
                     "booked": booked,
-                    "available": int(float(b.get("total_seats", 0) or 0)) - booked,
+                    "available": int(float(b.get("total_seats", 0) or 0))
+                                  - booked,
                 })
         batch_list.sort(key=lambda x: x["booked"], reverse=True)
         batch_list = batch_list[:10]
@@ -677,16 +730,17 @@ class DashboardTab:
             self.top_batches_table.rows.append(
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(rank_txt, color=rank_color,
+                                        size=11,
                                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(item["name"], weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(item["type"])),
-                    ft.DataCell(ft.Text(str(item["booked"]), color=booked_color)),
-                    ft.DataCell(ft.Text(str(avail), color=avail_color)),
+                    ft.DataCell(ft.Text(item["name"], size=11,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(item["type"], size=11)),
+                    ft.DataCell(ft.Text(str(item["booked"]), size=11,
+                                        color=booked_color)),
+                    ft.DataCell(ft.Text(str(avail), size=11,
+                                        color=avail_color)),
                 ]))
 
-    # -----------------------------------------------------------------------------
-    # 6.1.8 — BATCH SUMMARY
-    # -----------------------------------------------------------------------------
     def update_batch_summary(self, batches, travelers):
         counts = {}
         for t in travelers:
@@ -707,19 +761,20 @@ class DashboardTab:
 
             self.batch_summary_table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(self.safe_str(b.get("batch_name", "N/A")),
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(self.safe_str(b.get("tour_type_name", "N/A")))),
-                    ft.DataCell(ft.Text(self.safe_str(b.get("year", "-")))),
-                    ft.DataCell(ft.Text(self.safe_str(total))),
-                    ft.DataCell(ft.Text(self.safe_str(booked),
+                    ft.DataCell(ft.Text(self.safe_str(
+                        b.get("batch_name", "N/A")), size=11,
+                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(self.safe_str(
+                        b.get("tour_type_name", "N/A")), size=11)),
+                    ft.DataCell(ft.Text(self.safe_str(
+                        b.get("year", "-")), size=11)),
+                    ft.DataCell(ft.Text(self.safe_str(total), size=11)),
+                    ft.DataCell(ft.Text(self.safe_str(booked), size=11,
                                         color="#1e8449" if booked > 0 else None)),
-                    ft.DataCell(ft.Text(self.safe_str(avail), color=avail_color)),
+                    ft.DataCell(ft.Text(self.safe_str(avail), size=11,
+                                        color=avail_color)),
                 ]))
 
-    # -----------------------------------------------------------------------------
-    # 6.1.9 — ACTIVITY LOG
-    # -----------------------------------------------------------------------------
     def update_activity_log(self):
         try:
             log_df = None
@@ -729,7 +784,7 @@ class DashboardTab:
                     if isinstance(res, pd.DataFrame):
                         log_df = res
                 except Exception as _e:
-                    print(f"[DashboardTab.activity] get_activity_log failed: {_e}")
+                    print(f"[DashboardTab.activity] failed: {_e}")
 
             if log_df is None:
                 log_df = getattr(self.db, "activity_log", None)
@@ -757,22 +812,20 @@ class DashboardTab:
                     ts = str(a.get("timestamp", ""))[:10]
 
                 details = self.safe_str(a.get("details", ""))
-                if len(details) > 40:
-                    details = details[:40] + "..."
+                if len(details) > 30:
+                    details = details[:30] + "..."
 
                 self.activity_table.rows.append(
                     ft.DataRow(cells=[
-                        ft.DataCell(ft.Text(ts, size=11)),
-                        ft.DataCell(ft.Text(str(username)[:12], size=11)),
-                        ft.DataCell(ft.Text(str(a.get("action", ""))[:15], size=11)),
-                        ft.DataCell(ft.Text(details, size=11)),
+                        ft.DataCell(ft.Text(ts, size=10)),
+                        ft.DataCell(ft.Text(str(username)[:12], size=10)),
+                        ft.DataCell(ft.Text(str(a.get("action", ""))[:15],
+                                            size=10)),
+                        ft.DataCell(ft.Text(details, size=10)),
                     ]))
         except Exception as ex:
             print(f"Error updating activity log: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 6.1.10 — CHARTS
-    # -----------------------------------------------------------------------------
     def update_charts(self):
         if _CHART_ENGINE == "flet_charts":
             self._update_chart_flet_charts()
@@ -804,13 +857,10 @@ class DashboardTab:
                         x=i,
                         rods=[
                             fch.BarChartRod(
-                                from_y=0,
-                                to_y=float(v),
-                                width=30,
-                                color="#3498db",
+                                from_y=0, to_y=float(v),
+                                width=22, color="#3498db",
                                 tooltip=fch.BarChartRodTooltip(
-                                    f"{d.strftime('%d/%m')}\n₹{int(v):,}"
-                                ),
+                                    f"{d.strftime('%d/%m')}\n₹{int(v):,}"),
                                 border_radius=4,
                             ),
                         ],
@@ -821,13 +871,13 @@ class DashboardTab:
                 labels=[
                     fch.ChartAxisLabel(
                         value=i,
-                        label=ft.Text(d.strftime("%d/%m"), size=10),
+                        label=ft.Text(d.strftime("%d/%m"), size=9),
                     )
                     for i, d in enumerate(dates)
                 ],
-                label_size=30,
+                label_size=28,
             )
-            self.sales_chart.left_axis = fch.ChartAxis(label_size=55)
+            self.sales_chart.left_axis = fch.ChartAxis(label_size=50)
         except Exception as ex:
             print(f"flet_charts update error: {ex}")
 
@@ -836,14 +886,14 @@ class DashboardTab:
             if self.chart_container is None:
                 return
             df_sales = self._get_sales_last_days(7)
-
             fig = Figure(figsize=(7.5, 3.0), tight_layout=True)
             ax = fig.add_subplot(111)
 
             if not df_sales.empty:
                 values = list(df_sales.values)
                 dates = list(df_sales.index)
-                ax.bar(range(len(values)), values, color="#3498db", alpha=0.85)
+                ax.bar(range(len(values)), values, color="#3498db",
+                       alpha=0.85)
                 ax.set_xticks(range(len(values)))
                 ax.set_xticklabels([d.strftime("%d/%m") for d in dates],
                                    rotation=45, fontsize=8)
@@ -858,9 +908,6 @@ class DashboardTab:
         except Exception as ex:
             print(f"matplotlib chart error: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 6.1.11 — _get_sales_last_days
-    # -----------------------------------------------------------------------------
     def _get_sales_last_days(self, days):
         payments = None
         if hasattr(self.db, "get_payments"):
@@ -883,7 +930,8 @@ class DashboardTab:
             return pd.DataFrame()
 
         df = payments.copy()
-        df["payment_date"] = pd.to_datetime(df["payment_date"], errors="coerce")
+        df["payment_date"] = pd.to_datetime(df["payment_date"],
+                                            errors="coerce")
         cutoff = datetime.now() - timedelta(days=days)
         recent = df[df["payment_date"] >= cutoff]
         if recent.empty:
@@ -893,18 +941,9 @@ class DashboardTab:
         return daily
 
     # -----------------------------------------------------------------------------
-    # 6.1.12 — QUICK ACTIONS  ★ PATCH 6.1.D
+    # Quick actions
     # -----------------------------------------------------------------------------
     def _goto_tab(self, tab_name, action=None):
-        """
-        Navigate the MainWindow to a specific tab.
-
-        `tab_name` — display name shown in the nav bar, e.g. "Travelers".
-        `action`   — optional action for the target tab, e.g. "add".
-
-        The MainWindow must pass us an `on_navigate` callback at init
-        time. If it's missing, we show a helpful snackbar.
-        """
         print(f"[DASHBOARD] QuickAction → tab='{tab_name}' action={action}")
 
         if self.on_navigate is None:
@@ -919,7 +958,6 @@ class DashboardTab:
         try:
             self.on_navigate(tab_name, action)
         except TypeError:
-            # Callback only takes tab_name
             try:
                 self.on_navigate(tab_name)
             except Exception as ex:
@@ -945,5 +983,5 @@ class DashboardTab:
 
 
 # =================================================================================
-# SECTION 6 END (FLET 1.0.0 VERSION)
+# END — core/dashboard_tab.py
 # =================================================================================
