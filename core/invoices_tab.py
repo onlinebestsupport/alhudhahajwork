@@ -1,15 +1,14 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Stat cards 2-per-row on mobile
-#   • Tax bar stacks on narrow screens
-#   • Toolbar + filters use ResponsiveRow
-#   • Table wrapped in horizontal scroll
-#   • All original patches preserved:
-#       14.1.A — refresh() reload before read
-#       14.1.B — action menu re-fetches invoice on click
-#       14.3.A/B/C — cascade paid status (create/delete auto payment)
+# v1.3 — Row Selection + Data-Loading Safety
+#   • ADDED: Tap any row → SELECTS (does not open anything)
+#   • ADDED: Toolbar 📄 PDF / 🖨️ Print act on selected row
+#   • ADDED: "Sel" column with ✓ marker
+#   • FIXED: on_select_change (correct Flet 1.0.0 param)
+#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
+#   • Preserved: 14.1.A (reload before read), 14.1.B (action re-fetch),
+#                14.3.A/B/C (cascade paid ↔ payment create/delete)
 # =================================================================================
 
 import flet as ft
@@ -55,6 +54,10 @@ class InvoicesTab:
         self.search_input = None
         self.table = None
         self.root = None
+        self.selection_label = None
+
+        # Currently selected invoice (for toolbar PDF/Print)
+        self._selected_invoice_id = None
 
         self.setup_ui()
         self.refresh()
@@ -63,7 +66,7 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.1 — setup_ui  (MOBILE-RESPONSIVE)
+    # 14.1.1 — setup_ui
     # =============================================================================
     def setup_ui(self):
         tax = self.settings_manager.get_tax_settings()
@@ -212,6 +215,14 @@ class InvoicesTab:
                     content=_tb("🧾 Manual Create", "#f39c12",
                                 self.open_manual_invoice),
                     col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(
+                    content=_tb("📄 PDF (selected)", "#e74c3c",
+                                self.export_pdf_selected),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_tb("🖨️ Print (selected)", "#9b59b6",
+                                self.print_invoice_selected),
+                    col={"xs": 6, "sm": 4, "md": 2}),
                 ft.Container(content=self.status_filter,
                              col={"xs": 6, "sm": 4, "md": 2}),
                 ft.Container(content=self.search_input,
@@ -223,6 +234,7 @@ class InvoicesTab:
         # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11)),
                 ft.DataColumn(ft.Text("⋮", size=11)),
                 ft.DataColumn(ft.Text("Invoice", size=11)),
                 ft.DataColumn(ft.Text("Date", size=11)),
@@ -253,6 +265,11 @@ class InvoicesTab:
             horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
+        self.selection_label = ft.Text("", size=10,
+                                       color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD,
+                                       italic=True)
+
         # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
@@ -263,8 +280,17 @@ class InvoicesTab:
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Row([self.table],
-                                       scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Column([
+                            ft.Text("💡 Tap a row to SELECT it, then use "
+                                    "toolbar 📄 PDF / 🖨️ Print. "
+                                    "Use ⋮ menu for per-row actions.",
+                                    size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            self.selection_label,
+                            ft.Row([self.table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10,
                         padding=10),
@@ -340,18 +366,16 @@ class InvoicesTab:
             pass
 
     # =============================================================================
-    # 14.1.3 — refresh  (PATCH 14.1.A preserved)
+    # 14.1.3 — refresh (destructive reload removed)
     # =============================================================================
     def refresh(self, e=None):
-        try:
-            try:
-                if hasattr(self.db, "reload"):
-                    self.db.reload()
-                elif hasattr(self.db, "_load_all"):
-                    self.db._load_all()
-            except Exception as _reload_err:
-                print(f"[InvoicesTab.refresh] reload skipped: {_reload_err}")
+        """
+        Load invoices + related data from the in-memory DB cache.
 
+        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
+        can differ from the volume mount, which wipes the cache.
+        """
+        try:
             self.invoices = self.db.get_invoices()
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
@@ -387,10 +411,16 @@ class InvoicesTab:
                         self.traveler_paid.get(tid, 0)
                         + float(p.get('amount', 0) or 0))
 
+            print(f"[INVOICES] loaded {len(self.invoices)} invoices, "
+                  f"{len(self.travelers)} travelers")
+
             self.display_invoices()
             self.update_summary_stats()
             self.update_tax_display()
-            self.page.update()
+            try:
+                self.page.update()
+            except Exception:
+                pass
         except Exception as ex:
             print(f"Invoices refresh error: {ex}")
             import traceback
@@ -398,7 +428,6 @@ class InvoicesTab:
 
     # =============================================================================
     # 14.1.4 — display_invoices
-    #   PATCH 14.1.B: capture invoice ID, re-fetch on every action
     # =============================================================================
     def display_invoices(self, invoices=None):
         if invoices is None:
@@ -406,6 +435,7 @@ class InvoicesTab:
 
         self.table.rows.clear()
         for inv in invoices:
+            inv_id = inv.get('id')
             inv_no = self.safe_str(inv.get('invoice_no', ''))
             date_str = self._fmt_date_ddmmyyyy(inv.get('issue_date', ''))
             traveler_name = self.travelers.get(
@@ -449,8 +479,6 @@ class InvoicesTab:
                 pkg_color = "#95a5a6"
 
             # PATCH 14.1.B — capture ID, re-fetch before dispatch
-            inv_id = inv.get('id')
-
             def _make_actions_menu(_inv_id=inv_id):
                 def _fresh():
                     return next(
@@ -497,39 +525,104 @@ class InvoicesTab:
                     ],
                 )
 
+            is_selected = (self._selected_invoice_id == inv_id)
+
+            # -------- ROW TAP → SELECT (not open) --------
+            def _on_row_tap(e, _inv_id=inv_id):
+                try:
+                    self._select_invoice(_inv_id)
+                except Exception as ex:
+                    print(f"[INVOICES] row tap error: {ex}")
+
             self.table.rows.append(
-                ft.DataRow(cells=[
-                    ft.DataCell(_make_actions_menu()),
-                    ft.DataCell(ft.Text(inv_no[:16], size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(traveler_name[:18], size=10)),
-                    ft.DataCell(ft.Text(f"₹{base:,.0f}", size=10)),
-                    ft.DataCell(ft.Text(
-                        f"{disc_pct:.1f}%", size=10,
-                        color="#c2185b" if disc_pct > 0 else None)),
-                    ft.DataCell(ft.Text(
-                        f"₹{disc_amt:,.0f}", size=10,
-                        color="#c2185b" if disc_amt > 0 else None)),
-                    ft.DataCell(ft.Text(
-                        f"₹{taxable:,.0f}", size=10,
-                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(f"{gst_pct}%", size=10)),
-                    ft.DataCell(ft.Text(f"₹{gst_amt:,.0f}", size=10)),
-                    ft.DataCell(ft.Text(f"{tcs_pct}%", size=10)),
-                    ft.DataCell(ft.Text(f"₹{tcs_amt:,.0f}", size=10)),
-                    ft.DataCell(ft.Text(f"₹{total:,.0f}", size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(f"₹{rounded:,.0f}", size=10,
-                                        color="#003366",
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(due_date, size=10)),
-                    ft.DataCell(ft.Text(status, size=10,
-                                        color=status_color,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(pkg_txt, size=10,
-                                        color=pkg_color)),
-                ]))
+                ft.DataRow(
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
+                    cells=[
+                        # Selection indicator
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
+                        ft.DataCell(_make_actions_menu()),
+                        ft.DataCell(ft.Text(inv_no[:16], size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(date_str, size=10)),
+                        ft.DataCell(ft.Text(traveler_name[:18], size=10)),
+                        ft.DataCell(ft.Text(f"₹{base:,.0f}", size=10)),
+                        ft.DataCell(ft.Text(
+                            f"{disc_pct:.1f}%", size=10,
+                            color="#c2185b" if disc_pct > 0 else None)),
+                        ft.DataCell(ft.Text(
+                            f"₹{disc_amt:,.0f}", size=10,
+                            color="#c2185b" if disc_amt > 0 else None)),
+                        ft.DataCell(ft.Text(
+                            f"₹{taxable:,.0f}", size=10,
+                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(f"{gst_pct}%", size=10)),
+                        ft.DataCell(ft.Text(f"₹{gst_amt:,.0f}", size=10)),
+                        ft.DataCell(ft.Text(f"{tcs_pct}%", size=10)),
+                        ft.DataCell(ft.Text(f"₹{tcs_amt:,.0f}", size=10)),
+                        ft.DataCell(ft.Text(f"₹{total:,.0f}", size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(f"₹{rounded:,.0f}", size=10,
+                                            color="#003366",
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(due_date, size=10)),
+                        ft.DataCell(ft.Text(status, size=10,
+                                            color=status_color,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(pkg_txt, size=10,
+                                            color=pkg_color)),
+                    ]))
+
+    # =============================================================================
+    # 14.1.4b — _select_invoice / _get_selected_invoice
+    # =============================================================================
+    def _select_invoice(self, invoice_id):
+        if self._selected_invoice_id == invoice_id:
+            self._selected_invoice_id = None
+        else:
+            self._selected_invoice_id = invoice_id
+
+        if self.selection_label:
+            if self._selected_invoice_id:
+                inv = next((x for x in self.invoices
+                            if x.get('id') == self._selected_invoice_id),
+                           None)
+                if inv:
+                    tname = self.travelers.get(
+                        inv.get('traveler_id', ''), '?')
+                    self.selection_label.value = (
+                        f"✅ Selected: "
+                        f"{self.safe_str(inv.get('invoice_no', ''))[:16]} | "
+                        f"{tname} | "
+                        f"₹{self.safe_float(inv.get('rounded_total', 0)):,.0f}")
+                else:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        self.display_invoices()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _get_selected_invoice(self):
+        if not self._selected_invoice_id:
+            return None
+        return next((x for x in self.invoices
+                     if x.get('id') == self._selected_invoice_id), None)
 
     # =============================================================================
     # 14.1.5 — Stats
@@ -659,7 +752,24 @@ class InvoicesTab:
         dlg.show()
 
     # =============================================================================
-    # 14.1.8 — Export PDF  (all logic preserved)
+    # 14.1.8 — Toolbar PDF / Print (act on selected)
+    # =============================================================================
+    def export_pdf_selected(self, e):
+        inv = self._get_selected_invoice()
+        if not inv:
+            self._snack("⚠️ Tap a row first to select it, then tap 📄 PDF")
+            return
+        self.export_invoice_to_pdf(inv)
+
+    def print_invoice_selected(self, e):
+        inv = self._get_selected_invoice()
+        if not inv:
+            self._snack("⚠️ Tap a row first to select it, then tap 🖨️ Print")
+            return
+        self.print_invoice(inv)
+
+    # =============================================================================
+    # 14.1.8b — export_invoice_to_pdf (all logic preserved)
     # =============================================================================
     def export_invoice_to_pdf(self, invoice):
         try:
@@ -1334,8 +1444,8 @@ class InvoicesTab:
             self._snack(f"❌ Excel error: {ex}")
 
     def print_invoice(self, invoice):
-        self._snack(
-            "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
+        self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
+        self.export_invoice_to_pdf(invoice)
 
     def _snack(self, msg):
         try:
@@ -1678,7 +1788,7 @@ class InvoiceDialog:
 
 
 # =================================================================================
-# 14.3 — CLASS: InvoiceModifyDialog  (PATCHES 14.3.A/B/C preserved)
+# 14.3 — CLASS: InvoiceModifyDialog
 # =================================================================================
 class InvoiceModifyDialog:
 
