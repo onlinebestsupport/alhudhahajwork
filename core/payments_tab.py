@@ -1,11 +1,13 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.4 — Row Tap Selection (based on working v1.2)
-#   • ONLY CHANGE: Each table row is now tappable → opens Edit dialog
-#   • Data loading untouched (your working v1.2 logic preserved)
-#   • Table layout untouched
-#   • Action icons slightly larger (16 → 18) for easier tap
+# v1.5 — Data Loading Fixed + Row Tap Selection
+#   • FIXED: refresh() no longer calls db.reload_payments() (was wiping cache
+#            on Railway because the CSV path differs from volume mount path)
+#   • FIXED: dialogs no longer call db.reload_payments() on save
+#   • ADDED: on_select_changed on each DataRow → tap row to edit
+#   • ADDED: hint text "💡 Tap any row to edit"
+#   • Action icons 16 → 18 for easier tap on phones
 # =================================================================================
 
 import flet as ft
@@ -194,15 +196,8 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
-                try:
-                    if hasattr(self.db, "reload_payments"):
-                        self.db.reload_payments()
-                    if hasattr(self.db, "reload_receipts"):
-                        self.db.reload_receipts()
-                    if hasattr(self.db, "reload_invoices"):
-                        self.db.reload_invoices()
-                except Exception:
-                    pass
+                # NOTE: We do NOT call db.reload_payments() here.
+                # The DB's own update_payment() already updates its cache.
 
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
@@ -253,7 +248,7 @@ class PaymentsTab:
         self.table = None
         self.root = None
 
-        # Track currently highlighted row
+        # Track last-tapped row
         self._selected_payment_id = None
 
         self.setup_ui()
@@ -428,17 +423,19 @@ class PaymentsTab:
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
+    # -----------------------------------------------------------------------------
+    # refresh — DATA LOADING FIXED (no destructive reloads)
+    # -----------------------------------------------------------------------------
     def refresh(self):
-        try:
-            for mn in ("reload_payments", "reload_receipts",
-                       "reload_invoices", "reload_travelers",
-                       "reload_batches"):
-                if hasattr(self.db, mn):
-                    try:
-                        getattr(self.db, mn)()
-                    except Exception as ex:
-                        print(f"[PAYMENTS] {mn} failed: {ex}")
+        """
+        Load payments + related data from the in-memory DB cache.
 
+        IMPORTANT: We deliberately do NOT call db.reload_payments() etc.
+        On Railway those methods re-read from a fixed CSV path that may
+        differ from the actual volume path → cache gets wiped → tab
+        shows all zeros.
+        """
+        try:
             self.payments = self.db.get_payments()
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
@@ -466,6 +463,11 @@ class PaymentsTab:
                         'batch_price': 0, 'batch_name': 'No Batch',
                         'batch_id': None,
                     }
+
+            print(f"[PAYMENTS] loaded {len(self.payments)} payments, "
+                  f"{len(self.travelers)} travelers, "
+                  f"{len(self.receipts)} receipts, "
+                  f"{len(self.invoices)} invoices")
 
             self.display_payments()
             self.update_summary_stats()
@@ -579,35 +581,32 @@ class PaymentsTab:
                 try:
                     print(f"[PAYMENTS] Row tapped: {pp.get('id')}")
                     self._selected_payment_id = pp.get('id')
-                    # Small visual feedback
-                    self._snack(
-                        f"✏️ Opening payment "
-                        f"{str(pp.get('transaction_id', ''))[:12]}...")
                     self.edit_payment(pp)
                 except Exception as ex:
                     print(f"[PAYMENTS] row tap error: {ex}")
 
-            row = ft.DataRow(
-                on_select_changed=_on_row_tap,
-                cells=[
-                    ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(traveler_name[:18], size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(amount_text, size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(method[:12], size=10)),
-                    ft.DataCell(ft.Text(status, size=10,
-                                        color=status_color,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(txn, size=10)),
-                    ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
-                    ft.DataCell(ft.Text(str(inv_no), size=10)),
-                    ft.DataCell(ft.Text(pkg_txt, size=10, color=pkg_color)),
-                    ft.DataCell(ft.Text(inv_txt, size=10, color=inv_color)),
-                    ft.DataCell(actions),
-                ])
-
-            self.table.rows.append(row)
+            self.table.rows.append(
+                ft.DataRow(
+                    on_select_changed=_on_row_tap,
+                    cells=[
+                        ft.DataCell(ft.Text(date_str, size=10)),
+                        ft.DataCell(ft.Text(traveler_name[:18], size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(amount_text, size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(method[:12], size=10)),
+                        ft.DataCell(ft.Text(status, size=10,
+                                            color=status_color,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(txn, size=10)),
+                        ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
+                        ft.DataCell(ft.Text(str(inv_no), size=10)),
+                        ft.DataCell(ft.Text(pkg_txt, size=10,
+                                            color=pkg_color)),
+                        ft.DataCell(ft.Text(inv_txt, size=10,
+                                            color=inv_color)),
+                        ft.DataCell(actions),
+                    ]))
 
     def edit_payment(self, payment):
         dlg = PaymentEditDialog(
@@ -1323,15 +1322,8 @@ class PaymentDialog:
             except Exception:
                 pass
 
-            try:
-                if hasattr(self.db, "reload_payments"):
-                    self.db.reload_payments()
-                if hasattr(self.db, "reload_receipts"):
-                    self.db.reload_receipts()
-                if hasattr(self.db, "reload_invoices"):
-                    self.db.reload_invoices()
-            except Exception:
-                pass
+            # NOTE: We do NOT call db.reload_payments() here.
+            # add_payment() already updates the DB's in-memory cache.
 
             new_total = total_paid + amount
             new_pending = batch_price - new_total
