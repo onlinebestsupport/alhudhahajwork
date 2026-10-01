@@ -1,7 +1,15 @@
 # =================================================================================
-# SECTION 4 (FLET 1.0.0 VERSION) — COMPANY SETTINGS DIALOG
+# SECTION 4 (FLET 1.0.0 VERSION) — COMPANY SETTINGS DIALOG (Mobile-Responsive)
 # =================================================================================
-# UPDATED — 2026-09-30 (Cloud-ready)
+# v1.1 — Mobile-Responsive
+#   • Dialog width/height clamp to viewport
+#   • Tab bar scrollable
+#   • Logo row stacks on narrow screens
+#   • Field rows wrap
+#   • Tours tab: add-form fields stack on mobile
+#   • Save/Cancel buttons stay reachable
+#
+# All cloud-ready features preserved:
 #   • Logo stored as base64 data URI IN THE CSV — survives Railway redeploys
 #   • Falls back to file path if base64 is missing (backward compat)
 #   • FilePicker registered via page.services (Flet 1.0 standard)
@@ -34,8 +42,8 @@ class CompanySettingsDialog:
         self.current_user = current_user
         self.settings_manager = SettingsManager(db)
         self.on_save_callback = on_save_callback
-        self.logo_path = None              # absolute path (for local files)
-        self.logo_data_uri = None          # base64 data URI (for cloud)
+        self.logo_path = None
+        self.logo_data_uri = None
         self.dialog = None
         self.file_picker = None
 
@@ -64,19 +72,19 @@ class CompanySettingsDialog:
         self.load_settings()
 
     # =============================================================================
-    # setup_ui
+    # setup_ui  (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
         self.file_picker = ft.FilePicker()
 
         # ---- COMPANY TAB ----
         self.logo_image = ft.Image(
-            src="", width=100, height=100,
+            src="", width=90, height=90,
             fit=ft.BoxFit.CONTAIN, border_radius=8, visible=False,
         )
         self.logo_placeholder = ft.Container(
-            content=ft.Text("No Logo", color=ft.Colors.GREY_500, size=12),
-            width=100, height=100,
+            content=ft.Text("No Logo", color=ft.Colors.GREY_500, size=11),
+            width=90, height=90,
             alignment=ft.Alignment.CENTER,
             bgcolor=ft.Colors.GREY_100,
             border_radius=8,
@@ -84,52 +92,86 @@ class CompanySettingsDialog:
         )
 
         self.company_name_field = ft.TextField(
-            label="🏢 Company Name *", hint_text="Enter company name", expand=True)
+            label="🏢 Company Name *",
+            hint_text="Enter company name")
         self.address_field = ft.TextField(
             label="📍 Address", multiline=True, min_lines=2, max_lines=4,
             hint_text="Enter full address")
-        self.phone_field = ft.TextField(label="📞 Phone", hint_text="+966 XX XXXXXXX")
-        self.email_field = ft.TextField(label="📧 Email", hint_text="info@company.com")
-        self.website_field = ft.TextField(label="🌐 Website", hint_text="www.company.com")
-        self.gst_field = ft.TextField(label="💰 GST Number", hint_text="GSTXXXXXXXXX")
-        self.tan_field = ft.TextField(label="🏛️ TAN Number", hint_text="TANXXXXXXXXX")
-        self.pan_field = ft.TextField(label="📄 PAN Number", hint_text="PANXXXXXXXX")
+        self.phone_field = ft.TextField(
+            label="📞 Phone", hint_text="+966 XX XXXXXXX")
+        self.email_field = ft.TextField(
+            label="📧 Email", hint_text="info@company.com")
+        self.website_field = ft.TextField(
+            label="🌐 Website", hint_text="www.company.com")
+        self.gst_field = ft.TextField(
+            label="💰 GST Number", hint_text="GSTXXXXXXXXX")
+        self.tan_field = ft.TextField(
+            label="🏛️ TAN Number", hint_text="TANXXXXXXXXX")
+        self.pan_field = ft.TextField(
+            label="📄 PAN Number", hint_text="PANXXXXXXXX")
+
+        # Mobile: logo stacks above buttons
+        logo_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(
+                    content=ft.Stack(
+                        [self.logo_placeholder, self.logo_image],
+                        width=90, height=90),
+                    col={"xs": 4, "sm": 3, "md": 2}),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Button(content=ft.Text("📸 Upload Logo", size=11),
+                                  on_click=self.upload_logo_click,
+                                  bgcolor=ft.Colors.BLUE_600,
+                                  color=ft.Colors.WHITE, height=36),
+                        ft.Button(content=ft.Text("🗑️ Remove Logo", size=11),
+                                  on_click=self.remove_logo_click,
+                                  bgcolor=ft.Colors.RED_600,
+                                  color=ft.Colors.WHITE, height=36),
+                    ], spacing=6),
+                    col={"xs": 8, "sm": 9, "md": 4}),
+            ],
+            spacing=10, run_spacing=10,
+        )
 
         company_tab = ft.Column(
             controls=[
-                ft.Row([
-                    ft.Stack([self.logo_placeholder, self.logo_image],
-                             width=100, height=100),
-                    ft.Column([
-                        ft.Button(content=ft.Text("📸 Upload Logo"),
-                                  on_click=self.upload_logo_click,
-                                  bgcolor=ft.Colors.BLUE_600,
-                                  color=ft.Colors.WHITE),
-                        ft.Button(content=ft.Text("🗑️ Remove Logo"),
-                                  on_click=self.remove_logo_click,
-                                  bgcolor=ft.Colors.RED_600,
-                                  color=ft.Colors.WHITE),
-                    ], spacing=8),
-                ], spacing=20),
+                logo_row,
                 self.company_name_field,
                 self.address_field,
-                ft.Row([self.phone_field, self.email_field], spacing=10),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.phone_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                        ft.Container(content=self.email_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                    ], spacing=8, run_spacing=8),
                 self.website_field,
-                ft.Row([self.gst_field, self.tan_field], spacing=10),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.gst_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                        ft.Container(content=self.tan_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                    ], spacing=8, run_spacing=8),
                 self.pan_field,
-            ], spacing=12, scroll=ft.ScrollMode.AUTO,
+            ], spacing=10, scroll=ft.ScrollMode.AUTO,
         )
 
         # ---- BANK TAB ----
-        self.bank_name_field = ft.TextField(label="🏦 Bank Name", hint_text="Name of bank")
-        self.account_no_field = ft.TextField(label="💳 Account Number", hint_text="Account number")
-        self.ifsc_field = ft.TextField(label="🔢 IFSC Code", hint_text="IFSC code (e.g., HDFC0001234)")
-        self.upi_field = ft.TextField(label="⚡ UPI ID", hint_text="UPI ID (e.g., name@bank)")
+        self.bank_name_field = ft.TextField(
+            label="🏦 Bank Name", hint_text="Name of bank")
+        self.account_no_field = ft.TextField(
+            label="💳 Account Number", hint_text="Account number")
+        self.ifsc_field = ft.TextField(
+            label="🔢 IFSC Code", hint_text="IFSC code (e.g., HDFC0001234)")
+        self.upi_field = ft.TextField(
+            label="⚡ UPI ID", hint_text="UPI ID (e.g., name@bank)")
 
         bank_tab = ft.Column(
             controls=[self.bank_name_field, self.account_no_field,
                       self.ifsc_field, self.upi_field],
-            spacing=12, scroll=ft.ScrollMode.AUTO,
+            spacing=10, scroll=ft.ScrollMode.AUTO,
         )
 
         # ---- TAX TAB ----
@@ -148,28 +190,52 @@ class CompanySettingsDialog:
                     content=ft.Text(
                         "ℹ️ GST is calculated on Base Amount.\n"
                         "TCS is calculated on Taxable Amount (Base + GST).",
-                        size=11, color=ft.Colors.GREY_700),
-                    padding=10, bgcolor=ft.Colors.BLUE_50, border_radius=6),
-            ], spacing=12,
+                        size=10, color=ft.Colors.GREY_700),
+                    padding=10, bgcolor=ft.Colors.BLUE_50,
+                    border_radius=6),
+            ], spacing=10,
         )
 
         # ---- TOURS TAB ----
         self.tour_name_input = ft.TextField(
-            label="Tour Name", hint_text="Haj, Umrah, UK Tour", width=180)
+            label="Tour Name", hint_text="Haj, Umrah, UK Tour")
         self.tour_year_input = ft.TextField(
-            label="Year", value=str(datetime.now().year), width=100)
+            label="Year", value=str(datetime.now().year))
         self.tour_desc_input = ft.TextField(
-            label="Description", hint_text="Tour description", expand=True)
+            label="Description", hint_text="Tour description")
+
+        add_btn = ft.Button(
+            content=ft.Text("➕ Add", size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE),
+            on_click=self.add_tour_type_click,
+            bgcolor=ft.Colors.GREEN_600,
+            height=40)
+
+        # Mobile: stack the fields, put Add button full-width
+        add_tour_form = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=self.tour_name_input,
+                             col={"xs": 12, "sm": 6, "md": 4}),
+                ft.Container(content=self.tour_year_input,
+                             col={"xs": 6, "sm": 3, "md": 2}),
+                ft.Container(content=self.tour_desc_input,
+                             col={"xs": 6, "sm": 3, "md": 4}),
+                ft.Container(content=add_btn,
+                             col={"xs": 12, "sm": 12, "md": 2}),
+            ],
+            spacing=8, run_spacing=8,
+        )
 
         self.tour_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Tour Name")),
-                ft.DataColumn(ft.Text("Year")),
-                ft.DataColumn(ft.Text("Description")),
-                ft.DataColumn(ft.Text("Actions")),
-            ], rows=[], column_spacing=15,
+                ft.DataColumn(ft.Text("Tour Name", size=11)),
+                ft.DataColumn(ft.Text("Year", size=11)),
+                ft.DataColumn(ft.Text("Description", size=11)),
+                ft.DataColumn(ft.Text("Actions", size=11)),
+            ], rows=[], column_spacing=12,
             heading_row_color=ft.Colors.BLUE_GREY_900,
-            heading_row_height=40, data_row_min_height=40,
+            heading_row_height=38, data_row_min_height=40,
         )
 
         tours_tab = ft.Column(
@@ -177,71 +243,69 @@ class CompanySettingsDialog:
                 ft.Container(
                     content=ft.Column([
                         ft.Text("➕ Add New Tour Type",
-                                weight=ft.FontWeight.BOLD, size=13),
-                        ft.Row([
-                            self.tour_name_input,
-                            self.tour_year_input,
-                            self.tour_desc_input,
-                            ft.Button(content=ft.Text("➕ Add"),
-                                      on_click=self.add_tour_type_click,
-                                      bgcolor=ft.Colors.GREEN_600,
-                                      color=ft.Colors.WHITE, height=48),
-                        ], spacing=8),
+                                weight=ft.FontWeight.BOLD, size=12),
+                        add_tour_form,
                     ], spacing=8),
-                    padding=12, bgcolor=ft.Colors.GREY_50, border_radius=8,
+                    padding=10, bgcolor=ft.Colors.GREY_50,
+                    border_radius=8,
                     border=ft.Border.all(1, ft.Colors.GREY_300)),
                 ft.Text(
                     "💡 Format: PREFIX/BCH/YEAR/XXX (e.g., HAJ/BCH/2027/001)",
-                    size=11, color=ft.Colors.GREY_600),
+                    size=10, color=ft.Colors.GREY_600),
                 ft.Container(
-                    content=ft.Column([self.tour_table], scroll=ft.ScrollMode.AUTO),
+                    content=ft.Row([self.tour_table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
                     expand=True,
                     border=ft.Border.all(1, ft.Colors.GREY_300),
                     border_radius=8, padding=5),
             ], spacing=10, expand=True,
         )
 
-        # ---- TABS ----
+        # ---- TABS (MOBILE-RESPONSIVE) ----
         tabs = ft.Tabs(
             selected_index=0, animation_duration=200, length=4, expand=True,
             content=ft.Column(expand=True, controls=[
                 ft.TabBar(tabs=[
-                    ft.Tab(label="🏢 Company Info"),
-                    ft.Tab(label="🏦 Bank Details"),
-                    ft.Tab(label="💰 Tax Settings"),
-                    ft.Tab(label="🎯 Tour Types"),
-                ]),
+                    ft.Tab(label="🏢 Company"),
+                    ft.Tab(label="🏦 Bank"),
+                    ft.Tab(label="💰 Tax"),
+                    ft.Tab(label="🎯 Tours"),
+                ], scrollable=True),
                 ft.TabBarView(expand=True, controls=[
-                    ft.Container(content=company_tab, padding=15),
-                    ft.Container(content=bank_tab, padding=15),
-                    ft.Container(content=tax_tab, padding=15),
-                    ft.Container(content=tours_tab, padding=15),
+                    ft.Container(content=company_tab, padding=12),
+                    ft.Container(content=bank_tab, padding=12),
+                    ft.Container(content=tax_tab, padding=12),
+                    ft.Container(content=tours_tab, padding=12),
                 ]),
             ]),
         )
 
-        # ---- DIALOG ----
+        # ---- DIALOG — clamp to viewport ----
+        pw = self.page.width or 850
+        ph = self.page.height or 700
+        dlg_w = max(320, min(850, pw - 30))
+        dlg_h = max(420, min(620, ph - 80))
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("Company Settings",
-                          weight=ft.FontWeight.BOLD, size=18),
-            content=ft.Container(content=tabs, width=850, height=520),
+                          weight=ft.FontWeight.BOLD, size=16),
+            content=ft.Container(content=tabs, width=dlg_w, height=dlg_h),
             actions=[
-                ft.TextButton(content=ft.Text("Cancel"), on_click=self.on_cancel),
-                ft.Button(content=ft.Text("💾 Save All Settings"),
+                ft.TextButton(content=ft.Text("Cancel", size=12),
+                              on_click=self.on_cancel),
+                ft.Button(content=ft.Text("💾 Save All", size=12),
                           on_click=self.on_save,
                           bgcolor=ft.Colors.GREEN_600,
-                          color=ft.Colors.WHITE, height=42),
+                          color=ft.Colors.WHITE, height=40),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
     # =============================================================================
-    # Helper: Convert local image file to base64 data URI
+    # _get_logo_data_uri
     # =============================================================================
     def _get_logo_data_uri(self, file_path: str) -> str:
-        """Reads an image file and returns a base64 data URI string
-        that the browser can display directly (works without server routing)."""
         try:
             if not file_path or not os.path.exists(file_path):
                 return ""
@@ -312,18 +376,21 @@ class CompanySettingsDialog:
             data = getattr(f, 'bytes', None)
             if isinstance(data, bytes) and len(data) > 0:
                 print(f">>> Got {len(data)} bytes from .bytes ✅")
-                await self._save_logo_from_bytes(data, getattr(f, 'name', 'logo.png'))
+                await self._save_logo_from_bytes(
+                    data, getattr(f, 'name', 'logo.png'))
                 return
 
             file_id = getattr(f, 'id', None)
-            if file_id is not None and hasattr(self.file_picker, 'get_file_bytes'):
+            if file_id is not None and hasattr(self.file_picker,
+                                               'get_file_bytes'):
                 try:
                     print(f">>> Trying get_file_bytes(id={file_id})...")
                     result = self.file_picker.get_file_bytes(file_id)
                     if hasattr(result, '__await__'):
                         result = await result
                     if isinstance(result, bytes) and len(result) > 0:
-                        print(f">>> Got {len(result)} bytes via get_file_bytes ✅")
+                        print(f">>> Got {len(result)} bytes via "
+                              f"get_file_bytes ✅")
                         await self._save_logo_from_bytes(
                             result, getattr(f, 'name', 'logo.png'))
                         return
@@ -357,7 +424,6 @@ class CompanySettingsDialog:
                 shutil.copy(src_path, logo_dest)
 
             self.logo_path = str(logo_dest)
-
             data_uri = self._get_logo_data_uri(str(logo_dest))
             if data_uri:
                 self.logo_data_uri = data_uri
@@ -409,7 +475,6 @@ class CompanySettingsDialog:
                 print(f">>> PIL skipped: {pil_ex}")
 
             self.logo_path = str(logo_dest)
-
             data_uri = self._get_logo_data_uri(str(logo_dest))
             if data_uri:
                 self.logo_data_uri = data_uri
@@ -456,12 +521,9 @@ class CompanySettingsDialog:
             self.tan_field.value = s(company.get('tan_no', ''))
             self.pan_field.value = s(company.get('pan_no', ''))
 
-            # ---- Load existing logo ----
-            # Prefer logo_data_uri column (cloud-safe), fall back to file path.
             logo_data_uri = company.get('logo_data_uri', '')
             logo_path = company.get('logo_path', '')
 
-            # Case A: base64 data URI stored in CSV
             if (isinstance(logo_data_uri, str)
                     and logo_data_uri.startswith("data:image/")):
                 self.logo_data_uri = logo_data_uri
@@ -470,7 +532,6 @@ class CompanySettingsDialog:
                 self.logo_placeholder.visible = False
                 print(f">>> Loaded logo from CSV base64 "
                       f"({len(logo_data_uri)} chars)")
-            # Case B: file path stored in CSV (legacy)
             elif (isinstance(logo_path, str)
                     and logo_path
                     and os.path.exists(logo_path)):
@@ -484,7 +545,6 @@ class CompanySettingsDialog:
                     print(f">>> Loaded existing logo as base64 "
                           f"({len(data_uri)} chars)")
             else:
-                # No logo available
                 self.logo_image.visible = False
                 self.logo_placeholder.visible = True
 
@@ -496,12 +556,16 @@ class CompanySettingsDialog:
                     bank = {}
             self.bank_name_field.value = s(bank.get('bank_name', ''))
             self.account_no_field.value = s(bank.get('account_no', ''))
-            self.ifsc_field.value = s(bank.get('ifsc', '') or bank.get('swift', ''))
-            self.upi_field.value = s(bank.get('upi', '') or bank.get('iban', ''))
+            self.ifsc_field.value = s(bank.get('ifsc', '')
+                                      or bank.get('swift', ''))
+            self.upi_field.value = s(bank.get('upi', '')
+                                     or bank.get('iban', ''))
 
             tax = self.settings_manager.get_tax_settings()
-            self.gst_percentage_field.value = str(tax.get('gst_percentage', 18))
-            self.tcs_percentage_field.value = str(tax.get('tcs_percentage', 0))
+            self.gst_percentage_field.value = str(
+                tax.get('gst_percentage', 18))
+            self.tcs_percentage_field.value = str(
+                tax.get('tcs_percentage', 0))
 
             self.load_tour_types()
         except Exception as ex:
@@ -517,19 +581,25 @@ class CompanySettingsDialog:
             self.tour_table.rows.clear()
             for tour in active_tours:
                 row = ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(tour.get('tour_name', '')),
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(str(tour.get('year', '')))),
-                    ft.DataCell(ft.Text(str(tour.get('description', '')))),
+                    ft.DataCell(ft.Text(
+                        str(tour.get('tour_name', ''))[:20],
+                        size=11, weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(str(tour.get('year', '')), size=11)),
+                    ft.DataCell(ft.Text(
+                        str(tour.get('description', ''))[:30], size=11)),
                     ft.DataCell(ft.Row([
                         ft.IconButton(icon=ft.Icons.EDIT,
                                       icon_color=ft.Colors.ORANGE_600,
+                                      icon_size=16,
                                       tooltip="Edit",
-                                      on_click=lambda e, t=tour: self.edit_tour_type_click(t)),
+                                      on_click=lambda e, t=tour:
+                                          self.edit_tour_type_click(t)),
                         ft.IconButton(icon=ft.Icons.DELETE,
                                       icon_color=ft.Colors.RED_600,
+                                      icon_size=16,
                                       tooltip="Delete",
-                                      on_click=lambda e, t=tour: self.delete_tour_type_click(t)),
+                                      on_click=lambda e, t=tour:
+                                          self.delete_tour_type_click(t)),
                     ], spacing=0)),
                 ])
                 self.tour_table.rows.append(row)
@@ -558,9 +628,12 @@ class CompanySettingsDialog:
             self.show_snack(f"❌ Could not add tour: {ex}")
 
     def edit_tour_type_click(self, tour):
-        name_field = ft.TextField(label="Tour Name", value=tour.get('tour_name', ''))
-        year_field = ft.TextField(label="Year", value=str(tour.get('year', '')))
-        desc_field = ft.TextField(label="Description", value=tour.get('description', ''))
+        name_field = ft.TextField(
+            label="Tour Name", value=tour.get('tour_name', ''))
+        year_field = ft.TextField(
+            label="Year", value=str(tour.get('year', '')))
+        desc_field = ft.TextField(
+            label="Description", value=tour.get('description', ''))
 
         def do_save(ev):
             try:
@@ -575,14 +648,16 @@ class CompanySettingsDialog:
                 self.show_snack(f"❌ {ex}")
 
         edit_dialog = ft.AlertDialog(
-            title=ft.Text("Edit Tour Type"),
+            title=ft.Text("Edit Tour Type", size=14),
             content=ft.Column([name_field, year_field, desc_field],
                               spacing=10, tight=True),
             actions=[
-                ft.TextButton(content=ft.Text("Cancel"),
+                ft.TextButton(content=ft.Text("Cancel", size=12),
                               on_click=lambda ev: self.page.pop_dialog()),
-                ft.Button(content=ft.Text("Save"), on_click=do_save,
-                          bgcolor=ft.Colors.GREEN_600, color=ft.Colors.WHITE),
+                ft.Button(content=ft.Text("Save", size=12),
+                          on_click=do_save,
+                          bgcolor=ft.Colors.GREEN_600,
+                          color=ft.Colors.WHITE),
             ])
         self.page.show_dialog(edit_dialog)
 
@@ -597,14 +672,17 @@ class CompanySettingsDialog:
                 self.show_snack(f"❌ {ex}")
 
         confirm_dialog = ft.AlertDialog(
-            title=ft.Text("Delete Tour Type?"),
-            content=ft.Text(f"Delete '{tour.get('tour_name', '')}' "
-                            f"({tour.get('year', '')})?"),
+            title=ft.Text("Delete Tour Type?", size=14),
+            content=ft.Text(
+                f"Delete '{tour.get('tour_name', '')}' "
+                f"({tour.get('year', '')})?", size=12),
             actions=[
-                ft.TextButton(content=ft.Text("Cancel"),
+                ft.TextButton(content=ft.Text("Cancel", size=12),
                               on_click=lambda ev: self.page.pop_dialog()),
-                ft.Button(content=ft.Text("Delete"), on_click=confirm,
-                          bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE),
+                ft.Button(content=ft.Text("Delete", size=12),
+                          on_click=confirm,
+                          bgcolor=ft.Colors.RED_600,
+                          color=ft.Colors.WHITE),
             ])
         self.page.show_dialog(confirm_dialog)
 
@@ -631,7 +709,6 @@ class CompanySettingsDialog:
                 'upi': (self.upi_field.value or '').strip(),
             }
 
-            # ✅ Include base64 logo in CSV so it survives redeploys
             logo_data_uri_value = self.logo_data_uri or ''
 
             company_data = {
@@ -645,12 +722,13 @@ class CompanySettingsDialog:
                 'tan_no': (self.tan_field.value or '').strip(),
                 'pan_no': (self.pan_field.value or '').strip(),
                 'logo_path': str(self.logo_path) if self.logo_path else '',
-                'logo_data_uri': logo_data_uri_value,  # ✅ New column
+                'logo_data_uri': logo_data_uri_value,
                 'bank_details': json.dumps(bank_details),
             }
 
             self.db.company_settings = pd.DataFrame([company_data])
-            self.db._save_df(self.db.company_settings, "company_settings.csv")
+            self.db._save_df(self.db.company_settings,
+                             "company_settings.csv")
             print(f">>> Company CSV saved "
                   f"(logo_data_uri length: {len(logo_data_uri_value)})")
 
@@ -696,14 +774,12 @@ class CompanySettingsDialog:
     # show / close / snack
     # =============================================================================
     def show(self):
-        # Register FilePicker as service (Flet 1.0 standard)
         try:
             if hasattr(self.page, 'services'):
                 if self.file_picker not in self.page.services:
                     self.page.services.append(self.file_picker)
                 print("[FILE PICKER] Registered via services ✅")
             else:
-                # Fallback for older Flet versions
                 if self.file_picker not in self.page.overlay:
                     self.page.overlay.append(self.file_picker)
                 print("[FILE PICKER] Registered via overlay ✅")
