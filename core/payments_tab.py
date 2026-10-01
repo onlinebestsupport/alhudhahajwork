@@ -1,11 +1,11 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.3 — Mobile-Responsive + Selectable Rows
-#   • MOBILE: card layout with full-width action buttons (no more tiny icons)
+# v1.3.1 — Syntax fix + Mobile-Responsive + Selectable Rows
+#   • FIXED: "fbatch" typo → f"₹{batch_price:,.2f}"
+#   • MOBILE: card layout with full-width action buttons
 #   • DESKTOP: table with checkbox column for row selection
 #   • Row tap selects → toolbar Edit/PDF/Print act on selection
-#   • Fixed "Click 🖨️ in a row" issue — now buttons work on tap
 #   • Dialogs expand to viewport on narrow screens
 #   • Responsive stat cards + filters
 # =================================================================================
@@ -485,7 +485,6 @@ class PaymentsTab:
             if new_narrow != self._mobile_mode:
                 print(f"[PAYMENTS] viewport → "
                       f"{'mobile' if new_narrow else 'desktop'}")
-                # Rebuild root
                 self.stat_labels.clear()
                 self.setup_ui()
                 try:
@@ -656,7 +655,6 @@ class PaymentsTab:
                         self.selected_payment_id = None
                 return h
 
-            # Row click toggles selection
             def _make_row_click(pp=p, pid=pid):
                 def h(e):
                     self._select_payment(pid)
@@ -711,7 +709,6 @@ class PaymentsTab:
             self.mobile_list.controls.append(
                 ft.Container(
                     content=ft.Column([
-                        # Row 1: traveler + amount
                         ft.Row([
                             ft.Text(traveler_name, size=13,
                                     weight=ft.FontWeight.BOLD,
@@ -724,7 +721,6 @@ class PaymentsTab:
                                     color="#1e40af"),
                         ], spacing=8),
 
-                        # Row 2: date + method + status
                         ft.Row([
                             ft.Text(f"📅 {date_str}", size=10,
                                     color=ft.Colors.GREY_600),
@@ -740,7 +736,6 @@ class PaymentsTab:
                                 border_radius=8),
                         ], spacing=8, wrap=True),
 
-                        # Row 3: pkg/inv pending + receipt
                         ft.Row([
                             ft.Text(f"📦 {pkg_txt}", size=9,
                                     color=pkg_color,
@@ -752,7 +747,6 @@ class PaymentsTab:
                                     color=ft.Colors.GREY_600),
                         ], spacing=10, wrap=True),
 
-                        # Row 4: FULL-WIDTH action buttons
                         ft.Row([
                             ft.TextButton(
                                 content=ft.Row([
@@ -804,7 +798,6 @@ class PaymentsTab:
             self.selected_payment_id = None
         else:
             self.selected_payment_id = payment_id
-        # Re-render to update checkbox visuals
         self.display_payments()
         try:
             self.page.update()
@@ -931,8 +924,10 @@ class PaymentsTab:
 
         narrow = self._is_narrow()
         dialog = ft.AlertDialog(
-            title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
-                          weight=ft.FontWeight.BOLD, size=13 if narrow else 14),
+            title=ft.Text(
+                f"🧾 Receipt: {receipt.get('receipt_no', '')}",
+                weight=ft.FontWeight.BOLD,
+                size=13 if narrow else 14),
             content=ft.Container(
                 content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
@@ -960,7 +955,7 @@ class PaymentsTab:
         self.export_single_receipt_pdf(p)
 
     # -----------------------------------------------------------------------------
-    # export_single_receipt_pdf
+    # export_single_receipt_pdf   ✅ FIXED SYNTAX
     # -----------------------------------------------------------------------------
     def export_single_receipt_pdf(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
@@ -1054,6 +1049,7 @@ class PaymentsTab:
             elements.append(Paragraph("PAYMENT RECEIPT", subtitle_style))
             elements.append(Spacer(1, 10))
 
+            # ✅ FIXED — all f-strings are valid
             receipt_data = [
                 ["Receipt No:", receipt.get('receipt_no', '')],
                 ["Date:", str(receipt.get('receipt_date', ''))[:10]],
@@ -1067,7 +1063,7 @@ class PaymentsTab:
                 ["Status:", payment.get('status', 'completed')],
                 ["", ""],
                 ["📊 PAYMENT SUMMARY", ""],
-                ["Total Package:", fbatch"₹{_price:,.2f}"],
+                ["Total Package:", f"₹{batch_price:,.2f}"],
                 ["Total Paid:", f"₹{total_paid:,.2f}"],
                 ["Package Pending:",
                  f"₹{package_pending:,.2f} (without GST)"],
@@ -1127,7 +1123,6 @@ class PaymentsTab:
     # print_single_receipt
     # -----------------------------------------------------------------------------
     def print_single_receipt(self, payment):
-        # Generate PDF first, then user prints from browser
         self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
         self.export_single_receipt_pdf(payment)
 
