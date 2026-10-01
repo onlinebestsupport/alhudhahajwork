@@ -1,11 +1,15 @@
 # =================================================================================
 # nixpacks.toml — Alhudha Haj Travel System (Railway deployment)
 # =================================================================================
+# v1.2 — Fix for "undefined variable 'libgtk-3'"
+#   • Removed libgtk-3 — it's not a valid nixpkgs attribute name.
+#     Flet web / FastAPI mode doesn't need GTK at all (that's desktop-only).
+#   • If GTK is ever needed, the correct name is `gtk3` (no lib- prefix).
+# =================================================================================
 
 [phases.setup]
 nixPkgs = [
     "python311",
-    "libgtk-3",
 ]
 
 [phases.install]
