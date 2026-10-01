@@ -1,37 +1,29 @@
 # =================================================================================
 # Alhudha Haj Travel System — Python dependencies
 # =================================================================================
-# Flet 1.x is REQUIRED — the codebase uses the 1.0 API.
-# Do NOT downgrade below 1.0.0.
-#
-# NOTE ON FLET-CHART VERSIONS:
-#   flet and flet-charts are versioned in LOCKSTEP. If flet is 1.0.x,
-#   flet-charts must also be 1.0.x (NOT 0.1.x — that line never existed
-#   on PyPI). Both pins below allow patch updates within the 1.0 line.
-#
-#   If flet-charts ever fails to resolve again, comment it out — the
-#   dashboard falls back to matplotlib automatically (see
-#   _CHART_ENGINE logic in core/dashboard_tab.py).
-# =================================================================================
 
-# ---- Flet (MUST stay 1.x — codebase uses 1.0 API) ----
+# ---- Flet ----
 flet~=1.0
 
 # ---- Flet charts plugin (lockstep with flet 1.x) ----
 flet-charts~=1.0
 
-# ---- Matplotlib (fallback chart engine, always available) ----
+# ---- Matplotlib (fallback chart engine) ----
 matplotlib~=3.8
+
+# ---- FastAPI + uvicorn (required for file download endpoint) ----
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 
 # ---- Data ----
 pandas~=2.0
 numpy~=1.24
 
-# ---- PDF generation (server-side) ----
+# ---- PDF generation ----
 reportlab~=4.0
 
-# ---- Excel export (server-side) ----
+# ---- Excel export ----
 openpyxl~=3.1
 
-# ---- Image processing (Excel logo embedding) ----
+# ---- Image processing ----
 Pillow~=10.0

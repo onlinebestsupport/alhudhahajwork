@@ -161,21 +161,16 @@ def send_file_to_user(page, filepath, label="Download"):
     """
     Cloud-aware file delivery.
 
-    On web (Railway / Render / Fly):
-      • Copy the file into <base>/static/downloads/  (source folder)
-      • Return a URL path like "/assets/downloads/foo.pdf"
-        (Flet 1.0 serves `assets_dir` at /assets/, NOT /static/)
-      • Caller then does page.launch_url(url) → browser downloads it
+    On web: copy file into <base>/static/downloads/ and return
+            "/download/<filename>" — a FastAPI endpoint that sends the
+            file with Content-Disposition: attachment, forcing the browser
+            to download it.
 
-    On desktop:
-      • Return a file:// URI for the OS to open
-
-    Returns the URL string on success, None on failure.
+    On desktop: return a file:// URI.
     """
     if not filepath or not os.path.exists(filepath):
         return None
 
-    # ---- Detect web mode ----
     is_web = bool(
         os.getenv("PORT")
         or os.getenv("RAILWAY_ENVIRONMENT")
@@ -192,7 +187,6 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
-            # Avoid collision: if a different-size file exists, add timestamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -201,6 +195,19 @@ def send_file_to_user(page, filepath, label="Download"):
                 dest = os.path.join(downloads_dir, fname)
 
             shutil.copy2(filepath, dest)
+
+            # This URL hits the FastAPI /download/ endpoint defined in main.py
+            return f"/download/{fname}"
+
+        except Exception as ex:
+            print(f"[send_file_to_user] web copy failed: {ex}")
+            return None
+
+    try:
+        return f"file://{os.path.abspath(filepath)}"
+    except Exception as ex:
+        print(f"[send_file_to_user] desktop failed: {ex}")
+        return None
 
             # ─────────────────────────────────────────────────────────
             # CRITICAL: Flet 1.0 serves `assets_dir` at /assets/, NOT
