@@ -907,4 +907,360 @@ async function doLogout() {
 
 async function loadTravelerData() {
     $('loadingOverlay').classList.add('active');
-    $('loadingOverlay').innerHTML = '<div class="big-spinner"></div><div>
+    $('loadingOverlay').innerHTML = '<div class="big-spinner"></div><div>Loading your details&hellip;</div>';
+    $('portalContent').style.display = 'none';
+
+    try {
+        var res = await fetch(API.me, {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+
+        if (res.status === 401) {
+            currentData = null;
+            $('portalWrap').classList.remove('active');
+            $('loginWrap').style.display = 'flex';
+            $('userGreeting').style.display = 'none';
+            $('logoutBtn').style.display = 'none';
+            setLoginLoading(false);
+            showLoginError('Session expired. Please log in again.');
+            return;
+        }
+
+        if (!res.ok) {
+            throw new Error('Server returned HTTP ' + res.status);
+        }
+
+        var payload = await res.json();
+        currentData = payload.data || {};
+
+        renderPortal(currentData);
+
+        $('loadingOverlay').classList.remove('active');
+        $('portalContent').style.display = 'block';
+    } catch (err) {
+        console.error(err);
+        var msg = err && err.message ? err.message : 'Could not load your data.';
+        $('loadingOverlay').innerHTML =
+            '<div style="color:var(--danger);font-size:1rem">' +
+            '<i class="fas fa-exclamation-circle"></i> ' +
+            escapeHTML(msg) +
+            '<br><br><a href="#" onclick="loadTravelerData();return false;" ' +
+            'style="color:var(--primary);font-weight:600">Tap to retry</a>' +
+            '</div>';
+    }
+}
+
+function renderPortal(data) {
+    renderHero(data);
+    renderKPIs(data);
+    renderFieldsCard('profileGrid', data.personal_fields || []);
+    renderBatch(data);
+    renderDocuments(data);
+    renderPayments(data);
+    renderInvoice(data);
+}
+
+function renderHero(data) {
+    var t = data.traveler || {};
+    var name = t.full_name || 'Traveler';
+    $('heroName').textContent = name;
+    $('heroId').textContent = t.id || '\u2014';
+    $('greetingName').textContent = name;
+    $('greetingRole').textContent = 'Traveler';
+
+    var photoDoc = null;
+    var docs = data.documents || [];
+    for (var i = 0; i < docs.length; i++) {
+        if (docs[i].key === 'photo' && docs[i].exists) {
+            photoDoc = docs[i];
+            break;
+        }
+    }
+
+    var avatar = $('heroAvatar');
+    if (photoDoc) {
+        var imgUrl = photoDoc.url + '?t=' + Date.now();
+        avatar.innerHTML = '<img src="' + imgUrl + '" alt="' + escapeHTML(name) + '">';
+    } else {
+        avatar.innerHTML = '<div class="no-photo">\uD83D\uDC64</div>';
+    }
+
+    var badges = [];
+    if (t.passport_no) {
+        badges.push('<span class="hero-badge"><i class="fas fa-passport"></i> ' + escapeHTML(t.passport_no) + '</span>');
+    }
+    if (t.status) {
+        badges.push('<span class="hero-badge"><i class="fas fa-circle"></i> ' + escapeHTML(t.status) + '</span>');
+    }
+    if (data.batch && data.batch.batch_name) {
+        badges.push('<span class="hero-badge"><i class="fas fa-box"></i> ' + escapeHTML(data.batch.batch_name) + '</span>');
+    }
+    if (data.batch && data.batch.days_to_departure !== null
+        && data.batch.days_to_departure !== undefined
+        && data.batch.days_to_departure > 0) {
+        badges.push('<span class="hero-badge"><i class="fas fa-plane-departure"></i> ' + data.batch.days_to_departure + ' days to departure</span>');
+    }
+    $('heroBadges').innerHTML = badges.join('');
+}
+
+function renderKPIs(data) {
+    var kpis = data.kpis || [];
+    var html = '';
+    for (var i = 0; i < kpis.length; i++) {
+        var k = kpis[i];
+        var valStr;
+        if (k.is_currency) {
+            valStr = fmtINR0(k.value);
+        } else if (k.is_percent) {
+            valStr = k.value + '%';
+        } else {
+            valStr = escapeHTML(String(k.value));
+        }
+        html += '<div class="kpi-card kpi-' + (k.tone || '') + '">'
+              + '<div class="kpi-label"><i class="fas fa-' + (k.icon || 'circle') + '"></i> ' + escapeHTML(k.label) + '</div>'
+              + '<div class="kpi-value">' + valStr + '</div>'
+              + '<div class="kpi-sub">' + escapeHTML(k.sub || '') + '</div>'
+              + '</div>';
+    }
+    $('kpiGrid').innerHTML = html;
+}
+
+function renderFieldsCard(targetId, fields) {
+    var grid = $(targetId);
+    if (!grid) return;
+
+    if (!fields || fields.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">'
+                       + '<i class="fas fa-inbox"></i>'
+                       + '<div>No information available.</div></div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < fields.length; i++) {
+        var f = fields[i];
+        var val;
+        if (f.value === null || f.value === undefined || f.value === '') {
+            val = '<span class="info-value empty">Not provided</span>';
+        } else if (f.is_currency) {
+            val = '<span class="info-value">' + fmtINR(f.value) + '</span>';
+        } else {
+            val = '<span class="info-value">' + escapeHTML(String(f.value)) + '</span>';
+        }
+        html += '<div class="info-row">'
+              + '<div class="info-label">' + escapeHTML(f.label) + '</div>'
+              + val
+              + '</div>';
+    }
+    grid.innerHTML = html;
+}
+
+function renderBatch(data) {
+    var fields = data.batch_fields || [];
+    var grid = $('batchGrid');
+
+    if (!data.batch || fields.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">'
+                       + '<i class="fas fa-box-open"></i>'
+                       + '<div>No package assigned yet.</div></div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < fields.length; i++) {
+        var f = fields[i];
+        var val;
+        if (f.is_currency) {
+            val = '<span class="info-value">' + fmtINR(f.value) + '</span>';
+        } else if (!f.value) {
+            val = '<span class="info-value empty">Not set</span>';
+        } else {
+            val = '<span class="info-value">' + escapeHTML(String(f.value)) + '</span>';
+        }
+        html += '<div class="info-row">'
+              + '<div class="info-label">' + escapeHTML(f.label) + '</div>'
+              + val
+              + '</div>';
+    }
+    grid.innerHTML = html;
+}
+
+function renderDocuments(data) {
+    var docs = data.documents || [];
+    var grid = $('docsGrid');
+
+    if (docs.length === 0) {
+        grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">'
+                       + '<i class="fas fa-folder-open"></i>'
+                       + '<div>No documents uploaded.</div></div>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < docs.length; i++) {
+        var d = docs[i];
+        var cls = d.exists ? '' : ' missing';
+        var thumb;
+        if (d.exists && d.is_image) {
+            thumb = '<img src="' + d.url + '?t=' + Date.now() + '" alt="' + escapeHTML(d.label) + '" loading="lazy">';
+        } else if (d.exists) {
+            var isPdf = d.filename && d.filename.toLowerCase().indexOf('.pdf') !== -1;
+            thumb = '<div class="doc-icon"><i class="fas ' + (isPdf ? 'fa-file-pdf' : 'fa-file-image') + '"></i></div>';
+        } else {
+            thumb = '<div class="doc-icon"><i class="fas fa-file"></i></div>';
+        }
+        var status = d.exists
+            ? '<span class="doc-status ok"><i class="fas fa-check"></i> Uploaded</span>'
+            : '<span class="doc-status miss"><i class="fas fa-times"></i> Not uploaded</span>';
+        var click = d.exists
+            ? ' onclick="openDoc(\'' + d.key + '\', \'' + escapeHTML(d.label).replace(/'/g, '\\\'') + '\')"'
+            : '';
+        html += '<div class="doc-card' + cls + '"' + click + '>'
+              + '<div class="doc-thumb">' + thumb + '</div>'
+              + '<div class="doc-label">' + escapeHTML(d.label) + '</div>'
+              + status
+              + '</div>';
+    }
+    grid.innerHTML = html;
+}
+
+function renderPayments(data) {
+    var payments = data.payments || [];
+    var body = $('paymentsBody');
+
+    $('paymentsSubtitle').textContent =
+        payments.length + ' payment' + (payments.length === 1 ? '' : 's') + ' recorded';
+
+    if (payments.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" class="empty-state">'
+                       + '<i class="fas fa-receipt"></i>'
+                       + '<div>No payments recorded yet.</div></td></tr>';
+        return;
+    }
+
+    var html = '';
+    for (var i = 0; i < payments.length; i++) {
+        var p = payments[i];
+        var status = String(p.status || '').toLowerCase();
+        html += '<tr>'
+              + '<td>' + escapeHTML(p.date_display || p.date || '\u2014') + '</td>'
+              + '<td>' + escapeHTML(p.method || '\u2014') + '</td>'
+              + '<td><code style="font-size:0.78rem">' + escapeHTML(p.receipt_no || '\u2014') + '</code></td>'
+              + '<td><code style="font-size:0.78rem">' + escapeHTML(p.transaction_id || '\u2014') + '</code></td>'
+              + '<td class="amount-cell">' + fmtINR(p.amount) + '</td>'
+              + '<td><span class="badge-status ' + escapeHTML(status) + '">' + escapeHTML(p.status || 'completed') + '</span></td>'
+              + '</tr>';
+    }
+    body.innerHTML = html;
+}
+
+function renderInvoice(data) {
+    var inv = data.invoice;
+    var lines = $('invoiceLines');
+    var meta = $('invoiceMeta');
+
+    if (!inv) {
+        lines.innerHTML = '<div class="empty-state">'
+                        + '<i class="fas fa-file-invoice"></i>'
+                        + '<div>No invoice generated yet.</div></div>';
+        meta.innerHTML = '';
+        $('invoiceSubtitle').textContent = '';
+        return;
+    }
+
+    $('invoiceSubtitle').textContent = 'Invoice ' + inv.invoice_no + ' \u00B7 ' + (inv.issue_date_display || '');
+
+    var statusLower = String(inv.status || '').toLowerCase();
+    meta.innerHTML =
+          '<div class="invoice-line"><span class="label">Invoice No</span>'
+        + '<span class="value">' + escapeHTML(inv.invoice_no) + '</span></div>'
+        + '<div class="invoice-line"><span class="label">Issue Date</span>'
+        + '<span class="value">' + escapeHTML(inv.issue_date_display || '\u2014') + '</span></div>'
+        + '<div class="invoice-line"><span class="label">Due Date</span>'
+        + '<span class="value">' + escapeHTML(inv.due_date_display || '\u2014') + '</span></div>'
+        + '<div class="invoice-line"><span class="label">Status</span>'
+        + '<span class="value"><span class="badge-status ' + escapeHTML(statusLower) + '">' + escapeHTML(inv.status || '\u2014') + '</span></span></div>';
+
+    var items = data.invoice_line_items || [];
+    var html = '';
+    for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        var cls = it.tone === 'total' ? 'total' : (it.tone === 'danger' ? 'discount' : '');
+        var valStr = it.is_currency ? fmtINR(it.value) : escapeHTML(String(it.value));
+        if (it.value < 0 && it.is_currency) {
+            valStr = '\u2212 ' + fmtINR(Math.abs(it.value));
+        }
+        html += '<div class="invoice-line ' + cls + '">'
+              + '<span class="label">' + escapeHTML(it.label) + '</span>'
+              + '<span class="value">' + valStr + '</span>'
+              + '</div>';
+    }
+    lines.innerHTML = html;
+}
+
+function openDoc(key, label) {
+    var modal = $('docModal');
+    var body = $('docModalBody');
+    $('docModalTitle').textContent = label;
+
+    var url = API.doc(key) + '?t=' + Date.now();
+    body.innerHTML = '<img src="' + url + '" alt="' + escapeHTML(label) + '" '
+                   + 'onerror="this.outerHTML=\'<iframe src=&quot;' + url + '&quot;></iframe>\'">';
+    modal.classList.add('active');
+}
+
+function closeDocModal(e) {
+    if (e && e.target && e.target.id !== 'docModal') return;
+    $('docModal').classList.remove('active');
+    $('docModalBody').innerHTML = '';
+}
+
+async function bootstrap() {
+    try {
+        var res = await fetch(API.me, {
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+        if (res.ok) {
+            var payload = await res.json();
+            currentData = payload.data || {};
+            $('loginWrap').style.display = 'none';
+            $('portalWrap').classList.add('active');
+            $('userGreeting').style.display = 'block';
+            $('logoutBtn').style.display = 'inline-flex';
+            renderPortal(currentData);
+            $('portalContent').style.display = 'block';
+            $('loadingOverlay').classList.remove('active');
+            return;
+        }
+    } catch (e) { /* not logged in */ }
+
+    $('loginWrap').style.display = 'flex';
+    $('passportInput').focus();
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    $('passportInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            $('pinInput').focus();
+        }
+    });
+    $('pinInput').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            doLogin();
+        }
+    });
+
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeDocModal({ target: { id: 'docModal' } });
+    });
+
+    bootstrap();
+});
+</script>
+
+</body>
+</html>
