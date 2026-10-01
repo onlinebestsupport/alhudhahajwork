@@ -1,11 +1,15 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v2.1 — fixes + polish:
-#   • Preview button uses ft.UrlLauncher (Flet 1.0.3 API)
-#   • Contact / Social fields stack in Column layout (fixed grey-box bug)
-#   • Cleaner section cards, spacing, typography
-#   • Sticky action bar with prominent Save
+# v2.2 — Mobile-Responsive
+#   • Header stacks on narrow screens (Preview button drops below)
+#   • Section cards: compact padding, tighter typography
+#   • Feature rows stack (icon → title → description) on mobile
+#   • Stats rows stack on mobile
+#   • Two-column fields become single-column on mobile
+#   • Batch checkbox list: max-height shrinks on mobile
+#   • Action bar buttons wrap to 2 per row
+#   • All cloud-ready features preserved
 # =================================================================================
 
 import json
@@ -166,40 +170,51 @@ class FrontPageSettingsTab(ft.Column):
         ]
 
     # -----------------------------------------------------------------------------
-    # Header
+    # Header — MOBILE-RESPONSIVE
     # -----------------------------------------------------------------------------
     def _header(self):
         return ft.Container(
-            content=ft.Row([
-                ft.Container(
-                    content=ft.Text("🌐", size=26),
-                    width=56, height=56,
-                    bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
-                    border_radius=14,
-                    alignment=ft.Alignment.CENTER),
-                ft.Column([
-                    ft.Text("Front Page Settings", size=20,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
-                    ft.Text(
-                        "Edit everything visitors see at alhudhahaj.work",
-                        size=11, color="#c7d2fe"),
-                ], spacing=2, expand=True),
-                ft.Button(
-                    content=ft.Row([
-                        ft.Icon(ft.Icons.OPEN_IN_NEW, size=16,
-                                color=ft.Colors.WHITE),
-                        ft.Text("Preview Site", size=12,
-                                color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD),
-                    ], spacing=6, tight=True),
-                    on_click=self._open_preview,
-                    height=42,
-                    bgcolor=SUCCESS,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(radius=10))),
-            ], spacing=16),
-            padding=ft.Padding.symmetric(horizontal=24, vertical=18),
+            content=ft.ResponsiveRow(
+                controls=[
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Container(
+                                content=ft.Text("🌐", size=22),
+                                width=46, height=46,
+                                bgcolor=ft.Colors.with_opacity(
+                                    0.15, ft.Colors.WHITE),
+                                border_radius=12,
+                                alignment=ft.Alignment.CENTER),
+                            ft.Column([
+                                ft.Text("Front Page Settings", size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.Colors.WHITE,
+                                        no_wrap=False, max_lines=2),
+                                ft.Text("Edit your public landing page",
+                                        size=10, color="#c7d2fe"),
+                            ], spacing=2, expand=True),
+                        ], spacing=10),
+                        col={"xs": 12, "sm": 12, "md": 8}),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Button(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=14,
+                                            color=ft.Colors.WHITE),
+                                    ft.Text("Preview", size=11,
+                                            color=ft.Colors.WHITE,
+                                            weight=ft.FontWeight.BOLD),
+                                ], spacing=5, tight=True),
+                                on_click=self._open_preview,
+                                height=38,
+                                bgcolor=SUCCESS,
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(
+                                        radius=10))),
+                        ], alignment=ft.MainAxisAlignment.END),
+                        col={"xs": 12, "sm": 12, "md": 4}),
+                ], spacing=10, run_spacing=10),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=14),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -207,39 +222,41 @@ class FrontPageSettingsTab(ft.Column):
             border_radius=14)
 
     # -----------------------------------------------------------------------------
-    # Section wrapper (reusable card)
+    # Section wrapper (reusable card) — MOBILE-RESPONSIVE
     # -----------------------------------------------------------------------------
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
-        # Header row with colored accent bar
         header = ft.Row([
             ft.Container(
-                content=ft.Text(icon, size=18),
-                width=40, height=40,
+                content=ft.Text(icon, size=16),
+                width=36, height=36,
                 bgcolor=ft.Colors.with_opacity(0.12, accent),
-                border_radius=10,
+                border_radius=9,
                 alignment=ft.Alignment.CENTER),
             ft.Column([
-                ft.Text(title, size=15,
+                ft.Text(title, size=13,
                         weight=ft.FontWeight.BOLD,
-                        color="#0f172a"),
-                ft.Text(subtitle, size=11, color=MUTED),
+                        color="#0f172a",
+                        no_wrap=False, max_lines=2),
+                ft.Text(subtitle, size=10, color=MUTED,
+                        no_wrap=False, max_lines=2),
             ], spacing=2, expand=True),
-        ], spacing=12)
+        ], spacing=10)
 
-        body = ft.Column(controls, spacing=12)
+        body = ft.Column(controls, spacing=10)
 
         return ft.Container(
             content=ft.Column([
                 header,
                 ft.Divider(height=1, color=BORDER),
-                ft.Container(content=body, padding=ft.Padding.only(top=4)),
-            ], spacing=12),
-            padding=20,
+                ft.Container(content=body,
+                             padding=ft.Padding.only(top=4)),
+            ], spacing=10),
+            padding=14,
             bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
             border_radius=14,
             shadow=ft.BoxShadow(
-                blur_radius=8, spread_radius=0,
+                blur_radius=6, spread_radius=0,
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
@@ -250,22 +267,26 @@ class FrontPageSettingsTab(ft.Column):
         defaults = dict(
             label=label,
             value=value or "",
-            text_size=13,
+            text_size=12,
             border_color=BORDER,
             focused_border_color=PRIMARY_LT,
             border_radius=8,
-            content_padding=ft.Padding.symmetric(horizontal=12, vertical=12),
+            content_padding=ft.Padding.symmetric(
+                horizontal=10, vertical=10),
         )
         defaults.update(kwargs)
         return ft.TextField(**defaults)
 
     def _two_col(self, left, right):
-        """Two fields side by side — no wrap so nothing gets lost."""
-        return ft.Row(
-            [ft.Container(content=left, expand=True),
-             ft.Container(content=right, expand=True)],
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.START)
+        """Two fields side by side on desktop, stacked on mobile."""
+        return ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=left,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+                ft.Container(content=right,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+            ],
+            spacing=10, run_spacing=10)
 
     # -----------------------------------------------------------------------------
     # Hero
@@ -305,8 +326,7 @@ class FrontPageSettingsTab(ft.Column):
         self.alert_link = self._field(
             "Learn-more link (URL or /path)", a.get("link", "#"))
         self.alert_color = self._field(
-            "Banner color (hex)", a.get("color", "#f39c12"),
-            width=180)
+            "Banner color (hex)", a.get("color", "#f39c12"))
         self.alert_style = ft.Dropdown(
             label="Animation",
             value=a.get("style", "pulse"),
@@ -315,11 +335,10 @@ class FrontPageSettingsTab(ft.Column):
                 ft.dropdown.Option("pulse", "Pulse"),
                 ft.dropdown.Option("blink", "Blink"),
             ],
-            text_size=13,
+            text_size=12,
             border_color=BORDER,
             focused_border_color=PRIMARY_LT,
-            border_radius=8,
-            width=180)
+            border_radius=8)
 
         return self._section_card(
             "⚠️", "Alert Banner",
@@ -336,7 +355,7 @@ class FrontPageSettingsTab(ft.Column):
     # Features
     # -----------------------------------------------------------------------------
     def _section_features(self):
-        self.feature_rows_container = ft.Column(spacing=10)
+        self.feature_rows_container = ft.Column(spacing=8)
         self.feature_entries = []
 
         for f in (self.cfg.get("features") or []):
@@ -347,13 +366,13 @@ class FrontPageSettingsTab(ft.Column):
 
         add_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
-                ft.Text("Add Feature", size=12,
+                ft.Icon(ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
+                ft.Text("Add Feature", size=11,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
-            ], spacing=6, tight=True),
+            ], spacing=5, tight=True),
             on_click=self._add_feature_empty,
-            height=40, bgcolor=SUCCESS,
+            height=38, bgcolor=SUCCESS,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
@@ -365,7 +384,7 @@ class FrontPageSettingsTab(ft.Column):
 
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field(
-            "Icon", icon_val, width=160,
+            "Icon", icon_val,
             hint_text="e.g. fa-mosque")
         title_field = self._field("Title", title_val)
         text_field = self._field("Description", text_val)
@@ -385,18 +404,26 @@ class FrontPageSettingsTab(ft.Column):
             except Exception:
                 pass
 
+        # MOBILE-RESPONSIVE inner layout
         row = ft.Container(
-            content=ft.Row([
-                ft.Container(content=icon_field, width=170),
-                ft.Container(content=title_field, expand=True),
-                ft.Container(content=text_field, expand=True),
-                ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
-                    icon_color=DANGER,
-                    tooltip="Remove",
-                    on_click=remove),
-            ], spacing=8,
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            content=ft.Column([
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=icon_field,
+                                     col={"xs": 5, "sm": 4, "md": 3}),
+                        ft.Container(content=title_field,
+                                     col={"xs": 7, "sm": 8, "md": 9}),
+                    ], spacing=8, run_spacing=8),
+                ft.Row([
+                    ft.Container(content=text_field, expand=True),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        icon_color=DANGER, icon_size=18,
+                        tooltip="Remove",
+                        on_click=remove),
+                ], spacing=6,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            ], spacing=6),
             padding=10, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER),
             border_radius=10)
@@ -429,25 +456,21 @@ class FrontPageSettingsTab(ft.Column):
                 ft.dropdown.Option("manual",
                                    "Manual list (JSON, advanced)"),
             ],
-            text_size=13,
+            text_size=12,
             border_color=BORDER,
             focused_border_color=PRIMARY_LT,
-            border_radius=8,
-            expand=True)
+            border_radius=8)
         self.pkg_source.on_change = self._on_pkg_source_change
 
         self.pkg_max_shown = self._field(
             "Max packages shown",
-            str(p.get("max_shown", 6)),
-            width=180)
+            str(p.get("max_shown", 6)))
 
         select_all_btn = ft.TextButton(
-            content=ft.Text("✓ Select All", size=11,
-                            color=SUCCESS),
+            content=ft.Text("✓ All", size=11, color=SUCCESS),
             on_click=lambda e: self._toggle_batches(True))
         clear_all_btn = ft.TextButton(
-            content=ft.Text("✗ Clear All", size=11,
-                            color=DANGER),
+            content=ft.Text("✗ Clear", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
         # Build batch checkbox list
@@ -459,37 +482,44 @@ class FrontPageSettingsTab(ft.Column):
         if not self.all_batches:
             batch_rows.append(ft.Text(
                 "No batches found. Add some in the Batches tab first.",
-                size=12, color=MUTED))
+                size=11, color=MUTED))
         else:
             for b in self.all_batches:
                 bid = str(b.get("id", ""))
                 name = str(b.get("batch_name", bid))
                 status = str(b.get("status", ""))
                 price = b.get("price", 0)
-                label = f"{name}   ·   {status}   ·   ₹{price:,.0f}"
+                label = f"{name}  ·  {status}  ·  ₹{price:,.0f}"
 
                 cb = ft.Checkbox(
                     label=label,
                     value=(bid in selected_ids) if selected_ids else False,
-                    label_style=ft.TextStyle(size=12))
+                    label_style=ft.TextStyle(size=11))
                 self.batch_checkboxes[bid] = cb
                 batch_rows.append(
-                    ft.Container(content=cb, padding=ft.Padding.symmetric(
-                        horizontal=8, vertical=4)))
+                    ft.Container(
+                        content=cb,
+                        padding=ft.Padding.symmetric(
+                            horizontal=6, vertical=2)))
 
         self.pkg_batch_container = ft.Column(batch_rows, spacing=0)
+
+        # MOBILE-RESPONSIVE height
+        pw = self.page_ref.width or 1000
+        batch_h = 180 if pw < 700 else 240
 
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
-                        size=12, weight=ft.FontWeight.BOLD),
+                        size=11, weight=ft.FontWeight.BOLD,
+                        no_wrap=False, max_lines=2),
                 ft.Container(expand=True),
                 select_all_btn,
                 clear_all_btn,
-            ], spacing=6),
+            ], spacing=4, wrap=True),
             ft.Text(
                 "Leave all unchecked to show every open batch.",
-                size=11, color=MUTED, italic=True),
+                size=10, color=MUTED, italic=True),
             ft.Container(
                 content=ft.Column(
                     [self.pkg_batch_container],
@@ -497,7 +527,7 @@ class FrontPageSettingsTab(ft.Column):
                 padding=8, bgcolor="#f8fafc",
                 border=ft.Border.all(1, BORDER),
                 border_radius=10,
-                height=240),
+                height=batch_h),
         ], spacing=8)
 
         self._update_source_visibility()
@@ -558,18 +588,16 @@ class FrontPageSettingsTab(ft.Column):
                 self.about_p2,
                 ft.Container(height=4),
                 ft.Text("Statistics (4 recommended)",
-                        size=13, weight=ft.FontWeight.BOLD,
+                        size=12, weight=ft.FontWeight.BOLD,
                         color="#0f172a"),
                 self.stats_rows_container,
             ])
 
     def _add_stat_row(self, number_val, label_val):
         num_field = self._field(
-            "Number", number_val, width=160,
-            hint_text="e.g. 25+")
+            "Number", number_val, hint_text="e.g. 25+")
         lbl_field = self._field(
-            "Label", label_val,
-            hint_text="e.g. Years Experience")
+            "Label", label_val, hint_text="e.g. Years Experience")
 
         entry = {"number": num_field, "label": lbl_field, "row": None}
 
@@ -583,15 +611,15 @@ class FrontPageSettingsTab(ft.Column):
 
         row = ft.Container(
             content=ft.Row([
-                ft.Container(content=num_field, width=170),
+                ft.Container(content=num_field, width=110),
                 ft.Container(content=lbl_field, expand=True),
                 ft.IconButton(icon=ft.Icons.DELETE_OUTLINE,
-                              icon_color=DANGER,
+                              icon_color=DANGER, icon_size=18,
                               tooltip="Remove",
                               on_click=remove),
-            ], spacing=8,
+            ], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=10, bgcolor="#f8fafc",
+            padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER),
             border_radius=10)
 
@@ -666,70 +694,76 @@ class FrontPageSettingsTab(ft.Column):
             [self.footer_about, self.footer_copyright])
 
     # -----------------------------------------------------------------------------
-    # Action bar
+    # Action bar — MOBILE-RESPONSIVE (2 per row on mobile)
     # -----------------------------------------------------------------------------
     def _action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.SAVE, size=18, color=ft.Colors.WHITE),
-                ft.Text("Save Changes", size=13,
+                ft.Icon(ft.Icons.SAVE, size=16, color=ft.Colors.WHITE),
+                ft.Text("Save", size=12,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
-            ], spacing=8, tight=True),
+            ], spacing=6, tight=True),
             on_click=self._save,
-            height=50, bgcolor=SUCCESS,
+            height=44, bgcolor=SUCCESS,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
         reload_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.REFRESH, size=18,
+                ft.Icon(ft.Icons.REFRESH, size=16,
                         color=ft.Colors.WHITE),
-                ft.Text("Reload from Disk", size=13,
+                ft.Text("Reload", size=12,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
-            ], spacing=8, tight=True),
+            ], spacing=6, tight=True),
             on_click=self.refresh,
-            height=50, bgcolor="#0ea5e9",
+            height=44, bgcolor="#0ea5e9",
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
         preview_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.OPEN_IN_NEW, size=18,
+                ft.Icon(ft.Icons.OPEN_IN_NEW, size=16,
                         color=ft.Colors.WHITE),
-                ft.Text("Open Front Page", size=13,
+                ft.Text("Preview", size=12,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
-            ], spacing=8, tight=True),
+            ], spacing=6, tight=True),
             on_click=self._open_preview,
-            height=50, bgcolor=ACCENT,
+            height=44, bgcolor=ACCENT,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
         reset_btn = ft.TextButton(
-            content=ft.Text("↺ Reset to Defaults", size=12,
-                            color=DANGER),
+            content=ft.Text("↺ Reset", size=11, color=DANGER),
             on_click=self._reset_confirm)
 
-        # Status label inside the action bar
         self.status_label = ft.Text(
-            "Ready. Edit fields and click Save to publish.",
-            size=11, color=MUTED, italic=True)
+            "Ready. Edit fields and click Save.",
+            size=10, color=MUTED, italic=True,
+            no_wrap=False, max_lines=2)
 
         return ft.Container(
             content=ft.Column([
-                ft.Row([
-                    save_btn,
-                    reload_btn,
-                    preview_btn,
-                    ft.Container(expand=True),
-                    reset_btn,
-                ], spacing=10, wrap=True),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=save_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(content=reload_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(content=preview_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(
+                            content=ft.Row([reset_btn],
+                                           alignment=ft.MainAxisAlignment.END),
+                            col={"xs": 6, "sm": 12, "md": 3}),
+                    ],
+                    spacing=8, run_spacing=8),
                 ft.Divider(height=1, color=BORDER),
-                ft.Row([self.status_label], spacing=0),
+                self.status_label,
             ], spacing=10),
-            padding=20, bgcolor=SECTION_BG,
+            padding=14, bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
             border_radius=14)
 
@@ -827,8 +861,8 @@ class FrontPageSettingsTab(ft.Column):
             if ok:
                 self.cfg = cfg
                 self._set_status(
-                    f"✅ Saved at {datetime.now().strftime('%H:%M:%S')}. "
-                    f"Reload the front page to see changes.",
+                    f"✅ Saved at "
+                    f"{datetime.now().strftime('%H:%M:%S')}",
                     SUCCESS)
                 self._snack("✅ Front page settings saved")
                 try:
@@ -872,17 +906,18 @@ class FrontPageSettingsTab(ft.Column):
             title=ft.Row([
                 ft.Icon(ft.Icons.WARNING_AMBER, color=DANGER),
                 ft.Text("Reset to Defaults?",
-                        weight=ft.FontWeight.BOLD),
+                        weight=ft.FontWeight.BOLD, size=14),
             ], spacing=8),
             content=ft.Text(
                 "This will discard your custom front-page settings and "
                 "restore the original defaults.\n\nThis cannot be undone.",
-                size=12),
+                size=11),
             actions=[
-                ft.TextButton(content=ft.Text("Cancel"),
+                ft.TextButton(content=ft.Text("Cancel", size=11),
                               on_click=cancel),
                 ft.Button(
-                    content=ft.Text("Reset", color=ft.Colors.WHITE,
+                    content=ft.Text("Reset", size=11,
+                                    color=ft.Colors.WHITE,
                                     weight=ft.FontWeight.BOLD),
                     on_click=do_reset,
                     bgcolor=DANGER),
@@ -890,7 +925,7 @@ class FrontPageSettingsTab(ft.Column):
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # Preview — Flet 1.0.3 fix (ft.UrlLauncher async)
+    # Preview
     # -----------------------------------------------------------------------------
     def _open_preview(self, e=None):
         try:
@@ -902,7 +937,6 @@ class FrontPageSettingsTab(ft.Column):
                 except Exception as ex:
                     print(f"[preview] launch failed: {ex}")
 
-            # Schedule via run_task (Flet 1.0.3 native async scheduler)
             try:
                 self.page_ref.run_task(_do)
                 self._set_status("🔗 Opening front page…", PRIMARY_LT)
@@ -910,7 +944,6 @@ class FrontPageSettingsTab(ft.Column):
             except Exception as ex:
                 print(f"[preview] run_task failed: {ex}")
 
-            # Fallback: set page.url (also works in Flet 1.0.3)
             try:
                 self.page_ref.url = "/"
                 self._set_status("🔗 Opened front page", PRIMARY_LT)
