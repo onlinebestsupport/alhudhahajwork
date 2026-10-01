@@ -136,61 +136,82 @@ def round_as_per_rules(value):
 # =================================================================================
 def _trigger_download_js(page, url):
     """
-    Force the browser to download `url` using JavaScript anchor injection.
+    Trigger a browser download using JavaScript anchor injection.
 
-    This is the ONLY reliable way to bypass Chrome's popup blocker when the
-    download URL is produced by an async server call. We create an <a> element
-    with the `download` attribute, click it programmatically, and remove it.
-
-    The `download` attribute tells the browser to save (not navigate), and
-    because the click is a synthesized DOM event, it doesn't trigger the
-    popup blocker.
+    Flet 1.0.x's run_javascript() is ASYNC — calling it synchronously
+    creates a coroutine that never runs. This version schedules the
+    coroutine on the running event loop.
     """
+    import asyncio
+    import inspect
+
     if page is None:
         return False
 
-    # Escape single quotes in URL just in case
     safe_url = url.replace("'", "%27")
     js = (
         "(function() {"
         "try {"
         "  var a = document.createElement('a');"
         f"  a.href = '{safe_url}';"
-        "  a.download = '';"          # force download, don't navigate
+        "  a.download = '';"
         "  a.style.display = 'none';"
         "  document.body.appendChild(a);"
         "  a.click();"
         "  setTimeout(function(){ document.body.removeChild(a); }, 100);"
         "  return true;"
-        "} catch(err) { console.error('download error:', err); return false; }"
+        "} catch(e) { console.error('download err:', e); return false; }"
         "})();"
     )
 
-    try:
-        page.run_javascript(js)
-        print(f"[download] JS anchor triggered: {url}")
-        return True
-    except Exception as ex:
-        print(f"[download] JS anchor failed: {ex}")
+    # ---- Try run_javascript (async in Flet 1.0.x) ----
+    run_js = getattr(page, "run_javascript", None)
+    if run_js is not None:
+        try:
+            result = run_js(js)
+            # If it returned a coroutine, schedule it on the event loop
+            if inspect.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                    print(f"[download] JS scheduled on running loop: {url}")
+                    return True
+                except RuntimeError:
+                    # No running loop — spin one up
+                    asyncio.run(result)
+                    print(f"[download] JS ran synchronously: {url}")
+                    return True
+            else:
+                # Sync result — Flet executed it inline
+                print(f"[download] JS executed inline: {url}")
+                return True
+        except TypeError as ex:
+            print(f"[download] run_javascript TypeError: {ex}")
+        except Exception as ex:
+            print(f"[download] run_javascript failed: {ex}")
 
-    # Fallback 1: launch_url with _self (navigate + download)
-    try:
-        page.launch_url(url, web_window_name="_self")
-        print(f"[download] launch_url(_self): {url}")
-        return True
-    except Exception as ex:
-        print(f"[download] launch_url(_self) failed: {ex}")
+    # ---- Fallback: launch_url ----
+    launch = getattr(page, "launch_url", None)
+    if launch is not None:
+        try:
+            # Try with explicit target
+            try:
+                result = launch(url, web_window_name="_self")
+            except TypeError:
+                result = launch(url)
 
-    # Fallback 2: plain launch_url
-    try:
-        page.launch_url(url)
-        print(f"[download] launch_url: {url}")
-        return True
-    except Exception as ex:
-        print(f"[download] launch_url failed: {ex}")
+            if inspect.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    asyncio.run(result)
+            print(f"[download] launch_url: {url}")
+            return True
+        except Exception as ex:
+            print(f"[download] launch_url failed: {ex}")
 
     return False
-
 
 # =================================================================================
 # send_file_to_user — the one function all tabs call
