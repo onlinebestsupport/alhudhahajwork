@@ -1,16 +1,10 @@
 # =================================================================================
-# SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW
+# SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW (MOBILE-RESPONSIVE)
 # =================================================================================
-# UPDATED — 2026-10-01 (v2.2)
-#   • Permission-based tab visibility
-#   • 🔄 Reload Data button + 💾 Storage Info in settings menu
-#   • Auto-refresh every 30s
-#   • Dashboard Quick Actions navigate to tabs via _on_navigate()
-#   • Al-Hudha logo image in the header (left side)
-#   • NEW: "🌐 Front Page" tab (permission: manage_settings)
-#          — opens the FrontPageSettingsTab for editing the marketing
-#            front page (hero, alert, features, packages, about,
-#            contact, social, footer)
+# v2.3 — Mobile-friendly header and tabs
+#   • Compact header (fewer buttons visible)
+#   • Scrollable tab bar
+#   • Responsive dialogs and status bar
 # =================================================================================
 
 import flet as ft
@@ -18,7 +12,6 @@ import asyncio
 import json
 from datetime import datetime
 
-# ---- Existing sections (auto-detected) ----
 try:
     from core.dashboard_tab import DashboardTab
 except ImportError:
@@ -65,7 +58,6 @@ except ImportError as _e:
     print(f"[IMPORT] frontpage_settings_tab failed: {_e}")
     FrontPageSettingsTab = None
 
-# ---- Backup: try both filenames ----
 BackupTab = None
 try:
     from core.backups_tab import BackupTab
@@ -85,9 +77,6 @@ except ImportError:
     CompanySettingsDialog = None
 
 
-# =================================================================================
-# PERMISSION HELPERS
-# =================================================================================
 ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": {
         "view_dashboard", "manage_travelers", "manage_batches",
@@ -109,43 +98,29 @@ ROLE_DEFAULT_PERMISSIONS = {
 
 
 def _user_has_permission(user, perm_key):
-    """Return True if `user` has the given permission key."""
     if not user:
         return False
-
     role = str(user.get("role", "")).strip().lower()
     if role == "super_admin":
         return True
-
     raw = user.get("permissions", "")
-
     if isinstance(raw, (list, set, tuple, frozenset)):
         return perm_key in raw
-
     s = str(raw).strip() if raw else ""
-
     if not s:
         defaults = ROLE_DEFAULT_PERMISSIONS.get(
             role, ROLE_DEFAULT_PERMISSIONS["viewer"])
         return perm_key in defaults
-
     if s.startswith("["):
         try:
             return perm_key in set(json.loads(s))
         except Exception:
             pass
-
     return perm_key in {x.strip() for x in s.split("|") if x.strip()}
 
 
-# =================================================================================
-# 7.1 — CLASS: MainWindowView
-# =================================================================================
 class MainWindowView:
 
-    # -----------------------------------------------------------------------------
-    # 7.1.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page: ft.Page, db, current_user, on_logout=None):
         self.page = page
         self.db = db
@@ -160,12 +135,10 @@ class MainWindowView:
         self.invoices_tab = None
         self.reports_tab = None
         self.users_tab = None
-        self.frontpage_tab = None       # ← NEW
+        self.frontpage_tab = None
         self.backup_tab = None
 
-        # Registry keyed by plain tab name
         self.tab_instances = {}
-
         self.tabs_control = None
         self.status_time_label = None
         self._clock_running = False
@@ -173,77 +146,53 @@ class MainWindowView:
         self.root = None
 
     # =============================================================================
-    # 7.1.2 — Navigation callback
+    # Navigation callback
     # =============================================================================
     def _on_navigate(self, tab_name, action=None):
         print(f"[NAV] _on_navigate(tab_name='{tab_name}', action={action})")
-
         try:
             if self.tabs_control is None:
                 self._show_snack("⚠️ Tabs not initialized yet")
                 return
-
             idx = None
             try:
                 tab_bar = self.tabs_control.content.controls[0]
                 visible_labels = [t.label for t in tab_bar.tabs]
             except Exception:
                 visible_labels = []
-
             for i, lbl in enumerate(visible_labels):
                 plain = lbl.split(" ", 1)[-1] if " " in lbl else lbl
                 if plain == tab_name:
                     idx = i
                     break
-
             if idx is None:
-                print(f"[NAV] '{tab_name}' not in visible tabs: "
-                      f"{visible_labels}")
-                self._show_snack(
-                    f"⚠️ '{tab_name}' tab is not visible to you")
+                self._show_snack(f"⚠️ '{tab_name}' tab is not visible")
                 return
-
             self.tabs_control.selected_index = idx
             try:
                 self.page.update()
             except Exception:
                 pass
-            print(f"[NAV] Switched to '{tab_name}' (index {idx})")
-
             if action == "add":
                 tab_inst = self.tab_instances.get(tab_name)
                 if tab_inst is None:
-                    print(f"[NAV] No instance registered for '{tab_name}'")
                     return
-
-                for method_name in (
-                    "open_add_dialog",
-                    "open_create_dialog",
-                    "add_record",
-                    "add_new",
-                    "open_manual_invoice",
-                ):
+                for method_name in ("open_add_dialog", "open_create_dialog",
+                                    "add_record", "add_new",
+                                    "open_manual_invoice"):
                     fn = getattr(tab_inst, method_name, None)
                     if callable(fn):
                         try:
                             fn(None)
-                            print(f"[NAV] Called {tab_name}."
-                                  f"{method_name}()")
                         except Exception as ex:
-                            print(f"[NAV] {tab_name}.{method_name} "
-                                  f"failed: {ex}")
+                            print(f"[NAV] {tab_name}.{method_name} failed: {ex}")
                         break
-                else:
-                    print(f"[NAV] No add-method found on '{tab_name}'")
-
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            traceback.print_exc() if 'traceback' in dir() else None
             print(f"[NAV] _on_navigate failed: {ex}")
             self._show_snack(f"⚠️ Navigation error: {ex}")
 
-    # =============================================================================
-    # 7.1.3 — build()
+    # =============================================================================    # build()
     # =============================================================================
     def build(self):
         company_name = "Alhudha Haj Travel"
@@ -260,7 +209,7 @@ class MainWindowView:
         user_role = self.current_user.get('role', 'user')
 
         # =====================================================================
-        # HEADER
+        # HEADER — mobile-compact
         # =====================================================================
         def open_settings(e):
             if CompanySettingsDialog is None:
@@ -306,7 +255,6 @@ class MainWindowView:
                         lines.append(
                             f"  • {f['name']} — {f['size_bytes']} bytes — "
                             f"{f['modified'][:19]}")
-
                 d = ft.AlertDialog(
                     title=ft.Row([
                         ft.Icon(ft.Icons.FOLDER, color="#0ea5e9"),
@@ -333,14 +281,13 @@ class MainWindowView:
             self.show_about()
 
         settings_menu = ft.PopupMenuButton(
-            content=ft.Row(
-                controls=[
-                    ft.Icon(ft.Icons.SETTINGS, color=ft.Colors.WHITE),
-                    ft.Text("Settings", color=ft.Colors.WHITE, size=12),
-                ], spacing=4),
+            icon=ft.Icons.MORE_VERT,
+            icon_color=ft.Colors.WHITE,
+            icon_size=22,
+            tooltip="Menu",
             items=[
                 ft.PopupMenuItem(
-                    content=ft.Text("🏢 Company"),
+                    content=ft.Text("🏢 Company Settings"),
                     on_click=open_settings),
                 ft.PopupMenuItem(
                     content=ft.Text("💰 Tax"),
@@ -366,7 +313,6 @@ class MainWindowView:
                 self.page.pop_dialog()
                 if self.on_logout:
                     self.on_logout()
-
             d = ft.AlertDialog(
                 title=ft.Text("Logout"),
                 content=ft.Text("Are you sure you want to log out?"),
@@ -382,53 +328,55 @@ class MainWindowView:
                 ])
             self.page.show_dialog(d)
 
-        # ---- Logo image with emoji fallback ----
         logo_image = ft.Image(
             src="/static/logo.png",
-            width=42, height=42,
+            width=36, height=36,
             fit=ft.BoxFit.CONTAIN,
             error_content=ft.Icon(ft.Icons.TRAVEL_EXPLORE,
-                                  color=ft.Colors.WHITE, size=28),
+                                  color=ft.Colors.WHITE, size=22),
         )
 
+        # ---- Compact header, everything fits on mobile ----
         header = ft.Container(
             content=ft.Row(
                 controls=[
                     ft.Container(
                         content=logo_image,
-                        width=42, height=42,
+                        width=36, height=36,
                         alignment=ft.Alignment.CENTER,
                     ),
                     ft.Column(
                         controls=[
-                            ft.Text("Alhudha Haj Travel System",
-                                    size=16, weight=ft.FontWeight.BOLD,
+                            ft.Text("Alhudha",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
                                     color=ft.Colors.WHITE),
-                            ft.Text(company_name[:50], size=10,
+                            ft.Text(user_name[:18] if user_name else "Admin",
+                                    size=9,
                                     color=ft.Colors.BLUE_100),
-                        ], spacing=0),
-                    ft.Container(expand=True),
+                        ],
+                        spacing=0,
+                        expand=True,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
                     ft.IconButton(
                         icon=ft.Icons.REFRESH,
                         icon_color=ft.Colors.WHITE,
-                        tooltip="Refresh (F5)",
+                        icon_size=20,
+                        tooltip="Refresh",
                         on_click=refresh_click),
-                    ft.IconButton(
-                        icon=ft.Icons.CLOUD_DOWNLOAD,
-                        icon_color=ft.Colors.WHITE,
-                        tooltip="Reload Data from Disk",
-                        on_click=reload_click),
                     settings_menu,
-                    ft.Container(width=10),
-                    ft.Text(f"👤 {user_name} ({user_role})",
-                            color=ft.Colors.WHITE, size=12),
                     ft.IconButton(
                         icon=ft.Icons.LOGOUT,
                         icon_color=ft.Colors.WHITE,
+                        icon_size=20,
                         tooltip="Logout",
                         on_click=logout_click),
-                ], spacing=12),
-            padding=ft.Padding.symmetric(horizontal=15, vertical=8),
+                ],
+                spacing=4,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
             bgcolor=ft.Colors.BLUE_800)
 
         # =====================================================================
@@ -438,22 +386,23 @@ class MainWindowView:
             return ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Icon(icon, size=64, color=ft.Colors.GREY_400),
-                        ft.Text(label, size=22,
+                        ft.Icon(icon, size=56, color=ft.Colors.GREY_400),
+                        ft.Text(label, size=18,
                                 weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.GREY_700),
+                                color=ft.Colors.GREY_700,
+                                text_align=ft.TextAlign.CENTER),
                         ft.Text("This section will be migrated soon.",
-                                size=13, color=ft.Colors.GREY_500),
+                                size=12, color=ft.Colors.GREY_500,
+                                text_align=ft.TextAlign.CENTER),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     alignment=ft.MainAxisAlignment.CENTER,
                     spacing=10),
                 alignment=ft.Alignment.CENTER,
                 expand=True,
-                padding=50)
+                padding=30)
 
         def build_tab_content(cls, plain_label, icon, attr_name):
-            """Instantiate a tab class; register in tab_instances."""
             if cls is None:
                 print(f"[TAB] {plain_label}: no module (placeholder shown)")
                 return make_placeholder(plain_label, icon)
@@ -481,8 +430,7 @@ class MainWindowView:
                 traceback.print_exc()
                 return make_placeholder(f"{plain_label} (error)", icon)
 
-        # ---- Tab definitions (order matters!) ----
-        # ★ NEW: "🌐 Front Page" tab inserted before "💾 Backup"
+        # Short labels for mobile
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
              "view_dashboard",   DashboardTab),
@@ -501,39 +449,35 @@ class MainWindowView:
             ("👤 Users",     ft.Icons.PERSON,    "users_tab",
              "manage_users",     UsersTab),
             ("🌐 Front Page", ft.Icons.PUBLIC,   "frontpage_tab",
-             "manage_settings",  FrontPageSettingsTab),   # ← NEW
+             "manage_settings",  FrontPageSettingsTab),
             ("💾 Backup",    ft.Icons.BACKUP,    "backup_tab",
              "manage_backups",   BackupTab),
         ]
 
-        print(f"[MAIN] user='{user_name}' role='{user_role}' "
-              f"permissions_raw='{self.current_user.get('permissions', '')}'")
+        print(f"[MAIN] user='{user_name}' role='{user_role}'")
 
         tab_labels = []
         for label, icon, attr_name, perm_key, cls in TAB_DEFINITIONS:
             if not _user_has_permission(self.current_user, perm_key):
-                print(f"[TAB] {label.strip()}: ⛔ denied "
-                      f"(missing '{perm_key}' permission)")
+                print(f"[TAB] {label.strip()}: ⛔ denied")
                 continue
             plain_label = label.split(" ", 1)[-1]
             content = build_tab_content(cls, plain_label, icon, attr_name)
             tab_labels.append((label, icon, content))
 
         if not tab_labels:
-            print("[MAIN] ⚠️ user has no visible tabs — "
-                  "showing access-denied screen")
             tab_labels.append((
                 "⛔ No Access",
                 ft.Icons.LOCK,
                 make_placeholder("No Access", ft.Icons.LOCK)))
 
-        print(f"[MAIN] showing {len(tab_labels)} tab(s): "
-              f"{[lbl for lbl, _, _ in tab_labels]}")
+        print(f"[MAIN] showing {len(tab_labels)} tab(s)")
 
         tab_bar_items = [ft.Tab(label=label)
                          for label, _, _ in tab_labels]
         tab_views = [view for _, _, view in tab_labels]
 
+        # ---- Mobile-friendly tabs: horizontal scroll ----
         self.tabs_control = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -541,8 +485,12 @@ class MainWindowView:
             expand=True,
             content=ft.Column(
                 expand=True,
+                spacing=0,
                 controls=[
-                    ft.TabBar(tabs=tab_bar_items),
+                    ft.TabBar(
+                        tabs=tab_bar_items,
+                        scrollable=True,      # enable horizontal scroll
+                    ),
                     ft.TabBarView(
                         expand=True,
                         controls=[
@@ -552,20 +500,20 @@ class MainWindowView:
                 ]))
 
         # =====================================================================
-        # STATUS BAR
+        # STATUS BAR — compact
         # =====================================================================
         self.status_time_label = ft.Text(
             datetime.now().strftime("%H:%M:%S"),
-            size=11, color=ft.Colors.GREY_700)
+            size=10, color=ft.Colors.GREY_700)
 
         status_bar = ft.Container(
             content=ft.Row(
                 controls=[
-                    ft.Text("Ready", size=11, color=ft.Colors.GREY_700),
+                    ft.Text("Ready", size=10, color=ft.Colors.GREY_700),
                     ft.Container(expand=True),
                     self.status_time_label,
-                ], spacing=10),
-            padding=ft.Padding.symmetric(horizontal=15, vertical=5),
+                ], spacing=8),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=4),
             bgcolor=ft.Colors.GREY_100,
             border=ft.Border(top=ft.BorderSide(1, ft.Colors.GREY_300)))
 
@@ -577,14 +525,14 @@ class MainWindowView:
             spacing=0,
             expand=True)
 
-        self.page.run_task(self._clock_loop)
-        self.page.run_task(self._auto_refresh_loop)
+        try:
+            self.page.run_task(self._clock_loop)
+            self.page.run_task(self._auto_refresh_loop)
+        except Exception as ex:
+            print(f"[MAIN] run_task failed: {ex}")
 
         return self.root
 
-    # =============================================================================
-    # Live clock
-    # =============================================================================
     async def _clock_loop(self):
         if self._clock_running:
             return
@@ -604,9 +552,6 @@ class MainWindowView:
         finally:
             self._clock_running = False
 
-    # =============================================================================
-    # Auto-refresh every 30s
-    # =============================================================================
     async def _auto_refresh_loop(self):
         if self._refresh_running:
             return
@@ -623,14 +568,10 @@ class MainWindowView:
         finally:
             self._refresh_running = False
 
-    # =============================================================================
-    # Refresh all tabs
-    # =============================================================================
     def refresh_all(self):
         for name in ('dashboard_tab', 'travelers_tab', 'batches_tab',
                      'payments_tab', 'receipts_tab', 'invoices_tab',
-                     'reports_tab', 'users_tab',
-                     'frontpage_tab',       # ← NEW
+                     'reports_tab', 'users_tab', 'frontpage_tab',
                      'backup_tab'):
             tab = getattr(self, name, None)
             if tab is not None and hasattr(tab, 'refresh'):
@@ -642,13 +583,9 @@ class MainWindowView:
     def refresh_dashboard(self):
         self.refresh_all()
 
-    # =============================================================================
-    # About
-    # =============================================================================
     def show_about(self):
         def close(ev):
             self.page.pop_dialog()
-
         dialog = ft.AlertDialog(
             title=ft.Text("About"),
             content=ft.Column(
@@ -658,12 +595,10 @@ class MainWindowView:
                     ft.Text("Version 3.0.0 (Web)"),
                     ft.Text("© Alhudha Travel"),
                     ft.Divider(),
-                    ft.Text(
-                        f"User: {self.current_user.get('full_name','')}",
-                        size=12),
-                    ft.Text(
-                        f"Role: {self.current_user.get('role','')}",
-                        size=12),
+                    ft.Text(f"User: {self.current_user.get('full_name','')}",
+                            size=12),
+                    ft.Text(f"Role: {self.current_user.get('role','')}",
+                            size=12),
                 ],
                 tight=True,
                 spacing=8),
@@ -672,9 +607,6 @@ class MainWindowView:
             ])
         self.page.show_dialog(dialog)
 
-    # =============================================================================
-    # SnackBar helper
-    # =============================================================================
     def _show_snack(self, message):
         try:
             self.page.show_dialog(
@@ -687,8 +619,3 @@ class MainWindowView:
                 self.page.update()
             except Exception as ex:
                 print(f"[SNACK] {message} ({ex})")
-
-
-# =================================================================================
-# SECTION 7 END (FLET 1.0.0 VERSION)
-# =================================================================================
