@@ -1,11 +1,8 @@
 # =================================================================================
 # core/traveler_portal.py — Traveler authentication + data aggregation
 # =================================================================================
-# v1.2 — Disk-persisted sessions + dynamic data binding
-#   • Sessions stored in data/traveler_sessions.json (survives restarts)
-#   • _clean_number_string() strips .0 suffixes (fixes PIN/phone/aadhaar)
-#   • build_traveler_view() returns dynamic data for ALL UI sections
-#     so the traveler.html SPA can render everything without code changes
+# v1.3 — Fully DataFrame-safe. All DB calls wrapped in _to_list() / _to_dict()
+#        so it works whether db.get_*() returns a list or a pandas DataFrame.
 # =================================================================================
 
 import os
@@ -62,6 +59,50 @@ def _clean_number_string(value) -> str:
     return s
 
 
+def _to_list(x) -> list:
+    """
+    Convert anything (list, DataFrame, None, dict, tuple) to a list of dicts.
+    Safety net for when DB methods return DataFrames instead of lists.
+    """
+    if x is None:
+        return []
+    try:
+        import pandas as pd
+        if isinstance(x, pd.DataFrame):
+            if x.empty:
+                return []
+            return x.to_dict(orient="records")
+    except Exception:
+        pass
+    if isinstance(x, (list, tuple)):
+        return list(x)
+    if isinstance(x, dict):
+        return [x]
+    try:
+        return list(x)
+    except Exception:
+        return []
+
+
+def _to_dict(x) -> dict:
+    """Convert anything to a dict (empty dict if conversion fails)."""
+    if x is None:
+        return {}
+    if isinstance(x, dict):
+        return x
+    try:
+        import pandas as pd
+        if isinstance(x, pd.Series):
+            return x.to_dict()
+        if isinstance(x, pd.DataFrame):
+            if x.empty:
+                return {}
+            return x.iloc[0].to_dict()
+    except Exception:
+        pass
+    return {}
+
+
 # =================================================================================
 # 1 — Session storage (JSON file persisted to disk)
 # =================================================================================
@@ -70,7 +111,6 @@ _SESSION_TTL = 8 * 3600  # 8 hours
 
 
 def _session_file_path() -> str:
-    """Return the JSON file path for session storage."""
     global _SESSION_FILE
     if _SESSION_FILE is None:
         try:
@@ -155,7 +195,7 @@ def cleanup_expired():
 # =================================================================================
 def authenticate_traveler(db, passport_no, pin):
     """
-    Verify passport_no + pin against travelers.csv.
+    Verify passport_no + pin against travelers.
     Returns (traveler_dict, None) on success, (None, error_msg) on failure.
     """
     passport_no = _clean_number_string(passport_no).upper()
@@ -167,7 +207,7 @@ def authenticate_traveler(db, passport_no, pin):
         return None, "PIN is required."
 
     try:
-        travelers = db.get_travelers() or []
+        travelers = _to_list(db.get_travelers())
     except Exception as e:
         print(f"[TRAVELER] get_travelers failed: {e}")
         return None, "Server error. Please try again."
@@ -292,7 +332,6 @@ def _fmt_date(s):
 
 
 def _days_from_today(date_str):
-    """Return days until date (int) or None if invalid."""
     try:
         dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
         delta = (dt - datetime.now()).days
@@ -302,7 +341,6 @@ def _days_from_today(date_str):
 
 
 def _build_personal_fields(traveler):
-    """Return a list of {label, value, key} for the Personal Information card."""
     t = traveler
     return [
         {"key": "id", "label": "Traveler ID", "value": _safe_str(t.get("id", ""))},
@@ -366,7 +404,6 @@ def _build_personal_fields(traveler):
 
 
 def _build_batch_fields(batch):
-    """Return list of {label, value} for the Batch card."""
     if not batch:
         return []
     return [
@@ -390,7 +427,7 @@ def _build_batch_fields(batch):
 def build_traveler_view(db, traveler: dict) -> dict:
     """
     Aggregate everything the portal shows for a traveler.
-    Returns a rich, structured payload so the front-end is fully dynamic.
+    Fully DataFrame-safe.
     """
     tid = _safe_str(traveler.get("id", ""))
 
@@ -412,11 +449,11 @@ def build_traveler_view(db, traveler: dict) -> dict:
     bid = _safe_str(traveler.get("batch_id", ""))
     if bid:
         try:
-            b = None
+            b = {}
             if hasattr(db, "get_batch_by_id"):
-                b = db.get_batch_by_id(bid)
+                b = _to_dict(db.get_batch_by_id(bid))
             if not b:
-                for bb in (db.get_batches() or []):
+                for bb in _to_list(db.get_batches()):
                     if _safe_str(bb.get("id", "")) == bid:
                         b = bb
                         break
@@ -436,12 +473,17 @@ def build_traveler_view(db, traveler: dict) -> dict:
                         b.get("departure_date", "")),
                 }
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             print(f"[TRAVELER] batch lookup failed: {e}")
 
     # ---------- 3. Documents ----------
     documents = []
     for key, label, _subs in _DOC_SPECS:
-        path = get_document_path(db, traveler, key)
+        try:
+            path = get_document_path(db, traveler, key)
+        except Exception:
+            path = None
         exists = bool(path)
         documents.append({
             "key": key,
@@ -461,8 +503,8 @@ def build_traveler_view(db, traveler: dict) -> dict:
     payment_by_month = {}
 
     try:
-        raw_payments = db.get_payments(tid) if tid else []
-        for p in (raw_payments or []):
+        raw_payments = _to_list(db.get_payments(tid)) if tid else []
+        for p in raw_payments:
             amt = _f(p.get("amount", 0))
             total_paid += amt
 
@@ -489,6 +531,8 @@ def build_traveler_view(db, traveler: dict) -> dict:
                 "notes": _safe_str(p.get("notes", "")),
             })
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[TRAVELER] get_payments failed: {e}")
 
     payments.sort(key=lambda x: x.get("date", ""), reverse=True)
@@ -497,7 +541,7 @@ def build_traveler_view(db, traveler: dict) -> dict:
     invoice = None
     invoice_line_items = []
     try:
-        raw_invoices = db.get_invoices(tid) if tid else []
+        raw_invoices = _to_list(db.get_invoices(tid)) if tid else []
         if raw_invoices:
             raw_invoices = sorted(
                 raw_invoices,
@@ -552,12 +596,16 @@ def build_traveler_view(db, traveler: dict) -> dict:
                 "notes": _safe_str(inv.get("notes", "")),
             }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"[TRAVELER] get_invoices failed: {e}")
 
     # ---------- 6. Summary / KPIs ----------
     package_price = _f(batch.get("price", 0)) if batch else 0.0
-    invoice_total = _f(invoice.get("rounded_total",
-                                   invoice.get("total_amount", 0))) if invoice else 0.0
+    invoice_total = 0.0
+    if invoice:
+        invoice_total = _f(invoice.get("rounded_total",
+                                       invoice.get("total_amount", 0)))
 
     pkg_pending = max(0.0, package_price - total_paid) if package_price > 0 else 0.0
 
@@ -583,7 +631,7 @@ def build_traveler_view(db, traveler: dict) -> dict:
          "icon": "hourglass-half", "value": pkg_pending,
          "is_currency": True,
          "tone": "success" if pkg_pending <= 0 else "warn",
-         "sub": "Fully paid ✓" if pkg_pending <= 0 else "Remaining"},
+         "sub": "Fully paid" if pkg_pending <= 0 else "Remaining"},
         {"key": "paid_percent", "label": "Paid %",
          "icon": "chart-line", "value": round(paid_pct, 1),
          "is_currency": False, "is_percent": True,
@@ -601,7 +649,7 @@ def build_traveler_view(db, traveler: dict) -> dict:
             "icon": "exclamation-triangle", "value": inv_pending,
             "is_currency": True,
             "tone": "success" if inv_pending <= 0 else "danger",
-            "sub": "Settled ✓" if inv_pending <= 0 else "Due"
+            "sub": "Settled" if inv_pending <= 0 else "Due"
         })
 
     summary = {
