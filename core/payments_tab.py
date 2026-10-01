@@ -1,12 +1,13 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Stat cards 2-per-row on mobile
-#   • Toolbar + filters use ResponsiveRow
-#   • Table wrapped in horizontal scroll
-#   • Dialogs sized for mobile
-#   • All original features preserved (edit, receipt, PDF, invoice gen)
+# v1.3 — Mobile-Responsive + Selectable Rows
+#   • MOBILE: card layout with full-width action buttons (no more tiny icons)
+#   • DESKTOP: table with checkbox column for row selection
+#   • Row tap selects → toolbar Edit/PDF/Print act on selection
+#   • Fixed "Click 🖨️ in a row" issue — now buttons work on tap
+#   • Dialogs expand to viewport on narrow screens
+#   • Responsive stat cards + filters
 # =================================================================================
 
 import flet as ft
@@ -25,13 +26,16 @@ from core.helpers import (
 from core.settings_manager import SettingsManager
 
 
+# Mobile breakpoint
+MOBILE_BREAKPOINT = 700
+
+
 # =================================================================================
-# 12.2 — CLASS: PaymentEditDialog
+# 12.2 — CLASS: PaymentEditDialog  (mobile-responsive)
 # =================================================================================
 class PaymentEditDialog:
 
-    def __init__(self, page, db, current_user, payment_data,
-                 on_save=None):
+    def __init__(self, page, db, current_user, payment_data, on_save=None):
         self.page = page
         self.db = db
         self.current_user = current_user
@@ -48,7 +52,15 @@ class PaymentEditDialog:
 
         self.setup_ui()
 
+    def _is_narrow(self):
+        try:
+            return (self.page.width or 1200) < MOBILE_BREAKPOINT
+        except Exception:
+            return False
+
     def setup_ui(self):
+        narrow = self._is_narrow()
+
         traveler_id = self.payment_data.get('traveler_id', '')
         traveler_name = "Unknown"
         if traveler_id:
@@ -119,7 +131,7 @@ class PaymentEditDialog:
 
         def info_row(label, value):
             return ft.Row([
-                ft.Text(label, width=140,
+                ft.Text(label, width=120 if narrow else 140,
                         weight=ft.FontWeight.BOLD, size=11),
                 ft.Text(str(value), size=11, selectable=True, expand=True),
             ], spacing=8)
@@ -145,9 +157,14 @@ class PaymentEditDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Edit Payment",
-                          weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=520, height=560, padding=10),
+                          weight=ft.FontWeight.BOLD,
+                          size=14 if narrow else 15),
+            content=ft.Container(
+                content=content,
+                width=520 if not narrow else None,
+                height=560 if not narrow else None,
+                expand=narrow,
+                padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -231,7 +248,7 @@ class PaymentEditDialog:
 
 
 # =================================================================================
-# 12.3 — CLASS: PaymentsTab
+# 12.3 — CLASS: PaymentsTab  (Mobile-Responsive + Selectable)
 # =================================================================================
 class PaymentsTab:
 
@@ -252,7 +269,12 @@ class PaymentsTab:
         self.method_filter = None
         self.search_input = None
         self.table = None
+        self.mobile_list = None
         self.root = None
+
+        # Selection state
+        self.selected_payment_id = None
+        self._mobile_mode = False
 
         self.setup_ui()
         self.refresh()
@@ -260,19 +282,32 @@ class PaymentsTab:
     def build(self):
         return self.root
 
+    def _is_narrow(self):
+        try:
+            return (self.page.width or 1200) < MOBILE_BREAKPOINT
+        except Exception:
+            return False
+
+    # -----------------------------------------------------------------------------
+    # setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
+        narrow = self._is_narrow()
+        self._mobile_mode = narrow
+
+        # ---- Stat cards ----
         stat_configs = [
-            ("total",           "💰 Total",       "#3498db"),
-            ("completed",       "✅ Completed",   "#27ae60"),
-            ("pending",         "⏳ Pending",     "#f39c12"),
-            ("receipts",        "🧾 Receipts",    "#9b59b6"),
-            ("package_pending", "📦 Pkg Pend",    "#e74c3c"),
-            ("invoice_pending", "📄 Inv Pend",    "#e67e22"),
+            ("total",           "💰 Total",     "#3498db"),
+            ("completed",       "✅ Completed", "#27ae60"),
+            ("pending",         "⏳ Pending",   "#f39c12"),
+            ("receipts",        "🧾 Receipts",  "#9b59b6"),
+            ("package_pending", "📦 Pkg Pend",  "#e74c3c"),
+            ("invoice_pending", "📄 Inv Pend",  "#e67e22"),
         ]
 
         stat_cards = []
         for key, label, color in stat_configs:
-            value_label = ft.Text("0", size=14,
+            value_label = ft.Text("0", size=13 if narrow else 14,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stat_labels[key] = value_label
@@ -304,19 +339,39 @@ class PaymentsTab:
             spacing=6, run_spacing=6,
         )
 
+        # ---- Toolbar buttons (full width on mobile) ----
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.WHITE,
                                 no_wrap=True,
-                                overflow=ft.TextOverflow.ELLIPSIS),
-                on_click=handler, height=40,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                text_align=ft.TextAlign.CENTER),
+                on_click=handler,
+                height=42,
                 bgcolor=color,
+                expand=narrow,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
+        if narrow:
+            toolbar = ft.Column([
+                _tb("➕ Record Payment", "#27ae60", self.add_payment),
+                ft.Row([
+                    _tb("📄 PDF", "#e74c3c", self.export_pdf_selected),
+                    _tb("🖨️ Print", "#9b59b6", self.print_receipt_selected),
+                ], spacing=8),
+            ], spacing=8)
+        else:
+            toolbar = ft.Row([
+                _tb("➕ Record Payment", "#27ae60", self.add_payment),
+                _tb("📄 PDF", "#e74c3c", self.export_pdf_selected),
+                _tb("🖨️ Print", "#9b59b6", self.print_receipt_selected),
+            ], spacing=8, wrap=True)
+
+        # ---- Filters ----
         self.status_filter = ft.Dropdown(
             label="Status",
             options=[
@@ -349,24 +404,6 @@ class PaymentsTab:
             content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
         self.search_input.on_change = self.filter_payments
 
-        toolbar = ft.ResponsiveRow(
-            controls=[
-                ft.Container(
-                    content=_tb("➕ Record Payment", "#27ae60",
-                                self.add_payment),
-                    col={"xs": 6, "sm": 4, "md": 3}),
-                ft.Container(
-                    content=_tb("📄 PDF", "#e74c3c",
-                                self.export_pdf_selected),
-                    col={"xs": 6, "sm": 4, "md": 3}),
-                ft.Container(
-                    content=_tb("🖨️ Print", "#9b59b6",
-                                self.print_receipt_selected),
-                    col={"xs": 6, "sm": 4, "md": 3}),
-            ],
-            spacing=8, run_spacing=8,
-        )
-
         filter_row = ft.ResponsiveRow(
             controls=[
                 ft.Container(content=self.status_filter,
@@ -378,8 +415,10 @@ class PaymentsTab:
             ], spacing=8, run_spacing=8,
         )
 
+        # ---- DESKTOP table with selection checkbox ----
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("✔", size=11)),
                 ft.DataColumn(ft.Text("Date", size=11)),
                 ft.DataColumn(ft.Text("Traveler", size=11)),
                 ft.DataColumn(ft.Text("Amount", size=11)),
@@ -387,9 +426,7 @@ class PaymentsTab:
                 ft.DataColumn(ft.Text("Status", size=11)),
                 ft.DataColumn(ft.Text("Txn ID", size=11)),
                 ft.DataColumn(ft.Text("Receipt", size=11)),
-                ft.DataColumn(ft.Text("Invoice", size=11)),
                 ft.DataColumn(ft.Text("Pkg Pend", size=11)),
-                ft.DataColumn(ft.Text("Inv Pend", size=11)),
                 ft.DataColumn(ft.Text("Actions", size=11)),
             ],
             rows=[], column_spacing=10,
@@ -401,6 +438,21 @@ class PaymentsTab:
             border_radius=10,
         )
 
+        # ---- MOBILE card list ----
+        self.mobile_list = ft.Column(spacing=8)
+
+        # ---- Assemble ----
+        if narrow:
+            table_body = ft.Container(content=self.mobile_list, padding=4)
+            hint_text = "💡 Tap any card to edit"
+        else:
+            table_body = ft.Container(
+                content=ft.Row([self.table],
+                               scroll=ft.ScrollMode.ADAPTIVE),
+                bgcolor=ft.Colors.WHITE,
+                border_radius=10, padding=10)
+            hint_text = "💡 Select a row (checkbox) then use toolbar"
+
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -410,8 +462,12 @@ class PaymentsTab:
                     ft.Container(content=filter_row, padding=8,
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
-                        content=ft.Row([self.table],
-                                       scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Column([
+                            ft.Text(hint_text, size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            table_body,
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10, padding=10),
                 ],
@@ -420,6 +476,28 @@ class PaymentsTab:
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
+    # -----------------------------------------------------------------------------
+    # on_resize — switch layout when crossing breakpoint
+    # -----------------------------------------------------------------------------
+    def on_resize(self, e=None):
+        try:
+            new_narrow = self._is_narrow()
+            if new_narrow != self._mobile_mode:
+                print(f"[PAYMENTS] viewport → "
+                      f"{'mobile' if new_narrow else 'desktop'}")
+                # Rebuild root
+                self.stat_labels.clear()
+                self.setup_ui()
+                try:
+                    self.refresh()
+                except Exception as ex:
+                    print(f"[PAYMENTS] refresh after resize: {ex}")
+        except Exception as ex:
+            print(f"[PAYMENTS] on_resize error: {ex}")
+
+    # -----------------------------------------------------------------------------
+    # refresh
+    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
             for mn in ("reload_payments", "reload_receipts",
@@ -470,6 +548,49 @@ class PaymentsTab:
             import traceback
             traceback.print_exc()
 
+    # -----------------------------------------------------------------------------
+    # _compute_pkg_inv_info — shared computation
+    # -----------------------------------------------------------------------------
+    def _compute_pkg_inv_info(self, p, traveler_paid):
+        tid = p.get('traveler_id', '')
+        traveler_info = self.traveler_details.get(
+            tid, {'batch_price': 0, 'batch_name': 'No Batch'})
+        batch_price = traveler_info['batch_price']
+        total_paid = traveler_paid.get(tid, 0)
+        package_pending = batch_price - total_paid
+
+        if batch_price > 0:
+            if package_pending <= 0:
+                pkg_txt, pkg_color = "✅ Paid", "#27ae60"
+            else:
+                pkg_txt = f"₹{package_pending:,.0f}"
+                pkg_color = ("#e67e22"
+                             if package_pending < batch_price * 0.5
+                             else "#e74c3c")
+        else:
+            pkg_txt, pkg_color = "N/A", "#95a5a6"
+
+        inv_id = p.get('invoice_id', '')
+        inv_pending = 0
+        if inv_id and inv_id in self.invoices:
+            inv = self.invoices[inv_id]
+            if inv.get('status') == 'pending':
+                inv_pending = float(
+                    inv.get('rounded_total',
+                            inv.get('total_amount', 0)) or 0)
+
+        if inv_pending > 0:
+            inv_txt, inv_color = f"₹{inv_pending:,.0f}", "#f39c12"
+        elif inv_id and inv_id in self.invoices:
+            inv_txt, inv_color = "✅ Paid", "#27ae60"
+        else:
+            inv_txt, inv_color = "N/A", "#95a5a6"
+
+        return pkg_txt, pkg_color, inv_txt, inv_color
+
+    # -----------------------------------------------------------------------------
+    # display_payments — branches to desktop table OR mobile cards
+    # -----------------------------------------------------------------------------
     def display_payments(self, payments=None):
         if payments is None:
             payments = self.payments
@@ -481,9 +602,13 @@ class PaymentsTab:
                 traveler_paid[tid] = (traveler_paid.get(tid, 0)
                                       + float(p.get('amount', 0) or 0))
 
+        # Clear both views
         self.table.rows.clear()
+        self.mobile_list.controls.clear()
+
         for p in payments:
             tid = p.get('traveler_id', '')
+            pid = p.get('id')
             date_str = (str(p.get('payment_date', ''))[:10]
                         if p.get('payment_date') else '')
             traveler_name = self.travelers.get(tid, 'Unknown')
@@ -495,101 +620,218 @@ class PaymentsTab:
                             else "#e74c3c" if status == "failed"
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
-            receipt = self.receipts.get(p.get('id'))
+            receipt = self.receipts.get(pid)
             receipt_no = (receipt.get('receipt_no', '—')
                           if receipt else '—')
-            inv_id = p.get('invoice_id', '')
-            inv_no = ''
-            if inv_id and inv_id in self.invoices:
-                inv_no = self.invoices[inv_id].get('invoice_no', '')[:14]
 
-            traveler_info = self.traveler_details.get(
-                tid, {'batch_price': 0, 'batch_name': 'No Batch'})
-            batch_price = traveler_info['batch_price']
-            total_paid = traveler_paid.get(tid, 0)
-            package_pending = batch_price - total_paid
+            pkg_txt, pkg_color, inv_txt, inv_color = \
+                self._compute_pkg_inv_info(p, traveler_paid)
 
-            if batch_price > 0:
-                if package_pending <= 0:
-                    pkg_txt = "✅ Paid"
-                    pkg_color = "#27ae60"
-                else:
-                    pkg_txt = f"₹{package_pending:,.0f}"
-                    pkg_color = ("#e67e22"
-                                 if package_pending < batch_price * 0.5
-                                 else "#e74c3c")
-            else:
-                pkg_txt = "N/A"
-                pkg_color = "#95a5a6"
+            # ------- DESKTOP ROW -------
+            def _make_edit(pp=p):
+                def h(e):
+                    self.edit_payment(pp)
+                return h
 
-            inv_pending = 0
-            if inv_id and inv_id in self.invoices:
-                inv = self.invoices[inv_id]
-                if inv.get('status') == 'pending':
-                    inv_pending = float(
-                        inv.get('rounded_total',
-                                inv.get('total_amount', 0)) or 0)
+            def _make_receipt(pp=p):
+                def h(e):
+                    self.view_specific_receipt(pp)
+                return h
 
-            if inv_pending > 0:
-                inv_txt = f"₹{inv_pending:,.0f}"
-                inv_color = "#f39c12"
-            elif inv_id and inv_id in self.invoices:
-                inv_txt = "✅ Paid"
-                inv_color = "#27ae60"
-            else:
-                inv_txt = "N/A"
-                inv_color = "#95a5a6"
+            def _make_pdf(pp=p):
+                def h(e):
+                    self.export_single_receipt_pdf(pp)
+                return h
+
+            def _make_print(pp=p):
+                def h(e):
+                    self.print_single_receipt(pp)
+                return h
+
+            def _make_check(pp=p, pid=pid):
+                def h(e):
+                    if e.control.value:
+                        self.selected_payment_id = pid
+                    elif self.selected_payment_id == pid:
+                        self.selected_payment_id = None
+                return h
+
+            # Row click toggles selection
+            def _make_row_click(pp=p, pid=pid):
+                def h(e):
+                    self._select_payment(pid)
+                return h
 
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
-                                  icon_color="#f39c12", icon_size=16,
+                                  icon_color="#f39c12", icon_size=20,
                                   tooltip="Edit",
-                                  on_click=lambda e, pp=p:
-                                      self.edit_payment(pp)),
+                                  on_click=_make_edit()),
                     ft.IconButton(icon=ft.Icons.RECEIPT_LONG,
-                                  icon_color="#3498db", icon_size=16,
+                                  icon_color="#3498db", icon_size=20,
                                   tooltip="View Receipt",
-                                  on_click=lambda e, pp=p:
-                                      self.view_specific_receipt(pp)),
+                                  on_click=_make_receipt()),
                     ft.IconButton(icon=ft.Icons.PICTURE_AS_PDF,
-                                  icon_color="#e74c3c", icon_size=16,
+                                  icon_color="#e74c3c", icon_size=20,
                                   tooltip="PDF",
-                                  on_click=lambda e, pp=p:
-                                      self.export_single_receipt_pdf(pp)),
+                                  on_click=_make_pdf()),
                     ft.IconButton(icon=ft.Icons.PRINT,
-                                  icon_color="#9b59b6", icon_size=16,
+                                  icon_color="#9b59b6", icon_size=20,
                                   tooltip="Print",
-                                  on_click=lambda e, pp=p:
-                                      self.print_single_receipt(pp)),
+                                  on_click=_make_print()),
                 ], spacing=0,
             )
 
             self.table.rows.append(
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(traveler_name[:18], size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(amount_text, size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(method[:12], size=10)),
-                    ft.DataCell(ft.Text(status, size=10,
-                                        color=status_color,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(txn, size=10)),
-                    ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
-                    ft.DataCell(ft.Text(str(inv_no), size=10)),
-                    ft.DataCell(ft.Text(pkg_txt, size=10, color=pkg_color)),
-                    ft.DataCell(ft.Text(inv_txt, size=10, color=inv_color)),
-                    ft.DataCell(actions),
-                ]))
+                ft.DataRow(
+                    on_select_changed=_make_row_click(),
+                    selected=(self.selected_payment_id == pid),
+                    cells=[
+                        ft.DataCell(ft.Checkbox(
+                            value=(self.selected_payment_id == pid),
+                            on_change=_make_check())),
+                        ft.DataCell(ft.Text(date_str, size=10)),
+                        ft.DataCell(ft.Text(traveler_name[:18], size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(amount_text, size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(method[:12], size=10)),
+                        ft.DataCell(ft.Text(status, size=10,
+                                            color=status_color,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(txn, size=10)),
+                        ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
+                        ft.DataCell(ft.Text(pkg_txt, size=10,
+                                            color=pkg_color)),
+                        ft.DataCell(actions),
+                    ]))
 
+            # ------- MOBILE CARD -------
+            self.mobile_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        # Row 1: traveler + amount
+                        ft.Row([
+                            ft.Text(traveler_name, size=13,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#0f172a",
+                                    expand=True,
+                                    max_lines=1,
+                                    overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(amount_text, size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#1e40af"),
+                        ], spacing=8),
+
+                        # Row 2: date + method + status
+                        ft.Row([
+                            ft.Text(f"📅 {date_str}", size=10,
+                                    color=ft.Colors.GREY_600),
+                            ft.Text(f"💳 {method[:10]}", size=10,
+                                    color=ft.Colors.GREY_600),
+                            ft.Container(
+                                content=ft.Text(status, size=9,
+                                                color=ft.Colors.WHITE,
+                                                weight=ft.FontWeight.BOLD),
+                                padding=ft.Padding.symmetric(
+                                    horizontal=6, vertical=2),
+                                bgcolor=status_color,
+                                border_radius=8),
+                        ], spacing=8, wrap=True),
+
+                        # Row 3: pkg/inv pending + receipt
+                        ft.Row([
+                            ft.Text(f"📦 {pkg_txt}", size=9,
+                                    color=pkg_color,
+                                    weight=ft.FontWeight.BOLD),
+                            ft.Text(f"📄 {inv_txt}", size=9,
+                                    color=inv_color,
+                                    weight=ft.FontWeight.BOLD),
+                            ft.Text(f"🧾 {str(receipt_no)[:14]}", size=9,
+                                    color=ft.Colors.GREY_600),
+                        ], spacing=10, wrap=True),
+
+                        # Row 4: FULL-WIDTH action buttons
+                        ft.Row([
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.EDIT, size=14,
+                                            color="#f39c12"),
+                                    ft.Text("Edit", size=11,
+                                            color="#f39c12"),
+                                ], spacing=4, tight=True),
+                                on_click=_make_edit()),
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.RECEIPT_LONG, size=14,
+                                            color="#3498db"),
+                                    ft.Text("Receipt", size=11,
+                                            color="#3498db"),
+                                ], spacing=4, tight=True),
+                                on_click=_make_receipt()),
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.PICTURE_AS_PDF,
+                                            size=14, color="#e74c3c"),
+                                    ft.Text("PDF", size=11,
+                                            color="#e74c3c"),
+                                ], spacing=4, tight=True),
+                                on_click=_make_pdf()),
+                            ft.TextButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.PRINT, size=14,
+                                            color="#9b59b6"),
+                                    ft.Text("Print", size=11,
+                                            color="#9b59b6"),
+                                ], spacing=4, tight=True),
+                                on_click=_make_print()),
+                        ], spacing=0,
+                           alignment=ft.MainAxisAlignment.SPACE_EVENLY),
+                    ], spacing=8),
+                    padding=12,
+                    bgcolor=ft.Colors.WHITE,
+                    border_radius=10,
+                    border=ft.Border.all(1, "#e2e8f0"),
+                )
+            )
+
+    # -----------------------------------------------------------------------------
+    # _select_payment — toggle selection state
+    # -----------------------------------------------------------------------------
+    def _select_payment(self, payment_id):
+        if self.selected_payment_id == payment_id:
+            self.selected_payment_id = None
+        else:
+            self.selected_payment_id = payment_id
+        # Re-render to update checkbox visuals
+        self.display_payments()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    # -----------------------------------------------------------------------------
+    # _get_selected_payment
+    # -----------------------------------------------------------------------------
+    def _get_selected_payment(self):
+        if not self.selected_payment_id:
+            return None
+        return next((p for p in self.payments
+                     if p.get('id') == self.selected_payment_id), None)
+
+    # -----------------------------------------------------------------------------
+    # edit_payment
+    # -----------------------------------------------------------------------------
     def edit_payment(self, payment):
         dlg = PaymentEditDialog(
             self.page, self.db, self.current_user, payment,
             on_save=self.refresh)
         dlg.show()
 
+    # -----------------------------------------------------------------------------
+    # filter_payments
+    # -----------------------------------------------------------------------------
     def filter_payments(self, e=None):
         search = (self.search_input.value or "").strip().lower()
         status = self.status_filter.value or "All"
@@ -616,11 +858,17 @@ class PaymentsTab:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # add_payment
+    # -----------------------------------------------------------------------------
     def add_payment(self, e):
         dlg = PaymentDialog(self.page, self.db, self.current_user,
                             on_save=self.refresh)
         dlg.show()
 
+    # -----------------------------------------------------------------------------
+    # view_specific_receipt
+    # -----------------------------------------------------------------------------
     def view_specific_receipt(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
         if not receipts:
@@ -681,13 +929,17 @@ class PaymentsTab:
             f"  Invoice Pending:  ₹{inv_pending:,.2f}  (with GST)"
         )
 
+        narrow = self._is_narrow()
         dialog = ft.AlertDialog(
             title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
-                          weight=ft.FontWeight.BOLD, size=14),
+                          weight=ft.FontWeight.BOLD, size=13 if narrow else 14),
             content=ft.Container(
                 content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
-                width=520, height=440, padding=10),
+                width=520 if not narrow else None,
+                height=440 if not narrow else None,
+                expand=narrow,
+                padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -697,9 +949,19 @@ class PaymentsTab:
         )
         self.page.show_dialog(dialog)
 
+    # -----------------------------------------------------------------------------
+    # export_pdf_selected — act on selected row
+    # -----------------------------------------------------------------------------
     def export_pdf_selected(self, e):
-        self._snack("ℹ️ Click 📄 in a row to export that receipt")
+        p = self._get_selected_payment()
+        if not p:
+            self._snack("⚠️ Select a payment row first (tap the row)")
+            return
+        self.export_single_receipt_pdf(p)
 
+    # -----------------------------------------------------------------------------
+    # export_single_receipt_pdf
+    # -----------------------------------------------------------------------------
     def export_single_receipt_pdf(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
         if not receipts:
@@ -805,7 +1067,7 @@ class PaymentsTab:
                 ["Status:", payment.get('status', 'completed')],
                 ["", ""],
                 ["📊 PAYMENT SUMMARY", ""],
-                ["Total Package:", f"₹{batch_price:,.2f}"],
+                ["Total Package:", fbatch"₹{_price:,.2f}"],
                 ["Total Paid:", f"₹{total_paid:,.2f}"],
                 ["Package Pending:",
                  f"₹{package_pending:,.2f} (without GST)"],
@@ -851,13 +1113,27 @@ class PaymentsTab:
             traceback.print_exc()
             self._snack(f"❌ PDF error: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # print_receipt_selected — act on selected row
+    # -----------------------------------------------------------------------------
     def print_receipt_selected(self, e):
-        self._snack("ℹ️ Click 🖨️ in a row, then use browser Ctrl+P")
+        p = self._get_selected_payment()
+        if not p:
+            self._snack("⚠️ Select a payment row first (tap the row)")
+            return
+        self.print_single_receipt(p)
 
+    # -----------------------------------------------------------------------------
+    # print_single_receipt
+    # -----------------------------------------------------------------------------
     def print_single_receipt(self, payment):
-        self._snack(
-            "ℹ️ Generate PDF first (📄), then press Ctrl+P in the browser")
+        # Generate PDF first, then user prints from browser
+        self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
+        self.export_single_receipt_pdf(payment)
 
+    # -----------------------------------------------------------------------------
+    # generate_receipt_for_payment
+    # -----------------------------------------------------------------------------
     def generate_receipt_for_payment(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
         if receipts:
@@ -877,6 +1153,9 @@ class PaymentsTab:
         except Exception as ex:
             self._snack(f"❌ {ex}")
 
+    # -----------------------------------------------------------------------------
+    # update_summary_stats
+    # -----------------------------------------------------------------------------
     def update_summary_stats(self):
         total = sum(float(p.get('amount', 0) or 0) for p in self.payments)
         completed = sum(float(p.get('amount', 0) or 0)
@@ -921,15 +1200,24 @@ class PaymentsTab:
                 return f"₹{n/1000:.1f}K"
             return f"₹{n:,.0f}"
 
-        self.stat_labels['total'].value = _short(total)
-        self.stat_labels['completed'].value = _short(completed)
-        self.stat_labels['pending'].value = _short(pending)
-        self.stat_labels['receipts'].value = str(receipt_count)
-        self.stat_labels['package_pending'].value = _short(
-            total_package_pending)
-        self.stat_labels['invoice_pending'].value = _short(
-            total_invoice_pending)
+        if 'total' in self.stat_labels:
+            self.stat_labels['total'].value = _short(total)
+        if 'completed' in self.stat_labels:
+            self.stat_labels['completed'].value = _short(completed)
+        if 'pending' in self.stat_labels:
+            self.stat_labels['pending'].value = _short(pending)
+        if 'receipts' in self.stat_labels:
+            self.stat_labels['receipts'].value = str(receipt_count)
+        if 'package_pending' in self.stat_labels:
+            self.stat_labels['package_pending'].value = _short(
+                total_package_pending)
+        if 'invoice_pending' in self.stat_labels:
+            self.stat_labels['invoice_pending'].value = _short(
+                total_invoice_pending)
 
+    # -----------------------------------------------------------------------------
+    # _snack
+    # -----------------------------------------------------------------------------
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -942,7 +1230,7 @@ class PaymentsTab:
 
 
 # =================================================================================
-# 13.1 — CLASS: PaymentDialog (Record new payment)
+# 13.1 — CLASS: PaymentDialog  (Record new payment — mobile-responsive)
 # =================================================================================
 class PaymentDialog:
 
@@ -978,7 +1266,15 @@ class PaymentDialog:
         if traveler:
             self.select_traveler(traveler.get('id'))
 
+    def _is_narrow(self):
+        try:
+            return (self.page.width or 1200) < MOBILE_BREAKPOINT
+        except Exception:
+            return False
+
     def setup_ui(self):
+        narrow = self._is_narrow()
+
         traveler_options = []
         try:
             for t in self.db.get_travelers():
@@ -1012,7 +1308,7 @@ class PaymentDialog:
 
         def info_row(label, control):
             return ft.Row([
-                ft.Text(label, width=150,
+                ft.Text(label, width=120 if narrow else 150,
                         weight=ft.FontWeight.BOLD, size=11),
                 control,
             ], spacing=8)
@@ -1079,9 +1375,14 @@ class PaymentDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("💰 Record Payment",
-                          weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=540, height=640, padding=10),
+                          weight=ft.FontWeight.BOLD,
+                          size=14 if narrow else 15),
+            content=ft.Container(
+                content=content,
+                width=540 if not narrow else None,
+                height=640 if not narrow else None,
+                expand=narrow,
+                padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1341,5 +1642,5 @@ class PaymentDialog:
 
 
 # =================================================================================
-# SECTION 12 + 13 END (FLET 1.0.0 VERSION)
+# SECTION 12 + 13 END (FLET 1.0.0 — MOBILE-RESPONSIVE + SELECTABLE)
 # =================================================================================
