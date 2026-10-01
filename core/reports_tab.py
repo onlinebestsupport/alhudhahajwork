@@ -1,46 +1,20 @@
 # =================================================================================
-# SECTION 16 — REPORTS TAB (FLET 1.0)
+# SECTION 16 — REPORTS TAB (FLET 1.0, Mobile-Responsive)
 # =================================================================================
-# 16.0 — SECTION OVERVIEW
-#   • Reports Hub (stats + 4 category cards)
-#   • Custom Reports launcher (opens Section 17 dialog)
-#   • Single Traveler Report — card dashboard:
-#       - Left sidebar: circular photo + identity + document grid
-#       - Right area: 4 KPI cards + Invoice Breakdown + Payments table
-#   • Standard Reports — Financial / Travelers / Batches / Payments
-#   • Photo Viewer — browse traveler photos & docs
-#
-# 16.0.1 — Fixes carried over from the PyQt source:
-#   FIX-INVOICE-NO-LOOKUP  — Multi-strategy invoice_no resolution.
-#   FIX-PAYMENT-DATES      — Payment Received table with receipt date,
-#                            method, no, amount.
-#   FIX-LABEL-CLARITY      — "Pending Payment (with GST/TCS)" renamed.
-#   FIX-CSV-BOM            — CSV exports write the UTF-8 BOM explicitly.
-#   FIX-SINGLE-PHOTO       — ONE circular photo (no duplicate placeholder).
-#   FIX-PRO-LAYOUT         — Card-based Single Traveler dashboard.
-#   FIX-DOCS-INLINE        — Document thumbnails as compact cards.
-#   FIX-KPI-HIGHLIGHT      — Bold KPI values, right-aligned colors.
-#
-# 16.0.2 — PATCHES APPLIED (v1.1):
-#   16.1.A — refresh()               : force DB reload before reading (fresh
-#                                      cache). Reports aggregate from ALL
-#                                      tabs — the stale-cache risk is highest
-#                                      here.
-#   16.1.B — _rebuild_traveler_lists(): new helper that re-queries travelers
-#                                      and rebuilds _single_map + _photo_map
-#                                      + dropdown options. Called from refresh()
-#                                      so newly added travelers appear without
-#                                      a hard page reload.
-#   16.1.C — _generate_standard()    : reload DB before running each report.
-#                                      Users expect "Generate" to mean "now".
-#   16.1.D — _snack()                : use page.show_dialog(SnackBar) — the
-#                                      Flet 1.0 web-safe path (page.snack_bar
-#                                      attribute is deprecated).
+# v1.2 — Mobile-Responsive
+#   • Banner stacks on narrow screens
+#   • Stat cards 2-per-row mobile, 5 desktop
+#   • Report category cards stack on mobile
+#   • Single Traveler: sidebar stacks ABOVE right column on mobile
+#   • Standard Reports toolbar wraps
+#   • Photo Viewer dropdown + display stack
+#   • All original patches preserved:
+#       16.1.A — refresh() reload
+#       16.1.B — _rebuild_traveler_lists()
+#       16.1.C — _generate_standard() reload
+#       16.1.D — Flet 1.0 web-safe SnackBar
 # =================================================================================
 
-# =================================================================================
-# 16.1 — SECTION-LEVEL IMPORTS
-# =================================================================================
 import os
 import sys
 import base64
@@ -60,7 +34,6 @@ except ImportError:
 # 16.1b — MODULE HELPER: _app_base
 # =================================================================================
 def _app_base():
-    """Return PROJECT ROOT (walks up from core/)."""
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     here = os.path.dirname(os.path.abspath(__file__))
@@ -77,10 +50,9 @@ def _app_base():
 
 
 # =================================================================================
-# 16.1c — MODULE HELPER: _fmt_inr_
+# 16.1c — _fmt_inr_
 # =================================================================================
 def _fmt_inr_(value):
-    """Indian-format currency string."""
     try:
         v = float(value or 0)
     except (TypeError, ValueError):
@@ -113,22 +85,18 @@ def _fmt_inr_(value):
 
 
 # =================================================================================
-# 16.1d — MODULE HELPER: _fmt_date_ddmmyyyy
+# 16.1d — _fmt_date_ddmmyyyy
 # =================================================================================
 def _fmt_date_ddmmyyyy(dv):
-    """Convert any known date representation → dd/mm/yyyy."""
     if dv is None:
         return ""
     s = str(dv).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null", ""):
         return ""
-    # Already dd/mm/yyyy
     if len(s) >= 10 and s[2] == "/" and s[5] == "/":
         return s[:10]
-    # yyyy/mm/dd
     if len(s) >= 10 and s[4] == "/" and s[7] == "/":
         return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
-    # yyyy-mm-dd
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
         return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S",
@@ -143,10 +111,9 @@ def _fmt_date_ddmmyyyy(dv):
 
 
 # =================================================================================
-# 16.1e — MODULE HELPER: _parse_ui_date
+# 16.1e — _parse_ui_date
 # =================================================================================
 def _parse_ui_date(s):
-    """Parse dd/mm/yyyy, yyyy-mm-dd, yyyy/mm/dd, dd-mm-yyyy → datetime."""
     if not s:
         return None
     s = str(s).strip()[:10]
@@ -176,7 +143,7 @@ def _parse_ui_date(s):
 
 
 # =================================================================================
-# 16.1f — MODULE HELPER: _photo_data_uri
+# 16.1f — _photo_data_uri
 # =================================================================================
 def _photo_data_uri(path):
     if not path or not os.path.exists(path):
@@ -194,7 +161,7 @@ def _photo_data_uri(path):
 
 
 # =================================================================================
-# 16.1g — MODULE HELPER: _find_photo_path
+# 16.1g — _find_photo_path
 # =================================================================================
 def _find_photo_path(traveler):
     base = _app_base()
@@ -229,7 +196,7 @@ def _find_photo_path(traveler):
 
 
 # =================================================================================
-# 16.1h — MODULE HELPER: _collect_traveler_documents
+# 16.1h — _collect_traveler_documents
 # =================================================================================
 def _collect_traveler_documents(traveler):
     base = _app_base()
@@ -271,16 +238,9 @@ def _collect_traveler_documents(traveler):
 
 
 # =================================================================================
-# 16.2 — CLASS: ReportsTab (main tab)
+# 16.2 — CLASS: ReportsTab
 # =================================================================================
 class ReportsTab(ft.Column):
-    """16.2.0 — Main Reports Tab with 5 sub-tabs.
-
-    Flet 1.0 note:
-      • Subclasses ft.Column
-      • Exposes build() -> self (required by main_window.py)
-      • Does NOT set self.scroll (inner tabs handle their own scrolling)
-    """
 
     # -----------------------------------------------------------------------------
     # 16.2.1 — __init__
@@ -291,7 +251,6 @@ class ReportsTab(ft.Column):
         self.db = db
         self.current_user = current_user or {}
 
-        # NOTE: do NOT set self.scroll; inner tabs need a bounded height
         self.expand = True
         self.spacing = 0
 
@@ -299,15 +258,12 @@ class ReportsTab(ft.Column):
         self._tcs_rate = 0.0
         self._load_tax_rates()
 
-        # Hub refs
         self._hub_stat_labels = {}
         self._hub_badge_labels = {}
         self._hub_last_refresh = None
 
-        # Main tabs control
         self.tabs = None
 
-        # Single Traveler refs
         self._single_search = None
         self._single_photo_circle = None
         self._single_name = None
@@ -321,12 +277,10 @@ class ReportsTab(ft.Column):
         self._single_status = None
         self._single_map = {}
 
-        # Photo viewer refs
         self._photo_search = None
         self._photo_display = None
         self._photo_map = {}
 
-        # Standard reports refs
         self._std_type = None
         self._std_from = None
         self._std_to = None
@@ -368,18 +322,17 @@ class ReportsTab(ft.Column):
             print(f"[REPORTS] tax rates: {e}")
 
     # -----------------------------------------------------------------------------
-    # 16.2.3 — build   ✅ REQUIRED — main_window calls instance.build()
+    # 16.2.3 — build
     # -----------------------------------------------------------------------------
     def build(self):
         return self
 
     # -----------------------------------------------------------------------------
-    # 16.2.4 — _build (internal)
+    # 16.2.4 — _build
     # -----------------------------------------------------------------------------
     def _build(self):
-        labels = ["🏠 Reports Hub", "🎯 Custom Reports",
-                  "🔎 Single Traveler", "📈 Standard Reports",
-                  "📸 Photo Viewer"]
+        labels = ["🏠 Hub", "🎯 Custom", "🔎 Traveler",
+                  "📈 Standard", "📸 Photos"]
         views = [
             self._build_reports_hub_tab(),
             self._build_custom_report_tab(),
@@ -387,6 +340,7 @@ class ReportsTab(ft.Column):
             self._build_standard_reports_tab(),
             self._build_photo_viewer_tab(),
         ]
+        # Scrollable tab bar for mobile
         self.tabs = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -395,7 +349,9 @@ class ReportsTab(ft.Column):
             content=ft.Column(
                 expand=True, spacing=0,
                 controls=[
-                    ft.TabBar(tabs=[ft.Tab(label=l) for l in labels]),
+                    ft.TabBar(
+                        tabs=[ft.Tab(label=l) for l in labels],
+                        scrollable=True),
                     ft.TabBarView(
                         expand=True,
                         controls=[ft.Container(content=v, expand=True,
@@ -405,16 +361,10 @@ class ReportsTab(ft.Column):
         self.controls = [self.tabs]
 
     # -----------------------------------------------------------------------------
-    # 16.2.5 — refresh (called by main_window)
-    #   PATCH 16.1.A: force DB reload before reading
-    #   PATCH 16.1.B: rebuild traveler lists so new entries appear
+    # 16.2.5 — refresh  (PATCH 16.1.A + 16.1.B preserved)
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
-            # ---- PATCH 16.1.A: fresh cache reload ----
-            # Reports aggregate from every other tab. Re-hydrate the DB
-            # so every get_* call below returns current data — not a
-            # stale in-memory snapshot.
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -423,15 +373,8 @@ class ReportsTab(ft.Column):
             except Exception as _re:
                 print(f"[ReportsTab.refresh] reload skipped: {_re}")
 
-            # Reload tax rates in case CompanySettingsDialog changed them
             self._load_tax_rates()
-
-            # ---- PATCH 16.1.B: rebuild traveler lookup maps ----
-            # Without this, travelers added in the Travelers tab after the
-            # Reports tab was first built never appear in the Single
-            # Traveler / Photo Viewer dropdowns.
             self._rebuild_traveler_lists()
-
             self._refresh_hub_stats()
         except Exception as ex:
             print(f"[REPORTS] refresh: {ex}")
@@ -441,14 +384,12 @@ class ReportsTab(ft.Column):
     # 16.2.5b — _rebuild_traveler_lists  (PATCH 16.1.B)
     # -----------------------------------------------------------------------------
     def _rebuild_traveler_lists(self):
-        """Rebuild _single_map + _photo_map and refresh dropdown options
-        so newly added / renamed travelers show up without a hard reload."""
         try:
             travelers = self.db.get_travelers()
             travelers.sort(key=lambda t: (
                 f"{t.get('first_name','')} {t.get('last_name','')}".lower()))
 
-            # ---- Single Traveler dropdown ----
+            # Single Traveler dropdown
             if self._single_search is not None:
                 self._single_map = {}
                 opts = [ft.dropdown.Option("", "— Select a traveler —")]
@@ -461,8 +402,6 @@ class ReportsTab(ft.Column):
                     opts.append(ft.dropdown.Option(tid, label))
                     self._single_map[tid] = t
                 self._single_search.options = opts
-                # If the currently-selected traveler still exists,
-                # re-render them so their numbers are fresh.
                 cur = self._single_search.value
                 if cur and cur in self._single_map:
                     try:
@@ -470,7 +409,7 @@ class ReportsTab(ft.Column):
                     except Exception as _e:
                         print(f"[REPORTS] re-render single: {_e}")
 
-            # ---- Photo Viewer dropdown ----
+            # Photo Viewer dropdown
             if self._photo_search is not None:
                 self._photo_map = {}
                 opts = [ft.dropdown.Option("", "— Select a traveler —")]
@@ -487,7 +426,7 @@ class ReportsTab(ft.Column):
             print(f"[REPORTS] _rebuild_traveler_lists: {ex}")
 
     # =============================================================================
-    # 16.2.6 — Reports Hub tab
+    # 16.2.6 — Reports Hub tab  (MOBILE-RESPONSIVE)
     # =============================================================================
     def _build_reports_hub_tab(self):
         user_name = (self.current_user.get("full_name")
@@ -495,17 +434,17 @@ class ReportsTab(ft.Column):
 
         banner = ft.Container(
             content=ft.Row([
-                ft.Text("📊", size=42),
+                ft.Text("📊", size=32),
                 ft.Column([
-                    ft.Text(f"Welcome back, {user_name}! 👋", size=18,
+                    ft.Text(f"Welcome, {user_name}! 👋", size=15,
                             weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
-                    ft.Text("Your unified dashboard for travelers, "
-                            "batches, payments and reports",
-                            size=11, color=ft.Colors.BLUE_100),
+                            color=ft.Colors.WHITE,
+                            no_wrap=False, max_lines=2),
+                    ft.Text("Your unified reports dashboard",
+                            size=10, color=ft.Colors.BLUE_100),
                 ], spacing=4, expand=True),
-            ], spacing=16),
-            padding=ft.Padding.symmetric(horizontal=24, vertical=18),
+            ], spacing=12),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=14),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -521,60 +460,63 @@ class ReportsTab(ft.Column):
         ]
         stat_cols = []
         for key, icon, label, color in specs:
-            val = ft.Text("—", size=20, weight=ft.FontWeight.BOLD,
+            val = ft.Text("—", size=16, weight=ft.FontWeight.BOLD,
                           color=color)
             self._hub_stat_labels[key] = val
-            stat_cols.append(ft.Container(
-                content=ft.Column([
-                    ft.Text(icon, size=16, color=color),
-                    val,
-                    ft.Text(label, size=10, weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.GREY_600),
-                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                   spacing=2),
-                padding=10, expand=True))
+            stat_cols.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(icon, size=14, color=color),
+                        val,
+                        ft.Text(label, size=9,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.GREY_600),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                       spacing=2),
+                    padding=8,
+                    col={"xs": 4, "sm": 4, "md": 2}))
 
         stats_bar = ft.Container(
-            content=ft.Row(stat_cols, spacing=0),
+            content=ft.ResponsiveRow(stat_cols, spacing=4, run_spacing=6),
             bgcolor=ft.Colors.WHITE, border_radius=14,
             padding=ft.Padding.symmetric(horizontal=6, vertical=8),
             border=ft.Border.all(1, ft.Colors.GREY_300))
 
         def _card(icon, title, desc, color, key, on_click):
-            badge = ft.Text("—", size=11, weight=ft.FontWeight.BOLD,
+            badge = ft.Text("—", size=10, weight=ft.FontWeight.BOLD,
                             color=color)
             self._hub_badge_labels[key] = badge
             return ft.Container(
                 content=ft.Column([
                     ft.Container(
-                        content=ft.Text(icon, size=24),
-                        width=56, height=56,
+                        content=ft.Text(icon, size=22),
+                        width=48, height=48,
                         bgcolor=ft.Colors.with_opacity(0.12, color),
-                        border_radius=28,
+                        border_radius=24,
                         alignment=ft.Alignment.CENTER),
-                    ft.Text(title, size=13, weight=ft.FontWeight.BOLD),
-                    ft.Text(desc, size=11, color=ft.Colors.GREY_600),
-                    ft.Container(height=6),
+                    ft.Text(title, size=12, weight=ft.FontWeight.BOLD),
+                    ft.Text(desc, size=10, color=ft.Colors.GREY_600,
+                            max_lines=3),
+                    ft.Container(height=4),
                     ft.Container(content=badge,
                                  padding=ft.Padding.symmetric(
-                                     horizontal=10, vertical=5),
+                                     horizontal=8, vertical=4),
                                  bgcolor=ft.Colors.with_opacity(
                                      0.08, color),
-                                 border_radius=12),
-                    ft.Container(height=6),
-                    ft.Button(content=ft.Text("Open  →"),
+                                 border_radius=10),
+                    ft.Container(height=4),
+                    ft.Button(content=ft.Text("Open  →", size=11),
                               on_click=on_click, bgcolor=color,
-                              color=ft.Colors.WHITE, height=40,
+                              color=ft.Colors.WHITE, height=36,
                               expand=True),
-                ], spacing=8),
-                padding=18, bgcolor=ft.Colors.WHITE,
+                ], spacing=6),
+                padding=14, bgcolor=ft.Colors.WHITE,
                 border=ft.Border.all(1, ft.Colors.GREY_200),
-                border_radius=14, col={"sm": 12, "md": 6})
+                border_radius=14, col={"xs": 12, "sm": 6, "md": 6})
 
         cards = ft.ResponsiveRow([
             _card("🎯", "Custom Report Generator",
-                  "39+ traveler fields, batch data, dynamic payments "
-                  "(up to 10 slots per traveler).",
+                  "39+ traveler fields, batch data, dynamic payments.",
                   "#2563eb", "custom", lambda e: self._goto_tab(1)),
             _card("🔎", "Single Traveler Report",
                   "Full traveler profile with photo, payments, docs.",
@@ -585,9 +527,9 @@ class ReportsTab(ft.Column):
             _card("📸", "Photo Viewer",
                   "Browse traveler photos and documents.",
                   "#dc2626", "photo", lambda e: self._goto_tab(4)),
-        ], spacing=14, run_spacing=14)
+        ], spacing=10, run_spacing=10)
 
-        self._hub_last_refresh = ft.Text("", size=10,
+        self._hub_last_refresh = ft.Text("", size=9,
                                          color=ft.Colors.GREY_500)
 
         content = ft.Column([
@@ -595,21 +537,21 @@ class ReportsTab(ft.Column):
             ft.Container(height=8),
             stats_bar,
             ft.Container(height=10),
-            ft.Text("📊  Report Categories", size=15,
+            ft.Text("📊  Report Categories", size=13,
                     weight=ft.FontWeight.BOLD),
             cards,
             ft.Container(height=10),
             ft.Row([
                 self._hub_last_refresh,
                 ft.Container(expand=True),
-                ft.Button(content=ft.Text("🔄 Refresh"),
+                ft.Button(content=ft.Text("🔄 Refresh", size=11),
                           on_click=self._refresh_hub_stats,
                           bgcolor="#1e40af", color=ft.Colors.WHITE,
-                          height=38),
+                          height=36),
             ]),
         ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
 
-        container = ft.Container(content=content, padding=24, expand=True)
+        container = ft.Container(content=content, padding=14, expand=True)
         try:
             self.page_ref.run_task(self._refresh_hub_async)
         except Exception:
@@ -622,13 +564,10 @@ class ReportsTab(ft.Column):
         self._refresh_hub_stats()
 
     # -----------------------------------------------------------------------------
-    # 16.2.7 — _refresh_hub_stats
-    #   PATCH 16.1.A: force DB reload before reading (idempotent — safe to
-    #   call from the manual Refresh button too)
+    # 16.2.7 — _refresh_hub_stats  (PATCH 16.1.A preserved)
     # -----------------------------------------------------------------------------
     def _refresh_hub_stats(self, e=None):
         try:
-            # ---- PATCH 16.1.A: fresh cache reload ----
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -674,15 +613,14 @@ class ReportsTab(ft.Column):
                 self._hub_badge_labels["custom"].value = "📊 39 fields"
             if "single" in self._hub_badge_labels:
                 self._hub_badge_labels["single"].value = (
-                    f"👥 {len(travelers)} travelers")
+                    f"👥 {len(travelers)}")
             if "standard" in self._hub_badge_labels:
                 self._hub_badge_labels["standard"].value = "📋 4 types"
             if "photo" in self._hub_badge_labels:
-                self._hub_badge_labels["photo"].value = f"📷 {n_photos} photos"
+                self._hub_badge_labels["photo"].value = f"📷 {n_photos}"
             if self._hub_last_refresh:
                 self._hub_last_refresh.value = (
-                    f"🔄 Last updated: "
-                    f"{datetime.now().strftime('%H:%M:%S')}")
+                    f"🔄 {datetime.now().strftime('%H:%M:%S')}")
             self._safe_update()
         except Exception as e:
             print(f"[REPORTS] hub stats: {e}")
@@ -704,24 +642,23 @@ class ReportsTab(ft.Column):
     def _build_custom_report_tab(self):
         hero = ft.Container(
             content=ft.Column([
-                ft.Text("🎯", size=42),
-                ft.Text("Custom Report Generator", size=20,
+                ft.Text("🎯", size=36),
+                ft.Text("Custom Report Generator", size=17,
                         weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                 ft.Text(
-                    "39+ fields · dynamic payment slots (up to 10 per "
-                    "traveler) · invoice-accurate tax shares · Excel, "
-                    "CSV & PDF exports.",
-                    size=12, color=ft.Colors.BLUE_100,
+                    "39+ fields · dynamic payment slots · Excel, CSV & "
+                    "PDF exports.",
+                    size=11, color=ft.Colors.BLUE_100,
                     text_align=ft.TextAlign.CENTER),
                 ft.Container(height=8),
                 ft.Button(
-                    content=ft.Text("🚀  Launch Generator", size=14,
+                    content=ft.Text("🚀  Launch Generator", size=13,
                                     weight=ft.FontWeight.BOLD),
                     on_click=self._launch_custom_report,
-                    height=56, bgcolor=ft.Colors.WHITE, color="#1e40af"),
+                    height=48, bgcolor=ft.Colors.WHITE, color="#1e40af"),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                spacing=10),
-            padding=30,
+            padding=24,
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
@@ -731,7 +668,7 @@ class ReportsTab(ft.Column):
         return ft.Container(
             content=ft.Column([hero], scroll=ft.ScrollMode.AUTO,
                               expand=True),
-            padding=24, expand=True)
+            padding=14, expand=True)
 
     def _launch_custom_report(self, e=None):
         try:
@@ -744,14 +681,13 @@ class ReportsTab(ft.Column):
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # 16.2.10 — Single Traveler tab (card dashboard)
+    # 16.2.10 — Single Traveler tab  (MOBILE-RESPONSIVE)
     # =============================================================================
     def _build_single_traveler_tab(self):
         travelers = self.db.get_travelers()
         travelers.sort(key=lambda t: (
             f"{t.get('first_name','')} {t.get('last_name','')}".lower()))
 
-        # Lookup map (id → traveler)
         self._single_map = {}
         opts = [ft.dropdown.Option("", "— Select a traveler —")]
         for t in travelers:
@@ -765,33 +701,31 @@ class ReportsTab(ft.Column):
 
         self._single_search = ft.Dropdown(
             label="Search traveler",
-            options=opts, value="", width=650,
+            options=opts, value="",
             enable_filter=True, enable_search=True, editable=True)
         self._single_search.on_change = self._on_single_changed
         self._single_search.on_select = self._on_single_changed
 
-        # Circular photo
         self._single_photo_circle = ft.Container(
-            content=ft.Text("📷", size=42, color=ft.Colors.GREY_400),
-            width=170, height=170,
-            bgcolor="#f8fafc", border_radius=85,
+            content=ft.Text("📷", size=36, color=ft.Colors.GREY_400),
+            width=130, height=130,
+            bgcolor="#f8fafc", border_radius=65,
             alignment=ft.Alignment.CENTER,
             clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
             border=ft.Border.all(3, "#7c3aed"))
 
-        self._single_name = ft.Text("No traveler selected", size=14,
+        self._single_name = ft.Text("No traveler selected", size=13,
                                     weight=ft.FontWeight.BOLD,
                                     text_align=ft.TextAlign.CENTER)
-        self._single_id = ft.Text("—", size=11,
+        self._single_id = ft.Text("—", size=10,
                                   color=ft.Colors.GREY_600,
                                   text_align=ft.TextAlign.CENTER)
         self._single_status_badge = ft.Container(
-            content=ft.Text("—", size=11, weight=ft.FontWeight.BOLD,
+            content=ft.Text("—", size=10, weight=ft.FontWeight.BOLD,
                             color=ft.Colors.GREY_700),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=4),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=4),
             bgcolor="#f3f4f6", border_radius=13)
 
-        # Info rows
         self._single_info = {}
         info_rows = []
         for key, lbl in [("mobile", "📱 Mobile"),
@@ -799,18 +733,18 @@ class ReportsTab(ft.Column):
                          ("file_ref", "📄 File Ref"),
                          ("batch", "📦 Batch"),
                          ("dob", "🎂 DOB")]:
-            val = ft.Text("—", size=11, weight=ft.FontWeight.BOLD,
+            val = ft.Text("—", size=10, weight=ft.FontWeight.BOLD,
                           text_align=ft.TextAlign.RIGHT)
             self._single_info[key] = val
             info_rows.append(ft.Row([
-                ft.Text(lbl, width=85, size=11,
+                ft.Text(lbl, width=80, size=10,
                         weight=ft.FontWeight.BOLD,
                         color=ft.Colors.GREY_600),
                 ft.Container(expand=True), val]))
 
         self._single_docs_grid = ft.GridView(
             expand=True, runs_count=2, spacing=6, run_spacing=6,
-            child_aspect_ratio=1.4, height=170)
+            child_aspect_ratio=1.4, height=150)
 
         left_card = ft.Container(
             content=ft.Column([
@@ -823,123 +757,126 @@ class ReportsTab(ft.Column):
                 ft.Divider(height=1),
                 *info_rows,
                 ft.Divider(height=1),
-                ft.Text("📎 Uploaded Documents", size=11,
+                ft.Text("📎 Documents", size=10,
                         weight=ft.FontWeight.BOLD, color="#6d28d9"),
                 self._single_docs_grid,
             ], spacing=8, scroll=ft.ScrollMode.AUTO),
-            padding=20, width=320, bgcolor=ft.Colors.WHITE,
+            padding=14, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1.5, ft.Colors.GREY_300),
-            border_radius=14)
+            border_radius=14,
+            # Desktop fixed width, mobile full-width
+            col={"xs": 12, "sm": 12, "md": 4})
 
-        # KPI cards
         def _kpi(key, icon, title, color):
-            val = ft.Text("—", size=18, weight=ft.FontWeight.BOLD,
+            val = ft.Text("—", size=14, weight=ft.FontWeight.BOLD,
                           color=color)
             self._single_kpi[key] = val
             return ft.Container(
                 content=ft.Column([
-                    ft.Row([ft.Text(icon, size=14, color=color),
-                            ft.Text(title.upper(), size=10,
+                    ft.Row([ft.Text(icon, size=12, color=color),
+                            ft.Text(title.upper(), size=9,
                                     weight=ft.FontWeight.BOLD,
-                                    color=ft.Colors.GREY_600)],
-                           spacing=6),
+                                    color=ft.Colors.GREY_600,
+                                    no_wrap=False, max_lines=2)],
+                           spacing=4),
                     val,
-                ], spacing=4),
-                padding=14, expand=True, bgcolor=ft.Colors.WHITE,
+                ], spacing=3),
+                padding=10, bgcolor=ft.Colors.WHITE,
                 border=ft.Border.only(
-                    left=ft.BorderSide(5, color),
+                    left=ft.BorderSide(4, color),
                     top=ft.BorderSide(1, ft.Colors.GREY_200),
                     right=ft.BorderSide(1, ft.Colors.GREY_200),
                     bottom=ft.BorderSide(1, ft.Colors.GREY_200)),
-                border_radius=12)
+                border_radius=10,
+                col={"xs": 6, "sm": 6, "md": 3})
 
-        kpi_row = ft.Row([
-            _kpi("invoiced", "📄", "Total Invoiced", "#1e40af"),
-            _kpi("received", "💰", "Total Paid", "#059669"),
+        kpi_row = ft.ResponsiveRow([
+            _kpi("invoiced", "📄", "Invoiced", "#1e40af"),
+            _kpi("received", "💰", "Paid", "#059669"),
             _kpi("discount", "🎁", "Discount", "#c2185b"),
             _kpi("outstanding", "⚠️", "Outstanding", "#dc2626"),
-        ], spacing=12)
+        ], spacing=8, run_spacing=8)
 
-        # Invoice breakdown
         self._single_invoice_label = ft.Text(
             "No invoice recorded for this traveler yet.",
-            size=12, selectable=True, font_family="Consolas")
+            size=11, selectable=True, font_family="Consolas")
 
         inv_card = ft.Container(
             content=ft.Column([
-                ft.Text("🧾  Invoice Breakdown", size=14,
+                ft.Text("🧾  Invoice Breakdown", size=12,
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ft.Container(content=self._single_invoice_label,
-                             padding=14, bgcolor="#f8fafc",
+                             padding=10, bgcolor="#f8fafc",
                              border=ft.Border.all(1, ft.Colors.GREY_200),
                              border_radius=10),
             ], spacing=8),
-            padding=16, bgcolor=ft.Colors.WHITE,
+            padding=12, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1.5, ft.Colors.GREY_300),
             border_radius=14)
 
-        # Payments table
         self._single_payment_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Receipt Date", size=11)),
-                ft.DataColumn(ft.Text("Method", size=11)),
-                ft.DataColumn(ft.Text("Receipt No", size=11)),
-                ft.DataColumn(ft.Text("Amount", size=11)),
+                ft.DataColumn(ft.Text("Date", size=10)),
+                ft.DataColumn(ft.Text("Method", size=10)),
+                ft.DataColumn(ft.Text("Receipt", size=10)),
+                ft.DataColumn(ft.Text("Amount", size=10)),
             ],
-            rows=[], heading_row_color="#f1f5f9", column_spacing=14)
+            rows=[], heading_row_color="#f1f5f9", column_spacing=10)
 
         pay_card = ft.Container(
             content=ft.Column([
-                ft.Text("💵  Payment Received", size=14,
+                ft.Text("💵  Payment Received", size=12,
                         weight=ft.FontWeight.BOLD, color="#059669"),
                 ft.Container(
-                    content=ft.Column([self._single_payment_table],
-                                      scroll=ft.ScrollMode.AUTO),
-                    height=180, padding=4, bgcolor=ft.Colors.WHITE,
+                    content=ft.Row([self._single_payment_table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
+                    height=170, padding=4, bgcolor=ft.Colors.WHITE,
                     border=ft.Border.all(1, ft.Colors.GREY_200),
                     border_radius=10),
             ], spacing=8),
-            padding=16, bgcolor=ft.Colors.WHITE,
+            padding=12, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1.5, ft.Colors.GREY_300),
             border_radius=14)
 
         self._single_status = ft.Text(
-            "🔍  No traveler selected.", size=12,
+            "🔍  No traveler selected.", size=11,
             color=ft.Colors.GREY_600, italic=True)
 
-        right_col = ft.Column([kpi_row, inv_card, pay_card],
-                              spacing=14, expand=True)
+        right_col = ft.Container(
+            content=ft.Column([kpi_row, inv_card, pay_card],
+                              spacing=12),
+            col={"xs": 12, "sm": 12, "md": 8})
 
         body = ft.Container(
             content=ft.Column([
                 ft.Container(
                     content=ft.Row([
-                        ft.Text("🔎", size=32),
+                        ft.Text("🔎", size=26),
                         ft.Column([
-                            ft.Text("Single Traveler Report", size=18,
+                            ft.Text("Single Traveler", size=15,
                                     weight=ft.FontWeight.BOLD,
                                     color=ft.Colors.WHITE),
                             ft.Text("Search by name, passport, file ref",
-                                    size=10, color=ft.Colors.BLUE_100),
+                                    size=9, color=ft.Colors.BLUE_100),
                         ], spacing=2, expand=True),
-                    ], spacing=14),
-                    padding=ft.Padding.symmetric(horizontal=24,
-                                                 vertical=16),
+                    ], spacing=10),
+                    padding=ft.Padding.symmetric(horizontal=16,
+                                                 vertical=12),
                     gradient=ft.LinearGradient(
                         begin=ft.Alignment.CENTER_LEFT,
                         end=ft.Alignment.CENTER_RIGHT,
                         colors=["#6d28d9", "#7c3aed", "#a855f7"]),
                     border_radius=14),
-                ft.Container(height=14),
-                ft.Row([self._single_search], spacing=8),
-                ft.Container(height=6),
+                ft.Container(height=10),
+                self._single_search,
+                ft.Container(height=4),
                 self._single_status,
                 ft.Container(height=6),
-                ft.Row([left_card, right_col], spacing=20,
-                       vertical_alignment=ft.CrossAxisAlignment.START,
-                       expand=True),
+                ft.ResponsiveRow(
+                    controls=[left_card, right_col],
+                    spacing=12, run_spacing=12),
             ], spacing=6, scroll=ft.ScrollMode.AUTO, expand=True),
-            padding=20, expand=True, bgcolor="#f3f4f6")
+            padding=14, expand=True, bgcolor="#f3f4f6")
 
         return body
 
@@ -953,7 +890,6 @@ class ReportsTab(ft.Column):
                 return
             t = self._single_map.get(raw)
             if t is None:
-                # User might have typed an ID we don't know → refresh lists
                 self._rebuild_traveler_lists()
                 t = self._single_map.get(raw)
                 if t is None:
@@ -968,17 +904,15 @@ class ReportsTab(ft.Column):
     # 16.2.12 — _render_single_traveler
     # -----------------------------------------------------------------------------
     def _render_single_traveler(self, t):
-        # Photo
         photo_path = _find_photo_path(t)
         uri = _photo_data_uri(photo_path) if photo_path else None
         if uri:
             self._single_photo_circle.content = ft.Image(
-                src=uri, width=170, height=170, fit=ft.BoxFit.COVER)
+                src=uri, width=130, height=130, fit=ft.BoxFit.COVER)
         else:
             self._single_photo_circle.content = ft.Text(
-                "📷", size=42, color=ft.Colors.GREY_400)
+                "📷", size=36, color=ft.Colors.GREY_400)
 
-        # Name / ID / Status
         name = (f"{t.get('first_name','')} "
                 f"{t.get('last_name','')}").strip() or "Unknown"
         self._single_name.value = name
@@ -992,11 +926,10 @@ class ReportsTab(ft.Column):
         else:
             bg, fg = "#fef3c7", "#92400e"
         self._single_status_badge.content = ft.Text(
-            status_val.upper(), size=11, weight=ft.FontWeight.BOLD,
+            status_val.upper(), size=10, weight=ft.FontWeight.BOLD,
             color=fg)
         self._single_status_badge.bgcolor = bg
 
-        # Info
         batch_id = t.get("batch_id")
         batch = self.db.get_batch_by_id(batch_id) if batch_id else None
         batch_name = batch.get("batch_name", "—") if batch else "—"
@@ -1005,11 +938,10 @@ class ReportsTab(ft.Column):
             t.get("passport_no", "—") or "—")
         self._single_info["file_ref"].value = str(
             t.get("file_reference", "—") or "—")
-        self._single_info["batch"].value = batch_name
+        self._single_info["batch"].value = batch_name[:18]
         self._single_info["dob"].value = (
             _fmt_date_ddmmyyyy(str(t.get("dob", "") or "")) or "—")
 
-        # Aggregation
         tid = t.get("id", "")
         payments = self.db.get_payments(tid) if tid else []
         invoices = self.db.get_invoices(tid) if tid else []
@@ -1045,13 +977,13 @@ class ReportsTab(ft.Column):
 
         if invoices:
             lines = [
-                f"📦 Base Amount   : ₹{_fmt_inr_(inv_base):>15}",
-                f"🎁 Discount      : -₹{_fmt_inr_(inv_disc):>15}",
-                f"📊 Taxable Value : ₹{_fmt_inr_(inv_taxable):>15}",
-                f"🧾 GST           : +₹{_fmt_inr_(inv_gst):>15}",
-                f"💰 TCS           : +₹{_fmt_inr_(inv_tcs):>15}",
-                "─" * 50,
-                f"⭐ TOTAL PAYABLE : ₹{_fmt_inr_(inv_total):>15}",
+                f"📦 Base     : ₹{_fmt_inr_(inv_base):>15}",
+                f"🎁 Discount : -₹{_fmt_inr_(inv_disc):>14}",
+                f"📊 Taxable  : ₹{_fmt_inr_(inv_taxable):>15}",
+                f"🧾 GST      : +₹{_fmt_inr_(inv_gst):>14}",
+                f"💰 TCS      : +₹{_fmt_inr_(inv_tcs):>14}",
+                "─" * 44,
+                f"⭐ TOTAL    : ₹{_fmt_inr_(inv_total):>15}",
                 "",
                 f"Invoices: {len(invoices)}  ·  Payments: {len(payments)}",
             ]
@@ -1059,71 +991,67 @@ class ReportsTab(ft.Column):
         else:
             self._single_invoice_label.value = "ℹ️  No invoice recorded yet."
 
-        # Payment table
         self._single_payment_table.rows.clear()
         for p in payments:
             dt = _fmt_date_ddmmyyyy(str(p.get("payment_date", "")))
             amt = _f(p.get("amount", 0))
             self._single_payment_table.rows.append(ft.DataRow(cells=[
-                ft.DataCell(ft.Text(dt, size=11)),
+                ft.DataCell(ft.Text(dt, size=10)),
                 ft.DataCell(ft.Text(
-                    str(p.get("payment_method", "—") or "—"), size=11)),
-                ft.DataCell(ft.Text(str(p.get("id", "—")), size=11)),
-                ft.DataCell(ft.Text(f"₹{_fmt_inr_(amt)}", size=11,
+                    str(p.get("payment_method", "—") or "—")[:12],
+                    size=10)),
+                ft.DataCell(ft.Text(str(p.get("id", "—"))[:14], size=10)),
+                ft.DataCell(ft.Text(f"₹{_fmt_inr_(amt)}", size=10,
                                     weight=ft.FontWeight.BOLD,
                                     color="#059669",
                                     text_align=ft.TextAlign.RIGHT)),
             ]))
 
-        # KPIs
         self._single_kpi["invoiced"].value = f"₹{_fmt_inr_(package)}"
         self._single_kpi["received"].value = f"₹{_fmt_inr_(total_paid)}"
         self._single_kpi["discount"].value = f"₹{_fmt_inr_(inv_disc)}"
         if pending <= 0:
-            self._single_kpi["outstanding"].value = "₹0.00 ✅"
+            self._single_kpi["outstanding"].value = "₹0 ✅"
             self._single_kpi["outstanding"].color = "#059669"
         else:
             self._single_kpi["outstanding"].value = f"₹{_fmt_inr_(pending)}"
             self._single_kpi["outstanding"].color = "#dc2626"
 
-        # Status message
         if has_paid:
             self._single_status.value = (
-                f"✅ Selected: {name} — Invoice is PAID. "
-                f"Outstanding is ₹0.00.")
+                f"✅ {name} — Invoice PAID. Outstanding ₹0.00.")
             self._single_status.color = "#059669"
         else:
-            self._single_status.value = f"✅ Selected: {name}."
+            self._single_status.value = f"✅ {name}"
             self._single_status.color = "#059669"
 
-        # Docs grid
         docs = _collect_traveler_documents(t)
         self._single_docs_grid.controls.clear()
         for d in docs:
-            thumb = ft.Text("✕", size=18, color="#d1d5db")
+            thumb = ft.Text("✕", size=16, color="#d1d5db")
             if d["exists"] and d["path"].lower().endswith(
                     (".jpg", ".jpeg", ".png", ".bmp", ".gif")):
                 uri = _photo_data_uri(d["path"])
-                thumb = ft.Image(src=uri or "", width=60, height=40,
+                thumb = ft.Image(src=uri or "", width=50, height=34,
                                  fit=ft.BoxFit.COVER, border_radius=4)
             elif d["exists"]:
-                thumb = ft.Text("📄", size=22, color="#dc2626")
+                thumb = ft.Text("📄", size=18, color="#dc2626")
             self._single_docs_grid.controls.append(ft.Container(
                 content=ft.Column([
                     thumb,
-                    ft.Text(d["label"], size=9,
+                    ft.Text(d["label"], size=8,
                             weight=ft.FontWeight.BOLD,
                             text_align=ft.TextAlign.CENTER),
-                    ft.Text("●" if d["exists"] else "○", size=8,
+                    ft.Text("●" if d["exists"] else "○", size=7,
                             color="#059669" if d["exists"] else "#dc2626"),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                    spacing=2),
-                padding=6, bgcolor="#f8fafc",
+                padding=5, bgcolor="#f8fafc",
                 border=ft.Border.all(1, ft.Colors.GREY_200),
                 border_radius=8))
 
     # =============================================================================
-    # 16.2.13 — Standard Reports tab
+    # 16.2.13 — Standard Reports tab  (MOBILE-RESPONSIVE)
     # =============================================================================
     def _build_standard_reports_tab(self):
         self._std_type = ft.Dropdown(
@@ -1131,18 +1059,18 @@ class ReportsTab(ft.Column):
             options=[ft.dropdown.Option(x) for x in
                      ["Financial Summary", "Traveler Statistics",
                       "Batch Utilization", "Payment Analysis"]],
-            value="Financial Summary", width=220)
+            value="Financial Summary")
 
         self._std_from = ft.TextField(
             label="From (dd/mm/yyyy)",
             value=(datetime.now() - timedelta(days=30)
-                   ).strftime("%d/%m/%Y"), width=170)
+                   ).strftime("%d/%m/%Y"))
         self._std_to = ft.TextField(
             label="To (dd/mm/yyyy)",
-            value=datetime.now().strftime("%d/%m/%Y"), width=170)
+            value=datetime.now().strftime("%d/%m/%Y"))
 
         self._std_output = ft.TextField(
-            multiline=True, min_lines=20, read_only=True,
+            multiline=True, min_lines=15, read_only=True,
             text_style=ft.TextStyle(font_family="Consolas", size=11))
 
         def _quick(days):
@@ -1154,57 +1082,63 @@ class ReportsTab(ft.Column):
                 self._generate_standard(None)
             return _h
 
+        def _qbtn(label, days):
+            return ft.Button(
+                content=ft.Text(label, size=10),
+                on_click=_quick(days), height=36,
+                bgcolor="#0ea5e9", color=ft.Colors.WHITE)
+
         return ft.Container(
             content=ft.Column([
                 ft.Container(
                     content=ft.Row([
-                        ft.Text("📈", size=26),
+                        ft.Text("📈", size=22),
                         ft.Column([
-                            ft.Text("Standard Reports", size=15,
+                            ft.Text("Standard Reports", size=14,
                                     weight=ft.FontWeight.BOLD,
                                     color=ft.Colors.WHITE),
                             ft.Text("4 ready-to-use reports",
                                     size=9, color=ft.Colors.BLUE_100),
                         ], spacing=0, expand=True),
-                    ], spacing=12),
-                    padding=ft.Padding.symmetric(horizontal=24,
-                                                 vertical=14),
+                    ], spacing=10),
+                    padding=ft.Padding.symmetric(horizontal=16,
+                                                 vertical=12),
                     gradient=ft.LinearGradient(
                         begin=ft.Alignment.CENTER_LEFT,
                         end=ft.Alignment.CENTER_RIGHT,
                         colors=["#065f46", "#059669"]),
                     border_radius=14),
-                ft.Container(height=14),
+                ft.Container(height=12),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self._std_type,
+                                     col={"xs": 12, "sm": 6, "md": 3}),
+                        ft.Container(content=self._std_from,
+                                     col={"xs": 6, "sm": 6, "md": 2}),
+                        ft.Container(content=self._std_to,
+                                     col={"xs": 6, "sm": 6, "md": 2}),
+                    ], spacing=8, run_spacing=8),
+                ft.Container(height=8),
                 ft.Row([
-                    self._std_type,
-                    self._std_from,
-                    self._std_to,
-                    ft.Button(content=ft.Text("Today"),
-                              on_click=_quick(0), height=40),
-                    ft.Button(content=ft.Text("Week"),
-                              on_click=_quick(7), height=40),
-                    ft.Button(content=ft.Text("Month"),
-                              on_click=_quick(30), height=40),
-                    ft.Button(content=ft.Text("3M"),
-                              on_click=_quick(90), height=40),
-                    ft.Button(content=ft.Text("🔄 Generate"),
+                    _qbtn("Today", 0),
+                    _qbtn("Week", 7),
+                    _qbtn("Month", 30),
+                    _qbtn("3M", 90),
+                    ft.Button(content=ft.Text("🔄 Generate", size=11),
                               on_click=self._generate_standard,
                               bgcolor="#059669",
-                              color=ft.Colors.WHITE, height=40),
-                ], spacing=8, wrap=True),
-                ft.Divider(),
+                              color=ft.Colors.WHITE, height=36),
+                ], spacing=6, wrap=True),
+                ft.Divider(height=1),
                 self._std_output,
-            ], spacing=12, scroll=ft.ScrollMode.AUTO, expand=True),
-            padding=24, expand=True)
+            ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True),
+            padding=14, expand=True)
 
     # -----------------------------------------------------------------------------
-    # 16.2.13.0 — _generate_standard
-    #   PATCH 16.1.C: reload DB before running each report — "Generate"
-    #   should always reflect the latest data on disk.
+    # 16.2.13.0 — _generate_standard  (PATCH 16.1.C preserved)
     # -----------------------------------------------------------------------------
     def _generate_standard(self, e=None):
         try:
-            # ---- PATCH 16.1.C: fresh cache reload ----
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -1231,9 +1165,6 @@ class ReportsTab(ft.Column):
             self._std_output.value = f"❌ {ex}"
             self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # 16.2.13.1 — _report_financial
-    # -----------------------------------------------------------------------------
     def _report_financial(self, sd, ed):
         from_dt = _parse_ui_date(sd)
         to_dt = _parse_ui_date(ed)
@@ -1258,9 +1189,6 @@ class ReportsTab(ft.Column):
             lines.append(f"  • {m}: ₹{_fmt_inr_(amt)}")
         return "\n".join(lines)
 
-    # -----------------------------------------------------------------------------
-    # 16.2.13.2 — _report_travelers
-    # -----------------------------------------------------------------------------
     def _report_travelers(self, sd, ed):
         from_dt = _parse_ui_date(sd)
         to_dt = _parse_ui_date(ed)
@@ -1281,9 +1209,6 @@ class ReportsTab(ft.Column):
             lines.append(f"  • {s}: {c} ({p:.1f}%)")
         return "\n".join(lines)
 
-    # -----------------------------------------------------------------------------
-    # 16.2.13.3 — _report_batches
-    # -----------------------------------------------------------------------------
     def _report_batches(self, sd, ed):
         batches = self.db.get_batches()
         travelers = self.db.get_travelers()
@@ -1316,9 +1241,6 @@ class ReportsTab(ft.Column):
         lines.append(f"Total Revenue: ₹{_fmt_inr_(tr)}")
         return "\n".join(lines)
 
-    # -----------------------------------------------------------------------------
-    # 16.2.13.4 — _report_payments
-    # -----------------------------------------------------------------------------
     def _report_payments(self, sd, ed):
         from_dt = _parse_ui_date(sd)
         to_dt = _parse_ui_date(ed)
@@ -1345,9 +1267,6 @@ class ReportsTab(ft.Column):
             lines.append(f"  • {m}: ₹{_fmt_inr_(amt)}")
         return "\n".join(lines)
 
-    # -----------------------------------------------------------------------------
-    # 16.2.13.5 — _in_range
-    # -----------------------------------------------------------------------------
     def _in_range(self, value, d_from, d_to):
         if value is None:
             return True
@@ -1361,7 +1280,7 @@ class ReportsTab(ft.Column):
         return True
 
     # =============================================================================
-    # 16.2.14 — Photo Viewer tab
+    # 16.2.14 — Photo Viewer tab  (MOBILE-RESPONSIVE)
     # =============================================================================
     def _build_photo_viewer_tab(self):
         travelers = self.db.get_travelers()
@@ -1380,43 +1299,43 @@ class ReportsTab(ft.Column):
             self._photo_map[tid] = t
 
         self._photo_search = ft.Dropdown(
-            label="Search traveler", options=opts, value="", width=600,
+            label="Search traveler", options=opts, value="",
             enable_filter=True, enable_search=True, editable=True)
         self._photo_search.on_change = self._on_photo_change
         self._photo_search.on_select = self._on_photo_change
 
         self._photo_display = ft.Container(
             content=ft.Column([
-                ft.Text("📷", size=72, color=ft.Colors.GREY_400),
-                ft.Text("Select a traveler to view photo", size=13,
+                ft.Text("📷", size=60, color=ft.Colors.GREY_400),
+                ft.Text("Select a traveler to view photo", size=12,
                         color=ft.Colors.GREY_500),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                spacing=8),
             alignment=ft.Alignment.CENTER, bgcolor="#f9fafb",
-            border_radius=12, padding=30, height=500, expand=True)
+            border_radius=12, padding=20, height=420, expand=True)
 
         return ft.Container(
             content=ft.Column([
                 ft.Container(
                     content=ft.Row([
-                        ft.Text("📸", size=26),
-                        ft.Text("Photo Viewer", size=15,
+                        ft.Text("📸", size=22),
+                        ft.Text("Photo Viewer", size=14,
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.WHITE),
                     ], spacing=10),
-                    padding=ft.Padding.symmetric(horizontal=20,
-                                                 vertical=12),
+                    padding=ft.Padding.symmetric(horizontal=14,
+                                                 vertical=10),
                     gradient=ft.LinearGradient(
                         begin=ft.Alignment.CENTER_LEFT,
                         end=ft.Alignment.CENTER_RIGHT,
                         colors=["#dc2626", "#f43f5e"]),
                     border_radius=12),
                 ft.Container(height=10),
-                ft.Row([self._photo_search], spacing=8),
-                ft.Divider(),
+                self._photo_search,
+                ft.Divider(height=1),
                 self._photo_display,
             ], spacing=10, expand=True),
-            padding=20, expand=True)
+            padding=14, expand=True)
 
     def _on_photo_change(self, e=None):
         try:
@@ -1425,7 +1344,6 @@ class ReportsTab(ft.Column):
                 return
             t = self._photo_map.get(raw)
             if not t:
-                # Unknown ID → rebuild lists and retry
                 self._rebuild_traveler_lists()
                 t = self._photo_map.get(raw)
                 if not t:
@@ -1436,17 +1354,17 @@ class ReportsTab(ft.Column):
             uri = _photo_data_uri(pp) if pp else None
             if uri:
                 self._photo_display.content = ft.Column([
-                    ft.Image(src=uri, height=420, fit=ft.BoxFit.CONTAIN),
-                    ft.Text(name, size=16, weight=ft.FontWeight.BOLD),
+                    ft.Image(src=uri, height=340, fit=ft.BoxFit.CONTAIN),
+                    ft.Text(name, size=14, weight=ft.FontWeight.BOLD),
                     ft.Text(f"ID: {t.get('id','')} · "
                             f"Passport: {t.get('passport_no','')}",
-                            size=11, color=ft.Colors.GREY_600),
+                            size=10, color=ft.Colors.GREY_600),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                    spacing=8, scroll=ft.ScrollMode.AUTO)
             else:
                 self._photo_display.content = ft.Column([
-                    ft.Text("📷", size=72, color=ft.Colors.GREY_400),
-                    ft.Text(f"No photo available for {name}", size=14,
+                    ft.Text("📷", size=60, color=ft.Colors.GREY_400),
+                    ft.Text(f"No photo for {name}", size=12,
                             color=ft.Colors.GREY_500),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                    spacing=10)
@@ -1464,18 +1382,15 @@ class ReportsTab(ft.Column):
             pass
 
     # -----------------------------------------------------------------------------
-    # 16.2.15b — _snack  (PATCH 16.1.D: Flet 1.0 web-safe SnackBar)
+    # 16.2.15b — _snack  (PATCH 16.1.D preserved)
     # -----------------------------------------------------------------------------
     def _snack(self, msg, color=ft.Colors.GREEN_700):
-        # ---- PATCH 16.1.D: Flet 1.0 deprecated `page.snack_bar`.
-        # Prefer show_dialog(SnackBar) — the reliable path in web mode ----
         try:
             self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(msg), bgcolor=color))
             return
         except Exception:
             pass
-        # Last-resort fallback for very old Flet builds
         try:
             self.page_ref.snack_bar = ft.SnackBar(
                 content=ft.Text(msg), bgcolor=color)
@@ -1485,23 +1400,6 @@ class ReportsTab(ft.Column):
             pass
 
 
-# =================================================================================
-# 16.3 — MAINTENANCE WARNINGS
-# =================================================================================
-# 16.3.1  — FIX-INVOICE-NO-LOOKUP — Multi-strategy invoice_no resolution.
-# 16.3.2  — FIX-PAYMENT-DATES — Payment Received table in Single Traveler.
-# 16.3.3  — FIX-LABEL-CLARITY — Pending Payment column renamed.
-# 16.3.4  — FIX-CSV-BOM — CSV exports write UTF-8 BOM explicitly.
-# 16.3.5  — FIX-SINGLE-PHOTO — ONE circular photo in left sidebar.
-# 16.3.6  — FIX-PRO-LAYOUT — Single Traveler card dashboard.
-# 16.3.7  — FIX-DOCS-INLINE — Compact 2-column doc grid in sidebar.
-# 16.3.8  — FIX-KPI-HIGHLIGHT — Bold KPI values, direct text.
-# 16.3.9  — Flet 1.0 note: no top-level scroll on ReportsTab; inner
-#              tabs manage their own scrolling. build() returns self.
-# 16.3.10 — PATCH 16.1.A — refresh() reloads DB before reading.
-# 16.3.11 — PATCH 16.1.B — _rebuild_traveler_lists() keeps dropdowns fresh.
-# 16.3.12 — PATCH 16.1.C — _generate_standard() reloads DB before each run.
-# 16.3.13 — PATCH 16.1.D — _snack() uses show_dialog(SnackBar).
 # =================================================================================
 # SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION)
 # =================================================================================
