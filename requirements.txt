@@ -5,13 +5,18 @@
 # ---- Flet ----
 flet~=1.0
 
+# ---- Flet web server (REQUIRED for flet.fastapi) ----
+# flet normally auto-installs this when using ft.run(). Since we now
+# use flet.fastapi.app() directly, we must declare it explicitly.
+flet-web~=1.0
+
 # ---- Flet charts plugin (lockstep with flet 1.x) ----
 flet-charts~=1.0
 
 # ---- Matplotlib (fallback chart engine) ----
 matplotlib~=3.8
 
-# ---- FastAPI + uvicorn (required for file download endpoint) ----
+# ---- FastAPI + uvicorn (required for /download endpoint) ----
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 
