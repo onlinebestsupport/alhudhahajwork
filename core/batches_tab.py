@@ -1,11 +1,13 @@
 # =================================================================================
-# SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS (Mobile-Responsive)
+# SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
 # =================================================================================
-# v1.2 — Mobile-friendly layout:
-#   • Stat cards 2-per-row on mobile
-#   • Toolbar buttons responsive
-#   • Table wrapped in horizontal scroll
-#   • Dialogs fit mobile screens
+# v1.3 — Row Selection + Data-Loading Safety
+#   • ADDED: Tap any row → SELECTS (does not open anything)
+#   • ADDED: Toolbar 📊 Export / 🖨️ Print act on selected row
+#   • ADDED: "Sel" column with ✓ marker
+#   • FIXED: on_select_change (correct Flet 1.0.0 param)
+#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
+#   • Action icons 16 → 18 for easier tapping
 # =================================================================================
 
 import flet as ft
@@ -122,7 +124,11 @@ class BatchesTab:
         self.year_filter = None
         self.tour_filter = None
         self.search_input = None
+        self.selection_label = None
         self.root = None
+
+        # Currently selected batch (for toolbar Export/Print)
+        self._selected_batch_id = None
 
         try:
             self.setup_ui()
@@ -259,6 +265,7 @@ class BatchesTab:
 
         self.table = ft.DataTable(
             columns=[
+                ft.DataColumn(ft.Text("Sel", size=11)),
                 ft.DataColumn(ft.Text("ID", size=11)),
                 ft.DataColumn(ft.Text("Package", size=11)),
                 ft.DataColumn(ft.Text("Type", size=11)),
@@ -282,6 +289,11 @@ class BatchesTab:
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
         )
+
+        self.selection_label = ft.Text("", size=10,
+                                       color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD,
+                                       italic=True)
 
         self.pagination_label = ft.Text("0–0 of 0", size=11,
                                         weight=ft.FontWeight.BOLD,
@@ -313,8 +325,18 @@ class BatchesTab:
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Row([self.table],
-                                       scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Column([
+                            ft.Text("💡 Tap a row to SELECT it, then use "
+                                    "toolbar 📊 Export / 🖨️ Print. "
+                                    "Use icons in Actions column for "
+                                    "per-row actions.",
+                                    size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            self.selection_label,
+                            ft.Row([self.table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10,
                         padding=10,
@@ -378,16 +400,17 @@ class BatchesTab:
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # refresh (destructive reload removed)
+    # -----------------------------------------------------------------------------
     def refresh(self):
-        try:
-            try:
-                if hasattr(self.db, "reload"):
-                    self.db.reload()
-                elif hasattr(self.db, "_load_all"):
-                    self.db._load_all()
-            except Exception as _re:
-                print(f"[BatchesTab.refresh] reload skipped: {_re}")
+        """
+        Load batches + travelers from the DB's in-memory cache.
 
+        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
+        can differ from the volume mount, which wipes the cache.
+        """
+        try:
             self.load_tour_types_and_years()
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
@@ -402,6 +425,9 @@ class BatchesTab:
                     b["tour_type_name"] = "N/A"
                 if "year" not in b or not b.get("year"):
                     b["year"] = datetime.now().year
+
+            print(f"[BATCHES] loaded {len(self.batches)} batches, "
+                  f"{len(self.travelers)} travelers")
 
             self.filtered_batches = self.batches[:]
             self.current_page = 1
@@ -458,7 +484,9 @@ class BatchesTab:
                          else "#27ae60")
 
             b_id = b.get("id")
+            is_selected = (self._selected_batch_id == b_id)
 
+            # Action buttons (per-row)
             def _make_actions(_bid=b_id):
                 def _fresh():
                     return next(
@@ -478,49 +506,110 @@ class BatchesTab:
                 return ft.Row(
                     controls=[
                         ft.IconButton(icon=ft.Icons.VISIBILITY,
-                                      icon_color="#3498db", icon_size=16,
+                                      icon_color="#3498db", icon_size=18,
                                       tooltip="View",
                                       on_click=_wrap(self.view_batch)),
                         ft.IconButton(icon=ft.Icons.EDIT,
-                                      icon_color="#f39c12", icon_size=16,
+                                      icon_color="#f39c12", icon_size=18,
                                       tooltip="Edit",
                                       on_click=_wrap(self.open_edit_dialog)),
                         ft.IconButton(icon=ft.Icons.DELETE,
-                                      icon_color="#e74c3c", icon_size=16,
+                                      icon_color="#e74c3c", icon_size=18,
                                       tooltip="Delete",
                                       on_click=_wrap(self.delete_batch)),
                     ], spacing=0)
 
+            # -------- ROW TAP → SELECT (not open) --------
+            def _on_row_tap(e, _bid=b_id):
+                try:
+                    self._select_batch(_bid)
+                except Exception as ex:
+                    print(f"[BATCHES] row tap error: {ex}")
+
             self.table.rows.append(
-                ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(bid or "")[:18], size=9)),
-                    ft.DataCell(ft.Text(str(b.get("batch_name", "")),
-                                        size=10,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(tname, size=10, color=tcolor,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(str(b.get("year", "")), size=10,
-                                        color="#0064c8")),
-                    ft.DataCell(ft.Text(
-                        self._fmt_date(b.get("departure_date")), size=10)),
-                    ft.DataCell(ft.Text(
-                        self._fmt_date(b.get("return_date")), size=10)),
-                    ft.DataCell(ft.Text(
-                        f"₹{int(b.get('price', 0) or 0):,}", size=10)),
-                    ft.DataCell(ft.Text(str(total), size=10)),
-                    ft.DataCell(ft.Text(str(booked), size=10,
-                                        color="#1e8449" if booked > 0 else "#95a5a6")),
-                    ft.DataCell(ft.Text(str(avail), size=10,
-                                        color=avail_color)),
-                    ft.DataCell(ft.Text(status, size=10,
-                                        color=status_color,
-                                        weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(f"{occ:.0f}%", size=10,
-                                        color=occ_color)),
-                    ft.DataCell(_make_actions()),
-                ]))
+                ft.DataRow(
+                    on_select_change=_on_row_tap,
+                    selected=is_selected,
+                    cells=[
+                        # Selection indicator
+                        ft.DataCell(
+                            ft.Container(
+                                content=ft.Text(
+                                    "✓" if is_selected else "",
+                                    size=14,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#27ae60"),
+                                width=24,
+                                alignment=ft.Alignment.CENTER,
+                                bgcolor=("#dcfce7" if is_selected
+                                         else None),
+                                border_radius=4,
+                            )),
+                        ft.DataCell(ft.Text(str(bid or "")[:18], size=9)),
+                        ft.DataCell(ft.Text(str(b.get("batch_name", "")),
+                                            size=10,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(tname, size=10, color=tcolor,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(str(b.get("year", "")), size=10,
+                                            color="#0064c8")),
+                        ft.DataCell(ft.Text(
+                            self._fmt_date(b.get("departure_date")), size=10)),
+                        ft.DataCell(ft.Text(
+                            self._fmt_date(b.get("return_date")), size=10)),
+                        ft.DataCell(ft.Text(
+                            f"₹{int(b.get('price', 0) or 0):,}", size=10)),
+                        ft.DataCell(ft.Text(str(total), size=10)),
+                        ft.DataCell(ft.Text(str(booked), size=10,
+                                            color="#1e8449" if booked > 0
+                                            else "#95a5a6")),
+                        ft.DataCell(ft.Text(str(avail), size=10,
+                                            color=avail_color)),
+                        ft.DataCell(ft.Text(status, size=10,
+                                            color=status_color,
+                                            weight=ft.FontWeight.BOLD)),
+                        ft.DataCell(ft.Text(f"{occ:.0f}%", size=10,
+                                            color=occ_color)),
+                        ft.DataCell(_make_actions()),
+                    ]))
 
         self.update_pagination()
+
+    # -----------------------------------------------------------------------------
+    # _select_batch / _get_selected_batch
+    # -----------------------------------------------------------------------------
+    def _select_batch(self, batch_id):
+        if self._selected_batch_id == batch_id:
+            self._selected_batch_id = None
+        else:
+            self._selected_batch_id = batch_id
+
+        if self.selection_label:
+            if self._selected_batch_id:
+                b = next((x for x in self.batches
+                          if x.get("id") == self._selected_batch_id), None)
+                if b:
+                    self.selection_label.value = (
+                        f"✅ Selected: {b.get('batch_name', '')} | "
+                        f"{b.get('tour_type_name', 'N/A')} | "
+                        f"Year: {b.get('year', '')} | "
+                        f"₹{int(b.get('price', 0) or 0):,}")
+                else:
+                    self.selection_label.value = ""
+            else:
+                self.selection_label.value = ""
+
+        self.display_batches()
+        try:
+            self.page.update()
+        except Exception:
+            pass
+
+    def _get_selected_batch(self):
+        if not self._selected_batch_id:
+            return None
+        return next((b for b in self.batches
+                     if b.get("id") == self._selected_batch_id), None)
 
     def update_pagination(self):
         total = len(self.filtered_batches)
@@ -700,10 +789,21 @@ class BatchesTab:
         dlg = BatchViewDialog(self.page, self.db, batch)
         dlg.show()
 
+    # -----------------------------------------------------------------------------
+    # Export — if a row is selected, export only that batch
+    # -----------------------------------------------------------------------------
     def export_to_excel(self, e):
-        if not self.batches:
-            self._snack("⚠️ No batches to export")
-            return
+        selected = self._get_selected_batch()
+        if selected:
+            batches_to_export = [selected]
+            suffix = "selected_batch"
+        else:
+            if not self.batches:
+                self._snack("⚠️ No batches to export")
+                return
+            batches_to_export = self.batches
+            suffix = "batches"
+
         try:
             headers = ["ID", "Batch Name", "Tour Type", "Year",
                        "Departure Date", "Return Date", "Price",
@@ -716,7 +816,7 @@ class BatchesTab:
                     bookings[bid] = bookings.get(bid, 0) + 1
 
             data = []
-            for b in self.batches:
+            for b in batches_to_export:
                 bid = b.get("id")
                 booked = bookings.get(bid, 0)
                 total = int(b.get("total_seats", 0) or 0)
@@ -735,7 +835,7 @@ class BatchesTab:
             base = get_app_base_path()
             exports = Path(base) / "exports"
             exports.mkdir(exist_ok=True)
-            fname = (f"batches_export_"
+            fname = (f"{suffix}_"
                      f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
             path = exports / fname
             df.to_csv(path, index=False, encoding="utf-8-sig")
@@ -743,7 +843,8 @@ class BatchesTab:
             from core.helpers import send_file_to_user
             url = send_file_to_user(self.page, str(path),
                                     "Batches CSV")
-            self._snack(f"✅ Exported {len(self.batches)} batches")
+            self._snack(f"✅ Exported {len(batches_to_export)} "
+                        f"batch{'es' if len(batches_to_export) != 1 else ''}")
             if url:
                 try:
                     self.page.launch_url(url)
@@ -755,7 +856,15 @@ class BatchesTab:
             self._snack(f"❌ Export error: {ex}")
 
     def print_batches(self, e):
-        self._snack("ℹ️ Use your browser's Ctrl+P to print this page")
+        selected = self._get_selected_batch()
+        if selected:
+            self._snack(
+                f"🖨️ Selected: {selected.get('batch_name', '')} — "
+                f"opening export…")
+            self.export_to_excel(e)
+        else:
+            self._snack("⚠️ Tap a row to select, then tap 🖨️ Print. "
+                        "Or use Ctrl+P for the full page.")
 
     def _snack(self, msg):
         try:
