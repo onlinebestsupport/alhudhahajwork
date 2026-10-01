@@ -1,13 +1,12 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# 12.2 — PaymentEditDialog   (edit existing payment)
-# 12.3 — PaymentsTab         (main tab)
-# 13.1 — PaymentDialog       (add new payment — FULL Section 13 features)
-#
-# UPDATED — 2026-09-30 (Cloud-ready)
-#   • refresh() reloads all CSVs from disk before rendering
-#   • All exports already use send_file_to_user (no changes)
+# v1.2 — Mobile-Responsive
+#   • Stat cards 2-per-row on mobile
+#   • Toolbar + filters use ResponsiveRow
+#   • Table wrapped in horizontal scroll
+#   • Dialogs sized for mobile
+#   • All original features preserved (edit, receipt, PDF, invoice gen)
 # =================================================================================
 
 import flet as ft
@@ -121,8 +120,8 @@ class PaymentEditDialog:
         def info_row(label, value):
             return ft.Row([
                 ft.Text(label, width=140,
-                        weight=ft.FontWeight.BOLD, size=12),
-                ft.Text(str(value), size=12, selectable=True, expand=True),
+                        weight=ft.FontWeight.BOLD, size=11),
+                ft.Text(str(value), size=11, selectable=True, expand=True),
             ], spacing=8)
 
         content = ft.Column(
@@ -145,9 +144,10 @@ class PaymentEditDialog:
 
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("✏️ Edit Payment", weight=ft.FontWeight.BOLD),
+            title=ft.Text("✏️ Edit Payment",
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=550, height=580, padding=10),
+                                 width=520, height=560, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -195,7 +195,6 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
-                # ✅ Reload from disk
                 try:
                     if hasattr(self.db, "reload_payments"):
                         self.db.reload_payments()
@@ -263,50 +262,57 @@ class PaymentsTab:
 
     def setup_ui(self):
         stat_configs = [
-            ("total",           "💰 Total Payments",  "#3498db"),
-            ("completed",       "✅ Completed",       "#27ae60"),
-            ("pending",         "⏳ Pending",         "#f39c12"),
-            ("receipts",        "🧾 Receipts",        "#9b59b6"),
-            ("package_pending", "📦 Package Pending", "#e74c3c"),
-            ("invoice_pending", "📄 Invoice Pending", "#e67e22"),
+            ("total",           "💰 Total",       "#3498db"),
+            ("completed",       "✅ Completed",   "#27ae60"),
+            ("pending",         "⏳ Pending",     "#f39c12"),
+            ("receipts",        "🧾 Receipts",    "#9b59b6"),
+            ("package_pending", "📦 Pkg Pend",    "#e74c3c"),
+            ("invoice_pending", "📄 Inv Pend",    "#e67e22"),
         ]
 
         stat_cards = []
         for key, label, color in stat_configs:
-            value_label = ft.Text("0", size=16,
+            value_label = ft.Text("0", size=14,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stat_labels[key] = value_label
             card = ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(label, size=10,
+                        ft.Text(label, size=9,
                                 color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD),
+                                weight=ft.FontWeight.BOLD,
+                                no_wrap=False, max_lines=2),
                         value_label,
                     ],
                     spacing=2,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=10,
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment.TOP_CENTER,
-                    end=ft.Alignment.BOTTOM_CENTER,
-                    colors=[color, self._darken(color)],
-                ),
+                padding=8,
+                bgcolor=color,
                 border_radius=10,
-                expand=True, height=72,
+                height=64,
             )
             stat_cards.append(card)
 
-        stats_row = ft.Row(controls=stat_cards, spacing=8)
+        stats_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=c,
+                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                for c in stat_cards
+            ],
+            spacing=6, run_spacing=6,
+        )
 
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
-                                weight=ft.FontWeight.BOLD),
-                on_click=handler, height=38,
-                bgcolor=color, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
+                on_click=handler, height=40,
+                bgcolor=color,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
@@ -315,12 +321,12 @@ class PaymentsTab:
             label="Status",
             options=[
                 ft.dropdown.Option(key="All", text="All"),
-                ft.dropdown.Option(key="completed", text="completed"),
-                ft.dropdown.Option(key="pending", text="pending"),
-                ft.dropdown.Option(key="failed", text="failed"),
-                ft.dropdown.Option(key="refunded", text="refunded"),
+                ft.dropdown.Option(key="completed", text="Completed"),
+                ft.dropdown.Option(key="pending", text="Pending"),
+                ft.dropdown.Option(key="failed", text="Failed"),
+                ft.dropdown.Option(key="refunded", text="Refunded"),
             ],
-            value="All", width=140, height=48, text_size=12)
+            value="All", height=48, text_size=11)
         self.status_filter.on_change = self.filter_payments
 
         self.method_filter = ft.Dropdown(
@@ -334,88 +340,88 @@ class PaymentsTab:
                 ft.dropdown.Option(key="Online", text="Online"),
                 ft.dropdown.Option(key="UPI", text="UPI"),
             ],
-            value="All", width=160, height=48, text_size=12)
+            value="All", height=48, text_size=11)
         self.method_filter.on_change = self.filter_payments
 
         self.search_input = ft.TextField(
             hint_text="🔍 Search traveler or txn ID...",
-            width=260, height=48,
-            content_padding=ft.Padding.symmetric(horizontal=12, vertical=8))
+            height=48, text_size=12,
+            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
         self.search_input.on_change = self.filter_payments
 
-        toolbar = ft.Row(
+        toolbar = ft.ResponsiveRow(
             controls=[
-                _tb("➕ Record Payment", "#27ae60", self.add_payment),
-                _tb("📄 PDF", "#e74c3c", self.export_pdf_selected),
-                _tb("🖨️ Print", "#9b59b6", self.print_receipt_selected),
+                ft.Container(
+                    content=_tb("➕ Record Payment", "#27ae60",
+                                self.add_payment),
+                    col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(
+                    content=_tb("📄 PDF", "#e74c3c",
+                                self.export_pdf_selected),
+                    col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(
+                    content=_tb("🖨️ Print", "#9b59b6",
+                                self.print_receipt_selected),
+                    col={"xs": 6, "sm": 4, "md": 3}),
             ],
-            spacing=6, wrap=True,
+            spacing=8, run_spacing=8,
         )
 
-        filter_row = ft.Row(
-            controls=[self.status_filter, self.method_filter,
-                      self.search_input],
-            spacing=10, wrap=True,
+        filter_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=self.status_filter,
+                             col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(content=self.method_filter,
+                             col={"xs": 6, "sm": 4, "md": 4}),
+                ft.Container(content=self.search_input,
+                             col={"xs": 12, "sm": 12, "md": 5}),
+            ], spacing=8, run_spacing=8,
         )
 
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Date")),
-                ft.DataColumn(ft.Text("Traveler")),
-                ft.DataColumn(ft.Text("Amount")),
-                ft.DataColumn(ft.Text("Method")),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Txn ID")),
-                ft.DataColumn(ft.Text("Receipt No")),
-                ft.DataColumn(ft.Text("Invoice No")),
-                ft.DataColumn(ft.Text("Pkg Pending")),
-                ft.DataColumn(ft.Text("Inv Pending")),
-                ft.DataColumn(ft.Text("Actions")),
+                ft.DataColumn(ft.Text("Date", size=11)),
+                ft.DataColumn(ft.Text("Traveler", size=11)),
+                ft.DataColumn(ft.Text("Amount", size=11)),
+                ft.DataColumn(ft.Text("Method", size=11)),
+                ft.DataColumn(ft.Text("Status", size=11)),
+                ft.DataColumn(ft.Text("Txn ID", size=11)),
+                ft.DataColumn(ft.Text("Receipt", size=11)),
+                ft.DataColumn(ft.Text("Invoice", size=11)),
+                ft.DataColumn(ft.Text("Pkg Pend", size=11)),
+                ft.DataColumn(ft.Text("Inv Pend", size=11)),
+                ft.DataColumn(ft.Text("Actions", size=11)),
             ],
-            rows=[], column_spacing=12,
+            rows=[], column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=42,
-            data_row_min_height=48,
-            data_row_max_height=60,
+            heading_row_height=40,
+            data_row_min_height=44,
+            data_row_max_height=58,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
-            vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
-            horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
                     stats_row,
-                    ft.Container(content=toolbar, padding=10,
+                    ft.Container(content=toolbar, padding=8,
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
-                    ft.Container(content=filter_row, padding=10,
+                    ft.Container(content=filter_row, padding=8,
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.table],
-                            scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Row([self.table],
+                                       scroll=ft.ScrollMode.ADAPTIVE),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10, padding=10),
                 ],
-                spacing=12, scroll=ft.ScrollMode.AUTO,
+                spacing=10, scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15, bgcolor="#f0f2f5", expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
-    def _darken(self, color):
-        return {
-            "#3498db": "#2471a3", "#27ae60": "#1e8449",
-            "#f39c12": "#d68910", "#9b59b6": "#7d3c98",
-            "#e74c3c": "#c0392b", "#e67e22": "#ca6f1e",
-        }.get(color, color)
-
-    # -----------------------------------------------------------------------------
-    # refresh — UPDATED: reload all CSVs from disk first
-    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
-            # ✅ Force reload from disk (fixes stale cache)
             for mn in ("reload_payments", "reload_receipts",
                        "reload_invoices", "reload_travelers",
                        "reload_batches"):
@@ -481,7 +487,7 @@ class PaymentsTab:
             date_str = (str(p.get('payment_date', ''))[:10]
                         if p.get('payment_date') else '')
             traveler_name = self.travelers.get(tid, 'Unknown')
-            amount_text = f"₹{float(p.get('amount', 0) or 0):,.2f}"
+            amount_text = f"₹{float(p.get('amount', 0) or 0):,.0f}"
             method = str(p.get('payment_method', ''))
             status = str(p.get('status', 'pending'))
             status_color = ("#27ae60" if status == "completed"
@@ -490,12 +496,12 @@ class PaymentsTab:
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
             receipt = self.receipts.get(p.get('id'))
-            receipt_no = (receipt.get('receipt_no', 'Not Generated')
-                          if receipt else 'Not Generated')
+            receipt_no = (receipt.get('receipt_no', '—')
+                          if receipt else '—')
             inv_id = p.get('invoice_id', '')
             inv_no = ''
             if inv_id and inv_id in self.invoices:
-                inv_no = self.invoices[inv_id].get('invoice_no', '')
+                inv_no = self.invoices[inv_id].get('invoice_no', '')[:14]
 
             traveler_info = self.traveler_details.get(
                 tid, {'batch_price': 0, 'batch_name': 'No Batch'})
@@ -505,10 +511,10 @@ class PaymentsTab:
 
             if batch_price > 0:
                 if package_pending <= 0:
-                    pkg_txt = "✅ Fully Paid"
+                    pkg_txt = "✅ Paid"
                     pkg_color = "#27ae60"
                 else:
-                    pkg_txt = f"₹{package_pending:,.2f}"
+                    pkg_txt = f"₹{package_pending:,.0f}"
                     pkg_color = ("#e67e22"
                                  if package_pending < batch_price * 0.5
                                  else "#e74c3c")
@@ -525,7 +531,7 @@ class PaymentsTab:
                                 inv.get('total_amount', 0)) or 0)
 
             if inv_pending > 0:
-                inv_txt = f"₹{inv_pending:,.2f}"
+                inv_txt = f"₹{inv_pending:,.0f}"
                 inv_color = "#f39c12"
             elif inv_id and inv_id in self.invoices:
                 inv_txt = "✅ Paid"
@@ -537,37 +543,41 @@ class PaymentsTab:
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
-                                  icon_color="#f39c12", icon_size=18,
-                                  tooltip="Edit Payment",
-                                  on_click=lambda e, pp=p: self.edit_payment(pp)),
+                                  icon_color="#f39c12", icon_size=16,
+                                  tooltip="Edit",
+                                  on_click=lambda e, pp=p:
+                                      self.edit_payment(pp)),
                     ft.IconButton(icon=ft.Icons.RECEIPT_LONG,
-                                  icon_color="#3498db", icon_size=18,
+                                  icon_color="#3498db", icon_size=16,
                                   tooltip="View Receipt",
-                                  on_click=lambda e, pp=p: self.view_specific_receipt(pp)),
+                                  on_click=lambda e, pp=p:
+                                      self.view_specific_receipt(pp)),
                     ft.IconButton(icon=ft.Icons.PICTURE_AS_PDF,
-                                  icon_color="#e74c3c", icon_size=18,
-                                  tooltip="PDF Export",
-                                  on_click=lambda e, pp=p: self.export_single_receipt_pdf(pp)),
+                                  icon_color="#e74c3c", icon_size=16,
+                                  tooltip="PDF",
+                                  on_click=lambda e, pp=p:
+                                      self.export_single_receipt_pdf(pp)),
                     ft.IconButton(icon=ft.Icons.PRINT,
-                                  icon_color="#9b59b6", icon_size=18,
-                                  tooltip="Print Receipt",
-                                  on_click=lambda e, pp=p: self.print_single_receipt(pp)),
+                                  icon_color="#9b59b6", icon_size=16,
+                                  tooltip="Print",
+                                  on_click=lambda e, pp=p:
+                                      self.print_single_receipt(pp)),
                 ], spacing=0,
             )
 
             self.table.rows.append(
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(date_str, size=10)),
-                    ft.DataCell(ft.Text(traveler_name, size=11,
+                    ft.DataCell(ft.Text(traveler_name[:18], size=10,
                                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(amount_text, size=11,
+                    ft.DataCell(ft.Text(amount_text, size=10,
                                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(method, size=10)),
-                    ft.DataCell(ft.Text(status, size=11,
+                    ft.DataCell(ft.Text(method[:12], size=10)),
+                    ft.DataCell(ft.Text(status, size=10,
                                         color=status_color,
                                         weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(txn, size=10)),
-                    ft.DataCell(ft.Text(str(receipt_no), size=10)),
+                    ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
                     ft.DataCell(ft.Text(str(inv_no), size=10)),
                     ft.DataCell(ft.Text(pkg_txt, size=10, color=pkg_color)),
                     ft.DataCell(ft.Text(inv_txt, size=10, color=inv_color)),
@@ -673,11 +683,11 @@ class PaymentsTab:
 
         dialog = ft.AlertDialog(
             title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(
-                content=ft.Text(details, size=12,
+                content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
-                width=550, height=460, padding=10),
+                width=520, height=440, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -898,13 +908,26 @@ class PaymentsTab:
                     inv.get('rounded_total',
                             inv.get('total_amount', 0)) or 0)
 
-        self.stat_labels['total'].value = format_currency_indian(total)
-        self.stat_labels['completed'].value = format_currency_indian(completed)
-        self.stat_labels['pending'].value = format_currency_indian(pending)
+        def _short(v):
+            try:
+                n = float(v)
+            except Exception:
+                return "₹0"
+            if n >= 10000000:
+                return f"₹{n/10000000:.2f}Cr"
+            if n >= 100000:
+                return f"₹{n/100000:.2f}L"
+            if n >= 1000:
+                return f"₹{n/1000:.1f}K"
+            return f"₹{n:,.0f}"
+
+        self.stat_labels['total'].value = _short(total)
+        self.stat_labels['completed'].value = _short(completed)
+        self.stat_labels['pending'].value = _short(pending)
         self.stat_labels['receipts'].value = str(receipt_count)
-        self.stat_labels['package_pending'].value = format_currency_indian(
+        self.stat_labels['package_pending'].value = _short(
             total_package_pending)
-        self.stat_labels['invoice_pending'].value = format_currency_indian(
+        self.stat_labels['invoice_pending'].value = _short(
             total_invoice_pending)
 
     def _snack(self, msg):
@@ -919,14 +942,9 @@ class PaymentsTab:
 
 
 # =================================================================================
-# 13.1 — CLASS: PaymentDialog (FULL Section 13 features)
+# 13.1 — CLASS: PaymentDialog (Record new payment)
 # =================================================================================
 class PaymentDialog:
-    """
-    Record a new payment. Shows live traveler info (batch, total package,
-    total paid, pending), validates overpayment, optionally generates
-    an invoice with GST/TCS.
-    """
 
     def __init__(self, page, db, current_user, traveler=None,
                  on_save=None):
@@ -969,7 +987,7 @@ class PaymentDialog:
                 passport = t.get('passport_no', '')
                 label = f"{name} ({passport})" if passport else name
                 traveler_options.append(
-                    ft.dropdown.Option(key=str(t['id']), text=label))
+                    ft.dropdown.Option(key=str(t['id']), text=label[:60]))
         except Exception:
             pass
 
@@ -980,22 +998,22 @@ class PaymentDialog:
             value="", height=48, text_size=12)
         self.traveler_dropdown.on_change = self.on_traveler_change
 
-        self.batch_label = ft.Text("Not assigned", size=12,
+        self.batch_label = ft.Text("Not assigned", size=11,
                                    color="#2c3e50")
-        self.total_amount_label = ft.Text("₹0", size=13,
+        self.total_amount_label = ft.Text("₹0", size=12,
                                           weight=ft.FontWeight.BOLD,
                                           color="#2c3e50")
-        self.total_paid_label = ft.Text("₹0", size=13,
+        self.total_paid_label = ft.Text("₹0", size=12,
                                         weight=ft.FontWeight.BOLD,
                                         color="#27ae60")
-        self.pending_amount_label = ft.Text("₹0", size=15,
+        self.pending_amount_label = ft.Text("₹0", size=13,
                                             weight=ft.FontWeight.BOLD,
                                             color="#e74c3c")
 
         def info_row(label, control):
             return ft.Row([
-                ft.Text(label, width=170,
-                        weight=ft.FontWeight.BOLD, size=12),
+                ft.Text(label, width=150,
+                        weight=ft.FontWeight.BOLD, size=11),
                 control,
             ], spacing=8)
 
@@ -1004,7 +1022,7 @@ class PaymentDialog:
             value="0", height=48, text_size=13)
         self.amount_field.on_change = self.on_amount_changed
 
-        self.remaining_label = ft.Text("₹0", size=13,
+        self.remaining_label = ft.Text("₹0", size=12,
                                        weight=ft.FontWeight.BOLD,
                                        color="#3498db")
 
@@ -1026,7 +1044,7 @@ class PaymentDialog:
             height=48, text_size=12)
 
         self.generate_invoice_check = ft.Checkbox(
-            label="Generate Invoice (GST/TCS will be applied)",
+            label="Generate Invoice (GST/TCS applied)",
             value=False)
 
         self.notes_field = ft.TextField(
@@ -1045,10 +1063,10 @@ class PaymentDialog:
                 info_row("Batch:", self.batch_label),
                 info_row("💰 Total Package:", self.total_amount_label),
                 info_row("✅ Total Paid:", self.total_paid_label),
-                info_row("⚠️ Pending Amount:", self.pending_amount_label),
+                info_row("⚠️ Pending:", self.pending_amount_label),
                 ft.Divider(height=10),
                 self.amount_field,
-                info_row("📊 Remaining after payment:", self.remaining_label),
+                info_row("📊 Remaining:", self.remaining_label),
                 self.method_dropdown,
                 self.trans_field,
                 self.generate_invoice_check,
@@ -1061,9 +1079,9 @@ class PaymentDialog:
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("💰 Record Payment",
-                          weight=ft.FontWeight.BOLD),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=580, height=680, padding=10),
+                                 width=540, height=640, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1089,7 +1107,6 @@ class PaymentDialog:
             self.total_amount_label.value = "₹0"
             self.total_paid_label.value = "₹0"
             self.pending_amount_label.value = "₹0"
-            self.pending_amount_label.color = "#e74c3c"
             self._batch_price = 0
             self._total_paid = 0
             self._current_traveler_id = None
@@ -1153,7 +1170,7 @@ class PaymentDialog:
         if pending < 0:
             pending = 0
 
-        self.batch_label.value = f"{batch_name} (₹{batch_price:,.2f})"
+        self.batch_label.value = f"{batch_name} (₹{batch_price:,.0f})"
         self.total_amount_label.value = f"₹{batch_price:,.2f}"
         self.total_paid_label.value = f"₹{total_paid:,.2f}"
         self.pending_amount_label.value = f"₹{pending:,.2f}"
@@ -1281,7 +1298,6 @@ class PaymentDialog:
             except Exception:
                 pass
 
-            # ✅ Reload from disk after adding
             try:
                 if hasattr(self.db, "reload_payments"):
                     self.db.reload_payments()
@@ -1297,23 +1313,11 @@ class PaymentDialog:
             if new_pending < 0:
                 new_pending = 0
 
-            msg = (
-                f"✅ Payment recorded!\n\n"
-                f"Amount:  ₹{amount:,.2f}\n"
-                f"Method:  {self.method_dropdown.value}\n"
-                f"Receipt: auto-generated\n\n"
-                f"Total Package:  ₹{batch_price:,.2f}\n"
-                f"Total Paid:  ₹{new_total:,.2f}\n"
-                f"Remaining:  ₹{new_pending:,.2f}"
-            )
-            if invoice_id:
-                msg += "\n\n📄 Invoice generated with GST/TCS."
-            if new_pending <= 0:
-                msg += "\n\n🎉 Fully paid!"
+            print(f"[PAYMENT] Recorded: ₹{amount:,.2f}, "
+                  f"Total: ₹{new_total:,.2f}, Pending: ₹{new_pending:,.2f}")
 
             self.page.pop_dialog()
             self._snack("✅ Payment recorded successfully!")
-            print(f"[PAYMENT] {msg}")
 
             if self.on_save:
                 self.on_save()
