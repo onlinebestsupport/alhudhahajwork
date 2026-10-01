@@ -1,7 +1,7 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PATCHES APPLIED (v2.4):
+# PATCHES APPLIED (v2.5):
 #   21.1.A — Cloud environment detection
 #   21.1.B — Defensive window-close handler
 #   21.1.C — Flet 1.0 window sizing
@@ -11,16 +11,14 @@
 #   21.1.G — Ensure static/downloads/ exists
 #   21.1.H — SEED: populate empty volume from seed_data/
 #   21.1.I — Session persistence via client_storage
-#
 #   21.2.0 — Marketing front page at "/" (static/index.html)
 #   21.2.1 — Flet admin app mounted at "/admin"
 #   21.2.2 — /static/* serves logo.png and other assets
-#
-#   21.2.3 — FIX: /admin was serving the marketing page because Flet's
-#            `assets_dir=static_dir` was pointing at the folder that
-#            contains our custom index.html. Flet then served that as
-#            its own SPA shell. FIX: do NOT pass assets_dir to Flet;
-#            mount /admin FIRST, then /static, then the "/" route.
+#   21.2.3 — Mount /admin before /static; no assets_dir conflict
+#   21.2.4 — NEW: Serve custom logo as favicon + Flet splash icon.
+#            Routes for /favicon.png, /favicon.ico, /admin/favicon.png,
+#            /admin/favicon.ico registered BEFORE the Flet mount so they
+#            take precedence over Flet's built-in pink arrow icon.
 # =================================================================================
 
 import flet as ft
@@ -49,7 +47,6 @@ from core.main_window import MainWindowView
 APP_PORT = int(os.getenv("PORT", 8000))
 APP_HOST = "0.0.0.0"
 
-# Storage key for the persisted session in browser client storage
 SESSION_KEY = "alhudha_session_user_id"
 
 
@@ -82,8 +79,6 @@ _PATCH_INSTALLED = False
 
 
 def _patch_page_update():
-    """Patch Page.update() to swallow ONLY destroyed-session RuntimeErrors.
-    All other exceptions propagate normally so UI bugs aren't hidden."""
     global _PATCH_INSTALLED
     if _PATCH_INSTALLED:
         return
@@ -134,7 +129,6 @@ class AppState:
 
 
 def _seed_volume_if_empty(base_path: str):
-    """Populate empty volume from bundled seed_data/ if needed."""
     try:
         data_dir = os.path.join(base_path, "data")
         seed_dir = os.path.join(base_path, "seed_data")
@@ -212,10 +206,9 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — SESSION PERSISTENCE helpers (browser client storage)
+# 21.2.5 — SESSION PERSISTENCE helpers
 # =================================================================================
 def _find_user_by_id(db, user_id):
-    """Look up a user dict by ID (returns None if not found)."""
     try:
         for u in db.get_users():
             if str(u.get("id")) == str(user_id):
@@ -226,7 +219,6 @@ def _find_user_by_id(db, user_id):
 
 
 async def _save_session(page, user):
-    """Persist the logged-in user ID in the browser's client storage."""
     try:
         uid = user.get("id") if user else None
         if not uid:
@@ -244,7 +236,6 @@ async def _save_session(page, user):
 
 
 async def _load_session(page):
-    """Read the persisted user ID from client storage → user dict or None."""
     try:
         storage = getattr(page, "client_storage", None)
         if storage is None:
@@ -269,7 +260,6 @@ async def _load_session(page):
 
 
 async def _clear_session(page):
-    """Remove the persisted session."""
     try:
         storage = getattr(page, "client_storage", None)
         if storage is None:
@@ -300,7 +290,6 @@ def flet_main(page: ft.Page):
         except Exception:
             pass
 
-    # ---- DB failure page ----
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -325,7 +314,6 @@ def flet_main(page: ft.Page):
         page.update()
         return
 
-    # ---- Per-session state ----
     state = {"user": None}
 
     def _close_window():
@@ -408,13 +396,14 @@ def flet_main(page: ft.Page):
 
 
 # =================================================================================
-# 21.4 — FASTAPI SETUP: marketing at "/", Flet at "/admin"
+# 21.4 — FASTAPI SETUP
 # =================================================================================
 def _build_app() -> FastAPI:
     base_path = get_app_base_path()
     static_dir = os.path.join(base_path, "static")
     downloads_dir = os.path.join(static_dir, "downloads")
     index_html = os.path.join(static_dir, "index.html")
+    logo_path = os.path.join(static_dir, "logo.png")
 
     os.makedirs(downloads_dir, exist_ok=True)
 
@@ -423,11 +412,19 @@ def _build_app() -> FastAPI:
     _boot_log(f"Downloads   : {downloads_dir}")
     _boot_log(f"Index HTML  : {index_html} "
               f"({'found' if os.path.exists(index_html) else 'MISSING'})")
+    _boot_log(f"Logo        : {logo_path} "
+              f"({'found' if os.path.exists(logo_path) else 'MISSING'})")
 
     app = FastAPI(title="Alhudha Haj Travel System")
 
+    # ---- Shared logo response helper ----
+    def _logo_response():
+        if os.path.exists(logo_path):
+            return FileResponse(logo_path, media_type="image/png")
+        raise HTTPException(status_code=404, detail="no logo")
+
     # -----------------------------------------------------------------------------
-    # 21.4.1 — File download endpoint (/download/<filename>)
+    # 21.4.1 — File download endpoint
     # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
@@ -446,25 +443,44 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.4.2 — Mount Flet admin app at /admin  (mounted FIRST)
+    # 21.4.2 — Custom favicon + Flet splash icon overrides
+    #            CRITICAL: These must be registered BEFORE the /admin mount,
+    #            otherwise the mount intercepts the requests and Flet serves
+    #            its built-in pink arrow icon.
     # -----------------------------------------------------------------------------
-    # CRITICAL: Do NOT pass `assets_dir=static_dir` here. If we do, Flet
-    # uses our custom static/index.html as its SPA shell, which means
-    # /admin serves the marketing page instead of the login screen.
-    # Flet's built-in assets are bundled with the package — no need to
-    # point at our folder.
+    @app.get("/favicon.ico")
+    async def favicon_ico_root():
+        return _logo_response()
+
+    @app.get("/favicon.png")
+    async def favicon_png_root():
+        return _logo_response()
+
+    @app.get("/admin/favicon.ico")
+    async def favicon_ico_admin():
+        return _logo_response()
+
+    @app.get("/admin/favicon.png")
+    async def favicon_png_admin():
+        return _logo_response()
+
+    _boot_log("Registered favicon overrides for / and /admin")
+
+    # -----------------------------------------------------------------------------
+    # 21.4.3 — Mount Flet admin app at /admin
+    # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main)
     app.mount("/admin", admin_app)
     _boot_log("Mounted Flet admin app at /admin")
 
     # -----------------------------------------------------------------------------
-    # 21.4.3 — Static assets at /static/* (logo, index.html, etc.)
+    # 21.4.4 — Static assets at /static/*
     # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
     # -----------------------------------------------------------------------------
-    # 21.4.4 — Marketing front page at "/"
+    # 21.4.5 — Marketing front page at "/"
     # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
@@ -472,16 +488,6 @@ def _build_app() -> FastAPI:
             return FileResponse(index_html, media_type="text/html")
         _boot_log("No index.html — redirecting / to /admin")
         return RedirectResponse(url="/admin")
-
-    # -----------------------------------------------------------------------------
-    # 21.4.5 — Favicon (browsers auto-request /favicon.ico)
-    # -----------------------------------------------------------------------------
-    @app.get("/favicon.ico")
-    async def favicon():
-        logo = os.path.join(static_dir, "logo.png")
-        if os.path.exists(logo):
-            return FileResponse(logo, media_type="image/png")
-        raise HTTPException(status_code=404, detail="no favicon")
 
     return app
 
