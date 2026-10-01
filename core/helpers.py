@@ -1,9 +1,12 @@
 # =================================================================================
-# core/helpers.py — Shared utilities (Flet 1.0.0, cloud-ready)
+# core/helpers.py — Shared utilities (Flet 1.0 + FastAPI, cloud-ready)
 # =================================================================================
-# This is a COMPLETE drop-in replacement. If your current helpers.py has extra
-# functions not listed here, keep them — just ensure send_file_to_user() is
-# the version below.
+# PATCHES APPLIED (v2.1):
+#   • send_file_to_user now TRIGGERS the browser download itself using
+#     page.launch_url(url, web_window_name="_self"). This avoids Chrome's
+#     popup blocker which silently kills a `window.open()` that fires
+#     after an async server round-trip.
+#   • Returns None (callers' `if url:` blocks skip — no double-download).
 # =================================================================================
 
 import os
@@ -15,19 +18,8 @@ from pathlib import Path
 from datetime import datetime
 
 
-# =================================================================================
-# get_app_base_path — resolve the project root
-# =================================================================================
 def get_app_base_path():
-    """
-    Return the project root.
-
-    Priority:
-      1. RAILWAY_VOLUME_MOUNT_PATH (when Railway Volume attached)
-      2. DATA_ROOT env var
-      3. PyInstaller frozen executable directory
-      4. Project root (walks up from this file)
-    """
+    """Resolve project root (cloud-aware)."""
     for env_key in ("RAILWAY_VOLUME_MOUNT_PATH", "DATA_ROOT"):
         candidate = os.environ.get(env_key)
         if candidate and os.path.isdir(candidate):
@@ -49,9 +41,6 @@ def get_app_base_path():
     return os.path.dirname(here)
 
 
-# =================================================================================
-# number_to_words_indian — for invoice "Amount in Words"
-# =================================================================================
 def number_to_words_indian(number):
     """Convert integer to Indian English words (Rupees ... Only)."""
     try:
@@ -61,7 +50,6 @@ def number_to_words_indian(number):
 
     if number < 0:
         return "Minus " + number_to_words_indian(-number)
-
     if number == 0:
         return "Zero Rupees Only"
 
@@ -105,9 +93,6 @@ def number_to_words_indian(number):
     return (" ".join(parts).strip() or "Zero") + " Rupees Only"
 
 
-# =================================================================================
-# format_currency_indian — ₹ + Indian grouping (12,34,567.89)
-# =================================================================================
 def format_currency_indian(amount):
     """Return a string like '₹ 12,34,567.89'."""
     if amount is None:
@@ -116,7 +101,7 @@ def format_currency_indian(amount):
         v = float(amount)
     except (TypeError, ValueError):
         return "₹ 0.00"
-    if v != v:  # NaN
+    if v != v:
         return "₹ 0.00"
 
     negative = v < 0
@@ -137,9 +122,6 @@ def format_currency_indian(amount):
     return f"-{out}" if negative else out
 
 
-# =================================================================================
-# round_as_per_rules — round to nearest ₹ (≥0.50 UP, <0.50 DOWN)
-# =================================================================================
 def round_as_per_rules(value):
     """Round half up to the nearest integer."""
     try:
@@ -148,32 +130,60 @@ def round_as_per_rules(value):
         return 0
     if v != v:
         return 0
-    # half-up rounding
     import math
     return int(math.floor(v + 0.5))
 
 
-# =================================================================================
-# send_file_to_user — CLOUD-AWARE file delivery
-# =================================================================================
+def _trigger_download(page, url):
+    """
+    Trigger a browser download without hitting the popup blocker.
+
+    Uses `web_window_name="_self"` — the browser navigates the current
+    tab to `url`. Because the FastAPI endpoint sends
+    `Content-Disposition: attachment`, the browser downloads the file
+    and STAYS on the app page (no visual navigation).
+    """
+    if page is None:
+        return
+
+    # Preferred: _self target (no popup, no block)
+    try:
+        page.launch_url(url, web_window_name="_self")
+        print(f"[download] launched via _self: {url}")
+        return
+    except TypeError:
+        # Older Flet might not accept web_window_name kwarg
+        pass
+    except Exception as ex:
+        print(f"[download] _self launch failed: {ex}")
+
+    # Fallback: default launch (may be popup-blocked)
+    try:
+        page.launch_url(url)
+        print(f"[download] launched via default: {url}")
+    except Exception as ex:
+        print(f"[download] default launch failed: {ex}")
+
+
 def send_file_to_user(page, filepath, label="Download"):
     """
     Cloud-aware file delivery.
 
-    On web (Railway / Render / Fly):
-      • Copy the file into <base>/download/
-      • Return a URL path like "/download/foo.pdf"
-      • Caller then does page.launch_url(url) → browser downloads it
+    Web mode:
+      • Copy file into <base>/static/downloads/
+      • Trigger download via page.launch_url(_self)  ← avoids popup blocker
+      • Return None (callers' `if url:` blocks skip — no double-download)
 
-    On desktop:
-      • Return a file:// URI for the OS to open
+    Desktop mode:
+      • Open with OS default app
+      • Return None
 
-    Returns the URL string on success, None on failure.
+    Returns None always now. Callers should NOT call launch_url again.
     """
     if not filepath or not os.path.exists(filepath):
+        print(f"[send_file_to_user] file missing: {filepath}")
         return None
 
-    # ---- Detect web mode ----
     is_web = bool(
         os.getenv("PORT")
         or os.getenv("RAILWAY_ENVIRONMENT")
@@ -190,7 +200,6 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
-            # Avoid collision: if a different-size file exists, add timestamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -200,24 +209,29 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            # Flet serves assets_dir at /static/... — return the URL path
-            return f"/download/{fname}"
+            url = f"/download/{fname}"
+            print(f"[send_file_to_user] copied to {dest}, url={url}")
+
+            _trigger_download(page, url)
+
+            # Return None — caller's `if url:` block will skip
+            return None
 
         except Exception as ex:
+            import traceback
+            traceback.print_exc()
             print(f"[send_file_to_user] web copy failed: {ex}")
             return None
 
-    # ---- Desktop fallback ----
+    # Desktop
     try:
-        return f"file://{os.path.abspath(filepath)}"
+        if page is not None:
+            page.launch_url(f"file://{os.path.abspath(filepath)}")
     except Exception as ex:
         print(f"[send_file_to_user] desktop failed: {ex}")
-        return None
+    return None
 
 
-# =================================================================================
-# Convenience: base64 image data URI (used by reports_tab / travel docs)
-# =================================================================================
 def photo_data_uri(path):
     """Return a data:image/... URI for a local image, or None."""
     if not path or not os.path.exists(path):
