@@ -1,10 +1,12 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# UPDATED — 2026-10-01 (v1.1)
-#   • NEW: _clean_number_string() strips ".0" suffixes from numeric text fields
-#   • Load/Save clean PIN, mobile, emergency_phone, aadhaar
-#   • Fixes travelers.csv getting values like "1234.0" instead of "1234"
+# v1.2 — Mobile-responsive + numeric-string cleaning
+#   • _clean_number_string() strips ".0" from PIN/mobile/aadhaar
+#   • Stat cards use ResponsiveRow (2 per row on mobile)
+#   • Toolbar buttons use ResponsiveRow
+#   • Table wrapped in horizontal scroll
+#   • Dialogs sized for mobile (full-width, taller)
 # =================================================================================
 
 import flet as ft
@@ -21,7 +23,6 @@ from core.helpers import get_app_base_path, send_file_to_user
 # =================================================================================
 # Helper — strip trailing ".0" from numeric-looking strings
 # =================================================================================
-# Fields that MUST be stored as clean text (no decimal point):
 _NUMERIC_STRING_FIELDS = {
     "pin",
     "mobile",
@@ -32,22 +33,10 @@ _NUMERIC_STRING_FIELDS = {
 
 
 def _clean_number_string(value) -> str:
-    """
-    Normalise a value that should be a numeric string.
-
-    Examples:
-        "1234"           → "1234"
-        "1234.0"         → "1234"
-        "9841186164.0"   → "9841186164"
-        1234.0           → "1234"
-        " 1234 "         → "1234"
-        None             → ""
-        "abc"            → "abc"
-    """
     if value is None:
         return ""
     if isinstance(value, float):
-        if value != value:      # NaN
+        if value != value:
             return ""
         if value.is_integer():
             return str(int(value))
@@ -55,7 +44,6 @@ def _clean_number_string(value) -> str:
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-    # Strip trailing ".0"
     if s.endswith(".0"):
         s = s[:-2]
     return s
@@ -95,6 +83,7 @@ class TravelersTab:
     # 8.2 — setup_ui
     # =============================================================================
     def setup_ui(self):
+        # ---- STAT CARDS ----
         stat_configs = [
             ("total",         "Total Travelers",   "👥", "#3498db"),
             ("active",        "Active Passports",  "✅", "#27ae60"),
@@ -104,7 +93,7 @@ class TravelersTab:
 
         stat_cards = []
         for key, label, icon, color in stat_configs:
-            value_label = ft.Text("0", size=24,
+            value_label = ft.Text("0", size=20,
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stats_labels[key] = value_label
@@ -113,10 +102,12 @@ class TravelersTab:
                     controls=[
                         ft.Row(
                             controls=[
-                                ft.Text(icon, size=18),
-                                ft.Text(label, size=11,
+                                ft.Text(icon, size=16),
+                                ft.Text(label, size=10,
                                         color=ft.Colors.WHITE,
-                                        weight=ft.FontWeight.BOLD),
+                                        weight=ft.FontWeight.BOLD,
+                                        no_wrap=False,
+                                        max_lines=2),
                             ],
                             spacing=6,
                         ),
@@ -125,112 +116,137 @@ class TravelersTab:
                     spacing=4,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=12,
-                gradient=ft.LinearGradient(
-                    begin=ft.Alignment.TOP_CENTER,
-                    end=ft.Alignment.BOTTOM_CENTER,
-                    colors=[color, self._darken(color)],
-                ),
+                padding=10,
+                bgcolor=color,
                 border_radius=12,
-                expand=True,
-                height=90,
+                height=80,
             )
             stat_cards.append(card)
 
-        stats_row = ft.Row(controls=stat_cards, spacing=12)
+        stats_row = ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=c,
+                             col={"xs": 6, "sm": 6, "md": 3, "lg": 3})
+                for c in stat_cards
+            ],
+            spacing=8, run_spacing=8,
+        )
 
+        # ---- TOOLBAR ----
         def _toolbar_btn(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
-                                weight=ft.FontWeight.BOLD),
+                                weight=ft.FontWeight.BOLD,
+                                color=ft.Colors.WHITE,
+                                no_wrap=True,
+                                overflow=ft.TextOverflow.ELLIPSIS),
                 on_click=handler,
-                height=38,
+                height=40,
                 bgcolor=color,
-                color=ft.Colors.WHITE,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
         self.search_input = ft.TextField(
             hint_text="🔍 Search travelers...",
-            width=280,
             height=42,
             on_change=self.search_travelers,
             content_padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+            text_size=12,
         )
 
-        toolbar = ft.Row(
+        toolbar = ft.ResponsiveRow(
             controls=[
-                _toolbar_btn("➕ Add Traveler", "#27ae60",
-                             self.open_add_dialog),
-                _toolbar_btn("📊 Excel", "#16a085", self.export_to_excel),
-                _toolbar_btn("📄 PDF", "#c0392b", self.export_to_pdf),
-                _toolbar_btn("🖨️ Print", "#2980b9", self.print_table),
-                _toolbar_btn("📂 Bulk Upload", "#8e44ad",
-                             self.bulk_upload_csv),
-                _toolbar_btn("📥 Template", "#16a085",
-                             self.download_csv_template),
-                self.search_input,
+                ft.Container(
+                    content=_toolbar_btn("➕ Add Traveler", "#27ae60",
+                                         self.open_add_dialog),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("📊 Excel", "#16a085",
+                                         self.export_to_excel),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("📄 PDF", "#c0392b",
+                                         self.export_to_pdf),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("🖨️ Print", "#2980b9",
+                                         self.print_table),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("📂 Bulk Upload", "#8e44ad",
+                                         self.bulk_upload_csv),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=_toolbar_btn("📥 Template", "#16a085",
+                                         self.download_csv_template),
+                    col={"xs": 6, "sm": 4, "md": 2}),
+                ft.Container(
+                    content=self.search_input,
+                    col={"xs": 12, "sm": 12, "md": 12}),
             ],
-            spacing=8,
-            wrap=True,
+            spacing=8, run_spacing=8,
         )
 
+        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("#")),
-                ft.DataColumn(ft.Text("Name")),
-                ft.DataColumn(ft.Text("Passport")),
-                ft.DataColumn(ft.Text("Mobile")),
-                ft.DataColumn(ft.Text("Batch")),
-                ft.DataColumn(ft.Text("Return")),
-                ft.DataColumn(ft.Text("Status")),
-                ft.DataColumn(ft.Text("Docs")),
-                ft.DataColumn(ft.Text("Actions")),
+                ft.DataColumn(ft.Text("#", size=11)),
+                ft.DataColumn(ft.Text("Name", size=11)),
+                ft.DataColumn(ft.Text("Passport", size=11)),
+                ft.DataColumn(ft.Text("Mobile", size=11)),
+                ft.DataColumn(ft.Text("Batch", size=11)),
+                ft.DataColumn(ft.Text("Return", size=11)),
+                ft.DataColumn(ft.Text("Status", size=11)),
+                ft.DataColumn(ft.Text("Docs", size=11)),
+                ft.DataColumn(ft.Text("Actions", size=11)),
             ],
             rows=[],
-            column_spacing=15,
+            column_spacing=12,
             heading_row_color=ft.Colors.BLUE_GREY_800,
-            heading_row_height=42,
-            data_row_min_height=52,
-            data_row_max_height=70,
+            heading_row_height=40,
+            data_row_min_height=48,
+            data_row_max_height=64,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
             vertical_lines=ft.BorderSide(1, ft.Colors.GREY_200),
             horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
-        self.pagination_label = ft.Text("Showing 0 to 0 of 0 travelers",
-                                        size=12,
+        # ---- PAGINATION ----
+        self.pagination_label = ft.Text("Showing 0 to 0 of 0",
+                                        size=11,
                                         weight=ft.FontWeight.BOLD,
-                                        color=ft.Colors.BLUE_GREY_800)
+                                        color=ft.Colors.BLUE_GREY_800,
+                                        no_wrap=True,
+                                        overflow=ft.TextOverflow.ELLIPSIS)
         self.prev_btn = ft.Button(
-            content=ft.Text("◀ Previous"),
+            content=ft.Text("◀ Prev", size=11),
             on_click=self.prev_page,
             bgcolor=ft.Colors.BLUE_600,
             color=ft.Colors.WHITE,
             disabled=True,
-            height=36,
+            height=34,
         )
         self.next_btn = ft.Button(
-            content=ft.Text("Next ▶"),
+            content=ft.Text("Next ▶", size=11),
             on_click=self.next_page,
             bgcolor=ft.Colors.BLUE_600,
             color=ft.Colors.WHITE,
             disabled=True,
-            height=36,
+            height=34,
         )
 
         pagination_row = ft.Row(
             controls=[
-                self.pagination_label,
-                ft.Container(expand=True),
+                ft.Container(content=self.pagination_label, expand=True),
                 self.prev_btn,
                 self.next_btn,
             ],
-            spacing=10,
+            spacing=8,
         )
 
+        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -239,8 +255,8 @@ class TravelersTab:
                                  bgcolor=ft.Colors.WHITE,
                                  border_radius=10),
                     ft.Container(
-                        content=ft.Column(
-                            controls=[self.table],
+                        content=ft.Row(
+                            [self.table],
                             scroll=ft.ScrollMode.ADAPTIVE,
                         ),
                         bgcolor=ft.Colors.WHITE,
@@ -249,10 +265,10 @@ class TravelersTab:
                     ),
                     pagination_row,
                 ],
-                spacing=12,
+                spacing=10,
                 scroll=ft.ScrollMode.AUTO,
             ),
-            padding=15,
+            padding=10,
             bgcolor="#f0f2f5",
             expand=True,
         )
@@ -260,14 +276,6 @@ class TravelersTab:
     # =============================================================================
     # 8.3 — Helpers
     # =============================================================================
-    def _darken(self, color):
-        return {
-            "#3498db": "#2471a3",
-            "#27ae60": "#1e8449",
-            "#f39c12": "#d68910",
-            "#9b59b6": "#7d3c98",
-        }.get(color, color)
-
     def safe_str(self, value):
         if value is None:
             return ""
@@ -312,7 +320,6 @@ class TravelersTab:
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
 
-            # Clean numeric-string fields on load
             for t in self.travelers:
                 for k in _NUMERIC_STRING_FIELDS:
                     if k in t:
@@ -324,8 +331,7 @@ class TravelersTab:
                 bid = t.get('batch_id')
                 t['batch_name'] = (
                     batch_map.get(str(bid), 'Not Assigned') if bid
-                    else 'Not Assigned'
-                )
+                    else 'Not Assigned')
 
             self.filtered_travelers = self.travelers[:]
             self.current_page = 1
@@ -383,34 +389,32 @@ class TravelersTab:
                 has = bool(t.get(k))
                 doc_controls.append(
                     ft.Container(
-                        content=ft.Text(
-                            ic, size=14,
-                            color=None if has else "#e0e0e0"),
-                        width=24, height=24,
+                        content=ft.Text(ic, size=12,
+                                        color=None if has else "#e0e0e0"),
+                        width=20, height=20,
                         alignment=ft.Alignment.CENTER,
                         tooltip=(k.replace('_', ' ').title()
                                  if has else "Missing"),
                         on_click=((lambda e, tt=t, kk=k:
                                    self.open_document(tt, kk))
                                   if has else None),
-                    )
-                )
+                    ))
 
             actions = ft.Row(
                 controls=[
                     ft.IconButton(
                         icon=ft.Icons.VISIBILITY,
-                        icon_color="#3498db", icon_size=18,
+                        icon_color="#3498db", icon_size=16,
                         tooltip="View",
                         on_click=lambda e, tt=t: self.view_traveler(tt)),
                     ft.IconButton(
                         icon=ft.Icons.EDIT,
-                        icon_color="#f39c12", icon_size=18,
+                        icon_color="#f39c12", icon_size=16,
                         tooltip="Edit",
                         on_click=lambda e, tt=t: self.open_edit_dialog(tt)),
                     ft.IconButton(
                         icon=ft.Icons.DELETE,
-                        icon_color="#e74c3c", icon_size=18,
+                        icon_color="#e74c3c", icon_size=16,
                         tooltip="Delete",
                         on_click=lambda e, tt=t: self.delete_traveler(tt)),
                 ],
@@ -419,25 +423,25 @@ class TravelersTab:
 
             self.table.rows.append(
                 ft.DataRow(cells=[
-                    ft.DataCell(ft.Text(str(start + i + 1), size=11)),
+                    ft.DataCell(ft.Text(str(start + i + 1), size=10)),
                     ft.DataCell(ft.Text(
                         f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}".strip() or 'N/A',
-                        size=12, weight=ft.FontWeight.BOLD)),
+                        size=11, weight=ft.FontWeight.BOLD)),
                     ft.DataCell(ft.Text(
-                        f"{passport}\nExp: {exp_disp}", size=11)),
+                        f"{passport}\nExp: {exp_disp}", size=10)),
                     ft.DataCell(ft.Text(
                         _clean_number_string(t.get('mobile', '-')) or '-',
-                        size=11)),
+                        size=10)),
                     ft.DataCell(ft.Text(
                         str(t.get('batch_name', 'Not Assigned')),
-                        size=11, color="#0064c8",
+                        size=10, color="#0064c8",
                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Text(ret_disp, size=11)),
+                    ft.DataCell(ft.Text(ret_disp, size=10)),
                     ft.DataCell(ft.Text(
-                        status, size=11, color=status_color,
+                        status, size=10, color=status_color,
                         weight=ft.FontWeight.BOLD)),
-                    ft.DataCell(ft.Row(controls=doc_controls, spacing=2)),
+                    ft.DataCell(ft.Row(controls=doc_controls, spacing=1)),
                     ft.DataCell(actions),
                 ]))
 
@@ -452,7 +456,7 @@ class TravelersTab:
                  if total else 0)
         end = min(self.current_page * self.items_per_page, total)
         self.pagination_label.value = (
-            f"Showing {start} to {end} of {total} travelers")
+            f"{start}–{end} of {total}")
         self.prev_btn.disabled = self.current_page <= 1
         self.next_btn.disabled = end >= total
 
@@ -519,7 +523,7 @@ class TravelersTab:
         self.stats_labels['docs_complete'].value = str(docs_complete)
 
     # =============================================================================
-    # 8.9 — Open Add/Edit dialog
+    # 8.9 — Dialog launchers
     # =============================================================================
     def open_add_dialog(self, e):
         dlg = TravelerDialog(self.page, self.db, self.current_user,
@@ -599,7 +603,7 @@ class TravelersTab:
                 try:
                     self.page.launch_url(url)
                 except Exception:
-                    self.page.launch_url(url)
+                    pass
                 self._snack(f"📎 Opened: {os.path.basename(abs_path)}")
             else:
                 self._snack(f"⚠️ Could not serve file")
@@ -816,7 +820,7 @@ class TravelersTab:
 
 
 # =================================================================================
-# 9.1 — CLASS: TravelerDialog (Add/Edit — 36 fields)
+# 9.1 — CLASS: TravelerDialog (Add/Edit)
 # =================================================================================
 class TravelerDialog:
 
@@ -884,7 +888,7 @@ class TravelerDialog:
                     field("first_name", "First Name", 180, True),
                     field("last_name", "Last Name", 180, True),
                     passport_name_field,
-                ], spacing=10),
+                ], spacing=10, wrap=True),
                 ft.Row([
                     dropdown("gender",
                              ["", "Male", "Female", "Other"]),
@@ -892,14 +896,14 @@ class TravelerDialog:
                     dropdown("passport_status",
                              ["Active", "Expired", "Submitted",
                               "Processing"]),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
                 ft.Row([
                     field("passport_no", "Passport Number", 180, True),
                     field("passport_issue_date",
                           "Issue Date (YYYY-MM-DD)", 180),
                     field("passport_expiry_date",
                           "Expiry Date (YYYY-MM-DD)", 180),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
@@ -911,7 +915,7 @@ class TravelerDialog:
                     field("mobile", "Mobile", 180, True),
                     field("email", "Email", 220),
                     field("aadhaar", "Aadhaar", 180),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
                 ft.Row([
                     field("pan", "PAN", 180),
                     dropdown("aadhaar_pan_linked",
@@ -920,7 +924,7 @@ class TravelerDialog:
                              ["Not Vaccinated", "Partially Vaccinated",
                               "Fully Vaccinated", "Booster"]),
                     dropdown("wheelchair", ["No", "Yes"]),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
@@ -940,14 +944,14 @@ class TravelerDialog:
                 ft.Row([
                     field("place_of_birth", "Place of Birth", 200),
                     field("place_of_issue", "Place of Issue", 200),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
                 passport_addr,
                 mailing_addr,
                 ft.Row([
                     field("father_name", "Father's Name", 200),
                     field("mother_name", "Mother's Name", 200),
                     field("spouse_name", "Spouse Name", 200),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
@@ -974,7 +978,7 @@ class TravelerDialog:
                     field("expected_return_date",
                           "Expected Return (YYYY-MM-DD)", 220),
                     field("file_reference", "File Reference", 180),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
@@ -984,7 +988,7 @@ class TravelerDialog:
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
             ("pan_scan", "PAN Scan", "💳"),
             ("vaccine_scan", "Vaccine Certificate", "💉"),
-            ("photo", "Photo (413x531)", "📸"),
+            ("photo", "Photo", "📸"),
         ]
 
         doc_rows = []
@@ -999,12 +1003,11 @@ class TravelerDialog:
             )
             doc_rows.append(
                 ft.Row([
-                    ft.Text(f"{icon} {lbl}", size=11, width=180),
+                    ft.Text(f"{icon} {lbl}", size=11, width=160),
                     btn,
                     status_lbl,
-                ], spacing=10,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER)
-            )
+                ], spacing=10, wrap=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER))
 
         sec5 = ft.Column(
             controls=[section_header("5. DOCUMENT UPLOADS")] + doc_rows,
@@ -1015,13 +1018,13 @@ class TravelerDialog:
                            min_lines=2, max_lines=3, text_size=12)
         self.fields['medical_notes'] = med
 
-        # PIN field — text only, 4 digits
         pin_field = ft.TextField(
-            label="PIN (4 digits) — for Traveler Portal login",
+            label="PIN (4 digits) — for Traveler Portal",
             width=280, height=48, text_size=14,
             max_length=8,
             keyboard_type=ft.KeyboardType.NUMBER,
-            input_filter=ft.InputFilter(allow=True, regex_string=r"[0-9]*"),
+            input_filter=ft.InputFilter(allow=True,
+                                        regex_string=r"[0-9]*"),
             content_padding=ft.Padding.symmetric(horizontal=10, vertical=10),
         )
         self.fields['pin'] = pin_field
@@ -1033,7 +1036,7 @@ class TravelerDialog:
                     pin_field,
                     field("emergency_contact", "Emergency Contact", 200),
                     field("emergency_phone", "Emergency Phone", 180),
-                ], spacing=10),
+                ], spacing=10, wrap=True),
                 med,
             ],
             spacing=10,
@@ -1052,10 +1055,10 @@ class TravelerDialog:
 
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(title, weight=ft.FontWeight.BOLD),
+            title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(
                 content=content,
-                width=900, height=650,
+                width=850, height=580,
                 padding=10,
             ),
             actions=[
@@ -1085,9 +1088,7 @@ class TravelerDialog:
     async def _pick_doc_async(self):
         try:
             files = await self.file_picker.pick_files(
-                allow_multiple=False,
-                with_data=True,
-            )
+                allow_multiple=False, with_data=True)
             if not files:
                 return
             f = files[0]
@@ -1101,7 +1102,6 @@ class TravelerDialog:
                         data = fh.read()
 
             if not data:
-                print("No data read")
                 return
 
             base = get_app_base_path()
@@ -1129,8 +1129,7 @@ class TravelerDialog:
                 fh.write(data)
 
             rel = os.path.relpath(str(dest), base)
-            self.doc_paths[self._current_doc_key] = rel.replace(
-                os.sep, "/")
+            self.doc_paths[self._current_doc_key] = rel.replace(os.sep, "/")
 
             lbl = self.doc_status_labels.get(self._current_doc_key)
             if lbl:
@@ -1144,7 +1143,6 @@ class TravelerDialog:
     def load_traveler(self, traveler):
         for key, field in self.fields.items():
             val = traveler.get(key, '')
-            # Clean numeric-text fields so "1234.0" shows as "1234"
             if key in _NUMERIC_STRING_FIELDS:
                 val = _clean_number_string(val)
             if field.__class__.__name__ == "Dropdown":
@@ -1170,7 +1168,6 @@ class TravelerDialog:
                     data[key] = str(val) if val else ''
                 else:
                     cleaned = (val or '').strip()
-                    # Force clean numeric-string fields
                     if key in _NUMERIC_STRING_FIELDS:
                         cleaned = _clean_number_string(cleaned)
                     data[key] = cleaned
@@ -1188,10 +1185,9 @@ class TravelerDialog:
                 self._snack("⚠️ Please select a Batch")
                 return
 
-            # Validate PIN (if provided)
             pin = data.get('pin', '')
             if pin and not pin.isdigit():
-                self._snack("⚠️ PIN must be digits only (e.g. 1234)")
+                self._snack("⚠️ PIN must be digits only")
                 return
             if pin and len(pin) > 8:
                 self._snack("⚠️ PIN must be 4–8 digits")
@@ -1290,21 +1286,21 @@ class TravelerViewDialog:
                      f"{t.get('last_name', '')}").strip() or "Traveler"
 
         def info_row(label, value):
-            # Clean numeric-looking strings for display
             if value is not None:
-                value = _clean_number_string(value) if isinstance(
-                    value, float) or (isinstance(value, str)
-                                      and value.endswith(".0")) else value
+                value = (_clean_number_string(value)
+                         if isinstance(value, float)
+                         or (isinstance(value, str) and value.endswith(".0"))
+                         else value)
             return ft.Row(
                 controls=[
                     ft.Container(
-                        content=ft.Text(label, size=12,
+                        content=ft.Text(label, size=11,
                                         weight=ft.FontWeight.BOLD,
                                         color=ft.Colors.BLUE_GREY_800),
-                        width=160,
+                        width=140,
                     ),
                     ft.Text(str(value) if value not in (None, '') else '-',
-                            size=12, selectable=True, expand=True),
+                            size=11, selectable=True, expand=True),
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.START,
@@ -1314,7 +1310,7 @@ class TravelerViewDialog:
             return ft.Container(
                 content=ft.Column(
                     controls=[
-                        ft.Text(title, size=13,
+                        ft.Text(title, size=12,
                                 weight=ft.FontWeight.BOLD,
                                 color="#1e40af"),
                         ft.Divider(height=8),
@@ -1322,7 +1318,7 @@ class TravelerViewDialog:
                     ],
                     spacing=6,
                 ),
-                padding=15, bgcolor=ft.Colors.WHITE,
+                padding=14, bgcolor=ft.Colors.WHITE,
                 border_radius=8,
                 border=ft.Border.all(1, ft.Colors.GREY_300),
             )
@@ -1377,8 +1373,7 @@ class TravelerViewDialog:
             controls=[section_card("🏠 Address & Family", [
                 info_row("Place of Birth", t.get('place_of_birth', '')),
                 info_row("Place of Issue", t.get('place_of_issue', '')),
-                info_row("Passport Address",
-                         t.get('passport_address', '')),
+                info_row("Passport Address", t.get('passport_address', '')),
                 info_row("Mailing Address", t.get('mailing_address', '')),
                 info_row("Father's Name", t.get('father_name', '')),
                 info_row("Mother's Name", t.get('mother_name', '')),
@@ -1416,45 +1411,42 @@ class TravelerViewDialog:
                     link = ft.Container(
                         content=ft.Text(
                             f"📎 {os.path.basename(str(rel))}",
-                            size=12, color="#2980b9",
+                            size=11, color="#2980b9",
                             weight=ft.FontWeight.BOLD),
                         on_click=(lambda e, p=abs_path:
                                   self._open_document(p)),
-                        tooltip=f"Click to open: {abs_path}",
                         padding=ft.Padding.symmetric(
                             horizontal=6, vertical=3),
                     )
                     doc_rows.append(ft.Row([
                         ft.Container(
                             content=ft.Text(
-                                label, size=12,
+                                label, size=11,
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.BLUE_GREY_800),
-                            width=180),
+                            width=160),
                         link,
                     ], spacing=8))
                 else:
                     doc_rows.append(ft.Row([
                         ft.Container(
                             content=ft.Text(
-                                label, size=12,
+                                label, size=11,
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.BLUE_GREY_800),
-                            width=180),
-                        ft.Text(
-                            f"⚠️ {os.path.basename(str(rel))} "
-                            f"(file not found)",
-                            size=12, color="#e74c3c"),
+                            width=160),
+                        ft.Text(f"⚠️ {os.path.basename(str(rel))}",
+                                size=11, color="#e74c3c"),
                     ], spacing=8))
             else:
                 doc_rows.append(ft.Row([
                     ft.Container(
                         content=ft.Text(
-                            label, size=12,
+                            label, size=11,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.BLUE_GREY_800),
-                        width=180),
-                    ft.Text("❌ Missing", size=12, color="#95a5a6"),
+                        width=160),
+                    ft.Text("❌ Missing", size=11, color="#95a5a6"),
                 ], spacing=8))
 
         documents_tab = ft.Column(
@@ -1463,14 +1455,13 @@ class TravelerViewDialog:
         )
 
         additional_tab = ft.Column(
-            controls=[section_card("🔒 Additional Information", [
+            controls=[section_card("🔒 Additional", [
                 info_row("PIN",
                          _clean_number_string(t.get('pin', '')) or '—'),
                 info_row("Emergency Contact",
                          t.get('emergency_contact', '')),
                 info_row("Emergency Phone",
-                         _clean_number_string(
-                             t.get('emergency_phone', ''))),
+                         _clean_number_string(t.get('emergency_phone', ''))),
                 info_row("Medical Notes", t.get('medical_notes', '')),
                 info_row("Created At",
                          self._fmt_date(t.get('created_at'))),
@@ -1485,43 +1476,39 @@ class TravelerViewDialog:
             expand=True,
             content=ft.Column(
                 expand=True,
+                spacing=0,
                 controls=[
-                    ft.TabBar(tabs=[
-                        ft.Tab(label="👤 Personal"),
-                        ft.Tab(label="📞 Contact"),
-                        ft.Tab(label="🏠 Address"),
-                        ft.Tab(label="✈️ Travel"),
-                        ft.Tab(label="📎 Documents"),
-                        ft.Tab(label="🔒 Additional"),
-                    ]),
+                    ft.TabBar(
+                        tabs=[
+                            ft.Tab(label="👤 Personal"),
+                            ft.Tab(label="📞 Contact"),
+                            ft.Tab(label="🏠 Address"),
+                            ft.Tab(label="✈️ Travel"),
+                            ft.Tab(label="📎 Docs"),
+                            ft.Tab(label="🔒 More"),
+                        ],
+                        scrollable=True,
+                    ),
                     ft.TabBarView(
                         expand=True,
                         controls=[
-                            ft.Container(content=personal_tab,
-                                         padding=10),
-                            ft.Container(content=contact_tab,
-                                         padding=10),
-                            ft.Container(content=address_tab,
-                                         padding=10),
-                            ft.Container(content=travel_tab,
-                                         padding=10),
-                            ft.Container(content=documents_tab,
-                                         padding=10),
-                            ft.Container(content=additional_tab,
-                                         padding=10),
+                            ft.Container(content=personal_tab, padding=10),
+                            ft.Container(content=contact_tab, padding=10),
+                            ft.Container(content=address_tab, padding=10),
+                            ft.Container(content=travel_tab, padding=10),
+                            ft.Container(content=documents_tab, padding=10),
+                            ft.Container(content=additional_tab, padding=10),
                         ],
                     ),
-                ],
-            ),
-        )
+                ]))
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"👤 {full_name}",
-                          weight=ft.FontWeight.BOLD, size=16),
+                          weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(
                 content=self.tabs_control,
-                width=850, height=600, padding=5,
+                width=800, height=580, padding=5,
             ),
             actions=[
                 ft.Button(
