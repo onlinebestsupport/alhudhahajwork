@@ -1,14 +1,15 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.3.2 — Data-loading restored + Mobile-Responsive + Selectable Rows
-#   • FIXED: removed aggressive reload_*() loop in refresh() that wiped data
-#   • FIXED: "fbatch" typo → f"₹{batch_price:,.2f}"
-#   • MOBILE: card layout with full-width action buttons
-#   • DESKTOP: table with checkbox column for row selection
-#   • Row tap selects → toolbar Edit/PDF/Print act on selection
-#   • Dialogs expand to viewport on narrow screens
-#   • Responsive stat cards + filters
+# v1.3.3 — Data Loading Fixed + Mobile Card Layout + Row Selection
+#
+# FIXES vs v1.3.2:
+#   • DO NOT call db.reload_payments() in refresh() — it was wiping the
+#     in-memory cache on Railway (path mismatch → empty DataFrame).
+#   • Restored exact data loading sequence from working v1.2.
+#   • Mobile: card layout with big tappable Edit/Receipt/PDF/Print buttons.
+#   • Desktop: table with per-row checkbox + row tap = select.
+#   • No more "Click 🖨️ in a row" dead-end message.
 # =================================================================================
 
 import flet as ft
@@ -32,7 +33,7 @@ MOBILE_BREAKPOINT = 700
 
 
 # =================================================================================
-# 12.2 — CLASS: PaymentEditDialog  (mobile-responsive)
+# 12.2 — CLASS: PaymentEditDialog
 # =================================================================================
 class PaymentEditDialog:
 
@@ -213,16 +214,6 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
-                # Refresh receipts/invoices if DB has the method (safe —
-                # does not touch payments cache)
-                try:
-                    if hasattr(self.db, "reload_receipts"):
-                        self.db.reload_receipts()
-                    if hasattr(self.db, "reload_invoices"):
-                        self.db.reload_invoices()
-                except Exception:
-                    pass
-
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
                 if self.on_save:
@@ -249,7 +240,7 @@ class PaymentEditDialog:
 
 
 # =================================================================================
-# 12.3 — CLASS: PaymentsTab  (Mobile-Responsive + Selectable)
+# 12.3 — CLASS: PaymentsTab
 # =================================================================================
 class PaymentsTab:
 
@@ -273,7 +264,6 @@ class PaymentsTab:
         self.mobile_list = None
         self.root = None
 
-        # Selection state
         self.selected_payment_id = None
         self._mobile_mode = False
 
@@ -340,7 +330,7 @@ class PaymentsTab:
             spacing=6, run_spacing=6,
         )
 
-        # ---- Toolbar buttons (full width on mobile) ----
+        # ---- Toolbar buttons ----
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
@@ -496,36 +486,28 @@ class PaymentsTab:
             print(f"[PAYMENTS] on_resize error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # refresh — RESTORED original behavior (no aggressive reloads)
+    # refresh — DATA LOADING RESTORED (no destructive reloads)
     # -----------------------------------------------------------------------------
     def refresh(self):
         """
-        Reload payments + related data from DB.
+        Load data from DB (same sequence as working v1.2).
 
-        IMPORTANT: Do NOT call db.reload_payments() here. On some DB
-        implementations that method re-reads from disk and can wipe the
-        in-memory cache if the path/file is missing. The original tab
-        relied on db.get_payments() reading from the live cache.
+        IMPORTANT: Do NOT call db.reload_payments() here. On Railway the
+        CSV path may differ from the in-memory cache path, and reload
+        wipes the data → tab shows 0 payments.
         """
         try:
-            # ---- Payments ----
             self.payments = self.db.get_payments()
-            print(f"[PAYMENTS] loaded {len(self.payments)} payments")
-
-            # ---- Travelers ----
             self.travelers = {
                 t['id']: (f"{t.get('first_name', '')} "
                           f"{t.get('last_name', '')}").strip() or "Unnamed"
                 for t in self.db.get_travelers()
             }
-
-            # ---- Receipts / Invoices / Batches ----
             self.receipts = {r['payment_id']: r
                              for r in self.db.get_receipts()}
             self.invoices = {i['id']: i for i in self.db.get_invoices()}
             self.batches = {b['id']: b for b in self.db.get_batches()}
 
-            # ---- Traveler → Batch mapping ----
             self.traveler_details = {}
             for t in self.db.get_travelers():
                 tid = t['id']
@@ -613,7 +595,6 @@ class PaymentsTab:
                 traveler_paid[tid] = (traveler_paid.get(tid, 0)
                                       + float(p.get('amount', 0) or 0))
 
-        # Clear both views
         self.table.rows.clear()
         self.mobile_list.controls.clear()
 
@@ -638,7 +619,7 @@ class PaymentsTab:
             pkg_txt, pkg_color, inv_txt, inv_color = \
                 self._compute_pkg_inv_info(p, traveler_paid)
 
-            # ------- closure makers -------
+            # -------- closures --------
             def _make_edit(pp=p):
                 def h(e):
                     self.edit_payment(pp)
@@ -672,7 +653,7 @@ class PaymentsTab:
                     self._select_payment(pid)
                 return h
 
-            # ------- DESKTOP ROW -------
+            # -------- DESKTOP row --------
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
@@ -718,7 +699,7 @@ class PaymentsTab:
                         ft.DataCell(actions),
                     ]))
 
-            # ------- MOBILE CARD -------
+            # -------- MOBILE card --------
             self.mobile_list.controls.append(
                 ft.Container(
                     content=ft.Column([
@@ -968,7 +949,7 @@ class PaymentsTab:
         self.export_single_receipt_pdf(p)
 
     # -----------------------------------------------------------------------------
-    # export_single_receipt_pdf   ✅ FIXED SYNTAX
+    # export_single_receipt_pdf
     # -----------------------------------------------------------------------------
     def export_single_receipt_pdf(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
@@ -1062,7 +1043,6 @@ class PaymentsTab:
             elements.append(Paragraph("PAYMENT RECEIPT", subtitle_style))
             elements.append(Spacer(1, 10))
 
-            # ✅ FIXED — all f-strings are valid
             receipt_data = [
                 ["Receipt No:", receipt.get('receipt_no', '')],
                 ["Date:", str(receipt.get('receipt_date', ''))[:10]],
@@ -1238,7 +1218,7 @@ class PaymentsTab:
 
 
 # =================================================================================
-# 13.1 — CLASS: PaymentDialog  (Record new payment — mobile-responsive)
+# 13.1 — CLASS: PaymentDialog
 # =================================================================================
 class PaymentDialog:
 
@@ -1607,15 +1587,9 @@ class PaymentDialog:
             except Exception:
                 pass
 
-            # Only refresh receipts/invoices (NOT payments — that method
-            # was wiping cache on some setups)
-            try:
-                if hasattr(self.db, "reload_receipts"):
-                    self.db.reload_receipts()
-                if hasattr(self.db, "reload_invoices"):
-                    self.db.reload_invoices()
-            except Exception:
-                pass
+            # DO NOT call reload_payments here — it wipes the cache on
+            # some Railway deployments. get_payments() reads fresh data
+            # via the db's internal add_payment() → cache update path.
 
             new_total = total_paid + amount
             new_pending = batch_price - new_total
@@ -1650,5 +1624,5 @@ class PaymentDialog:
 
 
 # =================================================================================
-# SECTION 12 + 13 END (FLET 1.0.0 — DATA-LOADING FIXED + MOBILE-RESPONSIVE)
+# SECTION 12 + 13 END (FLET 1.0.0 — DATA LOADING FIXED)
 # =================================================================================
