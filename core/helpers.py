@@ -1,13 +1,13 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0.3 + FastAPI, cloud-ready)
 # =================================================================================
-# PATCHES APPLIED (v3.3):
-#   • _trigger_download_js now uses page.url setter + page.navigate() as
-#     primary methods. In Flet 1.0.3, page.launch_url() was REMOVED —
-#     the supported API is `page.url = "..."` (browser navigation).
-#   • Confirmed available methods (from runtime diagnostic):
-#       client_ip, client_user_agent, get_upload_url, run_task, url, navigate
-#   • Falls back through: page.url → page.navigate → run_javascript → none
+# PATCHES APPLIED (v3.4):
+#   • Page.launch_url() was REMOVED in Flet 1.0.0. Replacement is
+#     ft.UrlLauncher().launch_url() — an async method.
+#   • Parameter renamed: web_window_name → web_only_window_name
+#   • Uses page.run_task() to schedule the async launch_url call.
+#   • Popup blocker workaround: uses web_only_window_name="_self" which
+#     navigates the current tab (not a new popup), so the browser allows it.
 # =================================================================================
 
 import os
@@ -19,9 +19,6 @@ import inspect
 from datetime import datetime
 
 
-# =================================================================================
-# get_app_base_path — resolve the project root
-# =================================================================================
 def get_app_base_path():
     """Resolve project root (cloud-aware)."""
     for env_key in ("RAILWAY_VOLUME_MOUNT_PATH", "DATA_ROOT"):
@@ -43,9 +40,6 @@ def get_app_base_path():
     return os.path.dirname(here)
 
 
-# =================================================================================
-# number_to_words_indian
-# =================================================================================
 def number_to_words_indian(number):
     """Convert integer to Indian English words (Rupees ... Only)."""
     try:
@@ -96,9 +90,6 @@ def number_to_words_indian(number):
     return (" ".join(parts).strip() or "Zero") + " Rupees Only"
 
 
-# =================================================================================
-# format_currency_indian
-# =================================================================================
 def format_currency_indian(amount):
     """Return a string like '₹ 12,34,567.89'."""
     if amount is None:
@@ -127,9 +118,6 @@ def format_currency_indian(amount):
     return f"-{out}" if negative else out
 
 
-# =================================================================================
-# round_as_per_rules
-# =================================================================================
 def round_as_per_rules(value):
     """Round half up to the nearest integer."""
     try:
@@ -149,79 +137,93 @@ def _trigger_download_js(page, url):
     """
     Trigger a browser download for `url`.
 
-    In Flet 1.0.3, page.launch_url() was removed. The supported way to
-    navigate the browser is `page.url = "..."` (setter), and the app also
-    exposes `page.navigate(url)`.
+    In Flet 1.0.3:
+      • page.launch_url() was REMOVED
+      • Replacement is ft.UrlLauncher().launch_url() — an async method
+      • Parameter is web_only_window_name (not web_window_name)
+
+    The UrlLauncher is created fresh (Flet removed page.url_launcher).
+    _self target navigates the current tab — no popup blocker.
 
     Because the FastAPI /download endpoint sends Content-Disposition:
     attachment, navigating to the URL downloads the file and keeps the
     user on the current page.
-
-    Tries, in order:
-      1. page.url = url         (setter — instant navigation)
-      2. page.navigate(url)     (method — may be async)
-      3. page.run_javascript()  (fallback if it exists)
     """
+    import flet as ft
+
     if page is None:
         print("[download] page is None")
         return False
 
-    # ---- Method 1: page.url setter ----
+    async def _do_launch():
+        try:
+            launcher = ft.UrlLauncher()
+            await launcher.launch_url(
+                url,
+                mode=ft.LaunchMode.EXTERNAL_APPLICATION,
+                web_only_window_name="_self",
+            )
+            print(f"[download] ✅ UrlLauncher(_self) OK: {url}")
+            return
+        except TypeError as te:
+            print(f"[download] _self TypeError: {te}")
+        except Exception as ex:
+            print(f"[download] _self exception: {ex}")
+
+        # Fallback 1: try with _blank
+        try:
+            launcher = ft.UrlLauncher()
+            await launcher.launch_url(
+                url,
+                mode=ft.LaunchMode.EXTERNAL_APPLICATION,
+                web_only_window_name="_blank",
+            )
+            print(f"[download] ✅ UrlLauncher(_blank) OK: {url}")
+            return
+        except Exception as ex:
+            print(f"[download] _blank exception: {ex}")
+
+        # Fallback 2: try default (no mode)
+        try:
+            launcher = ft.UrlLauncher()
+            await launcher.launch_url(url)
+            print(f"[download] ✅ UrlLauncher(default) OK: {url}")
+            return
+        except Exception as ex:
+            print(f"[download] default exception: {ex}")
+
+        print("[download] ❌ all UrlLauncher methods failed")
+
+    # ---- Schedule via page.run_task (Flet 1.0.x official scheduler) ----
+    run_task = getattr(page, "run_task", None)
+    if run_task is None:
+        print("[download] ⚠️ page.run_task MISSING — trying sync")
+        try:
+            launcher = ft.UrlLauncher()
+            result = launcher.launch_url(
+                url,
+                mode=ft.LaunchMode.EXTERNAL_APPLICATION,
+                web_only_window_name="_self",
+            )
+            if inspect.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(result)
+                except RuntimeError:
+                    asyncio.run(result)
+            print(f"[download] sync launch scheduled: {url}")
+            return True
+        except Exception as ex:
+            print(f"[download] sync fallback failed: {ex}")
+            return False
+
     try:
-        page.url = url
-        print(f"[download] ✅ page.url set: {url}")
+        run_task(_do_launch)
+        print(f"[download] 🚀 run_task scheduled: {url}")
         return True
     except Exception as ex:
-        print(f"[download] page.url setter failed: {ex}")
-
-    # ---- Method 2: page.navigate() ----
-    navigate = getattr(page, "navigate", None)
-    if callable(navigate):
-        try:
-            result = navigate(url)
-            # navigate may be async — schedule if so
-            if inspect.iscoroutine(result):
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(result)
-                except RuntimeError:
-                    asyncio.run(result)
-            print(f"[download] ✅ page.navigate: {url}")
-            return True
-        except TypeError as te:
-            print(f"[download] page.navigate TypeError: {te}")
-        except Exception as ex:
-            print(f"[download] page.navigate failed: {ex}")
-    else:
-        print("[download] page.navigate not callable")
-
-    # ---- Method 3: run_javascript (if it exists) ----
-    run_js = getattr(page, "run_javascript", None)
-    if callable(run_js):
-        try:
-            safe_url = url.replace("'", "%27")
-            js = (
-                "var a=document.createElement('a');"
-                f"a.href='{safe_url}';"
-                "a.download='';"
-                "document.body.appendChild(a);"
-                "a.click();"
-                "document.body.removeChild(a);"
-            )
-            result = run_js(js)
-            if inspect.iscoroutine(result):
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(result)
-                except RuntimeError:
-                    asyncio.run(result)
-            print(f"[download] ✅ run_javascript dispatched: {url}")
-            return True
-        except Exception as ex:
-            print(f"[download] run_javascript failed: {ex}")
-
-    print("[download] ❌ all methods failed")
-    return False
+        print(f"[download] ❌ run_task failed: {ex}")
+        return False
 
 
 # =================================================================================
@@ -234,7 +236,7 @@ def send_file_to_user(page, filepath, label="Download"):
     Web mode:
       1. Copy the file into <base>/static/downloads/
       2. Build an absolute URL: https://<RAILWAY_PUBLIC_DOMAIN>/download/<fname>
-      3. Navigate the browser via page.url (triggers download)
+      3. Trigger browser download via UrlLauncher
       4. Return None (so callers' `if url:` blocks skip double-launch)
 
     Desktop:
@@ -260,7 +262,6 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
-            # Collision: if a different file with same name exists, add stamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -270,7 +271,6 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            # Build absolute URL for FastAPI /download endpoint
             domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
             url = (f"https://{domain}/download/{fname}"
                    if domain else f"/download/{fname}")
