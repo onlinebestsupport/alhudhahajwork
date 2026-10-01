@@ -1,11 +1,9 @@
 # =================================================================================
 # core/helpers.py — Shared utilities (Flet 1.0.0, cloud-ready)
 # =================================================================================
-# PATCHES APPLIED (v1.2):
-#   • send_file_to_user returns /assets/downloads/... (Flet 1.0 asset URL)
-#     Flet 1.0 serves `assets_dir` at /assets/, NOT /static/. The folder on
-#     disk is still called "static/" (that's just the source dir name), but
-#     the URL the browser fetches must be prefixed with /assets/.
+# This is a COMPLETE drop-in replacement. If your current helpers.py has extra
+# functions not listed here, keep them — just ensure send_file_to_user() is
+# the version below.
 # =================================================================================
 
 import os
@@ -150,6 +148,7 @@ def round_as_per_rules(value):
         return 0
     if v != v:
         return 0
+    # half-up rounding
     import math
     return int(math.floor(v + 0.5))
 
@@ -161,16 +160,20 @@ def send_file_to_user(page, filepath, label="Download"):
     """
     Cloud-aware file delivery.
 
-    On web: copy file into <base>/static/downloads/ and return
-            "/download/<filename>" — a FastAPI endpoint that sends the
-            file with Content-Disposition: attachment, forcing the browser
-            to download it.
+    On web (Railway / Render / Fly):
+      • Copy the file into <base>/static/downloads/
+      • Return a URL path like "/static/downloads/foo.pdf"
+      • Caller then does page.launch_url(url) → browser downloads it
 
-    On desktop: return a file:// URI.
+    On desktop:
+      • Return a file:// URI for the OS to open
+
+    Returns the URL string on success, None on failure.
     """
     if not filepath or not os.path.exists(filepath):
         return None
 
+    # ---- Detect web mode ----
     is_web = bool(
         os.getenv("PORT")
         or os.getenv("RAILWAY_ENVIRONMENT")
@@ -187,6 +190,7 @@ def send_file_to_user(page, filepath, label="Download"):
             fname = os.path.basename(filepath)
             dest = os.path.join(downloads_dir, fname)
 
+            # Avoid collision: if a different-size file exists, add timestamp
             if (os.path.exists(dest)
                     and os.path.getsize(dest) != os.path.getsize(filepath)):
                 stem, ext = os.path.splitext(fname)
@@ -196,25 +200,8 @@ def send_file_to_user(page, filepath, label="Download"):
 
             shutil.copy2(filepath, dest)
 
-            # This URL hits the FastAPI /download/ endpoint defined in main.py
-            return f"/download/{fname}"
-
-        except Exception as ex:
-            print(f"[send_file_to_user] web copy failed: {ex}")
-            return None
-
-    try:
-        return f"file://{os.path.abspath(filepath)}"
-    except Exception as ex:
-        print(f"[send_file_to_user] desktop failed: {ex}")
-        return None
-
-            # ─────────────────────────────────────────────────────────
-            # CRITICAL: Flet 1.0 serves `assets_dir` at /assets/, NOT
-            # /static/. The folder on disk is still called "static/",
-            # but the URL the browser must request is /assets/...
-            # ─────────────────────────────────────────────────────────
-            return f"/assets/downloads/{fname}"
+            # Flet serves assets_dir at /static/... — return the URL path
+            return f"/static/downloads/{fname}"
 
         except Exception as ex:
             print(f"[send_file_to_user] web copy failed: {ex}")
@@ -229,7 +216,7 @@ def send_file_to_user(page, filepath, label="Download"):
 
 
 # =================================================================================
-# photo_data_uri — inline base64 image for reports
+# Convenience: base64 image data URI (used by reports_tab / travel docs)
 # =================================================================================
 def photo_data_uri(path):
     """Return a data:image/... URI for a local image, or None."""
