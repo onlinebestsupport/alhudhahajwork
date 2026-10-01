@@ -1,12 +1,11 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Stat cards 2-per-row on mobile
-#   • Toolbar + filters use ResponsiveRow
-#   • Table wrapped in horizontal scroll
-#   • Dialogs sized for mobile
-#   • All original features preserved (edit, receipt, PDF, invoice gen)
+# v1.4 — Row Tap Selection (based on working v1.2)
+#   • ONLY CHANGE: Each table row is now tappable → opens Edit dialog
+#   • Data loading untouched (your working v1.2 logic preserved)
+#   • Table layout untouched
+#   • Action icons slightly larger (16 → 18) for easier tap
 # =================================================================================
 
 import flet as ft
@@ -254,6 +253,9 @@ class PaymentsTab:
         self.table = None
         self.root = None
 
+        # Track currently highlighted row
+        self._selected_payment_id = None
+
         self.setup_ui()
         self.refresh()
 
@@ -410,8 +412,14 @@ class PaymentsTab:
                     ft.Container(content=filter_row, padding=8,
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
-                        content=ft.Row([self.table],
-                                       scroll=ft.ScrollMode.ADAPTIVE),
+                        content=ft.Column([
+                            ft.Text("💡 Tap any row to edit that payment",
+                                    size=10,
+                                    color=ft.Colors.GREY_600,
+                                    italic=True),
+                            ft.Row([self.table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
+                        ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
                         border_radius=10, padding=10),
                 ],
@@ -484,6 +492,7 @@ class PaymentsTab:
         self.table.rows.clear()
         for p in payments:
             tid = p.get('traveler_id', '')
+            pid = p.get('id')
             date_str = (str(p.get('payment_date', ''))[:10]
                         if p.get('payment_date') else '')
             traveler_name = self.travelers.get(tid, 'Unknown')
@@ -495,7 +504,7 @@ class PaymentsTab:
                             else "#e74c3c" if status == "failed"
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
-            receipt = self.receipts.get(p.get('id'))
+            receipt = self.receipts.get(pid)
             receipt_no = (receipt.get('receipt_no', '—')
                           if receipt else '—')
             inv_id = p.get('invoice_id', '')
@@ -543,30 +552,44 @@ class PaymentsTab:
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
-                                  icon_color="#f39c12", icon_size=16,
+                                  icon_color="#f39c12", icon_size=18,
                                   tooltip="Edit",
                                   on_click=lambda e, pp=p:
                                       self.edit_payment(pp)),
                     ft.IconButton(icon=ft.Icons.RECEIPT_LONG,
-                                  icon_color="#3498db", icon_size=16,
+                                  icon_color="#3498db", icon_size=18,
                                   tooltip="View Receipt",
                                   on_click=lambda e, pp=p:
                                       self.view_specific_receipt(pp)),
                     ft.IconButton(icon=ft.Icons.PICTURE_AS_PDF,
-                                  icon_color="#e74c3c", icon_size=16,
+                                  icon_color="#e74c3c", icon_size=18,
                                   tooltip="PDF",
                                   on_click=lambda e, pp=p:
                                       self.export_single_receipt_pdf(pp)),
                     ft.IconButton(icon=ft.Icons.PRINT,
-                                  icon_color="#9b59b6", icon_size=16,
+                                  icon_color="#9b59b6", icon_size=18,
                                   tooltip="Print",
                                   on_click=lambda e, pp=p:
                                       self.print_single_receipt(pp)),
                 ], spacing=0,
             )
 
-            self.table.rows.append(
-                ft.DataRow(cells=[
+            # -------- ROW TAP → open Edit dialog --------
+            def _on_row_tap(e, pp=p):
+                try:
+                    print(f"[PAYMENTS] Row tapped: {pp.get('id')}")
+                    self._selected_payment_id = pp.get('id')
+                    # Small visual feedback
+                    self._snack(
+                        f"✏️ Opening payment "
+                        f"{str(pp.get('transaction_id', ''))[:12]}...")
+                    self.edit_payment(pp)
+                except Exception as ex:
+                    print(f"[PAYMENTS] row tap error: {ex}")
+
+            row = ft.DataRow(
+                on_select_changed=_on_row_tap,
+                cells=[
                     ft.DataCell(ft.Text(date_str, size=10)),
                     ft.DataCell(ft.Text(traveler_name[:18], size=10,
                                         weight=ft.FontWeight.BOLD)),
@@ -582,7 +605,9 @@ class PaymentsTab:
                     ft.DataCell(ft.Text(pkg_txt, size=10, color=pkg_color)),
                     ft.DataCell(ft.Text(inv_txt, size=10, color=inv_color)),
                     ft.DataCell(actions),
-                ]))
+                ])
+
+            self.table.rows.append(row)
 
     def edit_payment(self, payment):
         dlg = PaymentEditDialog(
