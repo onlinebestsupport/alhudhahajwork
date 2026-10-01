@@ -1,0 +1,14 @@
+# =================================================================================
+# railway.toml — Force Nixpacks builder (more stable than Railpack)
+# =================================================================================
+# Railpack has occasional transient failures fetching "mise". Nixpacks is the
+# previous generation builder and is more mature/stable on Railway.
+# =================================================================================
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python main.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
