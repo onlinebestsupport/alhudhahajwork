@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.14 — Back to Home navigates in SAME tab
-#   • _go_home_page() uses launch_url(url, web_window_name="_self")
-#   • Falls back to launch_url default / page.go if _self fails
-#   • All previous patches preserved (session persistence, captcha, etc.)
+# v2.15 — Async-aware "Back to Home" navigation
+#   • page.launch_url() in Flet 1.0 is async → wrapped in run_task
+#   • Falls through 5 attempts: UrlLauncher(_self) → page.launch_url(_self)
+#     → UrlLauncher(default) → page.launch_url(default) → page.go
+#   • All previous patches preserved (sessions, captcha, traveler portal)
 # =================================================================================
 
 import flet as ft
@@ -403,49 +404,79 @@ def flet_main(page: ft.Page):
     state = {"user": None}
 
     # -----------------------------------------------------------------------------
-    # [FIX v2.14] Navigate browser to the public homepage — SAME TAB
+    # [FIX v2.15] Navigate to / — async-aware for Flet 1.0
     # -----------------------------------------------------------------------------
     def _go_home_page():
-        """Send the browser to the public / homepage in the SAME tab."""
-        print("[NAV] Back to Home clicked → navigating to /")
+        """
+        Send the browser to / (public homepage).
+        Handles Flet 1.0's async launch_url API.
 
-        # Try 1: launch_url with same-tab target (preferred)
-        try:
-            page.launch_url("/", web_window_name="_self")
-            print("[NAV] ✅ launch_url(_self) succeeded")
-            return
-        except Exception as e:
-            print(f"[NAV] launch_url(_self) failed: {e}")
+        Attempt order:
+          1. ft.UrlLauncher().launch_url("/", web_window_name="_self")
+          2. page.launch_url("/", web_window_name="_self")
+          3. ft.UrlLauncher().launch_url("/")  → new tab
+          4. page.launch_url("/")               → new tab
+          5. page.go("/")                       → Flet route
+        """
+        print("[NAV] Back to Home clicked → scheduling navigation")
 
-        # Try 2: launch_url default (opens new tab as fallback)
-        try:
-            page.launch_url("/")
-            print("[NAV] ⚠️ launch_url(default) opened new tab")
-            return
-        except Exception as e:
-            print(f"[NAV] launch_url(default) failed: {e}")
+        async def _do():
+            # -- Attempt 1: UrlLauncher service with _self --
+            try:
+                launcher = ft.UrlLauncher()
+                result = launcher.launch_url(
+                    "/", web_window_name="_self")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[NAV] ✅ UrlLauncher(_self) succeeded")
+                return
+            except Exception as e:
+                print(f"[NAV] UrlLauncher(_self) failed: {e}")
 
-        # Try 3: UrlLauncher service (Flet 1.0)
+            # -- Attempt 2: page.launch_url with _self --
+            try:
+                result = page.launch_url(
+                    "/", web_window_name="_self")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[NAV] ✅ page.launch_url(_self) succeeded")
+                return
+            except Exception as e:
+                print(f"[NAV] page.launch_url(_self) failed: {e}")
+
+            # -- Attempt 3: UrlLauncher default (new tab) --
+            try:
+                launcher = ft.UrlLauncher()
+                result = launcher.launch_url("/")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[NAV] ⚠️ UrlLauncher(default) opened new tab")
+                return
+            except Exception as e:
+                print(f"[NAV] UrlLauncher(default) failed: {e}")
+
+            # -- Attempt 4: page.launch_url default (new tab) --
+            try:
+                result = page.launch_url("/")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[NAV] ⚠️ page.launch_url(default) opened new tab")
+                return
+            except Exception as e:
+                print(f"[NAV] page.launch_url(default) failed: {e}")
+
+            # -- Attempt 5: page.go (Flet route) --
+            try:
+                page.go("/")
+                print("[NAV] ⚠️ page.go('/') attempted")
+            except Exception as e:
+                print(f"[NAV] page.go('/') failed: {e}")
+
+        # Schedule on Flet's event loop
         try:
-            async def _do():
-                try:
-                    launcher = ft.UrlLauncher()
-                    await launcher.launch_url(
-                        "/", web_window_name="_self")
-                    print("[NAV] ✅ UrlLauncher succeeded")
-                except Exception as ex:
-                    print(f"[NAV] UrlLauncher failed: {ex}")
             page.run_task(_do)
-            return
         except Exception as e:
-            print(f"[NAV] run_task UrlLauncher failed: {e}")
-
-        # Try 4: Flet's own go()
-        try:
-            page.go("/")
-            print("[NAV] ⚠️ page.go('/') attempted")
-        except Exception as e:
-            print(f"[NAV] page.go failed: {e}")
+            print(f"[NAV] run_task failed: {e}")
 
     def show_login():
         page.controls.clear()
