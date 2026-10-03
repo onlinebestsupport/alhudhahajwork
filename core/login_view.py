@@ -1,14 +1,14 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.5 — 2026-10-03
-#   • ✅ Back to Home uses launch_url(url, web_window_name="_self")
-#   • ✅ Same-tab navigation (no extra tab opens)
+# v1.6 — 2026-10-03
+#   • ✅ Back to Home uses async-aware navigation (Flet 1.0)
 #   • ✅ CAPTCHA on login (math, self-hosted)
-#   • ✅ Session persistence helpers (used by main.py)
-#   • Logo, password hashing, Enter-to-submit preserved
+#   • ✅ Session persistence helpers
+#   • ✅ Same-tab navigation with _self target
 # =================================================================================
 
+import asyncio
 import hashlib
 import json
 import time
@@ -389,17 +389,16 @@ class LoginView:
         return self.root
 
     # -----------------------------------------------------------------------------
-    # 2.4.3 — _go_home  (SAME-TAB navigation)
+    # 2.4.3 — _go_home  [FIX v1.6] async-aware navigation
     # -----------------------------------------------------------------------------
     def _go_home(self, e=None):
         """
         Back to Home: navigate to / in the SAME browser tab.
-        Uses launch_url(url, web_window_name="_self") which maps to
-        JS window.open(url, "_self") — replaces the current tab.
+        Flet 1.0's launch_url is async — must be awaited via run_task.
         """
         print("[LOGIN] Back to Home clicked")
 
-        # Preferred: ask parent (main.py) to handle navigation
+        # Preferred: delegate to main.py handler (it has full fallback chain)
         try:
             if self.on_cancel:
                 self.on_cancel()
@@ -407,28 +406,63 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] on_cancel failed: {ex}")
 
-        # Fallback 1: same-tab launch_url
-        try:
-            self.page.launch_url("/", web_window_name="_self")
-            print("[LOGIN] ✅ launch_url(_self) succeeded")
-            return
-        except Exception as e:
-            print(f"[LOGIN] launch_url(_self) failed: {e}")
+        # Fallback: navigate directly with async wrapper
+        async def _do():
+            # Attempt 1: UrlLauncher with _self target
+            try:
+                launcher = ft.UrlLauncher()
+                result = launcher.launch_url(
+                    "/", web_window_name="_self")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[LOGIN] ✅ UrlLauncher(_self) succeeded")
+                return
+            except Exception as ex:
+                print(f"[LOGIN] UrlLauncher(_self) failed: {ex}")
 
-        # Fallback 2: default launch_url (new tab)
-        try:
-            self.page.launch_url("/")
-            print("[LOGIN] ⚠️ launch_url(default) opened new tab")
-            return
-        except Exception as e:
-            print(f"[LOGIN] launch_url(default) failed: {e}")
+            # Attempt 2: page.launch_url with _self target
+            try:
+                result = self.page.launch_url(
+                    "/", web_window_name="_self")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[LOGIN] ✅ page.launch_url(_self) succeeded")
+                return
+            except Exception as ex:
+                print(f"[LOGIN] page.launch_url(_self) failed: {ex}")
 
-        # Fallback 3: Flet's own go()
+            # Attempt 3: UrlLauncher default (new tab fallback)
+            try:
+                launcher = ft.UrlLauncher()
+                result = launcher.launch_url("/")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[LOGIN] ⚠️ UrlLauncher(default) opened new tab")
+                return
+            except Exception as ex:
+                print(f"[LOGIN] UrlLauncher(default) failed: {ex}")
+
+            # Attempt 4: page.launch_url default
+            try:
+                result = self.page.launch_url("/")
+                if asyncio.iscoroutine(result):
+                    await result
+                print("[LOGIN] ⚠️ page.launch_url(default) opened new tab")
+                return
+            except Exception as ex:
+                print(f"[LOGIN] page.launch_url(default) failed: {ex}")
+
+            # Attempt 5: page.go
+            try:
+                self.page.go("/")
+                print("[LOGIN] ⚠️ page.go('/') attempted")
+            except Exception as ex:
+                print(f"[LOGIN] page.go('/') failed: {ex}")
+
         try:
-            self.page.go("/")
-            print("[LOGIN] ⚠️ page.go('/') attempted")
-        except Exception as e:
-            print(f"[LOGIN] page.go failed: {e}")
+            self.page.run_task(_do)
+        except Exception as ex:
+            print(f"[LOGIN] run_task failed: {ex}")
 
     # -----------------------------------------------------------------------------
     # 2.4.4 — CAPTCHA helpers
