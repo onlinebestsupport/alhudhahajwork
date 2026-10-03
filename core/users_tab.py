@@ -1,12 +1,12 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v1.6
+# SECTION 18 — USERS TAB (FLET 1.0) — v1.7
 # =================================================================================
-# Fixes:
-#   • Container built ONCE and its content re-mounted after every refresh
-#   • No nested expand=True; no dual-view visibility toggling
+# Restored from original + mobile fixes:
+#   • Full Add / Edit dialog with permission checkboxes, validation, role defaults
+#   • Full Delete with super_admin protection & self-delete prevention
+#   • Container built once; content re-mounted on every refresh
 #   • Platform-first narrow detection
-#   • Removed the delayed re-check that was creating stale mobile_list refs
-#   • Full diagnostic prints at every step
+#   • Extensive diagnostics
 # =================================================================================
 
 import flet as ft
@@ -22,7 +22,7 @@ except ImportError:
 
 
 # =================================================================================
-# 18.0 — PERMISSION CATALOG
+# PERMISSION CATALOG
 # =================================================================================
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
@@ -52,7 +52,7 @@ MOBILE_BREAKPOINT = 700
 
 
 # =================================================================================
-# 18.0.1 — HELPERS
+# HELPERS
 # =================================================================================
 def _safe_str(v):
     if v is None:
@@ -115,13 +115,10 @@ def _user_has_permission(user, perm_key):
 
 
 # =================================================================================
-# 18.1 — CLASS: UsersTab
+# UsersTab
 # =================================================================================
 class UsersTab(ft.Column):
 
-    # -----------------------------------------------------------------------------
-    # __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         super().__init__()
 
@@ -166,8 +163,6 @@ class UsersTab(ft.Column):
             self._show_status(f"❌ Load failed: {e}", ft.Colors.RED_500)
 
     # -----------------------------------------------------------------------------
-    # _is_narrow — platform first, then width, then default True
-    # -----------------------------------------------------------------------------
     def _is_narrow(self):
         try:
             plat = getattr(self.page_ref, "platform", None)
@@ -182,25 +177,20 @@ class UsersTab(ft.Column):
                         return True
         except Exception:
             pass
-
         try:
             w = self.page_ref.width
             if w is not None and w > 0:
                 return w < MOBILE_BREAKPOINT
         except Exception:
             pass
-
         try:
             w = self.page_ref.window.width
             if w is not None and w > 0:
                 return w < MOBILE_BREAKPOINT
         except Exception:
             pass
-
         return True
 
-    # -----------------------------------------------------------------------------
-    # Access denied / error UI
     # -----------------------------------------------------------------------------
     def _build_access_denied_ui(self):
         try:
@@ -244,9 +234,9 @@ class UsersTab(ft.Column):
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # setup_ui — builds the shell; _content_container holds the list
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # setup_ui
+    # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
         self._mobile_mode = narrow
@@ -279,7 +269,7 @@ class UsersTab(ft.Column):
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # ---- Stats ----
+        # ---- Stats cards ----
         stat_specs = [
             ("total",  "👥", "Total",         "#2563eb"),
             ("supers", "👑", "Super Admins",  "#d97706"),
@@ -339,7 +329,7 @@ class UsersTab(ft.Column):
             bgcolor=ft.Colors.WHITE, border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-        # ---- Prepare the right view object ----
+        # ---- Prepare the correct view object ----
         if narrow:
             self.mobile_list = ft.Column(spacing=8)
             self.table = None
@@ -392,11 +382,8 @@ class UsersTab(ft.Column):
             self.status_label,
         ]
 
-        # Mount the correct view into the container
         self._mount_content_view()
 
-    # -----------------------------------------------------------------------------
-    # _mount_content_view — assign the visible view into the container
     # -----------------------------------------------------------------------------
     def _mount_content_view(self):
         try:
@@ -418,8 +405,6 @@ class UsersTab(ft.Column):
         return self
 
     # -----------------------------------------------------------------------------
-    # on_resize — rebuild only if mode flips
-    # -----------------------------------------------------------------------------
     def on_resize(self, e=None):
         try:
             new_narrow = self._is_narrow()
@@ -436,15 +421,14 @@ class UsersTab(ft.Column):
         except Exception as ex:
             print(f"[USERS] on_resize error: {ex}")
 
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     # refresh
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     def refresh(self, e=None):
         if not self._ui_built and not self.status_label:
             return
 
         try:
-            # ---- fresh data ----
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -469,15 +453,12 @@ class UsersTab(ft.Column):
 
             print(f"[USERS] loaded {len(self.users)} users from DB")
 
-            # ---- render ----
             if self._mobile_mode:
                 self._render_mobile_cards()
             else:
                 self._render_desktop_table()
 
             self._update_stats()
-
-            # ---- re-mount in case content reference was lost ----
             self._mount_content_view()
 
             if self.status_label:
@@ -491,9 +472,6 @@ class UsersTab(ft.Column):
             traceback.print_exc()
             self._show_status(f"❌ Load failed: {ex}", ft.Colors.RED_500)
 
-    # -----------------------------------------------------------------------------
-    # _update_stats
-    # -----------------------------------------------------------------------------
     def _update_stats(self):
         total = len(self.users)
         supers = sum(1 for u in self.users
@@ -506,16 +484,13 @@ class UsersTab(ft.Column):
             if k in self.stats_labels:
                 self.stats_labels[k].value = str(v)
 
-    # -----------------------------------------------------------------------------
-    # _render_desktop_table
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # Desktop table renderer
+    # =============================================================================
     def _render_desktop_table(self):
         if self.table is None:
-            print("[USERS] _render_desktop_table: table is None")
             return
         self.table.rows.clear()
-        print(f"[USERS] _render_desktop_table: rendering "
-              f"{len(self.users)} users")
 
         for u in self.users:
             username = u.get("username", "")
@@ -562,6 +537,9 @@ class UsersTab(ft.Column):
                     if fresh:
                         self.open_edit_dialog(e, user=fresh)
                     else:
+                        self._show_status(
+                            "⚠️ User no longer exists — refreshing…",
+                            ft.Colors.ORANGE_700)
                         self.refresh()
                 return h
 
@@ -572,6 +550,9 @@ class UsersTab(ft.Column):
                     if fresh:
                         self._confirm_delete(fresh)
                     else:
+                        self._show_status(
+                            "⚠️ User no longer exists — refreshing…",
+                            ft.Colors.ORANGE_700)
                         self.refresh()
                 return h
 
@@ -607,16 +588,14 @@ class UsersTab(ft.Column):
 
         print(f"[USERS] rendered {len(self.table.rows)} desktop rows")
 
-    # -----------------------------------------------------------------------------
-    # _render_mobile_cards
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # Mobile card renderer
+    # =============================================================================
     def _render_mobile_cards(self):
         if self.mobile_list is None:
             print("[USERS] _render_mobile_cards: mobile_list is None!")
             return
         self.mobile_list.controls.clear()
-        print(f"[USERS] _render_mobile_cards: rendering "
-              f"{len(self.users)} users")
 
         for u in self.users:
             username = u.get("username", "")
@@ -729,41 +708,46 @@ class UsersTab(ft.Column):
                 )
             )
 
-        print(f"[USERS] _render_mobile_cards: appended "
-              f"{len(self.mobile_list.controls)} cards")
+        print(f"[USERS] rendered {len(self.mobile_list.controls)} cards")
 
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     # Dialog launchers
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     def open_add_dialog(self, e=None):
         try:
-            UserFormDialog(
+            dlg = UserFormDialog(
                 page=self.page_ref,
                 db=self.db,
                 current_user=self.current_user,
                 user=None,
-                on_save=self.refresh).show()
+                on_save=self.refresh)
+            dlg.show()
         except Exception as ex:
             print(f"[USERS] open_add_dialog error: {ex}")
             traceback.print_exc()
+            self._show_status(f"❌ {ex}", ft.Colors.RED_500)
 
     def open_edit_dialog(self, e=None, user=None):
         if user is None:
+            self._show_status("⚠️ Select a user first.",
+                              ft.Colors.ORANGE_700)
             return
         try:
-            UserFormDialog(
+            dlg = UserFormDialog(
                 page=self.page_ref,
                 db=self.db,
                 current_user=self.current_user,
                 user=user,
-                on_save=self.refresh).show()
+                on_save=self.refresh)
+            dlg.show()
         except Exception as ex:
             print(f"[USERS] open_edit_dialog error: {ex}")
             traceback.print_exc()
+            self._show_status(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -----------------------------------------------------------------------------
-    # Delete
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # Delete confirmation
+    # =============================================================================
     def _confirm_delete(self, user):
         uid = user.get("id")
         username = user.get("username", "?")
@@ -810,6 +794,8 @@ class UsersTab(ft.Column):
             except Exception as ex:
                 print(f"[USERS] delete error: {ex}")
                 traceback.print_exc()
+                self._show_status(f"❌ Delete failed: {ex}",
+                                  ft.Colors.RED_500)
 
         def _cancel(ev):
             try:
@@ -842,9 +828,9 @@ class UsersTab(ft.Column):
             ])
         self.page_ref.show_dialog(dialog)
 
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     # Helpers
-    # -----------------------------------------------------------------------------
+    # =============================================================================
     def _show_status(self, message, color=ft.Colors.GREY_700):
         if self.status_label:
             self.status_label.value = message
@@ -859,7 +845,7 @@ class UsersTab(ft.Column):
 
 
 # =================================================================================
-# 18.2 — CLASS: UserFormDialog
+# UserFormDialog — FULL Add / Edit
 # =================================================================================
 class UserFormDialog:
 
@@ -886,7 +872,7 @@ class UserFormDialog:
     def _build(self):
         u = self.user
 
-        # Detect narrow
+        # Narrow detection
         narrow = False
         try:
             plat = getattr(self.page_ref, "platform", None)
@@ -914,7 +900,7 @@ class UserFormDialog:
             except Exception:
                 narrow = True
 
-        # Fields
+        # ---- Credentials ----
         self.username_field = ft.TextField(
             label="Username *",
             value=_safe_str(u.get("username")),
@@ -935,11 +921,14 @@ class UserFormDialog:
             text_size=12, content_padding=12)
 
         pw_row = (
-            ft.Column([self.password_field,
-                       self.confirm_password_field], spacing=8)
+            ft.Column([
+                self.password_field,
+                self.confirm_password_field,
+            ], spacing=8)
             if narrow else
             ft.Row([self.password_field,
-                    self.confirm_password_field], spacing=8)
+                    self.confirm_password_field],
+                   spacing=8)
         )
 
         credentials_section = ft.Container(
@@ -956,6 +945,7 @@ class UserFormDialog:
             bgcolor="#f0f9ff", border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
+        # ---- Profile ----
         self.full_name_field = ft.TextField(
             label="Full Name *",
             value=_safe_str(u.get("full_name")),
@@ -990,6 +980,7 @@ class UserFormDialog:
             bgcolor="#f5f3ff", border_radius=10,
             border=ft.Border.all(1, "#ddd6fe"))
 
+        # ---- Permissions ----
         current_perms = _parse_permissions(
             u.get("permissions", ""),
             u.get("role", "staff"))
@@ -1075,6 +1066,7 @@ class UserFormDialog:
 
         self._on_role_change(None, force_defaults=not self.is_edit)
 
+    # -----------------------------------------------------------------------------
     def _on_role_change(self, e=None, force_defaults=False):
         role = _safe_str(self.role_dropdown.value) or "staff"
 
@@ -1101,6 +1093,7 @@ class UserFormDialog:
 
         self._safe_update()
 
+    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             username = _safe_str(self.username_field.value)
@@ -1133,6 +1126,7 @@ class UserFormDialog:
                             ft.Colors.RED_500)
                 return
 
+            # Username uniqueness
             existing = self.db.get_users()
             for u in existing:
                 other_id = _safe_str(u.get("id"))
@@ -1261,6 +1255,7 @@ class UserFormDialog:
 
         self.db._save_df(self.db.users, "users.csv")
 
+    # -----------------------------------------------------------------------------
     def show(self):
         try:
             self.page_ref.show_dialog(self.dialog)
@@ -1296,5 +1291,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END — USERS TAB (FLET 1.0 — v1.6)
+# SECTION 18 END — USERS TAB (v1.7)
 # =================================================================================
