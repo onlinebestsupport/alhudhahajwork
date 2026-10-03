@@ -1,8 +1,12 @@
 # =================================================================================
-# SECTION 20 — BACKUP TAB (FLET 1.0) — v2.0
+# SECTION 20 — BACKUP TAB (FLET 1.0) — v2.1
 # =================================================================================
-# Working pattern: plain class + self.root Container + build() returns root
-# Desktop table body: Row([table], scroll=ADAPTIVE) — NO height, NO ListView
+# v2.1 — Desktop rendering fix
+#   • Plain class (NOT ft.Column subclass) ✓
+#   • self.root = ft.Container(content=Column(scroll=AUTO), expand=True) ✓
+#   • build() returns self.root ✓
+#   • Desktop actions: 3 rows × 2 buttons (NO wrap=True) ← fixed
+#   • Desktop table body: Container(content=self.table) — no Row wrapper ← fixed
 # =================================================================================
 
 import os
@@ -128,8 +132,6 @@ class BackupView:
         return dirs
 
     # =============================================================================
-    # setup_ui
-    # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
         self._mobile_mode = narrow
@@ -226,7 +228,8 @@ class BackupView:
                 expand=expand_narrow)
 
         if narrow:
-            body = ft.Column([
+            # Mobile: stacked, no wrap
+            actions_inner = ft.Column([
                 _btn("Create New Backup", ft.Icons.SAVE,
                      "#059669", self.create_backup, expand_narrow=True),
                 ft.Row([
@@ -245,23 +248,30 @@ class BackupView:
                 ], spacing=8),
             ], spacing=8)
         else:
-            body = ft.Row([
-                _btn("Create New Backup", ft.Icons.SAVE,
-                     "#059669", self.create_backup),
-                _btn("Refresh List", ft.Icons.REFRESH,
-                     "#2563eb", self.refresh),
-                _btn("⬇️ Download (selected)", ft.Icons.DOWNLOAD,
-                     "#0891b2", self._download_selected),
-                _btn("♻️ Restore (selected)", ft.Icons.RESTORE,
-                     "#d97706", self._restore_selected),
-                _btn("🗑️ Delete (selected)", ft.Icons.DELETE,
-                     "#dc2626", self._delete_selected),
-                _btn("Show Folder Path", ft.Icons.FOLDER_OPEN,
-                     "#7c3aed", self.open_folder),
-            ], spacing=10, wrap=True)
+            # Desktop: 3 rows of 2 buttons each — NO wrap=True
+            actions_inner = ft.Column([
+                ft.Row([
+                    _btn("Create New Backup", ft.Icons.SAVE,
+                         "#059669", self.create_backup),
+                    _btn("Refresh List", ft.Icons.REFRESH,
+                         "#2563eb", self.refresh),
+                ], spacing=8),
+                ft.Row([
+                    _btn("⬇️ Download (selected)", ft.Icons.DOWNLOAD,
+                         "#0891b2", self._download_selected),
+                    _btn("♻️ Restore (selected)", ft.Icons.RESTORE,
+                         "#d97706", self._restore_selected),
+                ], spacing=8),
+                ft.Row([
+                    _btn("🗑️ Delete (selected)", ft.Icons.DELETE,
+                         "#dc2626", self._delete_selected),
+                    _btn("Show Folder Path", ft.Icons.FOLDER_OPEN,
+                         "#7c3aed", self.open_folder),
+                ], spacing=8),
+            ], spacing=8)
 
         actions_block = ft.Container(
-            content=body,
+            content=actions_inner,
             padding=10,
             bgcolor=ft.Colors.WHITE,
             border_radius=12,
@@ -297,9 +307,9 @@ class BackupView:
             hint = ("💡 Tap a backup card to select, then use toolbar "
                     "Download / Restore / Delete")
         else:
+            # Desktop: direct DataTable child — no Row wrapper
             table_body = ft.Container(
-                content=ft.Row([self.table],
-                               scroll=ft.ScrollMode.ADAPTIVE),
+                content=self.table,
                 bgcolor=ft.Colors.WHITE,
                 border_radius=10,
                 border=ft.Border.all(1, "#e2e8f0"),
@@ -339,7 +349,7 @@ class BackupView:
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
 
-        # ---- ROOT: same shape as PaymentsTab ----
+        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -400,6 +410,10 @@ class BackupView:
             self.backup_files = []
             self._selected_backup_idx = None
             scanned_dirs = self._scan_all_dirs()
+
+            print(f"[BACKUP] scanning {len(scanned_dirs)} folder(s):")
+            for d in scanned_dirs:
+                print(f"[BACKUP]   → {d}")
 
             history_names = set()
             try:
@@ -621,7 +635,7 @@ class BackupView:
                         ft.Text(
                             f"📁 {Path(backup['folder']).name}",
                             size=9, color=ft.Colors.GREY_600),
-                    ], spacing=8, wrap=True),
+                    ], spacing=8),
                     ft.Row([
                         ft.IconButton(
                             ft.Icons.DOWNLOAD, icon_size=20,
@@ -760,39 +774,6 @@ class BackupView:
                 self._snack(
                     f"✅ Backup created: {Path(backup_path).name}",
                     ft.Colors.GREEN_700)
-                info = ft.AlertDialog(
-                    modal=True,
-                    title=ft.Row([
-                        ft.Icon(ft.Icons.CHECK_CIRCLE,
-                                color="#059669"),
-                        ft.Text("Backup Created",
-                                weight=ft.FontWeight.BOLD),
-                    ], spacing=8),
-                    content=ft.Column([
-                        ft.Text("Saved to:",
-                                size=11, weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.GREY_700),
-                        ft.Container(
-                            content=ft.Text(str(backup_path), size=11,
-                                            selectable=True,
-                                            color="#1e40af"),
-                            padding=10, bgcolor="#f0f9ff",
-                            border_radius=6,
-                            border=ft.Border.all(1, "#bae6fd")),
-                        ft.Container(height=6),
-                        ft.Text(
-                            "💡 Tip: Use the ⬇️ Download button "
-                            "to save a copy to your PC.",
-                            size=10, color=ft.Colors.GREY_600,
-                            italic=True),
-                    ], spacing=8, tight=True),
-                    actions=[
-                        ft.TextButton(
-                            content=ft.Text("OK"),
-                            on_click=lambda _:
-                                self.page_ref.pop_dialog()),
-                    ])
-                self.page_ref.show_dialog(info)
             except Exception as ex:
                 print(f"[BACKUP] create error: {ex}")
                 traceback.print_exc()
@@ -835,7 +816,7 @@ class BackupView:
                 self._show_status("⏳ Creating safety backup…",
                                   ft.Colors.BLUE_700)
                 self._safe_update()
-                safety = self.db.create_backup()
+                self.db.create_backup()
                 self._show_status("⏳ Restoring backup…",
                                   ft.Colors.BLUE_700)
                 self._safe_update()
@@ -1053,3 +1034,8 @@ class BackupView:
 
 
 BackupTab = BackupView
+
+
+# =================================================================================
+# END
+# =================================================================================
