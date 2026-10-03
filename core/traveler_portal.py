@@ -1,8 +1,11 @@
 # =================================================================================
 # core/traveler_portal.py — Traveler authentication + data aggregation
 # =================================================================================
-# v1.3 — Fully DataFrame-safe. All DB calls wrapped in _to_list() / _to_dict()
-#        so it works whether db.get_*() returns a list or a pandas DataFrame.
+# v1.4 — Added CAPTCHA integration
+#   • New section 5: traveler-specific CAPTCHA wrapper functions
+#   • authenticate_traveler_with_captcha() — enforces CAPTCHA before auth
+#   • get_captcha_new() / check_captcha_answer() — public helpers for FastAPI
+#   • All previous functions unchanged (v1.3 behavior preserved)
 # =================================================================================
 
 import os
@@ -10,6 +13,31 @@ import json
 import secrets
 import time
 from datetime import datetime
+
+# Try to import the captcha module (self-hosted math CAPTCHA)
+try:
+    from core.captcha import (
+        generate_math_captcha,
+        verify_math_captcha,
+        invalidate_captcha,
+        get_captcha_stats,
+    )
+    _CAPTCHA_AVAILABLE = True
+except ImportError:
+    print("[TRAVELER] ⚠️ captcha.py missing — CAPTCHA disabled")
+    _CAPTCHA_AVAILABLE = False
+
+    def generate_math_captcha(sid):
+        return {"question": "0 + 0", "session_id": sid, "expires_in": 300}
+
+    def verify_math_captcha(sid, ans):
+        return True, "ok"
+
+    def invalidate_captcha(sid):
+        return None
+
+    def get_captcha_stats():
+        return {"pending": 0, "max_attempts": 0, "ttl_seconds": 0}
 
 
 # =================================================================================
@@ -680,3 +708,108 @@ def build_traveler_view(db, traveler: dict) -> dict:
         "summary": summary,
         "kpis": kpis,
     }
+
+
+# =================================================================================
+# 5 — CAPTCHA (NEW — v1.4)
+# =================================================================================
+# These helpers wrap core.captcha with a "traveler:" namespace prefix so
+# that traveler CAPTCHAs don't collide with admin CAPTCHAs in the same
+# process. The FastAPI endpoints in main.py call these functions.
+
+def get_captcha_new(session_id: str = "") -> dict:
+    """
+    Generate a new traveler CAPTCHA.
+
+    Returns:
+        {
+            "ok": True,
+            "session_id": "<uuid or passthrough>",
+            "question": "7 + 3",
+            "expires_in": 300,
+        }
+    """
+    if not session_id:
+        session_id = secrets.token_urlsafe(16)
+
+    internal_key = f"traveler:{session_id}"
+    try:
+        challenge = generate_math_captcha(internal_key)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "question": challenge["question"],
+            "expires_in": challenge.get("expires_in", 300),
+        }
+    except Exception as e:
+        print(f"[TRAVELER] captcha generate failed: {e}")
+        return {"ok": False, "detail": str(e)}
+
+
+def check_captcha_answer(session_id: str, answer: str) -> dict:
+    """
+    Verify a traveler's CAPTCHA answer.
+
+    Returns:
+        {"ok": True, "reason": "ok"}
+        {"ok": False, "reason": "wrong"|"expired"|"empty"|...}
+    """
+    if not session_id:
+        return {"ok": False, "reason": "no_session"}
+    if answer is None:
+        answer = ""
+
+    internal_key = f"traveler:{session_id}"
+    try:
+        ok, reason = verify_math_captcha(internal_key, answer)
+        return {"ok": ok, "reason": reason}
+    except Exception as e:
+        print(f"[TRAVELER] captcha verify failed: {e}")
+        return {"ok": False, "reason": "error", "detail": str(e)}
+
+
+def invalidate_captcha_for(session_id: str):
+    """Invalidate a traveler's CAPTCHA after successful login."""
+    if not session_id:
+        return
+    internal_key = f"traveler:{session_id}"
+    try:
+        invalidate_captcha(internal_key)
+    except Exception:
+        pass
+
+
+def authenticate_traveler_with_captcha(db, passport_no, pin,
+                                       captcha_session_id,
+                                       captcha_answer):
+    """
+    Combined authentication:
+      1. Verify CAPTCHA first
+      2. Then verify passport + PIN
+
+    Returns:
+        (traveler_dict, None)          on success
+        (None, error_message)          on any failure
+        (None, "captcha:<reason>")     on CAPTCHA failure (so the caller
+                                       can decide which HTTP status code
+                                       to send back)
+    """
+    # ---- Step 1: CAPTCHA ----
+    if _CAPTCHA_AVAILABLE:
+        result = check_captcha_answer(captcha_session_id, captcha_answer)
+        if not result.get("ok"):
+            reason = result.get("reason", "wrong")
+            return None, f"captcha:{reason}"
+
+    # ---- Step 2: Credentials ----
+    traveler, err = authenticate_traveler(db, passport_no, pin)
+    if not traveler:
+        return None, err
+
+    # ---- Step 3: Invalidate CAPTCHA on success ----
+    try:
+        invalidate_captcha_for(captcha_session_id)
+    except Exception:
+        pass
+
+    return traveler, None
