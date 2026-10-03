@@ -1,12 +1,25 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v4.0 — Fixed grey box (payload size reduction via ExpansionTile accordion)
-#   • Each section in its own ExpansionTile — collapsed by default
-#   • Only Hero Section starts expanded → ~500 widgets instead of ~10,000
-#   • Plain class, self.root = ft.Container(...expand=True)
-#   • build() returns self.root
-#   • No nested scroll containers, no fixed-height wrappers around lists
+# v4.0 — Numbered sections, accordion layout, Flet 1.0.3 compatible
+#
+# SECTION MAP (use these numbers in future bug reports):
+#   [1] Header             _section_1_header
+#   [2] Hero Section       _section_2_hero
+#   [3] Alert Banner       _section_3_alert
+#   [4] Features           _section_4_features
+#   [5] Packages Section   _section_5_packages    (batch list)
+#   [6] About Section      _section_6_about
+#   [7] Contact Info       _section_7_contact
+#   [8] Social Links       _section_8_social
+#   [9] Footer             _section_9_footer
+#   [10] Action Bar        _section_10_action_bar
+#
+# HELPERS:
+#   [H1] _field / _two_col
+#   [H2] _accordion_section
+#   [H3] _collect_config
+#   [H4] _save / _reset_confirm / _open_preview
 # =================================================================================
 
 import json
@@ -39,6 +52,9 @@ PAGE_BG      = "#f1f5f9"
 # =================================================================================
 class FrontPageSettingsTab:
 
+    # -----------------------------------------------------------------------------
+    # [0] __init__
+    # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         self.page_ref = page
         self.db = db
@@ -101,9 +117,13 @@ class FrontPageSettingsTab:
             self.root = self._error_ui(e)
 
     # -----------------------------------------------------------------------------
+    # [0.1] build
+    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
+    # -----------------------------------------------------------------------------
+    # [0.2] refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
@@ -115,6 +135,9 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE_SETTINGS] refresh failed: {ex}")
             traceback.print_exc()
 
+    # -----------------------------------------------------------------------------
+    # [0.3] _load_batches
+    # -----------------------------------------------------------------------------
     def _load_batches(self):
         try:
             if hasattr(self.db, "reload"):
@@ -127,6 +150,9 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE_SETTINGS] get_batches failed: {e}")
             self.all_batches = []
 
+    # -----------------------------------------------------------------------------
+    # [0.4] _error_ui
+    # -----------------------------------------------------------------------------
     def _error_ui(self, exc):
         return ft.Container(
             content=ft.Column([
@@ -142,7 +168,7 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # ROOT BUILD — accordion layout to keep initial payload small
+    # [ROOT] _build_root — accordion layout to keep payload small
     # =============================================================================
     def _build_root(self):
         self.feature_entries = []
@@ -151,56 +177,60 @@ class FrontPageSettingsTab:
 
         inner_column = ft.Column(
             controls=[
-                self._header(),
+                # [1] Header (always visible)
+                self._section_1_header(),
                 ft.Container(height=8),
 
+                # [2-9] Sections inside collapsible accordion
                 self._accordion_section(
-                    "🎯  Hero Section",
+                    "1.  🎯  Hero Section",
                     "The big banner at the top of the page",
-                    self._section_hero,
+                    self._section_2_hero,
                     expanded=True),
 
                 self._accordion_section(
-                    "⚠️  Alert Banner",
-                    "Optional top-of-page announcement",
-                    self._section_alert),
+                    "2.  ⚠️  Alert Banner",
+                    "Optional top-of-page announcement for visitors",
+                    self._section_3_alert),
 
                 self._accordion_section(
-                    "✨  Features / Why Choose Us",
-                    "Up to 6 feature cards on the front page",
-                    self._section_features),
+                    "3.  ✨  Features / Why Choose Us",
+                    "Up to 6 feature cards shown on the front page",
+                    self._section_4_features),
 
                 self._accordion_section(
-                    "📦  Packages Section",
-                    "Packages drawn from real batches",
-                    self._section_packages),
+                    "4.  📦  Packages Section",
+                    "Packages drawn from real batches (auto-updated)",
+                    self._section_5_packages),
 
                 self._accordion_section(
-                    "📖  About Section",
+                    "5.  📖  About Section",
                     "The 'About Us' block with statistics",
-                    self._section_about),
+                    self._section_6_about),
 
                 self._accordion_section(
-                    "📞  Contact Information",
-                    "Shown in top bar, contact section and footer",
-                    self._section_contact),
+                    "6.  📞  Contact Information",
+                    "Shown in top bar, contact section, and footer",
+                    self._section_7_contact),
 
                 self._accordion_section(
-                    "🔗  Social Links",
+                    "7.  🔗  Social Links",
                     "Leave empty to hide a network",
-                    self._section_social),
+                    self._section_8_social),
 
                 self._accordion_section(
-                    "📝  Footer",
+                    "8.  📝  Footer",
                     "Bottom-of-page content",
-                    self._section_footer),
+                    self._section_9_footer),
 
                 ft.Container(height=12),
-                self._action_bar(),
+
+                # [10] Action bar
+                self._section_10_action_bar(),
                 ft.Container(height=20),
             ],
             spacing=6,
-            scroll=ft.ScrollMode.AUTO,      # ← ONLY scroll in the file
+            scroll=ft.ScrollMode.AUTO,   # ← ONLY scroll in the file
         )
 
         self.root = ft.Container(
@@ -210,12 +240,16 @@ class FrontPageSettingsTab:
             expand=True,
         )
 
-    # -----------------------------------------------------------------------------
-    # Accordion section wrapper
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # [H2] _accordion_section — wraps each section in an ExpansionTile
+    # =============================================================================
     def _accordion_section(self, title, subtitle, builder_fn,
                            expanded=False):
-        """Wrap a section builder in a collapsible card."""
+        """
+        Flet 1.0.3-compatible accordion wrapper.
+          • parameter is `expanded=` (NOT initially_expanded=)
+          • child list is `content=Column([...])` (NOT controls=[...])
+        """
         body = builder_fn()
 
         header_col = ft.Column([
@@ -234,20 +268,21 @@ class FrontPageSettingsTab:
                     horizontal=14, vertical=6),
                 controls_padding=ft.Padding.only(
                     left=14, right=14, bottom=14),
-                controls=[
+                content=ft.Column([
                     ft.Divider(height=1, color=BORDER),
                     ft.Container(content=body,
                                  padding=ft.Padding.only(top=8)),
-                ]),
+                ], spacing=0),
+            ),
             bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
             border_radius=12,
         )
 
-    # -----------------------------------------------------------------------------
-    # Header
-    # -----------------------------------------------------------------------------
-    def _header(self):
+    # =============================================================================
+    # [1] _section_1_header
+    # =============================================================================
+    def _section_1_header(self):
         return ft.Container(
             content=ft.ResponsiveRow(
                 controls=[
@@ -265,8 +300,10 @@ class FrontPageSettingsTab:
                                         weight=ft.FontWeight.BOLD,
                                         color=ft.Colors.WHITE,
                                         no_wrap=False, max_lines=2),
-                                ft.Text("Edit your public landing page",
-                                        size=10, color="#c7d2fe"),
+                                ft.Text(
+                                    "Edit everything visitors see at "
+                                    "alhudhahaj.work",
+                                    size=10, color="#c7d2fe"),
                             ], spacing=2, expand=True),
                         ], spacing=10),
                         col={"xs": 12, "sm": 12, "md": 8}),
@@ -274,9 +311,10 @@ class FrontPageSettingsTab:
                         content=ft.Row([
                             ft.Button(
                                 content=ft.Row([
-                                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=14,
+                                    ft.Icon(ft.Icons.OPEN_IN_NEW,
+                                            size=14,
                                             color=ft.Colors.WHITE),
-                                    ft.Text("Preview", size=11,
+                                    ft.Text("Preview Site", size=11,
                                             color=ft.Colors.WHITE,
                                             weight=ft.FontWeight.BOLD),
                                 ], spacing=5, tight=True),
@@ -296,39 +334,13 @@ class FrontPageSettingsTab:
                 colors=[PRIMARY, PRIMARY_LT, ACCENT]),
             border_radius=14)
 
-    # -----------------------------------------------------------------------------
-    # Field helpers
-    # -----------------------------------------------------------------------------
-    def _field(self, label, value, **kwargs):
-        defaults = dict(
-            label=label,
-            value=value or "",
-            text_size=12,
-            border_color=BORDER,
-            focused_border_color=PRIMARY_LT,
-            border_radius=8,
-            content_padding=ft.Padding.symmetric(
-                horizontal=10, vertical=10),
-        )
-        defaults.update(kwargs)
-        return ft.TextField(**defaults)
-
-    def _two_col(self, left, right):
-        return ft.ResponsiveRow(
-            controls=[
-                ft.Container(content=left,
-                             col={"xs": 12, "sm": 12, "md": 6}),
-                ft.Container(content=right,
-                             col={"xs": 12, "sm": 12, "md": 6}),
-            ],
-            spacing=10, run_spacing=10)
-
     # =============================================================================
-    # SECTION: Hero
+    # [2] _section_2_hero
     # =============================================================================
-    def _section_hero(self):
+    def _section_2_hero(self):
         h = self.cfg.get("hero", {})
-        self.hero_heading = self._field("Heading", h.get("heading", ""))
+        self.hero_heading = self._field(
+            "Heading", h.get("heading", ""))
         self.hero_subheading = self._field(
             "Subheading", h.get("subheading", ""),
             multiline=True, min_lines=2, max_lines=3)
@@ -344,9 +356,9 @@ class FrontPageSettingsTab:
         ], spacing=10)
 
     # =============================================================================
-    # SECTION: Alert
+    # [3] _section_3_alert
     # =============================================================================
-    def _section_alert(self):
+    def _section_3_alert(self):
         a = self.cfg.get("alert", {})
         self.alert_enabled = ft.Switch(
             label="Show alert banner",
@@ -380,9 +392,9 @@ class FrontPageSettingsTab:
         ], spacing=10)
 
     # =============================================================================
-    # SECTION: Features
+    # [4] _section_4_features
     # =============================================================================
-    def _section_features(self):
+    def _section_4_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
         self.feature_entries = []
 
@@ -394,7 +406,8 @@ class FrontPageSettingsTab:
 
         add_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
+                ft.Icon(ft.Icons.ADD, size=14,
+                        color=ft.Colors.WHITE),
                 ft.Text("Add Feature", size=11,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
@@ -426,7 +439,8 @@ class FrontPageSettingsTab:
         def remove(ev, _entry=entry):
             try:
                 self.feature_entries.remove(_entry)
-                self.feature_rows_container.controls.remove(_entry["row"])
+                self.feature_rows_container.controls.remove(
+                    _entry["row"])
                 self._safe_update()
             except Exception:
                 pass
@@ -463,9 +477,9 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # =============================================================================
-    # SECTION: Packages  (batch list, no nested scroll)
+    # [5] _section_5_packages
     # =============================================================================
-    def _section_packages(self):
+    def _section_5_packages(self):
         p = self.cfg.get("packages", {})
 
         self.pkg_title = self._field(
@@ -493,10 +507,10 @@ class FrontPageSettingsTab:
             str(p.get("max_shown", 6)))
 
         select_all_btn = ft.TextButton(
-            content=ft.Text("✓ All", size=11, color=SUCCESS),
+            content=ft.Text("✓ Select All", size=11, color=SUCCESS),
             on_click=lambda e: self._toggle_batches(True))
         clear_all_btn = ft.TextButton(
-            content=ft.Text("✗ Clear", size=11, color=DANGER),
+            content=ft.Text("✗ Clear All", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
         selected_ids = set(str(x) for x in
@@ -515,7 +529,7 @@ class FrontPageSettingsTab:
                 name = str(b.get("batch_name", bid))
                 status = str(b.get("status", ""))
                 price = b.get("price", 0)
-                label = f"{name} · {status} · ₹{price:,.0f}"
+                label = f"{name}  ·  {status}  ·  ₹{price:,.0f}"
 
                 cb = ft.Checkbox(
                     label=label,
@@ -527,7 +541,7 @@ class FrontPageSettingsTab:
         self.pkg_batch_container = ft.Column(
             batch_controls, spacing=4)
 
-        # No outer Container with bgcolor/height — plain Column
+        # No nested scroll, no fixed height, no bgcolor wrapper
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
@@ -558,7 +572,8 @@ class FrontPageSettingsTab:
 
     def _update_source_visibility(self):
         try:
-            is_batches = (self.pkg_source.value or "batches") == "batches"
+            is_batches = (self.pkg_source.value or
+                          "batches") == "batches"
             self._batch_ui.visible = is_batches
         except Exception:
             pass
@@ -569,9 +584,9 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # =============================================================================
-    # SECTION: About
+    # [6] _section_6_about
     # =============================================================================
-    def _section_about(self):
+    def _section_6_about(self):
         a = self.cfg.get("about", {})
         self.about_heading = self._field(
             "Heading", a.get("heading", ""))
@@ -586,11 +601,13 @@ class FrontPageSettingsTab:
         self.stat_entries = []
 
         for st in (a.get("stats") or []):
-            self._add_stat_row(st.get("number", ""), st.get("label", ""))
+            self._add_stat_row(st.get("number", ""),
+                               st.get("label", ""))
 
         add_stat_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
+                ft.Icon(ft.Icons.ADD, size=14,
+                        color=ft.Colors.WHITE),
                 ft.Text("Add Statistic", size=11,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
@@ -616,14 +633,17 @@ class FrontPageSettingsTab:
         num_field = self._field(
             "Number", number_val, hint_text="e.g. 25+")
         lbl_field = self._field(
-            "Label", label_val, hint_text="e.g. Years Experience")
+            "Label", label_val,
+            hint_text="e.g. Years Experience")
 
-        entry = {"number": num_field, "label": lbl_field, "row": None}
+        entry = {"number": num_field, "label": lbl_field,
+                 "row": None}
 
         def remove(ev, _entry=entry):
             try:
                 self.stat_entries.remove(_entry)
-                self.stats_rows_container.controls.remove(_entry["row"])
+                self.stats_rows_container.controls.remove(
+                    _entry["row"])
                 self._safe_update()
             except Exception:
                 pass
@@ -651,9 +671,9 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # =============================================================================
-    # SECTION: Contact
+    # [7] _section_7_contact
     # =============================================================================
-    def _section_contact(self):
+    def _section_7_contact(self):
         c = self.cfg.get("contact", {})
         self.contact_phone = self._field(
             "Primary phone", c.get("phone", ""))
@@ -677,9 +697,9 @@ class FrontPageSettingsTab:
         ], spacing=10)
 
     # =============================================================================
-    # SECTION: Social
+    # [8] _section_8_social
     # =============================================================================
-    def _section_social(self):
+    def _section_8_social(self):
         s = self.cfg.get("social", {})
         self.social_facebook = self._field(
             "Facebook URL", s.get("facebook", ""))
@@ -695,9 +715,9 @@ class FrontPageSettingsTab:
         ], spacing=10)
 
     # =============================================================================
-    # SECTION: Footer
+    # [9] _section_9_footer
     # =============================================================================
-    def _section_footer(self):
+    def _section_9_footer(self):
         f = self.cfg.get("footer", {})
         self.footer_about = self._field(
             "Footer about text", f.get("about_text", ""),
@@ -711,12 +731,13 @@ class FrontPageSettingsTab:
         ], spacing=10)
 
     # =============================================================================
-    # Action bar
+    # [10] _section_10_action_bar
     # =============================================================================
-    def _action_bar(self):
+    def _section_10_action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
-                ft.Icon(ft.Icons.SAVE, size=16, color=ft.Colors.WHITE),
+                ft.Icon(ft.Icons.SAVE, size=16,
+                        color=ft.Colors.WHITE),
                 ft.Text("Save", size=12,
                         color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
@@ -772,8 +793,9 @@ class FrontPageSettingsTab:
                         ft.Container(content=preview_btn,
                                      col={"xs": 6, "sm": 4, "md": 3}),
                         ft.Container(
-                            content=ft.Row([reset_btn],
-                                           alignment=ft.MainAxisAlignment.END),
+                            content=ft.Row(
+                                [reset_btn],
+                                alignment=ft.MainAxisAlignment.END),
                             col={"xs": 6, "sm": 12, "md": 3}),
                     ],
                     spacing=8, run_spacing=8),
@@ -785,7 +807,34 @@ class FrontPageSettingsTab:
             border_radius=14)
 
     # =============================================================================
-    # ACTIONS
+    # [H1] Field helpers
+    # =============================================================================
+    def _field(self, label, value, **kwargs):
+        defaults = dict(
+            label=label,
+            value=value or "",
+            text_size=12,
+            border_color=BORDER,
+            focused_border_color=PRIMARY_LT,
+            border_radius=8,
+            content_padding=ft.Padding.symmetric(
+                horizontal=10, vertical=10),
+        )
+        defaults.update(kwargs)
+        return ft.TextField(**defaults)
+
+    def _two_col(self, left, right):
+        return ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=left,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+                ft.Container(content=right,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+            ],
+            spacing=10, run_spacing=10)
+
+    # =============================================================================
+    # [H3] _collect_config
     # =============================================================================
     def _collect_config(self) -> dict:
         try:
@@ -807,7 +856,8 @@ class FrontPageSettingsTab:
             if not title and not text:
                 continue
             features.append({
-                "icon": (entry["icon"].value or "fa-check-circle").strip(),
+                "icon": (entry["icon"].value or
+                         "fa-check-circle").strip(),
                 "title": title,
                 "text": text,
             })
@@ -874,6 +924,9 @@ class FrontPageSettingsTab:
             },
         }
 
+    # =============================================================================
+    # [H4] _save / _reset_confirm / _open_preview
+    # =============================================================================
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -882,7 +935,8 @@ class FrontPageSettingsTab:
                 self.cfg = cfg
                 self._set_status(
                     f"✅ Saved at "
-                    f"{datetime.now().strftime('%H:%M:%S')}",
+                    f"{datetime.now().strftime('%H:%M:%S')}. "
+                    f"Reload the front page to see changes.",
                     SUCCESS)
                 self._snack("✅ Front page settings saved")
                 try:
@@ -893,8 +947,8 @@ class FrontPageSettingsTab:
                 except Exception:
                     pass
             else:
-                self._set_status("❌ Save failed — check server logs",
-                                 DANGER)
+                self._set_status(
+                    "❌ Save failed — check server logs", DANGER)
         except Exception as ex:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
@@ -927,7 +981,8 @@ class FrontPageSettingsTab:
             ], spacing=8),
             content=ft.Text(
                 "This will discard your custom front-page settings and "
-                "restore the original defaults.\n\nThis cannot be undone.",
+                "restore the original defaults.\n\n"
+                "This cannot be undone.",
                 size=11),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel", size=11),
@@ -969,6 +1024,9 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
+    # =============================================================================
+    # Helpers
+    # =============================================================================
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
