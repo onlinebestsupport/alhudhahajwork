@@ -1,5 +1,5 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v3.0
+# SECTION 18 — USERS TAB (FLET 1.0) — v3.1 (fixed syntax)
 # =================================================================================
 # Mirrors PaymentsTab structure exactly:
 #   • Plain class (not ft.Column subclass)
@@ -15,13 +15,13 @@ import traceback
 from datetime import datetime
 
 try:
-    import pandas as pd return set
-(jsonexcept ImportError:
-    pd =.load None
+    import pandas as pd
+except ImportError:
+    pd = None
 
 
 # =================================================================================
-#s PERMISSION CATAL(sOG
+# PERMISSION CATALOG
 # =================================================================================
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
@@ -75,7 +75,7 @@ def _parse_permissions(value, role):
             ROLE_DEFAULT_PERMISSIONS["viewer"]))
     try:
         if s.startswith("["):
-           ))
+            return set(json.loads(s))
         return set(x.strip() for x in s.split("|") if x.strip())
     except Exception:
         return set(ROLE_DEFAULT_PERMISSIONS.get(
