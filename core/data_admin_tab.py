@@ -1,22 +1,15 @@
 # =================================================================================
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
-# v1.0 — Data Administration tab
+# v1.1 — Added Reset Activity Log button
 #   • Lists every CSV in /app/data
 #   • Row count + column names + size + last modified
-#   • Download individual CSV (browser)
-#   • Upload CSV to replace a table (with auto-backup + column validation)
+#   • Download individual CSV / Upload CSV to replace
 #   • Export ALL CSVs as ZIP bundle
-#   • View sample rows of any table
+#   • Preview sample rows of any table
 #   • Create manual backup snapshot
+#   • NEW: Reset activity_log.csv (with backup + confirmation)
 #   • Restricted to super_admin role only
-#
-# SECTION INDEX:
-#   [1] Header
-#   [2] Stats cards
-#   [3] Toolbar (Export All, Refresh, Create Backup)
-#   [4] Table cards (one per CSV)
-#   [5] Status line
 # =================================================================================
 
 import io
@@ -79,7 +72,6 @@ class DataAdminTab:
         self.current_user = current_user or {}
         self.data_dir = Path("/app/data")
 
-        # UI refs
         self.stats_labels = {}
         self.cards_container = None
         self.status_label = None
@@ -88,7 +80,6 @@ class DataAdminTab:
         self._picker_registered = False
         self._pending_upload_table = None
 
-        # Access check
         role = _safe_str(self.current_user.get("role", "")).lower()
         if role != "super_admin":
             print(f"[DATA-ADMIN] ⛔ Access denied (role={role})")
@@ -112,7 +103,6 @@ class DataAdminTab:
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
     def _is_narrow(self):
         try:
             w = self.page_ref.width
@@ -122,7 +112,6 @@ class DataAdminTab:
         except Exception:
             return False
 
-    # -----------------------------------------------------------------------------
     def _access_denied_ui(self):
         return ft.Container(
             content=ft.Column([
@@ -160,7 +149,7 @@ class DataAdminTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # [ROOT] setup_ui
+    # setup_ui
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -245,6 +234,11 @@ class DataAdminTab:
                 bgcolor=color,
                 expand=expand)
 
+        # NEW: Reset Activity Log button (danger — red)
+        reset_log_btn = _btn(
+            "Reset Activity Log", ft.Icons.DELETE_SWEEP,
+            "#991b1b", self.reset_activity_log_confirm, expand=narrow)
+
         if narrow:
             toolbar_inner = ft.Column([
                 _btn("Export All (ZIP)", ft.Icons.DOWNLOAD,
@@ -253,6 +247,7 @@ class DataAdminTab:
                      "#059669", self.create_backup, expand=True),
                 _btn("Refresh List", ft.Icons.REFRESH,
                      "#2563eb", self.refresh, expand=True),
+                reset_log_btn,
             ], spacing=8)
         else:
             toolbar_inner = ft.Column([
@@ -264,7 +259,10 @@ class DataAdminTab:
                     _btn("Refresh List", ft.Icons.REFRESH,
                          "#2563eb", self.refresh),
                 ], spacing=8),
-            ], spacing=0)
+                ft.Row([
+                    reset_log_btn,
+                ], spacing=8),
+            ], spacing=8)
 
         toolbar = ft.Container(
             content=toolbar_inner,
@@ -343,7 +341,7 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] picker registration failed: {ex}")
 
     # =============================================================================
-    # refresh — scan /app/data and render cards
+    # refresh
     # =============================================================================
     def refresh(self, e=None):
         try:
@@ -357,7 +355,6 @@ class DataAdminTab:
                 try:
                     df = pd.read_csv(csv_file, nrows=0)
                     col_names = list(df.columns)
-                    # count rows quickly
                     with open(csv_file, "r", encoding="utf-8") as fh:
                         row_count = max(0, sum(1 for _ in fh) - 1)
                     size = csv_file.stat().st_size
@@ -373,7 +370,6 @@ class DataAdminTab:
                 except Exception as ex:
                     print(f"[DATA-ADMIN] cannot read {csv_file}: {ex}")
 
-            # Count backups
             backup_count = 0
             try:
                 backup_dir = self.data_dir / "backups"
@@ -382,7 +378,6 @@ class DataAdminTab:
             except Exception:
                 pass
 
-            # Update stats
             self.stats_labels["tables"].value = str(len(csvs))
             self.stats_labels["rows"].value = str(total_rows)
             self.stats_labels["size"].value = _human_size(total_size)
@@ -403,7 +398,6 @@ class DataAdminTab:
     def _build_table_card(self, name, rows, size, cols, mtime):
         narrow = self._is_narrow()
 
-        # Column chips
         chips = []
         for c in cols[:8]:
             chips.append(
@@ -494,10 +488,152 @@ class DataAdminTab:
             border_radius=10)
 
     # =============================================================================
-    # ACTIONS
+    # NEW: Reset Activity Log
     # =============================================================================
+    def reset_activity_log_confirm(self, e=None):
+        """Show confirmation dialog, then clear activity_log.csv."""
+        log_path = self.data_dir / "activity_log.csv"
 
-    # -------- Download individual CSV --------
+        if not log_path.exists():
+            self._snack("⚠️ activity_log.csv not found",
+                        ft.Colors.ORANGE_700)
+            return
+
+        # Count current rows
+        try:
+            with open(log_path, "r", encoding="utf-8") as fh:
+                current_rows = max(0, sum(1 for _ in fh) - 1)
+        except Exception:
+            current_rows = 0
+
+        # Get header (first line)
+        header_line = ""
+        try:
+            with open(log_path, "r", encoding="utf-8") as fh:
+                header_line = fh.readline().strip()
+        except Exception:
+            pass
+
+        def do_reset(ev):
+            try:
+                self.page_ref.pop_dialog()
+            except Exception:
+                pass
+
+            try:
+                # 1. Backup the current log first
+                backup_dir = self.data_dir / "backups"
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = backup_dir / f"activity_log.{stamp}.pre-reset.bak"
+                shutil.copy2(log_path, backup_path)
+                print(f"[DATA-ADMIN] activity log backup: {backup_path}")
+
+                # 2. Rewrite the file with only the header
+                if header_line:
+                    with open(log_path, "w",
+                              encoding="utf-8") as fh:
+                        fh.write(header_line + "\n")
+                else:
+                    # fallback — write a default header
+                    with open(log_path, "w",
+                              encoding="utf-8") as fh:
+                        fh.write("timestamp,user_id,action,details\n")
+
+                # 3. Try to reload DB cache so other views see empty log
+                try:
+                    if hasattr(self.db, "reload_activity_log"):
+                        self.db.reload_activity_log()
+                    elif hasattr(self.db, "reload_all"):
+                        self.db.reload_all()
+                except Exception:
+                    pass
+
+                self.refresh()
+                self._snack(
+                    f"✅ Activity log cleared — "
+                    f"{current_rows} rows removed.\n"
+                    f"Backup saved: {backup_path.name}",
+                    ft.Colors.GREEN_700)
+
+                # Log the reset action itself (fresh entry)
+                try:
+                    self.db.log_activity(
+                        self.current_user.get("id"),
+                        "reset_activity_log",
+                        f"Cleared {current_rows} activity log rows")
+                except Exception:
+                    pass
+
+            except Exception as ex:
+                print(f"[DATA-ADMIN] reset log error: {ex}")
+                traceback.print_exc()
+                self._snack(f"❌ Reset failed: {ex}",
+                            ft.Colors.RED_500)
+
+        def cancel(ev):
+            try:
+                self.page_ref.pop_dialog()
+            except Exception:
+                pass
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER, size=24,
+                        color="#dc2626"),
+                ft.Text("Reset Activity Log?",
+                        weight=ft.FontWeight.BOLD, size=15),
+            ], spacing=8),
+            content=ft.Column([
+                ft.Text(
+                    f"This will permanently delete ALL "
+                    f"activity log entries.",
+                    size=12),
+                ft.Container(height=8),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text(f"📊 Current entries:  {current_rows}",
+                                size=11, weight=ft.FontWeight.BOLD,
+                                color="#991b1b"),
+                        ft.Text(f"📁 File:  activity_log.csv",
+                                size=11, color="#991b1b"),
+                        ft.Text(f"💾 Backup:  will be saved to "
+                                f"/app/data/backups/",
+                                size=11, color="#991b1b"),
+                    ], spacing=4),
+                    padding=10, bgcolor="#fee2e2",
+                    border_radius=6,
+                    border=ft.Border.all(1, "#fecaca")),
+                ft.Container(height=8),
+                ft.Text(
+                    "⚠️ A timestamped backup of the current log "
+                    "will be created BEFORE the reset. "
+                    "You can restore it from the Backups folder "
+                    "if needed.",
+                    size=10, color=ft.Colors.GREY_600,
+                    italic=True),
+            ], spacing=6, tight=True),
+            actions=[
+                ft.TextButton(
+                    content=ft.Text("Cancel"),
+                    on_click=cancel),
+                ft.Button(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.DELETE_SWEEP, size=16,
+                                color=ft.Colors.WHITE),
+                        ft.Text("Reset Now",
+                                color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD),
+                    ], spacing=6, tight=True),
+                    on_click=do_reset,
+                    bgcolor="#dc2626"),
+            ])
+        self.page_ref.show_dialog(dlg)
+
+    # =============================================================================
+    # ACTIONS — Download / Export / Backup / Preview / Upload
+    # =============================================================================
     def _download_csv(self, name):
         try:
             path = self.data_dir / name
@@ -516,7 +652,6 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] download error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -------- Export ALL as ZIP --------
     def export_all_zip(self, e=None):
         try:
             out_dir = Path("/tmp/alhudha_exports")
@@ -544,7 +679,6 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] export error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -------- Create backup now --------
     def create_backup(self, e=None):
         try:
             if hasattr(self.db, "create_backup"):
@@ -559,7 +693,6 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] backup error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -------- Preview first 20 rows --------
     def _preview_csv(self, name):
         try:
             path = self.data_dir / name
@@ -570,7 +703,6 @@ class DataAdminTab:
             full_df = pd.read_csv(path, usecols=[0])
             total_rows = len(full_df)
 
-            # Build readable preview
             lines = []
             lines.append(" | ".join(str(c)[:15] for c in df.columns))
             lines.append("─" * 80)
@@ -609,9 +741,7 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] preview error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
-    # -------- Upload CSV to replace table --------
     def _upload_csv(self, name):
-        """Ask for confirmation, then open file picker."""
         def do_pick(ev):
             try:
                 self.page_ref.pop_dialog()
@@ -686,7 +816,6 @@ class DataAdminTab:
         self.page_ref.show_dialog(dialog)
 
     def _do_upload(self, file_obj):
-        """Process the selected file."""
         name = self._pending_upload_table
         if not name:
             return
@@ -694,7 +823,6 @@ class DataAdminTab:
             data = getattr(file_obj, "bytes", None)
             fname = getattr(file_obj, "name", "upload.csv")
             if not data:
-                # fallback for some Flet versions
                 src = getattr(file_obj, "path", None)
                 if src and os.path.exists(src):
                     with open(src, "rb") as fh:
@@ -706,7 +834,6 @@ class DataAdminTab:
             new_df = pd.read_csv(io.BytesIO(data))
             target = self.data_dir / name
 
-            # Validate columns against existing
             try:
                 old_df = pd.read_csv(target, nrows=0)
                 old_cols = list(old_df.columns)
@@ -717,12 +844,10 @@ class DataAdminTab:
                         f"⚠️ Missing columns: {', '.join(missing[:5])}",
                         ft.Colors.RED_500)
                     return
-                # reorder to match original
                 new_df = new_df.reindex(columns=old_cols)
             except Exception as e:
                 print(f"[DATA-ADMIN] column check skipped: {e}")
 
-            # Backup current file
             backup_dir = self.data_dir / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -731,10 +856,8 @@ class DataAdminTab:
                     target,
                     backup_dir / f"{name}.{stamp}.pre-upload.bak")
 
-            # Write new file
             new_df.to_csv(target, index=False, encoding="utf-8-sig")
 
-            # Try to reload DB caches
             try:
                 if hasattr(self.db, "reload_all"):
                     self.db.reload_all()
@@ -783,7 +906,6 @@ class DataAdminTab:
             pass
 
 
-# Alias for main_window.py
 DataAdminView = DataAdminTab
 
 
