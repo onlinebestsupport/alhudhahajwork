@@ -1,11 +1,11 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.4 — 2026-10-03
+# v1.5 — 2026-10-03
+#   • ✅ Back to Home uses launch_url(url, web_window_name="_self")
+#   • ✅ Same-tab navigation (no extra tab opens)
 #   • ✅ CAPTCHA on login (math, self-hosted)
-#   • ✅ Session persistence via page.client_storage
-#   • ✅ "Back to Home" button → redirects to /
-#   • ✅ Cancel button renamed to "Back to Home"
+#   • ✅ Session persistence helpers (used by main.py)
 #   • Logo, password hashing, Enter-to-submit preserved
 # =================================================================================
 
@@ -309,7 +309,7 @@ class LoginView:
             expand=True,
         )
 
-        # ---- Back to Home button (was "Cancel") ----
+        # ---- Back to Home button ----
         home_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(ft.Icons.HOME, size=16, color=ft.Colors.WHITE),
@@ -389,10 +389,17 @@ class LoginView:
         return self.root
 
     # -----------------------------------------------------------------------------
-    # 2.4.3 — _go_home (back to public front page)
+    # 2.4.3 — _go_home  (SAME-TAB navigation)
     # -----------------------------------------------------------------------------
     def _go_home(self, e=None):
+        """
+        Back to Home: navigate to / in the SAME browser tab.
+        Uses launch_url(url, web_window_name="_self") which maps to
+        JS window.open(url, "_self") — replaces the current tab.
+        """
         print("[LOGIN] Back to Home clicked")
+
+        # Preferred: ask parent (main.py) to handle navigation
         try:
             if self.on_cancel:
                 self.on_cancel()
@@ -400,16 +407,28 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] on_cancel failed: {ex}")
 
-        # Fallback: navigate to homepage
+        # Fallback 1: same-tab launch_url
         try:
-            self.page.go("/")
+            self.page.launch_url("/", web_window_name="_self")
+            print("[LOGIN] ✅ launch_url(_self) succeeded")
             return
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LOGIN] launch_url(_self) failed: {e}")
+
+        # Fallback 2: default launch_url (new tab)
         try:
             self.page.launch_url("/")
-        except Exception:
-            pass
+            print("[LOGIN] ⚠️ launch_url(default) opened new tab")
+            return
+        except Exception as e:
+            print(f"[LOGIN] launch_url(default) failed: {e}")
+
+        # Fallback 3: Flet's own go()
+        try:
+            self.page.go("/")
+            print("[LOGIN] ⚠️ page.go('/') attempted")
+        except Exception as e:
+            print(f"[LOGIN] page.go failed: {e}")
 
     # -----------------------------------------------------------------------------
     # 2.4.4 — CAPTCHA helpers
@@ -535,10 +554,10 @@ class LoginView:
         user = dict(match)
         user.pop("password_hash", None)
 
-        # ---- Save session to browser storage ----
+        # Save session to storage for auto-login on refresh
         save_session_to_storage(self.page, user)
 
-        # ---- Update last_login ----
+        # Update last_login
         try:
             if hasattr(self.db, "update_user"):
                 try:
@@ -551,13 +570,13 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] last_login update failed: {ex}")
 
-        # ---- Log activity ----
+        # Log activity
         try:
             self.db.log_activity(user["id"], "login", "User logged in")
         except Exception as ex:
             print(f"[LOGIN] log_activity failed: {ex}")
 
-        # ---- Notify parent ----
+        # Notify parent
         try:
             if self.on_login_success:
                 self.on_login_success(user)
