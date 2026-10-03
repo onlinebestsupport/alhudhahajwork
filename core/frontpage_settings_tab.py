@@ -229,7 +229,7 @@ class FrontPageSettingsTab:
         return ft.Container(
             content=ft.ExpansionTile(
                 title=header_col,
-                initially_expanded=expanded,
+                expanded=expanded,
                 tile_padding=ft.Padding.symmetric(
                     horizontal=14, vertical=6),
                 controls_padding=ft.Padding.only(
