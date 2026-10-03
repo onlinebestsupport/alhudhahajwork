@@ -1,12 +1,7 @@
 # =================================================================================
-# core/frontpage_settings_tab.py — Admin UI for front page configuration
+# core/frontpage_settings_tab.py
 # =================================================================================
-# v3.4 — Batch list renders reliably on Flutter Web
-#   • Explicit height on batch list container
-#   • Each Checkbox wrapped in its own Row
-#   • Only ONE scroll container per tab
-#   • Plain class with self.root = ft.Container(...expand=True)
-#   • build() returns self.root
+# v3.5 — Batch list renders as simple inline rows (no height, no wrapper)
 # =================================================================================
 
 import json
@@ -19,9 +14,6 @@ from core.frontpage_config import (
     DEFAULT_CONFIG, load_config, save_config, _deep_merge)
 
 
-# =================================================================================
-# Palette
-# =================================================================================
 PRIMARY      = "#1e3a8a"
 PRIMARY_LT   = "#2563eb"
 ACCENT       = "#7c3aed"
@@ -34,9 +26,6 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 
-# =================================================================================
-# CLASS: FrontPageSettingsTab
-# =================================================================================
 class FrontPageSettingsTab:
 
     def __init__(self, page, db, current_user):
@@ -47,48 +36,39 @@ class FrontPageSettingsTab:
         self.all_batches = []
         self.batch_checkboxes = {}
 
-        # Field refs
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
-
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
-
         self.feature_rows_container = None
         self.feature_entries = []
-
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
         self.pkg_title = None
         self.pkg_subtitle = None
         self._batch_ui = None
-
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
-
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
         self.contact_whatsapp = None
         self.contact_addr1 = None
         self.contact_addr2 = None
-
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
-
         self.footer_about = None
         self.footer_copyright = None
-
         self.status_label = None
         self.root = None
 
@@ -100,11 +80,9 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self.root = self._error_ui(e)
 
-    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
             self.cfg = load_config()
@@ -113,7 +91,6 @@ class FrontPageSettingsTab:
             self._safe_update()
         except Exception as ex:
             print(f"[FRONTPAGE_SETTINGS] refresh failed: {ex}")
-            traceback.print_exc()
 
     def _load_batches(self):
         try:
@@ -142,8 +119,6 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # ROOT BUILD
-    # =============================================================================
     def _build_root(self):
         self.feature_entries = []
         self.stat_entries = []
@@ -166,7 +141,7 @@ class FrontPageSettingsTab:
                 ft.Container(height=20),
             ],
             spacing=10,
-            scroll=ft.ScrollMode.AUTO,      # ← ONLY scroll in the file
+            scroll=ft.ScrollMode.AUTO,
         )
 
         self.root = ft.Container(
@@ -176,9 +151,6 @@ class FrontPageSettingsTab:
             expand=True,
         )
 
-    # -----------------------------------------------------------------------------
-    # Header
-    # -----------------------------------------------------------------------------
     def _header(self):
         return ft.Container(
             content=ft.ResponsiveRow(
@@ -228,9 +200,6 @@ class FrontPageSettingsTab:
                 colors=[PRIMARY, PRIMARY_LT, ACCENT]),
             border_radius=14)
 
-    # -----------------------------------------------------------------------------
-    # Section wrapper
-    # -----------------------------------------------------------------------------
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
             ft.Container(
@@ -261,15 +230,8 @@ class FrontPageSettingsTab:
             padding=14,
             bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
-            border_radius=14,
-            shadow=ft.BoxShadow(
-                blur_radius=6, spread_radius=0,
-                color=ft.Colors.with_opacity(0.04, "#000000"),
-                offset=ft.Offset(0, 2)))
+            border_radius=14)
 
-    # -----------------------------------------------------------------------------
-    # Field helpers
-    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         defaults = dict(
             label=label,
@@ -294,9 +256,6 @@ class FrontPageSettingsTab:
             ],
             spacing=10, run_spacing=10)
 
-    # -----------------------------------------------------------------------------
-    # Hero
-    # -----------------------------------------------------------------------------
     def _section_hero(self):
         h = self.cfg.get("hero", {})
         self.hero_heading = self._field("Heading", h.get("heading", ""))
@@ -317,9 +276,6 @@ class FrontPageSettingsTab:
                 self._two_col(self.hero_button, self.hero_whatsapp),
             ])
 
-    # -----------------------------------------------------------------------------
-    # Alert
-    # -----------------------------------------------------------------------------
     def _section_alert(self):
         a = self.cfg.get("alert", {})
         self.alert_enabled = ft.Switch(
@@ -357,9 +313,6 @@ class FrontPageSettingsTab:
             ],
             accent=WARN)
 
-    # -----------------------------------------------------------------------------
-    # Features
-    # -----------------------------------------------------------------------------
     def _section_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
         self.feature_entries = []
@@ -442,7 +395,7 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # -----------------------------------------------------------------------------
-    # Packages  ✅ v3.4
+    # Packages ✅ v3.5 — no height wrapper, plain inline Column
     # -----------------------------------------------------------------------------
     def _section_packages(self):
         p = self.cfg.get("packages", {})
@@ -481,16 +434,13 @@ class FrontPageSettingsTab:
         selected_ids = set(str(x) for x in
                            (p.get("selected_batch_ids") or []))
         self.batch_checkboxes = {}
-        batch_rows = []
+        batch_controls = []
 
         if not self.all_batches:
-            batch_rows.append(
-                ft.Row([
-                    ft.Text("No batches found. Add some in the "
-                            "Batches tab first.",
-                            size=11, color=MUTED,
-                            no_wrap=False, max_lines=2),
-                ], spacing=0))
+            batch_controls.append(
+                ft.Text("No batches found. Add some in the "
+                        "Batches tab first.",
+                        size=11, color=MUTED))
         else:
             for b in self.all_batches:
                 bid = str(b.get("id", ""))
@@ -504,13 +454,11 @@ class FrontPageSettingsTab:
                     value=(bid in selected_ids) if selected_ids else False,
                     label_style=ft.TextStyle(size=11))
                 self.batch_checkboxes[bid] = cb
-                batch_rows.append(
-                    ft.Row([cb], spacing=0,
-                           vertical_alignment=ft.CrossAxisAlignment.CENTER))
+                batch_controls.append(cb)
 
-        self.pkg_batch_container = ft.Column(
-            batch_rows, spacing=4)
+        self.pkg_batch_container = ft.Column(batch_controls, spacing=4)
 
+        # ✅ NO outer Container with bgcolor/height — the Column IS the widget
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
@@ -523,13 +471,7 @@ class FrontPageSettingsTab:
             ft.Text(
                 "Leave all unchecked to show every open batch.",
                 size=10, color=MUTED, italic=True),
-            ft.Container(
-                content=self.pkg_batch_container,
-                padding=10,
-                bgcolor="#f8fafc",
-                border=ft.Border.all(1, BORDER),
-                border_radius=10,
-                height=300),
+            self.pkg_batch_container,
         ], spacing=8)
 
         self._update_source_visibility()
@@ -561,9 +503,6 @@ class FrontPageSettingsTab:
             cb.value = value
         self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # About
-    # -----------------------------------------------------------------------------
     def _section_about(self):
         a = self.cfg.get("about", {})
         self.about_heading = self._field(
@@ -646,9 +585,6 @@ class FrontPageSettingsTab:
         self._add_stat_row("", "")
         self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # Contact
-    # -----------------------------------------------------------------------------
     def _section_contact(self):
         c = self.cfg.get("contact", {})
         self.contact_phone = self._field(
@@ -675,9 +611,6 @@ class FrontPageSettingsTab:
                 self._two_col(self.contact_addr1, self.contact_addr2),
             ])
 
-    # -----------------------------------------------------------------------------
-    # Social
-    # -----------------------------------------------------------------------------
     def _section_social(self):
         s = self.cfg.get("social", {})
         self.social_facebook = self._field(
@@ -696,9 +629,6 @@ class FrontPageSettingsTab:
                 self.social_twitter,
             ])
 
-    # -----------------------------------------------------------------------------
-    # Footer
-    # -----------------------------------------------------------------------------
     def _section_footer(self):
         f = self.cfg.get("footer", {})
         self.footer_about = self._field(
@@ -712,9 +642,6 @@ class FrontPageSettingsTab:
             "Bottom-of-page content",
             [self.footer_about, self.footer_copyright])
 
-    # -----------------------------------------------------------------------------
-    # Action bar
-    # -----------------------------------------------------------------------------
     def _action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
@@ -786,9 +713,6 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=14)
 
-    # =============================================================================
-    # ACTIONS
-    # =============================================================================
     def _collect_config(self) -> dict:
         try:
             max_shown = int(self.pkg_max_shown.value or 6)
@@ -870,7 +794,6 @@ class FrontPageSettingsTab:
             },
         }
 
-    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -896,7 +819,6 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
-    # -----------------------------------------------------------------------------
     def _reset_confirm(self, e=None):
         def do_reset(ev):
             try:
@@ -939,7 +861,6 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
-    # -----------------------------------------------------------------------------
     def _open_preview(self, e=None):
         try:
             async def _do():
@@ -968,7 +889,6 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
-    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
