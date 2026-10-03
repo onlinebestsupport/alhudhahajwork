@@ -1,7 +1,12 @@
 # =================================================================================
-# core/frontpage_settings_tab.py
+# core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v3.5 — Batch list renders as simple inline rows (no height, no wrapper)
+# v4.0 — Fixed grey box (payload size reduction via ExpansionTile accordion)
+#   • Each section in its own ExpansionTile — collapsed by default
+#   • Only Hero Section starts expanded → ~500 widgets instead of ~10,000
+#   • Plain class, self.root = ft.Container(...expand=True)
+#   • build() returns self.root
+#   • No nested scroll containers, no fixed-height wrappers around lists
 # =================================================================================
 
 import json
@@ -14,6 +19,9 @@ from core.frontpage_config import (
     DEFAULT_CONFIG, load_config, save_config, _deep_merge)
 
 
+# =================================================================================
+# Palette
+# =================================================================================
 PRIMARY      = "#1e3a8a"
 PRIMARY_LT   = "#2563eb"
 ACCENT       = "#7c3aed"
@@ -26,6 +34,9 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 
+# =================================================================================
+# CLASS: FrontPageSettingsTab
+# =================================================================================
 class FrontPageSettingsTab:
 
     def __init__(self, page, db, current_user):
@@ -36,39 +47,48 @@ class FrontPageSettingsTab:
         self.all_batches = []
         self.batch_checkboxes = {}
 
+        # Field refs
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
+
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
+
         self.feature_rows_container = None
         self.feature_entries = []
+
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
         self.pkg_title = None
         self.pkg_subtitle = None
         self._batch_ui = None
+
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
+
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
         self.contact_whatsapp = None
         self.contact_addr1 = None
         self.contact_addr2 = None
+
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
+
         self.footer_about = None
         self.footer_copyright = None
+
         self.status_label = None
         self.root = None
 
@@ -80,9 +100,11 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self.root = self._error_ui(e)
 
+    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
+    # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
             self.cfg = load_config()
@@ -91,6 +113,7 @@ class FrontPageSettingsTab:
             self._safe_update()
         except Exception as ex:
             print(f"[FRONTPAGE_SETTINGS] refresh failed: {ex}")
+            traceback.print_exc()
 
     def _load_batches(self):
         try:
@@ -119,6 +142,8 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
+    # ROOT BUILD — accordion layout to keep initial payload small
+    # =============================================================================
     def _build_root(self):
         self.feature_entries = []
         self.stat_entries = []
@@ -128,20 +153,54 @@ class FrontPageSettingsTab:
             controls=[
                 self._header(),
                 ft.Container(height=8),
-                self._section_hero(),
-                self._section_alert(),
-                self._section_features(),
-                self._section_packages(),
-                self._section_about(),
-                self._section_contact(),
-                self._section_social(),
-                self._section_footer(),
+
+                self._accordion_section(
+                    "🎯  Hero Section",
+                    "The big banner at the top of the page",
+                    self._section_hero,
+                    expanded=True),
+
+                self._accordion_section(
+                    "⚠️  Alert Banner",
+                    "Optional top-of-page announcement",
+                    self._section_alert),
+
+                self._accordion_section(
+                    "✨  Features / Why Choose Us",
+                    "Up to 6 feature cards on the front page",
+                    self._section_features),
+
+                self._accordion_section(
+                    "📦  Packages Section",
+                    "Packages drawn from real batches",
+                    self._section_packages),
+
+                self._accordion_section(
+                    "📖  About Section",
+                    "The 'About Us' block with statistics",
+                    self._section_about),
+
+                self._accordion_section(
+                    "📞  Contact Information",
+                    "Shown in top bar, contact section and footer",
+                    self._section_contact),
+
+                self._accordion_section(
+                    "🔗  Social Links",
+                    "Leave empty to hide a network",
+                    self._section_social),
+
+                self._accordion_section(
+                    "📝  Footer",
+                    "Bottom-of-page content",
+                    self._section_footer),
+
                 ft.Container(height=12),
                 self._action_bar(),
                 ft.Container(height=20),
             ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+            spacing=6,
+            scroll=ft.ScrollMode.AUTO,      # ← ONLY scroll in the file
         )
 
         self.root = ft.Container(
@@ -151,6 +210,43 @@ class FrontPageSettingsTab:
             expand=True,
         )
 
+    # -----------------------------------------------------------------------------
+    # Accordion section wrapper
+    # -----------------------------------------------------------------------------
+    def _accordion_section(self, title, subtitle, builder_fn,
+                           expanded=False):
+        """Wrap a section builder in a collapsible card."""
+        body = builder_fn()
+
+        header_col = ft.Column([
+            ft.Text(title, size=13,
+                    weight=ft.FontWeight.BOLD,
+                    color="#0f172a"),
+            ft.Text(subtitle, size=10, color=MUTED,
+                    no_wrap=False, max_lines=2),
+        ], spacing=2, expand=True)
+
+        return ft.Container(
+            content=ft.ExpansionTile(
+                title=header_col,
+                initially_expanded=expanded,
+                tile_padding=ft.Padding.symmetric(
+                    horizontal=14, vertical=6),
+                controls_padding=ft.Padding.only(
+                    left=14, right=14, bottom=14),
+                controls=[
+                    ft.Divider(height=1, color=BORDER),
+                    ft.Container(content=body,
+                                 padding=ft.Padding.only(top=8)),
+                ]),
+            bgcolor=SECTION_BG,
+            border=ft.Border.all(1, BORDER),
+            border_radius=12,
+        )
+
+    # -----------------------------------------------------------------------------
+    # Header
+    # -----------------------------------------------------------------------------
     def _header(self):
         return ft.Container(
             content=ft.ResponsiveRow(
@@ -200,38 +296,9 @@ class FrontPageSettingsTab:
                 colors=[PRIMARY, PRIMARY_LT, ACCENT]),
             border_radius=14)
 
-    def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
-        header = ft.Row([
-            ft.Container(
-                content=ft.Text(icon, size=16),
-                width=36, height=36,
-                bgcolor=ft.Colors.with_opacity(0.12, accent),
-                border_radius=9,
-                alignment=ft.Alignment.CENTER),
-            ft.Column([
-                ft.Text(title, size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color="#0f172a",
-                        no_wrap=False, max_lines=2),
-                ft.Text(subtitle, size=10, color=MUTED,
-                        no_wrap=False, max_lines=2),
-            ], spacing=2, expand=True),
-        ], spacing=10)
-
-        body = ft.Column(controls, spacing=10)
-
-        return ft.Container(
-            content=ft.Column([
-                header,
-                ft.Divider(height=1, color=BORDER),
-                ft.Container(content=body,
-                             padding=ft.Padding.only(top=4)),
-            ], spacing=10),
-            padding=14,
-            bgcolor=SECTION_BG,
-            border=ft.Border.all(1, BORDER),
-            border_radius=14)
-
+    # -----------------------------------------------------------------------------
+    # Field helpers
+    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         defaults = dict(
             label=label,
@@ -256,6 +323,9 @@ class FrontPageSettingsTab:
             ],
             spacing=10, run_spacing=10)
 
+    # =============================================================================
+    # SECTION: Hero
+    # =============================================================================
     def _section_hero(self):
         h = self.cfg.get("hero", {})
         self.hero_heading = self._field("Heading", h.get("heading", ""))
@@ -267,15 +337,15 @@ class FrontPageSettingsTab:
         self.hero_whatsapp = self._field(
             "WhatsApp button text", h.get("whatsapp_text", ""))
 
-        return self._section_card(
-            "🎯", "Hero Section",
-            "The big banner at the top of the page",
-            [
-                self.hero_heading,
-                self.hero_subheading,
-                self._two_col(self.hero_button, self.hero_whatsapp),
-            ])
+        return ft.Column([
+            self.hero_heading,
+            self.hero_subheading,
+            self._two_col(self.hero_button, self.hero_whatsapp),
+        ], spacing=10)
 
+    # =============================================================================
+    # SECTION: Alert
+    # =============================================================================
     def _section_alert(self):
         a = self.cfg.get("alert", {})
         self.alert_enabled = ft.Switch(
@@ -302,17 +372,16 @@ class FrontPageSettingsTab:
             focused_border_color=PRIMARY_LT,
             border_radius=8)
 
-        return self._section_card(
-            "⚠️", "Alert Banner",
-            "Optional top-of-page announcement for visitors",
-            [
-                self.alert_enabled,
-                self.alert_message,
-                self.alert_link,
-                self._two_col(self.alert_color, self.alert_style),
-            ],
-            accent=WARN)
+        return ft.Column([
+            self.alert_enabled,
+            self.alert_message,
+            self.alert_link,
+            self._two_col(self.alert_color, self.alert_style),
+        ], spacing=10)
 
+    # =============================================================================
+    # SECTION: Features
+    # =============================================================================
     def _section_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
         self.feature_entries = []
@@ -335,11 +404,10 @@ class FrontPageSettingsTab:
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
-        return self._section_card(
-            "✨", "Features / Why Choose Us",
-            "Up to 6 feature cards shown on the front page",
-            [self.feature_rows_container, add_btn],
-            accent=SUCCESS)
+        return ft.Column([
+            self.feature_rows_container,
+            add_btn,
+        ], spacing=10)
 
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field(
@@ -394,9 +462,9 @@ class FrontPageSettingsTab:
         self._add_feature_row("fa-check-circle", "", "")
         self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # Packages ✅ v3.5 — no height wrapper, plain inline Column
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # SECTION: Packages  (batch list, no nested scroll)
+    # =============================================================================
     def _section_packages(self):
         p = self.cfg.get("packages", {})
 
@@ -456,9 +524,10 @@ class FrontPageSettingsTab:
                 self.batch_checkboxes[bid] = cb
                 batch_controls.append(cb)
 
-        self.pkg_batch_container = ft.Column(batch_controls, spacing=4)
+        self.pkg_batch_container = ft.Column(
+            batch_controls, spacing=4)
 
-        # ✅ NO outer Container with bgcolor/height — the Column IS the widget
+        # No outer Container with bgcolor/height — plain Column
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
@@ -476,16 +545,12 @@ class FrontPageSettingsTab:
 
         self._update_source_visibility()
 
-        return self._section_card(
-            "📦", "Packages Section",
-            "Packages drawn from real batches (auto-updated)",
-            [
-                self.pkg_title,
-                self.pkg_subtitle,
-                self._two_col(self.pkg_source, self.pkg_max_shown),
-                self._batch_ui,
-            ],
-            accent=ACCENT)
+        return ft.Column([
+            self.pkg_title,
+            self.pkg_subtitle,
+            self._two_col(self.pkg_source, self.pkg_max_shown),
+            self._batch_ui,
+        ], spacing=10)
 
     def _on_pkg_source_change(self, e=None):
         self._update_source_visibility()
@@ -503,6 +568,9 @@ class FrontPageSettingsTab:
             cb.value = value
         self._safe_update()
 
+    # =============================================================================
+    # SECTION: About
+    # =============================================================================
     def _section_about(self):
         a = self.cfg.get("about", {})
         self.about_heading = self._field(
@@ -532,20 +600,17 @@ class FrontPageSettingsTab:
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
-        return self._section_card(
-            "📖", "About Section",
-            "The 'About Us' block with statistics",
-            [
-                self.about_heading,
-                self.about_p1,
-                self.about_p2,
-                ft.Container(height=4),
-                ft.Text("Statistics (4 recommended)",
-                        size=12, weight=ft.FontWeight.BOLD,
-                        color="#0f172a"),
-                self.stats_rows_container,
-                add_stat_btn,
-            ])
+        return ft.Column([
+            self.about_heading,
+            self.about_p1,
+            self.about_p2,
+            ft.Container(height=4),
+            ft.Text("Statistics (4 recommended)",
+                    size=12, weight=ft.FontWeight.BOLD,
+                    color="#0f172a"),
+            self.stats_rows_container,
+            add_stat_btn,
+        ], spacing=10)
 
     def _add_stat_row(self, number_val, label_val):
         num_field = self._field(
@@ -585,6 +650,9 @@ class FrontPageSettingsTab:
         self._add_stat_row("", "")
         self._safe_update()
 
+    # =============================================================================
+    # SECTION: Contact
+    # =============================================================================
     def _section_contact(self):
         c = self.cfg.get("contact", {})
         self.contact_phone = self._field(
@@ -602,15 +670,15 @@ class FrontPageSettingsTab:
         self.contact_addr2 = self._field(
             "Address line 2", c.get("address_line2", ""))
 
-        return self._section_card(
-            "📞", "Contact Information",
-            "Shown in top bar, contact section, and footer",
-            [
-                self._two_col(self.contact_phone, self.contact_phone2),
-                self._two_col(self.contact_email, self.contact_whatsapp),
-                self._two_col(self.contact_addr1, self.contact_addr2),
-            ])
+        return ft.Column([
+            self._two_col(self.contact_phone, self.contact_phone2),
+            self._two_col(self.contact_email, self.contact_whatsapp),
+            self._two_col(self.contact_addr1, self.contact_addr2),
+        ], spacing=10)
 
+    # =============================================================================
+    # SECTION: Social
+    # =============================================================================
     def _section_social(self):
         s = self.cfg.get("social", {})
         self.social_facebook = self._field(
@@ -620,15 +688,15 @@ class FrontPageSettingsTab:
         self.social_twitter = self._field(
             "Twitter / X URL", s.get("twitter", ""))
 
-        return self._section_card(
-            "🔗", "Social Links",
-            "Leave empty to hide a network",
-            [
-                self._two_col(self.social_facebook,
-                              self.social_instagram),
-                self.social_twitter,
-            ])
+        return ft.Column([
+            self._two_col(self.social_facebook,
+                          self.social_instagram),
+            self.social_twitter,
+        ], spacing=10)
 
+    # =============================================================================
+    # SECTION: Footer
+    # =============================================================================
     def _section_footer(self):
         f = self.cfg.get("footer", {})
         self.footer_about = self._field(
@@ -637,11 +705,14 @@ class FrontPageSettingsTab:
         self.footer_copyright = self._field(
             "Copyright text", f.get("copyright", ""))
 
-        return self._section_card(
-            "📝", "Footer",
-            "Bottom-of-page content",
-            [self.footer_about, self.footer_copyright])
+        return ft.Column([
+            self.footer_about,
+            self.footer_copyright,
+        ], spacing=10)
 
+    # =============================================================================
+    # Action bar
+    # =============================================================================
     def _action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
@@ -713,6 +784,9 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=14)
 
+    # =============================================================================
+    # ACTIONS
+    # =============================================================================
     def _collect_config(self) -> dict:
         try:
             max_shown = int(self.pkg_max_shown.value or 6)
@@ -746,51 +820,57 @@ class FrontPageSettingsTab:
                 continue
             stats.append({"number": number, "label": label})
 
+        def _v(field):
+            try:
+                return (field.value or "").strip()
+            except Exception:
+                return ""
+
         return {
             "hero": {
-                "heading": (self.hero_heading.value or "").strip(),
-                "subheading": (self.hero_subheading.value or "").strip(),
-                "button_text": (self.hero_button.value or "").strip(),
-                "whatsapp_text": (self.hero_whatsapp.value or "").strip(),
+                "heading": _v(self.hero_heading),
+                "subheading": _v(self.hero_subheading),
+                "button_text": _v(self.hero_button),
+                "whatsapp_text": _v(self.hero_whatsapp),
             },
             "alert": {
                 "enabled": bool(self.alert_enabled.value),
-                "message": (self.alert_message.value or "").strip(),
-                "link": (self.alert_link.value or "#").strip() or "#",
-                "color": (self.alert_color.value or "#f39c12").strip(),
+                "message": _v(self.alert_message),
+                "link": _v(self.alert_link) or "#",
+                "color": _v(self.alert_color) or "#f39c12",
                 "style": (self.alert_style.value or "pulse"),
             },
             "features": features,
             "packages": {
-                "title": (self.pkg_title.value or "").strip(),
-                "subtitle": (self.pkg_subtitle.value or "").strip(),
+                "title": _v(self.pkg_title),
+                "subtitle": _v(self.pkg_subtitle),
                 "source": (self.pkg_source.value or "batches"),
                 "max_shown": max_shown,
                 "selected_batch_ids": selected_ids,
                 "manual": [],
             },
             "about": {
-                "heading": (self.about_heading.value or "").strip(),
-                "paragraph1": (self.about_p1.value or "").strip(),
-                "paragraph2": (self.about_p2.value or "").strip(),
+                "heading": _v(self.about_heading),
+                "paragraph1": _v(self.about_p1),
+                "paragraph2": _v(self.about_p2),
                 "stats": stats,
             },
             "contact": {
-                "phone": (self.contact_phone.value or "").strip(),
-                "phone2": (self.contact_phone2.value or "").strip(),
-                "email": (self.contact_email.value or "").strip(),
-                "whatsapp": (self.contact_whatsapp.value or "").strip(),
-                "address_line1": (self.contact_addr1.value or "").strip(),
-                "address_line2": (self.contact_addr2.value or "").strip(),
+                "phone": _v(self.contact_phone),
+                "phone2": _v(self.contact_phone2),
+                "email": _v(self.contact_email),
+                "whatsapp": _v(self.contact_whatsapp),
+                "address_line1": _v(self.contact_addr1),
+                "address_line2": _v(self.contact_addr2),
             },
             "social": {
-                "facebook": (self.social_facebook.value or "").strip(),
-                "instagram": (self.social_instagram.value or "").strip(),
-                "twitter": (self.social_twitter.value or "").strip(),
+                "facebook": _v(self.social_facebook),
+                "instagram": _v(self.social_instagram),
+                "twitter": _v(self.social_twitter),
             },
             "footer": {
-                "about_text": (self.footer_about.value or "").strip(),
-                "copyright": (self.footer_copyright.value or "").strip(),
+                "about_text": _v(self.footer_about),
+                "copyright": _v(self.footer_copyright),
             },
         }
 
