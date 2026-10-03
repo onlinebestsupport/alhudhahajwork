@@ -1,11 +1,12 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v3.1 — Fixed mobile rendering (matches UsersTab v3.1 pattern)
-#   • Plain class, self.root = ft.Container(...expand=True)
+# v3.2 — Fixed batch list grey box
+#   • Removed nested scroll container from batch list
+#   • Removed fixed height from batch container
+#   • Plain class with self.root = ft.Container(...expand=True)
 #   • build() returns self.root
-#   • refresh() rebuilds root content
-#   • No nested scroll containers
+#   • Only ONE scroll container per tab (the outer Column)
 # =================================================================================
 
 import json
@@ -141,7 +142,7 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # ROOT BUILD — outer Container wraps a Column with scroll
+    # ROOT BUILD
     # =============================================================================
     def _build_root(self):
         # Reset entries (rebuilt each time)
@@ -442,7 +443,7 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # -----------------------------------------------------------------------------
-    # Packages
+    # Packages  ✅ FIXED — no nested scroll, no fixed height
     # -----------------------------------------------------------------------------
     def _section_packages(self):
         p = self.cfg.get("packages", {})
@@ -508,9 +509,7 @@ class FrontPageSettingsTab:
 
         self.pkg_batch_container = ft.Column(batch_rows, spacing=0)
 
-        pw = self.page_ref.width or 1000
-        batch_h = 180 if pw < 700 else 240
-
+        # ---- ✅ FIXED: single Column, NO nested scroll, NO fixed height ----
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
@@ -524,13 +523,10 @@ class FrontPageSettingsTab:
                 "Leave all unchecked to show every open batch.",
                 size=10, color=MUTED, italic=True),
             ft.Container(
-                content=ft.Column(
-                    [self.pkg_batch_container],
-                    scroll=ft.ScrollMode.AUTO),
+                content=self.pkg_batch_container,
                 padding=8, bgcolor="#f8fafc",
                 border=ft.Border.all(1, BORDER),
-                border_radius=10,
-                height=batch_h),
+                border_radius=10),
         ], spacing=8)
 
         self._update_source_visibility()
