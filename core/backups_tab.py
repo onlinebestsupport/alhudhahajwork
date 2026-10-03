@@ -1,21 +1,8 @@
 # =================================================================================
 # SECTION 20 — BACKUP TAB (FLET 1.0) — v2.0
 # =================================================================================
-# v2.0 — Matches PaymentsTab/UsersTab working pattern
-#   • Plain class (NOT ft.Column subclass)
-#   • self.root = ft.Container(content=Column(scroll=AUTO), expand=True)
-#   • build() returns self.root
-#   • Desktop table body: Row([table], scroll=ADAPTIVE) — no height, no ListView
-#   • Mobile card list unchanged (already worked)
-#   • FilePicker registered in setup_ui (did_mount won't fire on plain class)
-#
-# SECTION INDEX:
-#   [1] Header            _section_1_header
-#   [2] Cloud note        _section_2_cloud_note
-#   [3] Folder banner     _section_3_folder_banner
-#   [4] Actions block     _section_4_actions
-#   [5] Table / Card list _section_5_list
-#   [6] Status            _section_6_status
+# Working pattern: plain class + self.root Container + build() returns root
+# Desktop table body: Row([table], scroll=ADAPTIVE) — NO height, NO ListView
 # =================================================================================
 
 import os
@@ -38,20 +25,13 @@ except ImportError:
 MOBILE_BREAKPOINT = 700
 
 
-# =================================================================================
-# CLASS: BackupView  (plain class — same shape as PaymentsTab)
-# =================================================================================
 class BackupView:
 
-    # -----------------------------------------------------------------------------
-    # [0] __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
 
-        # UI state
         self.table = None
         self.mobile_list = None
         self.backup_count_label = None
@@ -62,11 +42,8 @@ class BackupView:
         self._mobile_mode = False
         self._selected_backup_idx = None
 
-        # File picker
         self.file_picker = ft.FilePicker()
         self._picker_registered = False
-
-        # Root container
         self.root = None
 
         try:
@@ -83,15 +60,9 @@ class BackupView:
             print(f"[BACKUP] refresh FAILED: {e}")
             traceback.print_exc()
 
-    # -----------------------------------------------------------------------------
-    # [0.1] build
-    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
-    # [0.2] _is_narrow
-    # -----------------------------------------------------------------------------
     def _is_narrow(self):
         try:
             plat = getattr(self.page_ref, "platform", None)
@@ -120,9 +91,6 @@ class BackupView:
             pass
         return False
 
-    # -----------------------------------------------------------------------------
-    # [0.3] _error_root
-    # -----------------------------------------------------------------------------
     def _error_root(self, exc):
         return ft.Container(
             content=ft.Column([
@@ -137,9 +105,6 @@ class BackupView:
             padding=40, bgcolor="#fef3c7", border_radius=12,
             alignment=ft.Alignment.CENTER, expand=True)
 
-    # -----------------------------------------------------------------------------
-    # [0.4] Path helpers
-    # -----------------------------------------------------------------------------
     def _backup_dir(self):
         d = self.db.data_dir / "backups"
         d.mkdir(parents=True, exist_ok=True)
@@ -163,58 +128,14 @@ class BackupView:
         return dirs
 
     # =============================================================================
-    # [ROOT] setup_ui
+    # setup_ui
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
         self._mobile_mode = narrow
 
         # ---- [1] Header ----
-        header = self._section_1_header(narrow)
-
-        # ---- [2] Cloud note ----
-        cloud_note = self._section_2_cloud_note(narrow)
-
-        # ---- [3] Folder banner ----
-        folder_banner = self._section_3_folder_banner(narrow)
-
-        # ---- [4] Actions block ----
-        actions_block = self._section_4_actions(narrow)
-
-        # ---- [5] Table / card list ----
-        list_card = self._section_5_list(narrow)
-
-        # ---- [6] Status ----
-        self.status_label = ft.Text("Ready.", size=10,
-                                    color=ft.Colors.GREY_600, italic=True)
-
-        # ---- Root (same structure as PaymentsTab) ----
-        self.root = ft.Container(
-            content=ft.Column(
-                controls=[
-                    header,
-                    cloud_note,
-                    folder_banner,
-                    actions_block,
-                    list_card,
-                    self.status_label,
-                ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
-            ),
-            padding=10,
-            bgcolor="#f0f2f5",
-            expand=True,
-        )
-
-        # Register FilePicker
-        self._register_picker()
-
-    # -----------------------------------------------------------------------------
-    # [1] Header
-    # -----------------------------------------------------------------------------
-    def _section_1_header(self, narrow):
-        return ft.Container(
+        header = ft.Container(
             content=ft.Row([
                 ft.Text("💾", size=22 if narrow else 26),
                 ft.Column([
@@ -238,11 +159,8 @@ class BackupView:
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-    # -----------------------------------------------------------------------------
-    # [2] Cloud note
-    # -----------------------------------------------------------------------------
-    def _section_2_cloud_note(self, narrow):
-        return ft.Container(
+        # ---- [2] Cloud note ----
+        cloud_note = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.CLOUD, size=16 if narrow else 18,
                         color="#d97706"),
@@ -267,16 +185,13 @@ class BackupView:
             border_radius=10,
             border=ft.Border.all(1, "#fcd34d"))
 
-    # -----------------------------------------------------------------------------
-    # [3] Folder banner
-    # -----------------------------------------------------------------------------
-    def _section_3_folder_banner(self, narrow):
+        # ---- [3] Folder banner ----
         self.folder_path_label = ft.Text(
             "", size=10 if narrow else 11, color="#1e40af",
             italic=True, selectable=True, max_lines=2,
             overflow=ft.TextOverflow.ELLIPSIS)
 
-        return ft.Container(
+        folder_banner = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.FOLDER_OPEN,
                         size=16 if narrow else 18,
@@ -294,10 +209,7 @@ class BackupView:
             border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
-    # -----------------------------------------------------------------------------
-    # [4] Actions
-    # -----------------------------------------------------------------------------
-    def _section_4_actions(self, narrow):
+        # ---- [4] Actions ----
         def _btn(label, icon, color, handler, expand_narrow=False):
             return ft.Button(
                 content=ft.Row([
@@ -348,18 +260,14 @@ class BackupView:
                      "#7c3aed", self.open_folder),
             ], spacing=10, wrap=True)
 
-        return ft.Container(
+        actions_block = ft.Container(
             content=body,
             padding=10,
             bgcolor=ft.Colors.WHITE,
             border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-    # -----------------------------------------------------------------------------
-    # [5] List  — desktop table OR mobile card list
-    # -----------------------------------------------------------------------------
-    def _section_5_list(self, narrow):
-        # ---- Build columns for desktop table ----
+        # ---- [5] Table / card list ----
         _cols = [
             ft.DataColumn(ft.Text("Sel", size=11,
                                   weight=ft.FontWeight.BOLD,
@@ -380,20 +288,15 @@ class BackupView:
             data_row_min_height=44,
             data_row_max_height=70)
 
-        # ---- Mobile list container ----
         self.mobile_list = ft.Column(spacing=8)
 
-        # ---- Pick the visible body ----
         if narrow:
-            # Mobile: plain Column, no height, no nested scroll
             table_body = ft.Container(
                 content=self.mobile_list,
                 padding=4)
             hint = ("💡 Tap a backup card to select, then use toolbar "
                     "Download / Restore / Delete")
         else:
-            # Desktop: Row with horizontal scroll (same as PaymentsTab)
-            # NO height, NO ListView — just a Row scroll=ADAPTIVE
             table_body = ft.Container(
                 content=ft.Row([self.table],
                                scroll=ft.ScrollMode.ADAPTIVE),
@@ -413,7 +316,7 @@ class BackupView:
             "", size=10, color=ft.Colors.BLUE_700,
             weight=ft.FontWeight.BOLD, italic=True)
 
-        return ft.Container(
+        list_card = ft.Container(
             content=ft.Column([
                 ft.Row([
                     ft.Text("📋", size=14),
@@ -433,9 +336,30 @@ class BackupView:
             border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-    # -----------------------------------------------------------------------------
-    # FilePicker registration
-    # -----------------------------------------------------------------------------
+        self.status_label = ft.Text("Ready.", size=10,
+                                    color=ft.Colors.GREY_600, italic=True)
+
+        # ---- ROOT: same shape as PaymentsTab ----
+        self.root = ft.Container(
+            content=ft.Column(
+                controls=[
+                    header,
+                    cloud_note,
+                    folder_banner,
+                    actions_block,
+                    list_card,
+                    self.status_label,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=10,
+            bgcolor="#f0f2f5",
+            expand=True,
+        )
+
+        self._register_picker()
+
     def _register_picker(self):
         if self._picker_registered:
             return
@@ -457,9 +381,6 @@ class BackupView:
         except Exception as ex:
             print(f"[BACKUP] file picker registration failed: {ex}")
 
-    # =============================================================================
-    # on_resize
-    # =============================================================================
     def on_resize(self, e=None):
         try:
             new_narrow = self._is_narrow()
@@ -474,18 +395,11 @@ class BackupView:
         except Exception as ex:
             print(f"[BACKUP] on_resize error: {ex}")
 
-    # =============================================================================
-    # refresh
-    # =============================================================================
     def refresh(self, e=None):
         try:
             self.backup_files = []
             self._selected_backup_idx = None
             scanned_dirs = self._scan_all_dirs()
-
-            print(f"[BACKUP] scanning {len(scanned_dirs)} folder(s):")
-            for d in scanned_dirs:
-                print(f"[BACKUP]   → {d}")
 
             history_names = set()
             try:
@@ -521,7 +435,6 @@ class BackupView:
 
             self.backup_files.sort(key=lambda x: x["file_date"],
                                    reverse=True)
-
             print(f"[BACKUP] found {len(self.backup_files)} backup files")
 
             self._display_backups()
@@ -545,9 +458,6 @@ class BackupView:
             self._show_status(f"❌ Refresh failed: {ex}",
                               ft.Colors.RED_500)
 
-    # =============================================================================
-    # _display_backups
-    # =============================================================================
     def _display_backups(self):
         self.table.rows.clear()
 
@@ -643,9 +553,6 @@ class BackupView:
             except Exception as ex:
                 print(f"[BACKUP] mobile render failed: {ex}")
 
-    # =============================================================================
-    # _render_mobile_backups
-    # =============================================================================
     def _render_mobile_backups(self):
         if self.mobile_list is None:
             return
@@ -747,9 +654,6 @@ class BackupView:
 
             self.mobile_list.controls.append(card)
 
-    # =============================================================================
-    # Selection
-    # =============================================================================
     def _select_backup(self, idx):
         if self._selected_backup_idx == idx:
             self._selected_backup_idx = None
@@ -785,9 +689,6 @@ class BackupView:
         except Exception:
             return None
 
-    # =============================================================================
-    # Toolbar wrappers
-    # =============================================================================
     def _download_selected(self, e=None):
         b = self._get_selected_backup()
         if not b:
@@ -812,9 +713,6 @@ class BackupView:
             return
         self._confirm_delete(b)
 
-    # =============================================================================
-    # Download
-    # =============================================================================
     def _download_backup(self, backup):
         try:
             path = backup.get("file_path", "")
@@ -840,9 +738,6 @@ class BackupView:
             self._snack(f"❌ Download failed: {ex}",
                         ft.Colors.RED_500)
 
-    # =============================================================================
-    # Create / restore / delete (unchanged)
-    # =============================================================================
     def create_backup(self, e=None):
         def _do(ev):
             try:
@@ -1130,9 +1025,6 @@ class BackupView:
             print(f"[BACKUP] open_folder error: {ex}")
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
-    # =============================================================================
-    # Helpers
-    # =============================================================================
     def _show_status(self, message, color=ft.Colors.GREY_700):
         if self.status_label:
             self.status_label.value = message
@@ -1160,10 +1052,4 @@ class BackupView:
             pass
 
 
-# Alias so main_window.py can import BackupTab
 BackupTab = BackupView
-
-
-# =================================================================================
-# SECTION 20 END — BACKUP TAB (FLET 1.0 — v2.0)
-# =================================================================================
