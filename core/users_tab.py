@@ -1,9 +1,5 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v2.2
-# =================================================================================
-# Fix for: "ResponsiveRow: width is unbounded"
-# Every top-level child is wrapped in ft.Container(expand=True) so the
-# ResponsiveRow gets a bounded width.
+# SECTION 18 — USERS TAB (FLET 1.0) — v2.3 (matches working-tab pattern)
 # =================================================================================
 
 import flet as ft
@@ -19,7 +15,7 @@ except ImportError:
 
 
 # =================================================================================
-# CONSTANTS
+# PERMISSION CATALOG
 # =================================================================================
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
@@ -48,9 +44,6 @@ ROLE_OPTIONS = ["super_admin", "admin", "staff", "viewer"]
 MOBILE_BREAKPOINT = 700
 
 
-# =================================================================================
-# HELPERS
-# =================================================================================
 def _safe_str(v):
     if v is None:
         return ""
@@ -112,27 +105,24 @@ def _user_has_permission(user, perm_key):
 
 
 # =================================================================================
-# UsersTab
+# UsersTab — returns a ROOT Container (same pattern as PaymentsTab etc.)
 # =================================================================================
-class UsersTab(ft.Column):
+class UsersTab:
 
     def __init__(self, page, db, current_user):
-        super().__init__()
-
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
         self.users = []
-
-        self.scroll = ft.ScrollMode.AUTO
-        self.expand = True
-        self.spacing = 12
 
         self.stats_labels = {}
         self.status_label = None
         self.users_container = None
         self._ui_built = False
         self._mobile_mode = False
+
+        # Root container (returned via build())
+        self.root = None
 
         if not _user_has_permission(self.current_user, "manage_users"):
             self._build_access_denied_ui()
@@ -152,6 +142,9 @@ class UsersTab(ft.Column):
         except Exception as e:
             print(f"[USERS] refresh FAILED: {e}")
             traceback.print_exc()
+
+    def build(self):
+        return self.root
 
     def _is_narrow(self):
         try:
@@ -183,44 +176,42 @@ class UsersTab(ft.Column):
 
     def _build_access_denied_ui(self):
         try:
-            self.controls = [
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.LOCK, size=64,
-                                color=ft.Colors.RED_400),
-                        ft.Text("Access Denied", size=22,
-                                weight=ft.FontWeight.BOLD,
-                                color=ft.Colors.RED_700),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                       spacing=12),
-                    padding=60, alignment=ft.Alignment.CENTER,
-                    bgcolor="#fef2f2", border_radius=12,
-                    border=ft.Border.all(1, "#fecaca"))
-            ]
+            self.root = ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.LOCK, size=64,
+                            color=ft.Colors.RED_400),
+                    ft.Text("Access Denied", size=22,
+                            weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.RED_700),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                   spacing=12),
+                padding=60, alignment=ft.Alignment.CENTER,
+                bgcolor="#fef2f2", border_radius=12,
+                border=ft.Border.all(1, "#fecaca"),
+                expand=True)
         except Exception:
             pass
 
     def _build_error_ui(self, exc):
         try:
-            self.controls = [
-                ft.Container(
-                    content=ft.Column([
-                        ft.Icon(ft.Icons.WARNING_AMBER, size=48,
-                                color=ft.Colors.ORANGE_600),
-                        ft.Text("Users tab failed to load", size=18,
-                                weight=ft.FontWeight.BOLD),
-                        ft.Text(str(exc), size=12,
-                                color=ft.Colors.RED_500, selectable=True),
-                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                       spacing=10),
-                    padding=40, bgcolor="#fef3c7", border_radius=12,
-                    alignment=ft.Alignment.CENTER)
-            ]
+            self.root = ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.WARNING_AMBER, size=48,
+                            color=ft.Colors.ORANGE_600),
+                    ft.Text("Users tab failed to load", size=18,
+                            weight=ft.FontWeight.BOLD),
+                    ft.Text(str(exc), size=12,
+                            color=ft.Colors.RED_500, selectable=True),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                   spacing=10),
+                padding=40, bgcolor="#fef3c7", border_radius=12,
+                alignment=ft.Alignment.CENTER,
+                expand=True)
         except Exception:
             pass
 
     # =============================================================================
-    # setup_ui — every top-level child in ft.Container(expand=True)
+    # setup_ui — IDENTICAL pattern to working tabs
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -250,8 +241,7 @@ class UsersTab(ft.Column):
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
-            border_radius=12,
-            expand=True)
+            border_radius=12)
 
         # ---- Stats ----
         stat_specs = [
@@ -283,11 +273,6 @@ class UsersTab(ft.Column):
 
         stats_row = ft.ResponsiveRow(stat_cards, spacing=8, run_spacing=8)
 
-        stats_wrapper = ft.Container(
-            content=stats_row,
-            expand=True,
-        )
-
         # ---- Toolbar ----
         add_btn = ft.Button(
             content=ft.Row([
@@ -301,21 +286,22 @@ class UsersTab(ft.Column):
             height=44, bgcolor="#059669",
             expand=narrow)
 
+        toolbar_content = ft.Row([
+            add_btn,
+            ft.Container(expand=not narrow),
+            ft.IconButton(icon=ft.Icons.REFRESH,
+                          icon_color="#2563eb",
+                          tooltip="Refresh",
+                          on_click=self.refresh),
+        ], spacing=8, wrap=True)
+
         toolbar = ft.Container(
-            content=ft.Row([
-                add_btn,
-                ft.Container(expand=not narrow),
-                ft.IconButton(icon=ft.Icons.REFRESH,
-                              icon_color="#2563eb",
-                              tooltip="Refresh",
-                              on_click=self.refresh),
-            ], spacing=8, wrap=True),
+            content=toolbar_content,
             padding=ft.Padding.symmetric(
                 horizontal=10 if narrow else 14,
                 vertical=8 if narrow else 10),
             bgcolor=ft.Colors.WHITE, border_radius=12,
-            border=ft.Border.all(1, "#e2e8f0"),
-            expand=True)
+            border=ft.Border.all(1, "#e2e8f0"))
 
         # ---- Users list ----
         self.users_container = ft.Column(spacing=8)
@@ -336,33 +322,33 @@ class UsersTab(ft.Column):
             ], spacing=10),
             padding=12,
             bgcolor=ft.Colors.WHITE, border_radius=12,
-            border=ft.Border.all(1, "#e2e8f0"),
-            expand=True)
+            border=ft.Border.all(1, "#e2e8f0"))
 
-        status_wrapper = ft.Container(
-            content=self.status_label if self.status_label else ft.Text(""),
-            expand=True,
-        )
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
-        status_wrapper.content = self.status_label
 
-        self.controls = [
-            header,
-            stats_wrapper,
-            toolbar,
-            list_card,
-            status_wrapper,
-        ]
-
-    def build(self):
-        return self
+        # ---- ROOT: exactly like PaymentsTab ----
+        self.root = ft.Container(
+            content=ft.Column(
+                controls=[
+                    header,
+                    stats_row,
+                    toolbar,
+                    list_card,
+                    self.status_label,
+                ],
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            padding=10,
+            bgcolor="#f0f2f5",
+            expand=True,
+        )
 
     def on_resize(self, e=None):
         try:
             new_narrow = self._is_narrow()
             if new_narrow != self._mobile_mode:
-                self.controls.clear()
                 self.stats_labels.clear()
                 self.setup_ui()
                 self.refresh()
@@ -642,7 +628,8 @@ class UsersTab(ft.Column):
 
     def _safe_update(self):
         try:
-            self.update()
+            if self.root is not None:
+                self.root.update()
         except Exception:
             pass
 
@@ -923,21 +910,9 @@ class UserFormDialog:
 
             if self.is_edit:
                 self._update_existing(user_data)
-                try:
-                    self.db.log_activity(
-                        self.current_user.get("id"), "edit_user",
-                        f"Edited user: {username}")
-                except Exception:
-                    pass
                 label = "updated"
             else:
                 self._add_new(user_data)
-                try:
-                    self.db.log_activity(
-                        self.current_user.get("id"), "add_user",
-                        f"Added user: {username}")
-                except Exception:
-                    pass
                 label = "created"
 
             self.close()
@@ -1039,5 +1014,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# END — v2.2
+# END — v2.3
 # =================================================================================
