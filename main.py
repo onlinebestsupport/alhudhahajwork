@@ -1,11 +1,10 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.13 — Session persistence + back-to-home fix
-#   • _load_session() now retries with backoff (fixes refresh → login bug)
-#   • _save_session() retries too — storage may be uninitialized right after login
-#   • "Back to Home" on login → navigates to / (public homepage)
-#   • All previous patches preserved
+# v2.14 — Back to Home navigates in SAME tab
+#   • _go_home_page() uses launch_url(url, web_window_name="_self")
+#   • Falls back to launch_url default / page.go if _self fails
+#   • All previous patches preserved (session persistence, captcha, etc.)
 # =================================================================================
 
 import flet as ft
@@ -309,7 +308,6 @@ async def _load_session(page, max_retries=4):
                           f"'{user.get('username')}'")
                     return user
                 else:
-                    # Session points to a deleted user — clear it
                     print(f"[SESSION] user_id={uid} no longer exists — "
                           f"clearing stale session")
                     try:
@@ -320,7 +318,6 @@ async def _load_session(page, max_retries=4):
                         pass
                     return None
             else:
-                # Storage returned nothing yet — wait a bit longer
                 if attempt < max_retries - 1:
                     await asyncio.sleep(0.4)
                     continue
@@ -406,22 +403,49 @@ def flet_main(page: ft.Page):
     state = {"user": None}
 
     # -----------------------------------------------------------------------------
-    # Navigate browser to the public homepage (exit the admin Flet app)
+    # [FIX v2.14] Navigate browser to the public homepage — SAME TAB
     # -----------------------------------------------------------------------------
     def _go_home_page():
-        """Send the browser to the public / homepage."""
+        """Send the browser to the public / homepage in the SAME tab."""
         print("[NAV] Back to Home clicked → navigating to /")
+
+        # Try 1: launch_url with same-tab target (preferred)
         try:
-            # Flet 1.0 web-safe: launch_url opens the URL in the same tab
-            page.launch_url("/")
+            page.launch_url("/", web_window_name="_self")
+            print("[NAV] ✅ launch_url(_self) succeeded")
             return
         except Exception as e:
-            print(f"[NAV] launch_url failed: {e}")
+            print(f"[NAV] launch_url(_self) failed: {e}")
+
+        # Try 2: launch_url default (opens new tab as fallback)
         try:
-            # Older Flet fallback — navigate the window
-            page.window.location = "/"
-        except Exception:
-            pass
+            page.launch_url("/")
+            print("[NAV] ⚠️ launch_url(default) opened new tab")
+            return
+        except Exception as e:
+            print(f"[NAV] launch_url(default) failed: {e}")
+
+        # Try 3: UrlLauncher service (Flet 1.0)
+        try:
+            async def _do():
+                try:
+                    launcher = ft.UrlLauncher()
+                    await launcher.launch_url(
+                        "/", web_window_name="_self")
+                    print("[NAV] ✅ UrlLauncher succeeded")
+                except Exception as ex:
+                    print(f"[NAV] UrlLauncher failed: {ex}")
+            page.run_task(_do)
+            return
+        except Exception as e:
+            print(f"[NAV] run_task UrlLauncher failed: {e}")
+
+        # Try 4: Flet's own go()
+        try:
+            page.go("/")
+            print("[NAV] ⚠️ page.go('/') attempted")
+        except Exception as e:
+            print(f"[NAV] page.go failed: {e}")
 
     def show_login():
         page.controls.clear()
@@ -648,7 +672,6 @@ def _build_app() -> FastAPI:
 
     @app.get("/api/captcha/new")
     async def captcha_new(session_id: str = ""):
-        """Generate a new math CAPTCHA for the traveler portal."""
         try:
             from core.traveler_portal import get_captcha_new
             return get_captcha_new(session_id)
@@ -658,7 +681,6 @@ def _build_app() -> FastAPI:
 
     @app.post("/api/captcha/verify")
     async def captcha_verify(payload: CaptchaVerifyPayload):
-        """Verify the traveler's CAPTCHA answer."""
         try:
             from core.traveler_portal import check_captcha_answer
             return check_captcha_answer(payload.session_id, payload.answer)
@@ -707,7 +729,6 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
         if err:
-            # CAPTCHA failure → 400, credential failure → 401
             if err.startswith("captcha:"):
                 reason = err.split(":", 1)[1]
                 msg_map = {
