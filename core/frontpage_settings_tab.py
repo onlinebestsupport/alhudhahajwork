@@ -1,12 +1,12 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v3.2 — Fixed batch list grey box
-#   • Removed nested scroll container from batch list
-#   • Removed fixed height from batch container
+# v3.4 — Batch list renders reliably on Flutter Web
+#   • Explicit height on batch list container
+#   • Each Checkbox wrapped in its own Row
+#   • Only ONE scroll container per tab
 #   • Plain class with self.root = ft.Container(...expand=True)
 #   • build() returns self.root
-#   • Only ONE scroll container per tab (the outer Column)
 # =================================================================================
 
 import json
@@ -145,7 +145,6 @@ class FrontPageSettingsTab:
     # ROOT BUILD
     # =============================================================================
     def _build_root(self):
-        # Reset entries (rebuilt each time)
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
@@ -167,7 +166,7 @@ class FrontPageSettingsTab:
                 ft.Container(height=20),
             ],
             spacing=10,
-            scroll=ft.ScrollMode.AUTO,
+            scroll=ft.ScrollMode.AUTO,      # ← ONLY scroll in the file
         )
 
         self.root = ft.Container(
@@ -443,7 +442,7 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # -----------------------------------------------------------------------------
-    # Packages  ✅ FIXED — no nested scroll, no fixed height
+    # Packages  ✅ v3.4
     # -----------------------------------------------------------------------------
     def _section_packages(self):
         p = self.cfg.get("packages", {})
@@ -485,16 +484,20 @@ class FrontPageSettingsTab:
         batch_rows = []
 
         if not self.all_batches:
-            batch_rows.append(ft.Text(
-                "No batches found. Add some in the Batches tab first.",
-                size=11, color=MUTED))
+            batch_rows.append(
+                ft.Row([
+                    ft.Text("No batches found. Add some in the "
+                            "Batches tab first.",
+                            size=11, color=MUTED,
+                            no_wrap=False, max_lines=2),
+                ], spacing=0))
         else:
             for b in self.all_batches:
                 bid = str(b.get("id", ""))
                 name = str(b.get("batch_name", bid))
                 status = str(b.get("status", ""))
                 price = b.get("price", 0)
-                label = f"{name}  ·  {status}  ·  ₹{price:,.0f}"
+                label = f"{name} · {status} · ₹{price:,.0f}"
 
                 cb = ft.Checkbox(
                     label=label,
@@ -502,14 +505,12 @@ class FrontPageSettingsTab:
                     label_style=ft.TextStyle(size=11))
                 self.batch_checkboxes[bid] = cb
                 batch_rows.append(
-                    ft.Container(
-                        content=cb,
-                        padding=ft.Padding.symmetric(
-                            horizontal=6, vertical=2)))
+                    ft.Row([cb], spacing=0,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER))
 
-        self.pkg_batch_container = ft.Column(batch_rows, spacing=0)
+        self.pkg_batch_container = ft.Column(
+            batch_rows, spacing=4)
 
-        # ---- ✅ FIXED: single Column, NO nested scroll, NO fixed height ----
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
@@ -524,9 +525,11 @@ class FrontPageSettingsTab:
                 size=10, color=MUTED, italic=True),
             ft.Container(
                 content=self.pkg_batch_container,
-                padding=8, bgcolor="#f8fafc",
+                padding=10,
+                bgcolor="#f8fafc",
                 border=ft.Border.all(1, BORDER),
-                border_radius=10),
+                border_radius=10,
+                height=300),
         ], spacing=8)
 
         self._update_source_visibility()
