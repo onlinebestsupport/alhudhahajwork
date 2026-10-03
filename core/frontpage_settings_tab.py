@@ -1,15 +1,11 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Admin UI for front page configuration
 # =================================================================================
-# v2.2 — Mobile-Responsive
-#   • Header stacks on narrow screens (Preview button drops below)
-#   • Section cards: compact padding, tighter typography
-#   • Feature rows stack (icon → title → description) on mobile
-#   • Stats rows stack on mobile
-#   • Two-column fields become single-column on mobile
-#   • Batch checkbox list: max-height shrinks on mobile
-#   • Action bar buttons wrap to 2 per row
-#   • All cloud-ready features preserved
+# v3.1 — Fixed mobile rendering (matches UsersTab v3.1 pattern)
+#   • Plain class, self.root = ft.Container(...expand=True)
+#   • build() returns self.root
+#   • refresh() rebuilds root content
+#   • No nested scroll containers
 # =================================================================================
 
 import json
@@ -40,11 +36,9 @@ PAGE_BG      = "#f1f5f9"
 # =================================================================================
 # CLASS: FrontPageSettingsTab
 # =================================================================================
-class FrontPageSettingsTab(ft.Column):
+class FrontPageSettingsTab:
 
     def __init__(self, page, db, current_user):
-        super().__init__()
-
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
@@ -95,33 +89,30 @@ class FrontPageSettingsTab(ft.Column):
         self.footer_copyright = None
 
         self.status_label = None
-
-        self.spacing = 0
-        self.expand = True
-        self.scroll = ft.ScrollMode.AUTO
+        self.root = None
 
         try:
             self._load_batches()
-            self._build()
+            self._build_root()
         except Exception as e:
             print(f"[FRONTPAGE_SETTINGS] build failed: {e}")
             traceback.print_exc()
-            self.controls = [self._error_ui(e)]
+            self.root = self._error_ui(e)
 
     # -----------------------------------------------------------------------------
     def build(self):
-        return self
+        return self.root
 
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
             self.cfg = load_config()
             self._load_batches()
-            self.controls.clear()
-            self._build()
+            self._build_root()
             self._safe_update()
         except Exception as ex:
             print(f"[FRONTPAGE_SETTINGS] refresh failed: {ex}")
+            traceback.print_exc()
 
     def _load_batches(self):
         try:
@@ -150,27 +141,43 @@ class FrontPageSettingsTab(ft.Column):
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # UI BUILD
+    # ROOT BUILD — outer Container wraps a Column with scroll
     # =============================================================================
-    def _build(self):
-        self.controls = [
-            self._header(),
-            ft.Container(height=8),
-            self._section_hero(),
-            self._section_alert(),
-            self._section_features(),
-            self._section_packages(),
-            self._section_about(),
-            self._section_contact(),
-            self._section_social(),
-            self._section_footer(),
-            ft.Container(height=12),
-            self._action_bar(),
-            ft.Container(height=20),
-        ]
+    def _build_root(self):
+        # Reset entries (rebuilt each time)
+        self.feature_entries = []
+        self.stat_entries = []
+        self.batch_checkboxes = {}
+
+        inner_column = ft.Column(
+            controls=[
+                self._header(),
+                ft.Container(height=8),
+                self._section_hero(),
+                self._section_alert(),
+                self._section_features(),
+                self._section_packages(),
+                self._section_about(),
+                self._section_contact(),
+                self._section_social(),
+                self._section_footer(),
+                ft.Container(height=12),
+                self._action_bar(),
+                ft.Container(height=20),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+        self.root = ft.Container(
+            content=inner_column,
+            padding=10,
+            bgcolor=PAGE_BG,
+            expand=True,
+        )
 
     # -----------------------------------------------------------------------------
-    # Header — MOBILE-RESPONSIVE
+    # Header
     # -----------------------------------------------------------------------------
     def _header(self):
         return ft.Container(
@@ -222,7 +229,7 @@ class FrontPageSettingsTab(ft.Column):
             border_radius=14)
 
     # -----------------------------------------------------------------------------
-    # Section wrapper (reusable card) — MOBILE-RESPONSIVE
+    # Section wrapper
     # -----------------------------------------------------------------------------
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
@@ -278,7 +285,6 @@ class FrontPageSettingsTab(ft.Column):
         return ft.TextField(**defaults)
 
     def _two_col(self, left, right):
-        """Two fields side by side on desktop, stacked on mobile."""
         return ft.ResponsiveRow(
             controls=[
                 ft.Container(content=left,
@@ -404,7 +410,6 @@ class FrontPageSettingsTab(ft.Column):
             except Exception:
                 pass
 
-        # MOBILE-RESPONSIVE inner layout
         row = ft.Container(
             content=ft.Column([
                 ft.ResponsiveRow(
@@ -473,7 +478,6 @@ class FrontPageSettingsTab(ft.Column):
             content=ft.Text("✗ Clear", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
-        # Build batch checkbox list
         selected_ids = set(str(x) for x in
                            (p.get("selected_batch_ids") or []))
         self.batch_checkboxes = {}
@@ -504,7 +508,6 @@ class FrontPageSettingsTab(ft.Column):
 
         self.pkg_batch_container = ft.Column(batch_rows, spacing=0)
 
-        # MOBILE-RESPONSIVE height
         pw = self.page_ref.width or 1000
         batch_h = 180 if pw < 700 else 240
 
@@ -579,6 +582,18 @@ class FrontPageSettingsTab(ft.Column):
         for st in (a.get("stats") or []):
             self._add_stat_row(st.get("number", ""), st.get("label", ""))
 
+        add_stat_btn = ft.Button(
+            content=ft.Row([
+                ft.Icon(ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
+                ft.Text("Add Statistic", size=11,
+                        color=ft.Colors.WHITE,
+                        weight=ft.FontWeight.BOLD),
+            ], spacing=5, tight=True),
+            on_click=self._add_stat_empty,
+            height=38, bgcolor=SUCCESS,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=10)))
+
         return self._section_card(
             "📖", "About Section",
             "The 'About Us' block with statistics",
@@ -591,6 +606,7 @@ class FrontPageSettingsTab(ft.Column):
                         size=12, weight=ft.FontWeight.BOLD,
                         color="#0f172a"),
                 self.stats_rows_container,
+                add_stat_btn,
             ])
 
     def _add_stat_row(self, number_val, label_val):
@@ -626,6 +642,10 @@ class FrontPageSettingsTab(ft.Column):
         entry["row"] = row
         self.stat_entries.append(entry)
         self.stats_rows_container.controls.append(row)
+
+    def _add_stat_empty(self, e=None):
+        self._add_stat_row("", "")
+        self._safe_update()
 
     # -----------------------------------------------------------------------------
     # Contact
@@ -694,7 +714,7 @@ class FrontPageSettingsTab(ft.Column):
             [self.footer_about, self.footer_copyright])
 
     # -----------------------------------------------------------------------------
-    # Action bar — MOBILE-RESPONSIVE (2 per row on mobile)
+    # Action bar
     # -----------------------------------------------------------------------------
     def _action_bar(self):
         save_btn = ft.Button(
@@ -852,8 +872,6 @@ class FrontPageSettingsTab(ft.Column):
         }
 
     # -----------------------------------------------------------------------------
-    # Save
-    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -879,8 +897,6 @@ class FrontPageSettingsTab(ft.Column):
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
-    # -----------------------------------------------------------------------------
-    # Reset
     # -----------------------------------------------------------------------------
     def _reset_confirm(self, e=None):
         def do_reset(ev):
@@ -925,8 +941,6 @@ class FrontPageSettingsTab(ft.Column):
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # Preview
-    # -----------------------------------------------------------------------------
     def _open_preview(self, e=None):
         try:
             async def _do():
@@ -956,8 +970,6 @@ class FrontPageSettingsTab(ft.Column):
             self._snack(f"⚠️ {ex}")
 
     # -----------------------------------------------------------------------------
-    # Helpers
-    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
@@ -976,6 +988,7 @@ class FrontPageSettingsTab(ft.Column):
 
     def _safe_update(self):
         try:
-            self.update()
+            if self.root is not None:
+                self.root.update()
         except Exception:
             pass
