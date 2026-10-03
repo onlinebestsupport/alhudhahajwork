@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW (MOBILE-RESPONSIVE)
 # =================================================================================
-# v2.3 — Mobile-friendly header and tabs
+# v2.4 — Added Data Administration tab (super_admin only)
 #   • Compact header (fewer buttons visible)
 #   • Scrollable tab bar
 #   • Responsive dialogs and status bar
+#   • NEW: 🗄️ Data Admin tab
 # =================================================================================
 
 import flet as ft
@@ -57,6 +58,13 @@ try:
 except ImportError as _e:
     print(f"[IMPORT] frontpage_settings_tab failed: {_e}")
     FrontPageSettingsTab = None
+
+try:
+    from core.data_admin_tab import DataAdminTab
+    print("[IMPORT] Loaded DataAdminTab from core.data_admin_tab")
+except ImportError as _e:
+    print(f"[IMPORT] core.data_admin_tab failed: {_e}")
+    DataAdminTab = None
 
 BackupTab = None
 try:
@@ -137,6 +145,7 @@ class MainWindowView:
         self.users_tab = None
         self.frontpage_tab = None
         self.backup_tab = None
+        self.data_admin_tab = None       # ← NEW
 
         self.tab_instances = {}
         self.tabs_control = None
@@ -188,11 +197,11 @@ class MainWindowView:
                             print(f"[NAV] {tab_name}.{method_name} failed: {ex}")
                         break
         except Exception as ex:
-            traceback.print_exc() if 'traceback' in dir() else None
             print(f"[NAV] _on_navigate failed: {ex}")
             self._show_snack(f"⚠️ Navigation error: {ex}")
 
-    # =============================================================================    # build()
+    # =============================================================================
+    # build()
     # =============================================================================
     def build(self):
         company_name = "Alhudha Haj Travel"
@@ -336,7 +345,6 @@ class MainWindowView:
                                   color=ft.Colors.WHITE, size=22),
         )
 
-        # ---- Compact header, everything fits on mobile ----
         header = ft.Container(
             content=ft.Row(
                 controls=[
@@ -452,6 +460,9 @@ class MainWindowView:
              "manage_settings",  FrontPageSettingsTab),
             ("💾 Backup",    ft.Icons.BACKUP,    "backup_tab",
              "manage_backups",   BackupTab),
+            # ✅ NEW: Data Admin — super_admin only (gated inside tab too)
+            ("🗄️ Data Admin", ft.Icons.STORAGE, "data_admin_tab",
+             "manage_settings",  DataAdminTab),
         ]
 
         print(f"[MAIN] user='{user_name}' role='{user_role}'")
@@ -461,6 +472,13 @@ class MainWindowView:
             if not _user_has_permission(self.current_user, perm_key):
                 print(f"[TAB] {label.strip()}: ⛔ denied")
                 continue
+
+            # Extra gate for Data Admin: only super_admin
+            if attr_name == "data_admin_tab":
+                if str(user_role).strip().lower() != "super_admin":
+                    print(f"[TAB] {label.strip()}: ⛔ super_admin only")
+                    continue
+
             plain_label = label.split(" ", 1)[-1]
             content = build_tab_content(cls, plain_label, icon, attr_name)
             tab_labels.append((label, icon, content))
@@ -477,7 +495,6 @@ class MainWindowView:
                          for label, _, _ in tab_labels]
         tab_views = [view for _, _, view in tab_labels]
 
-        # ---- Mobile-friendly tabs: horizontal scroll ----
         self.tabs_control = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -489,7 +506,7 @@ class MainWindowView:
                 controls=[
                     ft.TabBar(
                         tabs=tab_bar_items,
-                        scrollable=True,      # enable horizontal scroll
+                        scrollable=True,
                     ),
                     ft.TabBarView(
                         expand=True,
@@ -500,7 +517,7 @@ class MainWindowView:
                 ]))
 
         # =====================================================================
-        # STATUS BAR — compact
+        # STATUS BAR
         # =====================================================================
         self.status_time_label = ft.Text(
             datetime.now().strftime("%H:%M:%S"),
@@ -572,7 +589,7 @@ class MainWindowView:
         for name in ('dashboard_tab', 'travelers_tab', 'batches_tab',
                      'payments_tab', 'receipts_tab', 'invoices_tab',
                      'reports_tab', 'users_tab', 'frontpage_tab',
-                     'backup_tab'):
+                     'backup_tab', 'data_admin_tab'):
             tab = getattr(self, name, None)
             if tab is not None and hasattr(tab, 'refresh'):
                 try:
