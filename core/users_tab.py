@@ -1,8 +1,9 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v2.1
+# SECTION 18 — USERS TAB (FLET 1.0) — v2.2
 # =================================================================================
-# Fix: use Rows as wrappers around Container children so Flet web computes
-# their heights correctly. Only the outer Column scrolls.
+# Fix for: "ResponsiveRow: width is unbounded"
+# Every top-level child is wrapped in ft.Container(expand=True) so the
+# ResponsiveRow gets a bounded width.
 # =================================================================================
 
 import flet as ft
@@ -219,7 +220,7 @@ class UsersTab(ft.Column):
             pass
 
     # =============================================================================
-    # setup_ui — every child wrapped in Row() so Flet web computes height
+    # setup_ui — every top-level child in ft.Container(expand=True)
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -249,7 +250,8 @@ class UsersTab(ft.Column):
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
-            border_radius=12)
+            border_radius=12,
+            expand=True)
 
         # ---- Stats ----
         stat_specs = [
@@ -281,7 +283,12 @@ class UsersTab(ft.Column):
 
         stats_row = ft.ResponsiveRow(stat_cards, spacing=8, run_spacing=8)
 
-        # ---- Toolbar (wrapped in Row so it computes height) ----
+        stats_wrapper = ft.Container(
+            content=stats_row,
+            expand=True,
+        )
+
+        # ---- Toolbar ----
         add_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
@@ -294,58 +301,58 @@ class UsersTab(ft.Column):
             height=44, bgcolor="#059669",
             expand=narrow)
 
-        toolbar = ft.Row([
-            ft.Container(
-                content=ft.Row([
-                    add_btn,
-                    ft.Container(expand=not narrow),
-                    ft.IconButton(icon=ft.Icons.REFRESH,
-                                  icon_color="#2563eb",
-                                  tooltip="Refresh",
-                                  on_click=self.refresh),
-                ], spacing=8, wrap=True),
-                padding=ft.Padding.symmetric(
-                    horizontal=10 if narrow else 14,
-                    vertical=8 if narrow else 10),
-                bgcolor=ft.Colors.WHITE, border_radius=12,
-                border=ft.Border.all(1, "#e2e8f0"),
-                expand=True),
-        ], spacing=0)
+        toolbar = ft.Container(
+            content=ft.Row([
+                add_btn,
+                ft.Container(expand=not narrow),
+                ft.IconButton(icon=ft.Icons.REFRESH,
+                              icon_color="#2563eb",
+                              tooltip="Refresh",
+                              on_click=self.refresh),
+            ], spacing=8, wrap=True),
+            padding=ft.Padding.symmetric(
+                horizontal=10 if narrow else 14,
+                vertical=8 if narrow else 10),
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.all(1, "#e2e8f0"),
+            expand=True)
 
         # ---- Users list ----
         self.users_container = ft.Column(spacing=8)
 
-        list_card = ft.Row([
-            ft.Container(
-                content=ft.Column([
-                    ft.Row([
-                        ft.Text("📋", size=14),
-                        ft.Text("All Users", size=13,
-                                weight=ft.FontWeight.BOLD,
-                                color="#1e40af"),
-                        ft.Container(expand=True),
-                        ft.Text("💡 Tap Edit/Delete",
-                                size=9, color=ft.Colors.GREY_500,
-                                italic=True),
-                    ], spacing=6),
-                    self.users_container,
-                ], spacing=10),
-                padding=12,
-                bgcolor=ft.Colors.WHITE, border_radius=12,
-                border=ft.Border.all(1, "#e2e8f0"),
-                expand=True),
-        ], spacing=0)
+        list_card = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Text("📋", size=14),
+                    ft.Text("All Users", size=13,
+                            weight=ft.FontWeight.BOLD,
+                            color="#1e40af"),
+                    ft.Container(expand=True),
+                    ft.Text("💡 Tap Edit/Delete",
+                            size=9, color=ft.Colors.GREY_500,
+                            italic=True),
+                ], spacing=6),
+                self.users_container,
+            ], spacing=10),
+            padding=12,
+            bgcolor=ft.Colors.WHITE, border_radius=12,
+            border=ft.Border.all(1, "#e2e8f0"),
+            expand=True)
 
+        status_wrapper = ft.Container(
+            content=self.status_label if self.status_label else ft.Text(""),
+            expand=True,
+        )
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
+        status_wrapper.content = self.status_label
 
-        # Wrap every child in a Row to force height computation on Flet web
         self.controls = [
-            ft.Row([header], spacing=0),
-            ft.Row([stats_row], spacing=0),
+            header,
+            stats_wrapper,
             toolbar,
             list_card,
-            ft.Row([self.status_label], spacing=0),
+            status_wrapper,
         ]
 
     def build(self):
@@ -1032,5 +1039,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# END — v2.1
+# END — v2.2
 # =================================================================================
