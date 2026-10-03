@@ -1,11 +1,8 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v2.0
+# SECTION 18 — USERS TAB (FLET 1.0) — v2.1
 # =================================================================================
-# Based on the proven-rendering test layout.
-#   • Outer Column scrolls the whole tab (only scroll container)
-#   • Users list is a plain ft.Column (no nested ListView, no expand)
-#   • Full Add / Edit / Delete with permission grid
-#   • Mobile-responsive sizing
+# Fix: use Rows as wrappers around Container children so Flet web computes
+# their heights correctly. Only the outer Column scrolls.
 # =================================================================================
 
 import flet as ft
@@ -21,7 +18,7 @@ except ImportError:
 
 
 # =================================================================================
-# PERMISSION CATALOG
+# CONSTANTS
 # =================================================================================
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
@@ -126,7 +123,6 @@ class UsersTab(ft.Column):
         self.current_user = current_user or {}
         self.users = []
 
-        # Only the OUTER column scrolls — matches proven test layout
         self.scroll = ft.ScrollMode.AUTO
         self.expand = True
         self.spacing = 12
@@ -138,7 +134,6 @@ class UsersTab(ft.Column):
         self._mobile_mode = False
 
         if not _user_has_permission(self.current_user, "manage_users"):
-            print(f"[USERS] ⛔ Access denied")
             self._build_access_denied_ui()
             return
 
@@ -157,7 +152,6 @@ class UsersTab(ft.Column):
             print(f"[USERS] refresh FAILED: {e}")
             traceback.print_exc()
 
-    # -----------------------------------------------------------------------------
     def _is_narrow(self):
         try:
             plat = getattr(self.page_ref, "platform", None)
@@ -225,7 +219,7 @@ class UsersTab(ft.Column):
             pass
 
     # =============================================================================
-    # setup_ui — matches proven test layout (no nested scroll)
+    # setup_ui — every child wrapped in Row() so Flet web computes height
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -257,7 +251,7 @@ class UsersTab(ft.Column):
                 colors=["#1e3a8a", "#2563eb", "#7c3aed"]),
             border_radius=12)
 
-        # ---- Stats (proven layout) ----
+        # ---- Stats ----
         stat_specs = [
             ("total",  "👥", "Total",         "#2563eb"),
             ("supers", "👑", "Super Admins",  "#d97706"),
@@ -287,7 +281,7 @@ class UsersTab(ft.Column):
 
         stats_row = ft.ResponsiveRow(stat_cards, spacing=8, run_spacing=8)
 
-        # ---- Toolbar ----
+        # ---- Toolbar (wrapped in Row so it computes height) ----
         add_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(ft.Icons.ADD, size=16, color=ft.Colors.WHITE),
@@ -300,51 +294,58 @@ class UsersTab(ft.Column):
             height=44, bgcolor="#059669",
             expand=narrow)
 
-        toolbar = ft.Container(
-            content=ft.Row([
-                add_btn,
-                ft.Container(expand=not narrow),
-                ft.IconButton(icon=ft.Icons.REFRESH,
-                              icon_color="#2563eb",
-                              tooltip="Refresh",
-                              on_click=self.refresh),
-            ], spacing=8, wrap=True),
-            padding=ft.Padding.symmetric(
-                horizontal=10 if narrow else 14,
-                vertical=8 if narrow else 10),
-            bgcolor=ft.Colors.WHITE, border_radius=12,
-            border=ft.Border.all(1, "#e2e8f0"))
+        toolbar = ft.Row([
+            ft.Container(
+                content=ft.Row([
+                    add_btn,
+                    ft.Container(expand=not narrow),
+                    ft.IconButton(icon=ft.Icons.REFRESH,
+                                  icon_color="#2563eb",
+                                  tooltip="Refresh",
+                                  on_click=self.refresh),
+                ], spacing=8, wrap=True),
+                padding=ft.Padding.symmetric(
+                    horizontal=10 if narrow else 14,
+                    vertical=8 if narrow else 10),
+                bgcolor=ft.Colors.WHITE, border_radius=12,
+                border=ft.Border.all(1, "#e2e8f0"),
+                expand=True),
+        ], spacing=0)
 
-        # ---- Users list container (plain Column, NO scroll, NO expand) ----
+        # ---- Users list ----
         self.users_container = ft.Column(spacing=8)
 
-        list_card = ft.Container(
-            content=ft.Column([
-                ft.Row([
-                    ft.Text("📋", size=14),
-                    ft.Text("All Users", size=13,
-                            weight=ft.FontWeight.BOLD,
-                            color="#1e40af"),
-                    ft.Container(expand=True),
-                    ft.Text("💡 Tap Edit/Delete on any card",
-                            size=9, color=ft.Colors.GREY_500,
-                            italic=True),
-                ], spacing=6),
-                self.users_container,
-            ], spacing=10),
-            padding=12,
-            bgcolor=ft.Colors.WHITE, border_radius=12,
-            border=ft.Border.all(1, "#e2e8f0"))
+        list_card = ft.Row([
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text("📋", size=14),
+                        ft.Text("All Users", size=13,
+                                weight=ft.FontWeight.BOLD,
+                                color="#1e40af"),
+                        ft.Container(expand=True),
+                        ft.Text("💡 Tap Edit/Delete",
+                                size=9, color=ft.Colors.GREY_500,
+                                italic=True),
+                    ], spacing=6),
+                    self.users_container,
+                ], spacing=10),
+                padding=12,
+                bgcolor=ft.Colors.WHITE, border_radius=12,
+                border=ft.Border.all(1, "#e2e8f0"),
+                expand=True),
+        ], spacing=0)
 
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
 
+        # Wrap every child in a Row to force height computation on Flet web
         self.controls = [
-            header,
-            stats_row,
+            ft.Row([header], spacing=0),
+            ft.Row([stats_row], spacing=0),
             toolbar,
             list_card,
-            self.status_label,
+            ft.Row([self.status_label], spacing=0),
         ]
 
     def build(self):
@@ -354,8 +355,6 @@ class UsersTab(ft.Column):
         try:
             new_narrow = self._is_narrow()
             if new_narrow != self._mobile_mode:
-                print(f"[USERS] viewport changed → "
-                      f"{'mobile' if new_narrow else 'desktop'}")
                 self.controls.clear()
                 self.stats_labels.clear()
                 self.setup_ui()
@@ -420,15 +419,10 @@ class UsersTab(ft.Column):
             if k in self.stats_labels:
                 self.stats_labels[k].value = str(v)
 
-    # =============================================================================
-    # _render_users — plain Column of cards (proven to render on mobile)
-    # =============================================================================
     def _render_users(self):
         if self.users_container is None:
-            print("[USERS] users_container is None — cannot render")
             return
         self.users_container.controls.clear()
-        print(f"[USERS] rendering {len(self.users)} user cards")
 
         for u in self.users:
             username = u.get("username", "")
@@ -472,7 +466,6 @@ class UsersTab(ft.Column):
 
             card = ft.Container(
                 content=ft.Column([
-                    # Row 1: username + role badge
                     ft.Row([
                         ft.Text(username, size=14,
                                 weight=ft.FontWeight.BOLD,
@@ -490,16 +483,10 @@ class UsersTab(ft.Column):
                             bgcolor=role_color,
                             border_radius=10),
                     ], spacing=8),
-
-                    # Row 2: full name
                     ft.Text(full_name or "—", size=12,
                             color=ft.Colors.GREY_700),
-
-                    # Row 3: email
                     ft.Text(email or "—", size=11,
                             color=ft.Colors.GREY_500),
-
-                    # Row 4: metadata
                     ft.Row([
                         ft.Text(f"🔑 {perm_count} perms", size=10,
                                 color="#1e40af"),
@@ -508,8 +495,6 @@ class UsersTab(ft.Column):
                         ft.Text(f"🕒 {last_login}", size=10,
                                 color=ft.Colors.GREY_600),
                     ], spacing=12, wrap=True),
-
-                    # Row 5: actions
                     ft.Row([
                         ft.TextButton(
                             content=ft.Row([
@@ -608,11 +593,8 @@ class UsersTab(ft.Column):
                 except Exception:
                     pass
                 self.refresh()
-                self._show_status(f"✅ User '{username}' deleted.",
-                                  ft.Colors.GREEN_700)
             except Exception as ex:
                 print(f"[USERS] delete error: {ex}")
-                traceback.print_exc()
 
         def _cancel(ev):
             try:
@@ -708,7 +690,6 @@ class UserFormDialog:
             except Exception:
                 narrow = True
 
-        # ---- Credentials ----
         self.username_field = ft.TextField(
             label="Username *",
             value=_safe_str(u.get("username")),
@@ -744,7 +725,6 @@ class UserFormDialog:
             padding=10, bgcolor="#f0f9ff", border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
-        # ---- Profile ----
         self.full_name_field = ft.TextField(
             label="Full Name *",
             value=_safe_str(u.get("full_name")),
@@ -773,7 +753,6 @@ class UserFormDialog:
             padding=10, bgcolor="#f5f3ff", border_radius=10,
             border=ft.Border.all(1, "#ddd6fe"))
 
-        # ---- Permissions ----
         current_perms = _parse_permissions(
             u.get("permissions", ""), u.get("role", "staff"))
         perm_grid = ft.ResponsiveRow(spacing=6, run_spacing=6)
@@ -965,7 +944,6 @@ class UserFormDialog:
         except Exception as ex:
             print(f"[USERS] save error: {ex}")
             traceback.print_exc()
-            self._snack(f"❌ Save failed: {ex}", ft.Colors.RED_500)
 
     def _add_new(self, data):
         if hasattr(self.db, "add_user"):
@@ -1054,5 +1032,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# END — v2.0
+# END — v2.1
 # =================================================================================
