@@ -1,9 +1,11 @@
 # =================================================================================
 # SECTION 21 (FLET 1.0.0 VERSION) — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.12 — Mobile-responsive admin shell
-#   • flet_main() sets responsive window and injects mobile CSS
-#   • All other patches preserved (NaN-safe JSON, sessions, seeding, etc.)
+# v2.13 — Session persistence + back-to-home fix
+#   • _load_session() now retries with backoff (fixes refresh → login bug)
+#   • _save_session() retries too — storage may be uninitialized right after login
+#   • "Back to Home" on login → navigates to / (public homepage)
+#   • All previous patches preserved
 # =================================================================================
 
 import flet as ft
@@ -233,7 +235,7 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — ADMIN session helpers
+# 21.2.5 — ADMIN session helpers (with retry)
 # =================================================================================
 def _find_user_by_id(db, user_id):
     try:
@@ -246,37 +248,91 @@ def _find_user_by_id(db, user_id):
     return None
 
 
-async def _save_session(page, user):
-    try:
-        uid = user.get("id") if user else None
-        if not uid:
+async def _save_session(page, user, max_retries=3):
+    """Save user id to client_storage. Retries if storage is not ready yet."""
+    if not user:
+        return
+    uid = user.get("id")
+    if not uid:
+        return
+
+    for attempt in range(max_retries):
+        try:
+            storage = getattr(page, "client_storage", None)
+            if storage is None:
+                print(f"[SESSION] save: client_storage is None "
+                      f"(attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(0.3)
+                continue
+
+            result = storage.set(SESSION_KEY, str(uid))
+            if asyncio.iscoroutine(result):
+                await result
+
+            print(f"[SESSION] ✅ Saved user_id={uid} to client_storage")
             return
-        storage = getattr(page, "client_storage", None)
-        if storage is None:
-            return
-        result = storage.set(SESSION_KEY, str(uid))
-        if asyncio.iscoroutine(result):
-            await result
-    except Exception as e:
-        print(f"[SESSION] save failed: {e}")
+        except Exception as e:
+            print(f"[SESSION] save attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(0.3)
+
+    print(f"[SESSION] ❌ Save failed after {max_retries} attempts")
 
 
-async def _load_session(page):
-    try:
-        storage = getattr(page, "client_storage", None)
-        if storage is None:
-            return None
-        result = storage.get(SESSION_KEY)
-        if asyncio.iscoroutine(result):
-            uid = await result
-        else:
-            uid = result
-        if not uid:
-            return None
-        return _find_user_by_id(AppState.db, uid)
-    except Exception as e:
-        print(f"[SESSION] load failed: {e}")
-        return None
+async def _load_session(page, max_retries=4):
+    """
+    Load user from client_storage. Retries with backoff because
+    client_storage may not be initialized immediately on page load,
+    especially after a browser refresh.
+    """
+    for attempt in range(max_retries):
+        try:
+            storage = getattr(page, "client_storage", None)
+            if storage is None:
+                print(f"[SESSION] load: client_storage is None "
+                      f"(attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(0.3)
+                continue
+
+            result = storage.get(SESSION_KEY)
+            if asyncio.iscoroutine(result):
+                uid = await result
+            else:
+                uid = result
+
+            print(f"[SESSION] load attempt {attempt + 1}: "
+                  f"uid={uid!r}")
+
+            if uid:
+                user = _find_user_by_id(AppState.db, uid)
+                if user:
+                    print(f"[SESSION] ✅ Restored user "
+                          f"'{user.get('username')}'")
+                    return user
+                else:
+                    # Session points to a deleted user — clear it
+                    print(f"[SESSION] user_id={uid} no longer exists — "
+                          f"clearing stale session")
+                    try:
+                        r = storage.remove(SESSION_KEY)
+                        if asyncio.iscoroutine(r):
+                            await r
+                    except Exception:
+                        pass
+                    return None
+            else:
+                # Storage returned nothing yet — wait a bit longer
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.4)
+                    continue
+                print("[SESSION] no saved session found")
+                return None
+
+        except Exception as e:
+            print(f"[SESSION] load attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(0.3)
+
+    print(f"[SESSION] ❌ Load failed after {max_retries} attempts")
+    return None
 
 
 async def _clear_session(page):
@@ -287,23 +343,22 @@ async def _clear_session(page):
         result = storage.remove(SESSION_KEY)
         if asyncio.iscoroutine(result):
             await result
+        print("[SESSION] ✅ Cleared saved session")
     except Exception as e:
         print(f"[SESSION] clear failed: {e}")
 
 
 # =================================================================================
-# 21.3 — FLET ADMIN APP ENTRY POINT (MOBILE-RESPONSIVE)
+# 21.3 — FLET ADMIN APP ENTRY POINT
 # =================================================================================
 def flet_main(page: ft.Page):
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
-    # ---- Responsive window settings ----
-    # On web these are largely ignored by the browser, but Flet uses
-    # them for its own layout calculations.
+    # Responsive window
     try:
-        page.window.width = 400          # force fluid width on mobile
+        page.window.width = 400
         page.window.height = 800
         page.window.resizable = True
     except Exception:
@@ -313,7 +368,7 @@ def flet_main(page: ft.Page):
         except Exception:
             pass
 
-    # ---- Mobile CSS injection ----
+    # Mobile CSS
     try:
         page.html_style = """
             html, body {
@@ -324,15 +379,13 @@ def flet_main(page: ft.Page):
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
             }
             * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
-            /* Make dialogs fit small screens */
             flt-dialog, .flt-dialog { max-width: 100vw !important; }
-            /* Prevent horizontal overflow */
             flt-view, .flt-view { overflow-x: hidden !important; }
         """
     except Exception:
         pass
 
-    # ---- DB failure page ----
+    # DB failure UI
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -352,21 +405,30 @@ def flet_main(page: ft.Page):
 
     state = {"user": None}
 
-    def _close_window():
+    # -----------------------------------------------------------------------------
+    # Navigate browser to the public homepage (exit the admin Flet app)
+    # -----------------------------------------------------------------------------
+    def _go_home_page():
+        """Send the browser to the public / homepage."""
+        print("[NAV] Back to Home clicked → navigating to /")
         try:
-            page.window.close()
+            # Flet 1.0 web-safe: launch_url opens the URL in the same tab
+            page.launch_url("/")
+            return
+        except Exception as e:
+            print(f"[NAV] launch_url failed: {e}")
+        try:
+            # Older Flet fallback — navigate the window
+            page.window.location = "/"
         except Exception:
-            try:
-                page.window_close()
-            except Exception:
-                pass
+            pass
 
     def show_login():
         page.controls.clear()
         login = LoginView(
             page=page, db=AppState.db,
             on_login_success=on_login_success,
-            on_cancel=_close_window)
+            on_cancel=_go_home_page)      # ← Back to Home
         page.add(login.build())
         try:
             page.update()
@@ -377,15 +439,16 @@ def flet_main(page: ft.Page):
         state["user"] = user
         try:
             page.run_task(_save_session, page, user)
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[LOGIN] save_session run_task failed: {ex}")
         show_main_window(user)
 
     def on_logout():
         user = state.get("user")
         if user:
             try:
-                AppState.db.log_activity(user['id'], "logout", "User logged out")
+                AppState.db.log_activity(
+                    user['id'], "logout", "User logged out")
             except Exception:
                 pass
         state["user"] = None
@@ -398,10 +461,12 @@ def flet_main(page: ft.Page):
     def show_main_window(user):
         page.controls.clear()
         try:
-            AppState.db.log_activity(user['id'], "login", "User logged in")
+            AppState.db.log_activity(
+                user['id'], "login", "User logged in")
         except Exception:
             pass
-        mw = MainWindowView(page, AppState.db, user, on_logout=on_logout)
+        mw = MainWindowView(
+            page, AppState.db, user, on_logout=on_logout)
         page.add(mw.build())
         try:
             page.update()
@@ -409,14 +474,21 @@ def flet_main(page: ft.Page):
             _boot_log(f"show_main_window update failed: {ex}")
 
     async def _bootstrap():
+        print("[SESSION] → Bootstrap starting...")
         try:
             restored = await _load_session(page)
-        except Exception:
+        except Exception as ex:
+            print(f"[SESSION] bootstrap load error: {ex}")
+            traceback.print_exc()
             restored = None
+
         if restored:
+            print(f"[SESSION] → Showing main window for "
+                  f"'{restored.get('username')}'")
             state["user"] = restored
             show_main_window(restored)
         else:
+            print("[SESSION] → No session — showing login")
             show_login()
 
     try:
@@ -567,8 +639,34 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    # ---- Traveler portal endpoints ----
+    # ---- CAPTCHA endpoints ----
+    from pydantic import BaseModel
 
+    class CaptchaVerifyPayload(BaseModel):
+        session_id: str
+        answer: str
+
+    @app.get("/api/captcha/new")
+    async def captcha_new(session_id: str = ""):
+        """Generate a new math CAPTCHA for the traveler portal."""
+        try:
+            from core.traveler_portal import get_captcha_new
+            return get_captcha_new(session_id)
+        except Exception as e:
+            traceback.print_exc()
+            return {"ok": False, "detail": str(e)}
+
+    @app.post("/api/captcha/verify")
+    async def captcha_verify(payload: CaptchaVerifyPayload):
+        """Verify the traveler's CAPTCHA answer."""
+        try:
+            from core.traveler_portal import check_captcha_answer
+            return check_captcha_answer(payload.session_id, payload.answer)
+        except Exception as e:
+            traceback.print_exc()
+            return {"ok": False, "reason": "error", "detail": str(e)}
+
+    # ---- Traveler portal endpoints ----
     @app.get("/traveler")
     async def traveler_portal_page():
         if os.path.exists(traveler_html):
@@ -586,10 +684,12 @@ def _build_app() -> FastAPI:
 
         passport_no = str(body.get("passport_no", "")).strip()
         pin = str(body.get("pin", "")).strip()
+        captcha_session_id = str(body.get("captcha_session_id", "")).strip()
+        captcha_answer = str(body.get("captcha_answer", "")).strip()
 
         try:
             from core.traveler_portal import (
-                authenticate_traveler, create_session)
+                authenticate_traveler_with_captcha, create_session)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
@@ -599,13 +699,28 @@ def _build_app() -> FastAPI:
                                 detail="Database unavailable")
 
         try:
-            traveler, err = authenticate_traveler(
-                AppState.db, passport_no, pin)
+            traveler, err = authenticate_traveler_with_captcha(
+                AppState.db, passport_no, pin,
+                captcha_session_id, captcha_answer)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
         if err:
+            # CAPTCHA failure → 400, credential failure → 401
+            if err.startswith("captcha:"):
+                reason = err.split(":", 1)[1]
+                msg_map = {
+                    "empty": "Please answer the security question.",
+                    "wrong": "Wrong answer to the security question.",
+                    "expired": "Security question expired. Please try again.",
+                    "too_many_tries": "Too many wrong answers. Please reload.",
+                    "no_session": "Session error. Please reload.",
+                }
+                raise HTTPException(
+                    status_code=400,
+                    detail=msg_map.get(reason,
+                                       "Security check failed."))
             raise HTTPException(status_code=401, detail=err)
 
         try:
