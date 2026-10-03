@@ -1,12 +1,27 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v5.0 — Working PaymentsTab/UsersTab pattern
-#   • Plain class (NOT ft.Column subclass)
-#   • self.root = ft.Container(content=Column(...), expand=True)
+# v3.3 — v3.2 structure + numbered sections [1]..[10] for error tracking
+#
+# SECTION INDEX (use these numbers in future bug reports):
+#   [1]  Header              _section_1_header
+#   [2]  Hero Section        _section_2_hero
+#   [3]  Alert Banner        _section_3_alert
+#   [4]  Features            _section_4_features
+#   [5]  Packages Section    _section_5_packages    ← batch list fix
+#   [6]  About Section       _section_6_about
+#   [7]  Contact Info        _section_7_contact
+#   [8]  Social Links        _section_8_social
+#   [9]  Footer              _section_9_footer
+#   [10] Action Bar          _section_10_action_bar
+#
+# ARCHITECTURE:
+#   • Plain class — NOT ft.Column subclass
+#   • self.root = ft.Container(content=Column(scroll=AUTO), expand=True)
 #   • build() returns self.root
-#   • Section methods numbered [1]..[10] for future error reports
-#   • Batch list: no height, no nested scroll
+#   • Only ONE scroll container in the whole file
+#   • Section bodies are plain Column/Row — no nested scroll
+#   • Batch list has no height and no inner scroll
 # =================================================================================
 
 import json
@@ -19,6 +34,9 @@ from core.frontpage_config import (
     DEFAULT_CONFIG, load_config, save_config, _deep_merge)
 
 
+# =================================================================================
+# Palette
+# =================================================================================
 PRIMARY      = "#1e3a8a"
 PRIMARY_LT   = "#2563eb"
 ACCENT       = "#7c3aed"
@@ -31,69 +49,63 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 
+# =================================================================================
+# CLASS: FrontPageSettingsTab
+# =================================================================================
 class FrontPageSettingsTab:
 
     # -----------------------------------------------------------------------------
     # [0] __init__
     # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
-        self.page = page
+        self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
         self.cfg = load_config()
         self.all_batches = []
         self.batch_checkboxes = {}
 
-        # Field refs
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
-
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
-
         self.feature_rows_container = None
         self.feature_entries = []
-
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
         self.pkg_title = None
         self.pkg_subtitle = None
         self._batch_ui = None
-
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
-
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
         self.contact_whatsapp = None
         self.contact_addr1 = None
         self.contact_addr2 = None
-
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
-
         self.footer_about = None
         self.footer_copyright = None
-
         self.status_label = None
         self.root = None
 
         try:
             self._load_batches()
-            self.setup_ui()
+            self._build_root()
         except Exception as e:
-            print(f"[FRONTPAGE] setup failed: {e}")
+            print(f"[FRONTPAGE] build failed: {e}")
             traceback.print_exc()
             self.root = self._error_ui(e)
 
@@ -110,11 +122,8 @@ class FrontPageSettingsTab:
         try:
             self.cfg = load_config()
             self._load_batches()
-            self.setup_ui()
-            try:
-                self.root.update()
-            except Exception:
-                pass
+            self._build_root()
+            self._safe_update()
         except Exception as ex:
             print(f"[FRONTPAGE] refresh failed: {ex}")
             traceback.print_exc()
@@ -152,85 +161,44 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # [ROOT] setup_ui
+    # [ROOT] _build_root
     # =============================================================================
-    def setup_ui(self):
+    def _build_root(self):
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
 
+        inner_column = ft.Column(
+            controls=[
+                self._section_1_header(),
+                ft.Container(height=8),
+                self._section_2_hero(),
+                self._section_3_alert(),
+                self._section_4_features(),
+                self._section_5_packages(),
+                self._section_6_about(),
+                self._section_7_contact(),
+                self._section_8_social(),
+                self._section_9_footer(),
+                ft.Container(height=12),
+                self._section_10_action_bar(),
+                ft.Container(height=20),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
         self.root = ft.Container(
-            content=ft.Column(
-                controls=[
-                    self._section_1_header(),
-                    ft.Container(height=8),
-                    self._section_2_hero(),
-                    self._section_3_alert(),
-                    self._section_4_features(),
-                    self._section_5_packages(),
-                    self._section_6_about(),
-                    self._section_7_contact(),
-                    self._section_8_social(),
-                    self._section_9_footer(),
-                    ft.Container(height=12),
-                    self._section_10_action_bar(),
-                    ft.Container(height=20),
-                ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
-            ),
+            content=inner_column,
             padding=10,
             bgcolor=PAGE_BG,
             expand=True,
         )
 
     # =============================================================================
-    # [1] _section_1_header
+    # [H] _section_card — shared card wrapper
     # =============================================================================
-    def _section_1_header(self):
-        return ft.Container(
-            content=ft.Row([
-                ft.Container(
-                    content=ft.Text("🌐", size=22),
-                    width=46, height=46,
-                    bgcolor=ft.Colors.with_opacity(
-                        0.15, ft.Colors.WHITE),
-                    border_radius=12,
-                    alignment=ft.Alignment.CENTER),
-                ft.Column([
-                    ft.Text("Front Page Settings", size=15,
-                            weight=ft.FontWeight.BOLD,
-                            color=ft.Colors.WHITE),
-                    ft.Text("Edit your public landing page",
-                            size=10, color="#c7d2fe"),
-                ], spacing=2, expand=True),
-                ft.Button(
-                    content=ft.Row([
-                        ft.Icon(ft.Icons.OPEN_IN_NEW, size=14,
-                                color=ft.Colors.WHITE),
-                        ft.Text("Preview", size=11,
-                                color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD),
-                    ], spacing=5, tight=True),
-                    on_click=self._open_preview,
-                    height=38, bgcolor=SUCCESS,
-                    style=ft.ButtonStyle(
-                        shape=ft.RoundedRectangleBorder(
-                            radius=10))),
-            ], spacing=12),
-            padding=ft.Padding.symmetric(
-                horizontal=16, vertical=14),
-            gradient=ft.LinearGradient(
-                begin=ft.Alignment.CENTER_LEFT,
-                end=ft.Alignment.CENTER_RIGHT,
-                colors=[PRIMARY, PRIMARY_LT, ACCENT]),
-            border_radius=14)
-
-    # -----------------------------------------------------------------------------
-    # _section_card (helper used by sections 2-9)
-    # -----------------------------------------------------------------------------
-    def _section_card(self, icon, title, subtitle, controls,
-                      accent=PRIMARY):
+    def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
             ft.Container(
                 content=ft.Text(icon, size=16),
@@ -241,25 +209,34 @@ class FrontPageSettingsTab:
             ft.Column([
                 ft.Text(title, size=13,
                         weight=ft.FontWeight.BOLD,
-                        color="#0f172a"),
-                ft.Text(subtitle, size=10, color=MUTED),
+                        color="#0f172a",
+                        no_wrap=False, max_lines=2),
+                ft.Text(subtitle, size=10, color=MUTED,
+                        no_wrap=False, max_lines=2),
             ], spacing=2, expand=True),
         ], spacing=10)
+
+        body = ft.Column(controls, spacing=10)
 
         return ft.Container(
             content=ft.Column([
                 header,
                 ft.Divider(height=1, color=BORDER),
-                ft.Column(controls, spacing=10),
+                ft.Container(content=body,
+                             padding=ft.Padding.only(top=4)),
             ], spacing=10),
             padding=14,
             bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
-            border_radius=12)
+            border_radius=14,
+            shadow=ft.BoxShadow(
+                blur_radius=6, spread_radius=0,
+                color=ft.Colors.with_opacity(0.04, "#000000"),
+                offset=ft.Offset(0, 2)))
 
-    # -----------------------------------------------------------------------------
-    # Field helpers
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # [H] Field helpers
+    # =============================================================================
     def _field(self, label, value, **kwargs):
         defaults = dict(
             label=label,
@@ -275,11 +252,66 @@ class FrontPageSettingsTab:
         return ft.TextField(**defaults)
 
     def _two_col(self, left, right):
-        return ft.Row([
-            ft.Container(content=left, expand=True),
-            ft.Container(content=right, expand=True),
-        ], spacing=10,
-           vertical_alignment=ft.CrossAxisAlignment.START)
+        return ft.ResponsiveRow(
+            controls=[
+                ft.Container(content=left,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+                ft.Container(content=right,
+                             col={"xs": 12, "sm": 12, "md": 6}),
+            ],
+            spacing=10, run_spacing=10)
+
+    # =============================================================================
+    # [1] _section_1_header
+    # =============================================================================
+    def _section_1_header(self):
+        return ft.Container(
+            content=ft.ResponsiveRow(
+                controls=[
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Container(
+                                content=ft.Text("🌐", size=22),
+                                width=46, height=46,
+                                bgcolor=ft.Colors.with_opacity(
+                                    0.15, ft.Colors.WHITE),
+                                border_radius=12,
+                                alignment=ft.Alignment.CENTER),
+                            ft.Column([
+                                ft.Text("Front Page Settings", size=15,
+                                        weight=ft.FontWeight.BOLD,
+                                        color=ft.Colors.WHITE,
+                                        no_wrap=False, max_lines=2),
+                                ft.Text("Edit your public landing page",
+                                        size=10, color="#c7d2fe"),
+                            ], spacing=2, expand=True),
+                        ], spacing=10),
+                        col={"xs": 12, "sm": 12, "md": 8}),
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Button(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.OPEN_IN_NEW, size=14,
+                                            color=ft.Colors.WHITE),
+                                    ft.Text("Preview", size=11,
+                                            color=ft.Colors.WHITE,
+                                            weight=ft.FontWeight.BOLD),
+                                ], spacing=5, tight=True),
+                                on_click=self._open_preview,
+                                height=38,
+                                bgcolor=SUCCESS,
+                                style=ft.ButtonStyle(
+                                    shape=ft.RoundedRectangleBorder(
+                                        radius=10))),
+                        ], alignment=ft.MainAxisAlignment.END),
+                        col={"xs": 12, "sm": 12, "md": 4}),
+                ], spacing=10, run_spacing=10),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=14),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.CENTER_LEFT,
+                end=ft.Alignment.CENTER_RIGHT,
+                colors=[PRIMARY, PRIMARY_LT, ACCENT]),
+            border_radius=14)
 
     # =============================================================================
     # [2] _section_2_hero
@@ -336,7 +368,7 @@ class FrontPageSettingsTab:
 
         return self._section_card(
             "⚠️", "Alert Banner",
-            "Optional top-of-page announcement",
+            "Optional top-of-page announcement for visitors",
             [
                 self.alert_enabled,
                 self.alert_message,
@@ -378,8 +410,8 @@ class FrontPageSettingsTab:
 
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field(
-            "Icon", icon_val, width=140,
-            hint_text="fa-mosque")
+            "Icon", icon_val,
+            hint_text="e.g. fa-mosque")
         title_field = self._field("Title", title_val)
         text_field = self._field("Description", text_val)
 
@@ -397,17 +429,22 @@ class FrontPageSettingsTab:
 
         row = ft.Container(
             content=ft.Column([
-                ft.Row([
-                    ft.Container(content=icon_field, width=150),
-                    ft.Container(content=title_field, expand=True),
-                ], spacing=8),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=icon_field,
+                                     col={"xs": 5, "sm": 4, "md": 3}),
+                        ft.Container(content=title_field,
+                                     col={"xs": 7, "sm": 8, "md": 9}),
+                    ], spacing=8, run_spacing=8),
                 ft.Row([
                     ft.Container(content=text_field, expand=True),
                     ft.IconButton(
                         icon=ft.Icons.DELETE_OUTLINE,
-                        icon_color=DANGER,
+                        icon_color=DANGER, icon_size=18,
+                        tooltip="Remove",
                         on_click=remove),
-                ], spacing=6),
+                ], spacing=6,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ], spacing=6),
             padding=10, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER),
@@ -422,7 +459,7 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # =============================================================================
-    # [5] _section_5_packages   ✅ no height, no nested scroll
+    # [5] _section_5_packages   ✅ batch list fix
     # =============================================================================
     def _section_5_packages(self):
         p = self.cfg.get("packages", {})
@@ -436,8 +473,10 @@ class FrontPageSettingsTab:
             label="Package source",
             value=p.get("source", "batches"),
             options=[
-                ft.dropdown.Option("batches", "Batches (recommended)"),
-                ft.dropdown.Option("manual", "Manual list"),
+                ft.dropdown.Option("batches",
+                                   "Batches (recommended)"),
+                ft.dropdown.Option("manual",
+                                   "Manual list (JSON, advanced)"),
             ],
             text_size=12,
             border_color=BORDER,
@@ -459,13 +498,12 @@ class FrontPageSettingsTab:
         selected_ids = set(str(x) for x in
                            (p.get("selected_batch_ids") or []))
         self.batch_checkboxes = {}
-        batch_controls = []
+        batch_rows = []
 
         if not self.all_batches:
-            batch_controls.append(
-                ft.Text("No batches found. Add some in the "
-                        "Batches tab first.",
-                        size=11, color=MUTED))
+            batch_rows.append(ft.Text(
+                "No batches found. Add some in the Batches tab first.",
+                size=11, color=MUTED))
         else:
             for b in self.all_batches:
                 bid = str(b.get("id", ""))
@@ -479,22 +517,32 @@ class FrontPageSettingsTab:
                     value=(bid in selected_ids) if selected_ids else False,
                     label_style=ft.TextStyle(size=11))
                 self.batch_checkboxes[bid] = cb
-                batch_controls.append(cb)
+                batch_rows.append(
+                    ft.Container(
+                        content=cb,
+                        padding=ft.Padding.symmetric(
+                            horizontal=6, vertical=2)))
 
-        self.pkg_batch_container = ft.Column(
-            batch_controls, spacing=4)
+        self.pkg_batch_container = ft.Column(batch_rows, spacing=0)
 
+        # ✅ No nested scroll, no height — plain growing Column
         self._batch_ui = ft.Column([
             ft.Row([
                 ft.Text("Batches to show as packages:",
-                        size=11, weight=ft.FontWeight.BOLD),
+                        size=11, weight=ft.FontWeight.BOLD,
+                        no_wrap=False, max_lines=2),
                 ft.Container(expand=True),
                 select_all_btn,
                 clear_all_btn,
             ], spacing=4, wrap=True),
-            ft.Text("Leave all unchecked to show every open batch.",
-                    size=10, color=MUTED, italic=True),
-            self.pkg_batch_container,
+            ft.Text(
+                "Leave all unchecked to show every open batch.",
+                size=10, color=MUTED, italic=True),
+            ft.Container(
+                content=self.pkg_batch_container,
+                padding=8, bgcolor="#f8fafc",
+                border=ft.Border.all(1, BORDER),
+                border_radius=10),
         ], spacing=8)
 
         self._update_source_visibility()
@@ -515,7 +563,8 @@ class FrontPageSettingsTab:
 
     def _update_source_visibility(self):
         try:
-            is_batches = (self.pkg_source.value or "batches") == "batches"
+            is_batches = (
+                (self.pkg_source.value or "batches") == "batches")
             self._batch_ui.visible = is_batches
         except Exception:
             pass
@@ -566,6 +615,7 @@ class FrontPageSettingsTab:
                 self.about_heading,
                 self.about_p1,
                 self.about_p2,
+                ft.Container(height=4),
                 ft.Text("Statistics (4 recommended)",
                         size=12, weight=ft.FontWeight.BOLD,
                         color="#0f172a"),
@@ -575,11 +625,10 @@ class FrontPageSettingsTab:
 
     def _add_stat_row(self, number_val, label_val):
         num_field = self._field(
-            "Number", number_val, width=140,
-            hint_text="25+")
+            "Number", number_val, hint_text="e.g. 25+")
         lbl_field = self._field(
             "Label", label_val,
-            hint_text="Years Experience")
+            hint_text="e.g. Years Experience")
 
         entry = {"number": num_field, "label": lbl_field,
                  "row": None}
@@ -595,10 +644,11 @@ class FrontPageSettingsTab:
 
         row = ft.Container(
             content=ft.Row([
-                ft.Container(content=num_field, width=150),
+                ft.Container(content=num_field, width=110),
                 ft.Container(content=lbl_field, expand=True),
                 ft.IconButton(icon=ft.Icons.DELETE_OUTLINE,
-                              icon_color=DANGER,
+                              icon_color=DANGER, icon_size=18,
+                              tooltip="Remove",
                               on_click=remove),
             ], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -622,13 +672,13 @@ class FrontPageSettingsTab:
         self.contact_phone = self._field(
             "Primary phone", c.get("phone", ""))
         self.contact_phone2 = self._field(
-            "Secondary phone", c.get("phone2", ""))
+            "Secondary phone (optional)", c.get("phone2", ""))
         self.contact_email = self._field(
             "Email", c.get("email", ""))
         self.contact_whatsapp = self._field(
-            "WhatsApp (country code)",
+            "WhatsApp (country code, no +)",
             c.get("whatsapp", ""),
-            hint_text="919876543210")
+            hint_text="e.g. 919876543210")
         self.contact_addr1 = self._field(
             "Address line 1", c.get("address_line1", ""))
         self.contact_addr2 = self._field(
@@ -638,8 +688,7 @@ class FrontPageSettingsTab:
             "📞", "Contact Information",
             "Shown in top bar, contact section, and footer",
             [
-                self._two_col(self.contact_phone,
-                              self.contact_phone2),
+                self._two_col(self.contact_phone, self.contact_phone2),
                 self._two_col(self.contact_email,
                               self.contact_whatsapp),
                 self._two_col(self.contact_addr1,
@@ -732,21 +781,31 @@ class FrontPageSettingsTab:
 
         self.status_label = ft.Text(
             "Ready. Edit fields and click Save.",
-            size=10, color=MUTED, italic=True)
+            size=10, color=MUTED, italic=True,
+            no_wrap=False, max_lines=2)
 
         return ft.Container(
             content=ft.Column([
-                ft.Row([
-                    save_btn, reload_btn, preview_btn,
-                    ft.Container(expand=True),
-                    reset_btn,
-                ], spacing=8, wrap=True),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=save_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(content=reload_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(content=preview_btn,
+                                     col={"xs": 6, "sm": 4, "md": 3}),
+                        ft.Container(
+                            content=ft.Row([reset_btn],
+                                           alignment=ft.MainAxisAlignment.END),
+                            col={"xs": 6, "sm": 12, "md": 3}),
+                    ],
+                    spacing=8, run_spacing=8),
                 ft.Divider(height=1, color=BORDER),
                 self.status_label,
             ], spacing=10),
             padding=14, bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER),
-            border_radius=12)
+            border_radius=14)
 
     # =============================================================================
     # ACTIONS
@@ -838,9 +897,6 @@ class FrontPageSettingsTab:
             },
         }
 
-    # -----------------------------------------------------------------------------
-    # _save
-    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -865,13 +921,10 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
-    # -----------------------------------------------------------------------------
-    # _reset_confirm
-    # -----------------------------------------------------------------------------
     def _reset_confirm(self, e=None):
         def do_reset(ev):
             try:
-                self.page.pop_dialog()
+                self.page_ref.pop_dialog()
             except Exception:
                 pass
             ok = save_config(DEFAULT_CONFIG)
@@ -883,62 +936,61 @@ class FrontPageSettingsTab:
 
         def cancel(ev):
             try:
-                self.page.pop_dialog()
+                self.page_ref.pop_dialog()
             except Exception:
                 pass
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Reset to Defaults?",
-                          weight=ft.FontWeight.BOLD),
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER, color=DANGER),
+                ft.Text("Reset to Defaults?",
+                        weight=ft.FontWeight.BOLD, size=14),
+            ], spacing=8),
             content=ft.Text(
-                "Discard custom front-page settings and restore "
-                "defaults?\n\nThis cannot be undone.",
-                size=12),
+                "This will discard your custom front-page settings and "
+                "restore the original defaults.\n\n"
+                "This cannot be undone.",
+                size=11),
             actions=[
-                ft.TextButton(content=ft.Text("Cancel"),
+                ft.TextButton(content=ft.Text("Cancel", size=11),
                               on_click=cancel),
                 ft.Button(
-                    content=ft.Text("Reset",
+                    content=ft.Text("Reset", size=11,
                                     color=ft.Colors.WHITE,
                                     weight=ft.FontWeight.BOLD),
                     on_click=do_reset, bgcolor=DANGER),
             ])
-        self.page.show_dialog(dlg)
+        self.page_ref.show_dialog(dlg)
 
-    # -----------------------------------------------------------------------------
-    # _open_preview
-    # -----------------------------------------------------------------------------
     def _open_preview(self, e=None):
         try:
             async def _do():
                 try:
                     launcher = ft.UrlLauncher()
                     await launcher.launch_url("/")
+                    print("[preview] opened /")
                 except Exception as ex:
                     print(f"[preview] launch failed: {ex}")
 
             try:
-                self.page.run_task(_do)
-                self._set_status("🔗 Opening…", PRIMARY_LT)
+                self.page_ref.run_task(_do)
+                self._set_status("🔗 Opening front page…", PRIMARY_LT)
                 return
             except Exception as ex:
                 print(f"[preview] run_task failed: {ex}")
 
             try:
-                self.page.url = "/"
-                self._set_status("🔗 Opened", PRIMARY_LT)
+                self.page_ref.url = "/"
+                self._set_status("🔗 Opened front page", PRIMARY_LT)
                 return
             except Exception as ex:
                 print(f"[preview] page.url failed: {ex}")
 
-            self._snack("⚠️ Visit / manually")
+            self._snack("⚠️ Could not open preview — visit / manually")
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
-    # -----------------------------------------------------------------------------
-    # Helpers
-    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
@@ -950,7 +1002,7 @@ class FrontPageSettingsTab:
 
     def _snack(self, msg, color=ft.Colors.GREEN_700):
         try:
-            self.page.show_dialog(
+            self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(msg), bgcolor=color))
         except Exception:
             pass
