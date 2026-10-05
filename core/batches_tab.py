@@ -1,13 +1,29 @@
 # =================================================================================
 # SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
 # =================================================================================
-# v1.3 — Row Selection + Data-Loading Safety
-#   • ADDED: Tap any row → SELECTS (does not open anything)
-#   • ADDED: Toolbar 📊 Export / 🖨️ Print act on selected row
-#   • ADDED: "Sel" column with ✓ marker
-#   • FIXED: on_select_change (correct Flet 1.0.0 param)
-#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
-#   • Action icons 16 → 18 for easier tapping
+# v1.4 — Date format DD-MM-YYYY
+#   • All batch dates now display/input/store as DD-MM-YYYY
+#   • Backward compatible: legacy YYYY-MM-DD data auto-converts on load
+#   • v1.3 features preserved (row selection, data-loading safety, etc.)
+#
+# SECTION INDEX
+#   [H]     Module-level helpers (prefix, date conversion, db adapters)
+#   [11.1]  BatchesTab class
+#   [11.2]  setup_ui
+#   [11.3]  Helpers (safe_str, _fmt_date)
+#   [11.4]  load_tour_types_and_years
+#   [11.5]  refresh
+#   [11.6]  display_batches
+#   [11.7]  _select_batch / _get_selected_batch
+#   [11.8]  Pagination
+#   [11.9]  Filters
+#   [11.10] Statistics
+#   [11.11] Dialog launchers
+#   [11.12] Delete
+#   [11.13] View
+#   [11.14] Exports
+#   [12.1]  BatchFormDialog (Add/Edit)
+#   [13.1]  BatchViewDialog
 # =================================================================================
 
 import flet as ft
@@ -22,6 +38,11 @@ except ImportError:
     SettingsManager = None
 
 
+# =================================================================================
+# [H] MODULE-LEVEL HELPERS
+# =================================================================================
+
+# ---- [H.0] App base path ----
 def get_app_base_path():
     import sys
     if getattr(sys, "frozen", False):
@@ -29,6 +50,7 @@ def get_app_base_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+# ---- [H.1] _get_prefix — derive batch ID prefix from tour name ----
 def _get_prefix(name):
     if not name:
         return "HAJ"
@@ -54,6 +76,101 @@ def _get_prefix(name):
     return clean + "XX"
 
 
+# ---- [H.2] Date conversion helpers ----
+_DATE_SEP = "-"
+
+
+def _to_display_date(value) -> str:
+    """
+    Convert a stored date (any of the formats below) → DD-MM-YYYY:
+        • 2026-10-05              (legacy ISO)
+        • 2026-10-05T10:00:00     (ISO timestamp)
+        • 05-10-2026              (current DD-MM-YYYY)
+        • 05/10/2026              (slash variant)
+    Returns the original string unchanged if it can't be parsed.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+
+    head = s[:10]
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", ""))
+        return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+    except Exception:
+        pass
+
+    return s
+
+
+def _to_storage_date(value) -> str:
+    """
+    Normalise a user-entered date → DD-MM-YYYY for storage.
+    Accepts DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, and ISO timestamps.
+    Returns the raw input if nothing matches.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+
+    head = s[:10]
+
+    # Prefer user-facing formats
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    # Fall back to ISO
+    for fmt in ("%Y-%m-%d",):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", ""))
+        return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+    except Exception:
+        pass
+
+    return s
+
+
+def _to_storage_datetime(value) -> str:
+    """
+    Like _to_storage_date but also validates the parse.
+    Used in the form's save() to convert user input → storage format.
+    Raises ValueError on invalid input — caller catches and shows snackbar.
+    """
+    s = str(value or "").strip()
+    if not s:
+        raise ValueError("empty date")
+    head = s[:10]
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y"), dt
+        except ValueError:
+            continue
+    raise ValueError(f"bad date: {s}")
+
+
+# ---- [H.3] DB adapters ----
 def _db_add_batch(db, data):
     if hasattr(db, "add_batch"):
         return db.add_batch(data)
@@ -98,6 +215,9 @@ def _db_get_tour_years(db):
     return list(range(2020, 2100))
 
 
+# =================================================================================
+# [11.1] CLASS: BatchesTab
+# =================================================================================
 class BatchesTab:
 
     def __init__(self, page: ft.Page, db, current_user):
@@ -127,7 +247,6 @@ class BatchesTab:
         self.selection_label = None
         self.root = None
 
-        # Currently selected batch (for toolbar Export/Print)
         self._selected_batch_id = None
 
         try:
@@ -152,6 +271,9 @@ class BatchesTab:
     def build(self):
         return self.root
 
+    # =============================================================================
+    # [11.2] setup_ui
+    # =============================================================================
     def setup_ui(self):
         stat_configs = [
             ("total",       "Total Batches",    "📦", "#3498db"),
@@ -349,6 +471,9 @@ class BatchesTab:
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
+    # =============================================================================
+    # [11.3] Helpers
+    # =============================================================================
     def safe_str(self, value):
         if value is None:
             return ""
@@ -360,15 +485,15 @@ class BatchesTab:
         return str(value)
 
     def _fmt_date(self, value):
+        """Display a batch date in DD-MM-YYYY."""
         if not value:
             return "-"
-        try:
-            s = str(value)[:10]
-            dt = datetime.strptime(s, "%Y-%m-%d")
-            return dt.strftime("%d/%m/%Y")
-        except Exception:
-            return str(value)
+        out = _to_display_date(value)
+        return out or "-"
 
+    # =============================================================================
+    # [11.4] load_tour_types_and_years
+    # =============================================================================
     def load_tour_types_and_years(self):
         try:
             self.tour_types = _db_get_tour_types(self.db)
@@ -400,16 +525,10 @@ class BatchesTab:
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # refresh (destructive reload removed)
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # [11.5] refresh (no destructive reloads)
+    # =============================================================================
     def refresh(self):
-        """
-        Load batches + travelers from the DB's in-memory cache.
-
-        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
-        can differ from the volume mount, which wipes the cache.
-        """
         try:
             self.load_tour_types_and_years()
             self.batches = self.db.get_batches()
@@ -442,6 +561,9 @@ class BatchesTab:
             import traceback
             traceback.print_exc()
 
+    # =============================================================================
+    # [11.6] display_batches
+    # =============================================================================
     def display_batches(self):
         start = (self.current_page - 1) * self.items_per_page
         end = min(start + self.items_per_page, len(self.filtered_batches))
@@ -486,7 +608,6 @@ class BatchesTab:
             b_id = b.get("id")
             is_selected = (self._selected_batch_id == b_id)
 
-            # Action buttons (per-row)
             def _make_actions(_bid=b_id):
                 def _fresh():
                     return next(
@@ -519,7 +640,6 @@ class BatchesTab:
                                       on_click=_wrap(self.delete_batch)),
                     ], spacing=0)
 
-            # -------- ROW TAP → SELECT (not open) --------
             def _on_row_tap(e, _bid=b_id):
                 try:
                     self._select_batch(_bid)
@@ -531,7 +651,6 @@ class BatchesTab:
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -575,9 +694,9 @@ class BatchesTab:
 
         self.update_pagination()
 
-    # -----------------------------------------------------------------------------
-    # _select_batch / _get_selected_batch
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # [11.7] _select_batch / _get_selected_batch
+    # =============================================================================
     def _select_batch(self, batch_id):
         if self._selected_batch_id == batch_id:
             self._selected_batch_id = None
@@ -611,6 +730,9 @@ class BatchesTab:
         return next((b for b in self.batches
                      if b.get("id") == self._selected_batch_id), None)
 
+    # =============================================================================
+    # [11.8] Pagination
+    # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_batches)
         start = ((self.current_page - 1) * self.items_per_page + 1
@@ -639,6 +761,9 @@ class BatchesTab:
             except Exception:
                 pass
 
+    # =============================================================================
+    # [11.9] Filters
+    # =============================================================================
     def apply_filters(self, e=None):
         year = self.year_filter.value or ""
         tour_id = self.tour_filter.value or ""
@@ -672,6 +797,9 @@ class BatchesTab:
         except Exception:
             pass
 
+    # =============================================================================
+    # [11.10] Statistics
+    # =============================================================================
     def update_statistics(self):
         total = len(self.batches)
 
@@ -705,6 +833,9 @@ class BatchesTab:
         self.stats_labels["value"].value = f"₹{total_value:,}"
         self.stats_labels["return_date"].value = str(with_return)
 
+    # =============================================================================
+    # [11.11] Dialog launchers
+    # =============================================================================
     def open_create_dialog(self, e):
         dlg = BatchFormDialog(
             self.page, self.db, self.current_user,
@@ -730,6 +861,9 @@ class BatchesTab:
     def _on_saved(self):
         self.refresh()
 
+    # =============================================================================
+    # [11.12] Delete
+    # =============================================================================
     def delete_batch(self, batch):
         assigned = [t for t in self.travelers
                     if str(t.get("batch_id")) == str(batch.get("id"))]
@@ -785,13 +919,16 @@ class BatchesTab:
         )
         self.page.show_dialog(dialog)
 
+    # =============================================================================
+    # [11.13] View
+    # =============================================================================
     def view_batch(self, batch):
         dlg = BatchViewDialog(self.page, self.db, batch)
         dlg.show()
 
-    # -----------------------------------------------------------------------------
-    # Export — if a row is selected, export only that batch
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # [11.14] Exports
+    # =============================================================================
     def export_to_excel(self, e):
         selected = self._get_selected_batch()
         if selected:
@@ -825,7 +962,9 @@ class BatchesTab:
                 data.append([
                     bid, b.get("batch_name", ""),
                     b.get("tour_type_name", ""), b.get("year", ""),
-                    b.get("departure_date", ""), b.get("return_date", ""),
+                    # ---- dates in DD-MM-YYYY ----
+                    _to_display_date(b.get("departure_date", "")),
+                    _to_display_date(b.get("return_date", "")),
                     b.get("price", 0), total, booked, avail,
                     b.get("status", ""), f"{occ:.1f}",
                     b.get("description", ""),
@@ -877,6 +1016,9 @@ class BatchesTab:
             pass
 
 
+# =================================================================================
+# [12.1] CLASS: BatchFormDialog (Add/Edit)
+# =================================================================================
 class BatchFormDialog:
 
     def __init__(self, page, db, current_user, batch=None,
@@ -959,18 +1101,24 @@ class BatchFormDialog:
             label="Price (₹)", hint_text="350000",
             width=180, height=48, text_size=12,
         )
+
+        # ---- Date fields: labels now DD-MM-YYYY, defaults today in DD-MM-YYYY ----
+        today_dmy = datetime.now().strftime("%d-%m-%Y")
         self.departure_field = ft.TextField(
-            label="Departure (YYYY-MM-DD)",
-            value=datetime.now().strftime("%Y-%m-%d"),
+            label="Departure (DD-MM-YYYY)",
+            value=today_dmy,
+            hint_text="e.g. 05-10-2026",
             height=48, text_size=12,
         )
         self.return_field = ft.TextField(
-            label="Return (YYYY-MM-DD)",
-            value=datetime.now().strftime("%Y-%m-%d"),
+            label="Return (DD-MM-YYYY)",
+            value=today_dmy,
+            hint_text="e.g. 20-10-2026",
             height=48, text_size=12,
         )
         self.date_validation = ft.Text("", size=11,
                                        color=ft.Colors.GREEN_700)
+
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
@@ -1086,10 +1234,15 @@ class BatchFormDialog:
             self.tour_dropdown.value = str(b.get("tour_type_id"))
         self.seats_field.value = str(int(b.get("total_seats", 150) or 150))
         self.price_field.value = str(int(b.get("price", 0) or 0))
+
+        # ---- Convert stored dates → DD-MM-YYYY for the fields ----
         if b.get("departure_date"):
-            self.departure_field.value = str(b.get("departure_date"))[:10]
+            self.departure_field.value = _to_display_date(
+                b.get("departure_date"))
         if b.get("return_date"):
-            self.return_field.value = str(b.get("return_date"))[:10]
+            self.return_field.value = _to_display_date(
+                b.get("return_date"))
+
         self.status_dropdown.value = str(b.get("status", "Open"))
         self.description_field.value = str(b.get("description", ""))
         self.update_id_preview()
@@ -1122,19 +1275,22 @@ class BatchFormDialog:
             except Exception:
                 seats = 150
 
-            dep = (self.departure_field.value or "").strip()
-            ret = (self.return_field.value or "").strip()
-            if not dep or not ret:
+            # ---- Validate + normalise dates to DD-MM-YYYY ----
+            dep_raw = (self.departure_field.value or "").strip()
+            ret_raw = (self.return_field.value or "").strip()
+            if not dep_raw or not ret_raw:
                 self._snack("⚠️ Departure and Return dates required")
                 return
             try:
-                dep_dt = datetime.strptime(dep[:10], "%Y-%m-%d")
-                ret_dt = datetime.strptime(ret[:10], "%Y-%m-%d")
-                if ret_dt < dep_dt:
-                    self._snack("⚠️ Return must be after departure")
-                    return
-            except Exception:
-                self._snack("⚠️ Dates must be YYYY-MM-DD")
+                dep_norm, dep_dt = _to_storage_datetime(dep_raw)
+                ret_norm, ret_dt = _to_storage_datetime(ret_raw)
+            except ValueError:
+                self._snack(
+                    "⚠️ Dates must be in DD-MM-YYYY format "
+                    "(e.g. 05-10-2026)")
+                return
+            if ret_dt < dep_dt:
+                self._snack("⚠️ Return must be after departure")
                 return
 
             tour_name = ""
@@ -1150,8 +1306,8 @@ class BatchFormDialog:
                 "year": int(year),
                 "total_seats": seats,
                 "price": price,
-                "departure_date": dep[:10],
-                "return_date": ret[:10],
+                "departure_date": dep_norm,
+                "return_date": ret_norm,
                 "status": self.status_dropdown.value or "Open",
                 "description": (self.description_field.value or "").strip(),
             }
@@ -1192,6 +1348,9 @@ class BatchFormDialog:
             pass
 
 
+# =================================================================================
+# [13.1] CLASS: BatchViewDialog
+# =================================================================================
 class BatchViewDialog:
 
     def __init__(self, page, db, batch):
@@ -1219,6 +1378,10 @@ class BatchViewDialog:
                   f"{t.get('last_name', '')}").strip() or "N/A"
                  for t in assigned]
 
+        # ---- Dates shown in DD-MM-YYYY ----
+        dep_disp = _to_display_date(b.get("departure_date")) or "-"
+        ret_disp = _to_display_date(b.get("return_date")) or "-"
+
         content = ft.Column(
             controls=[
                 ft.Text("Batch Information", size=12,
@@ -1228,8 +1391,8 @@ class BatchViewDialog:
                 row("Batch Name", b.get("batch_name", "")),
                 row("Tour Type", b.get("tour_type_name", "N/A")),
                 row("Year", b.get("year", "")),
-                row("Departure", b.get("departure_date", "-")),
-                row("Return", b.get("return_date", "-")),
+                row("Departure", dep_disp),
+                row("Return", ret_disp),
                 row("Price", f"₹{int(b.get('price', 0) or 0):,}"),
                 row("Total Seats", b.get("total_seats", 0)),
                 row("Status", b.get("status", "")),
