@@ -8,6 +8,9 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
     <style>
+        /* =========================================================================
+           [CSS.0] RESET & VARIABLES
+           ========================================================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
         :root {
@@ -33,7 +36,9 @@
             background: #ffffff;
         }
 
-        /* ============ ALERT BANNER ============ */
+        /* =========================================================================
+           [CSS.1] ALERT BANNER
+           ========================================================================= */
         .alert-banner {
             color: white;
             padding: 14px 0;
@@ -112,7 +117,9 @@
             background: rgba(255, 255, 255, 0.15);
         }
 
-        /* ============ TOP BAR ============ */
+        /* =========================================================================
+           [CSS.2] TOP BAR
+           ========================================================================= */
         .top-bar {
             background: var(--primary-color);
             color: white;
@@ -137,7 +144,9 @@
         .social-links a { color: white; font-size: 1.1rem; text-decoration: none; }
         .social-links a:hover { transform: translateY(-2px); }
 
-        /* ============ NAVIGATION ============ */
+        /* =========================================================================
+           [CSS.3] NAVIGATION
+           ========================================================================= */
         .navbar {
             background: white;
             box-shadow: 0 2px 20px rgba(0, 0, 0, 0.05);
@@ -226,7 +235,9 @@
             color: var(--primary-color);
         }
 
-        /* ============ HERO ============ */
+        /* =========================================================================
+           [CSS.4] HERO
+           ========================================================================= */
         .hero {
             background: linear-gradient(135deg, rgba(30, 60, 114, 0.95), rgba(20, 40, 80, 0.95)),
                         url('https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=1950&q=80');
@@ -250,7 +261,9 @@
             display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;
         }
 
-        /* ============ COMMON ============ */
+        /* =========================================================================
+           [CSS.5] COMMON
+           ========================================================================= */
         .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
         .section-header { text-align: center; margin-bottom: 50px; }
         .section-header h2 {
@@ -262,7 +275,9 @@
         }
         .section-header p { font-size: 1.05rem; color: var(--gray-color); }
 
-        /* ============ FEATURES ============ */
+        /* =========================================================================
+           [CSS.6] FEATURES
+           ========================================================================= */
         .features-section { padding: 70px 0; }
         .features-grid {
             display: grid;
@@ -298,7 +313,9 @@
             font-size: 0.95rem;
         }
 
-        /* ============ PACKAGES ============ */
+        /* =========================================================================
+           [CSS.7] PACKAGES
+           ========================================================================= */
         .packages-section { padding: 70px 0; background: var(--lighter-color); }
         .packages-grid {
             display: grid;
@@ -371,7 +388,9 @@
             to { transform: rotate(360deg); }
         }
 
-        /* ============ ABOUT ============ */
+        /* =========================================================================
+           [CSS.8] ABOUT
+           ========================================================================= */
         .about-section { padding: 70px 0; }
         .about-content {
             display: grid;
@@ -405,7 +424,167 @@
             box-shadow: var(--card-shadow);
         }
 
-        /* ============ CONTACT ============ */
+        /* =========================================================================
+           [CSS.11] GALLERY (NEW)
+           ========================================================================= */
+        .gallery-section { padding: 70px 0; background: var(--lighter-color); }
+
+        .gallery-tabs {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        .gallery-tab {
+            padding: 10px 22px;
+            border: 2px solid var(--primary-color);
+            background: transparent;
+            color: var(--primary-color);
+            border-radius: 50px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .gallery-tab:hover {
+            background: rgba(30, 60, 114, 0.06);
+        }
+        .gallery-tab.active {
+            background: var(--primary-color);
+            color: white;
+        }
+
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 15px;
+        }
+        .gallery-item {
+            position: relative;
+            overflow: hidden;
+            border-radius: var(--border-radius);
+            box-shadow: var(--card-shadow);
+            cursor: pointer;
+            background: #000;
+            aspect-ratio: 4 / 3;
+            transition: transform 0.3s ease;
+        }
+        .gallery-item:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--hover-shadow);
+        }
+        .gallery-item img,
+        .gallery-item video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.4s ease;
+            display: block;
+        }
+        .gallery-item:hover img,
+        .gallery-item:hover video {
+            transform: scale(1.06);
+        }
+        .gallery-item .caption {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            padding: 12px 14px;
+            color: white;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
+            font-size: 0.85rem;
+            font-weight: 500;
+            pointer-events: none;
+        }
+        .gallery-item .play-badge {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 3rem;
+            background: rgba(0, 0, 0, 0.18);
+            pointer-events: none;
+            opacity: 0.9;
+        }
+        .gallery-empty {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--gray-color);
+            font-size: 1rem;
+        }
+        .gallery-empty i {
+            font-size: 2rem;
+            display: block;
+            margin-bottom: 12px;
+            color: var(--primary-color);
+        }
+
+        /* ---- Lightbox ---- */
+        .lightbox {
+            position: fixed;
+            inset: 0;
+            z-index: 2000;
+            background: rgba(0, 0, 0, 0.93);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 30px;
+            animation: fadeIn 0.2s ease;
+        }
+        .lightbox.active { display: flex; }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .lightbox img,
+        .lightbox video {
+            max-width: 92vw;
+            max-height: 85vh;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+        }
+        .lightbox-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: white;
+            font-size: 2.4rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            line-height: 1;
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: background 0.2s ease;
+        }
+        .lightbox-close:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        .lightbox-caption {
+            position: absolute;
+            bottom: 25px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            color: white;
+            font-size: 0.95rem;
+            padding: 0 20px;
+            font-weight: 500;
+        }
+
+        /* =========================================================================
+           [CSS.9] CONTACT
+           ========================================================================= */
         .contact-section { padding: 70px 0; background: var(--lighter-color); }
         .contact-grid {
             display: grid;
@@ -443,7 +622,9 @@
         }
         .contact-card a:hover { text-decoration: underline; }
 
-        /* ============ FOOTER ============ */
+        /* =========================================================================
+           [CSS.10] FOOTER
+           ========================================================================= */
         .footer { background: var(--dark-color); color: white; padding: 50px 0 25px; }
         .footer-content {
             display: grid;
@@ -476,7 +657,9 @@
             opacity: 0.7;
         }
 
-        /* ============ FLOATING WHATSAPP ============ */
+        /* =========================================================================
+           [CSS.12] FLOATING WHATSAPP
+           ========================================================================= */
         .floating-whatsapp {
             position: fixed;
             bottom: 25px; right: 25px;
@@ -493,7 +676,9 @@
         }
         .floating-whatsapp:hover { transform: scale(1.1); }
 
-        /* ============ MOBILE ============ */
+        /* =========================================================================
+           [CSS.13] MOBILE
+           ========================================================================= */
         @media (max-width: 900px) {
             .nav-buttons { flex-wrap: wrap; gap: 6px; }
             .nav-buttons .btn { padding: 8px 14px; font-size: 0.8rem; }
@@ -535,12 +720,23 @@
             .alert-content { flex-direction: column; text-align: center; }
             .alert-message { flex-direction: column; text-align: center; }
             .alert-message i { font-size: 2rem; }
+
+            /* Gallery on mobile */
+            .gallery-grid {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                gap: 10px;
+            }
+            .gallery-item .play-badge { font-size: 2rem; }
+            .lightbox { padding: 12px; }
+            .lightbox-close { top: 10px; right: 10px; font-size: 2rem; }
         }
     </style>
 </head>
 <body>
 
-    <!-- ALERT BANNER -->
+    <!-- =========================================================================
+         [HTML.1] ALERT BANNER
+         ========================================================================= -->
     <div id="alertBanner" class="alert-banner">
         <div class="alert-content">
             <div class="alert-message">
@@ -552,7 +748,9 @@
         </div>
     </div>
 
-    <!-- TOP BAR -->
+    <!-- =========================================================================
+         [HTML.2] TOP BAR
+         ========================================================================= -->
     <div class="top-bar">
         <div class="top-bar-content">
             <div class="contact-info" id="topBarContact"></div>
@@ -560,7 +758,9 @@
         </div>
     </div>
 
-    <!-- NAVIGATION -->
+    <!-- =========================================================================
+         [HTML.3] NAVIGATION
+         ========================================================================= -->
     <nav class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-brand">
@@ -572,15 +772,14 @@
                 <div class="nav-links">
                     <a href="/">Home</a>
                     <a href="#packages">Packages</a>
+                    <a href="#gallery">Gallery</a>
                     <a href="#about">About</a>
                     <a href="#contact">Contact</a>
                 </div>
                 <div class="nav-buttons">
-                    <!-- ★ TRAVELER LOGIN ★ -->
                     <a href="/traveler" class="btn btn-traveler">
                         <i class="fas fa-user"></i> Traveler Login
                     </a>
-                    <!-- Admin Login -->
                     <a href="/admin" class="btn btn-primary">
                         <i class="fas fa-lock"></i> Admin
                     </a>
@@ -592,7 +791,9 @@
         </div>
     </nav>
 
-    <!-- HERO -->
+    <!-- =========================================================================
+         [HTML.4] HERO
+         ========================================================================= -->
     <section class="hero">
         <div class="hero-content">
             <h1 id="heroHeading">Your Journey to the Holy Land</h1>
@@ -606,7 +807,9 @@
         </div>
     </section>
 
-    <!-- FEATURES -->
+    <!-- =========================================================================
+         [HTML.5] FEATURES
+         ========================================================================= -->
     <section class="features-section" id="features">
         <div class="container">
             <div class="section-header">
@@ -619,7 +822,9 @@
         </div>
     </section>
 
-    <!-- PACKAGES -->
+    <!-- =========================================================================
+         [HTML.6] PACKAGES
+         ========================================================================= -->
     <section class="packages-section" id="packages">
         <div class="container">
             <div class="section-header">
@@ -632,7 +837,9 @@
         </div>
     </section>
 
-    <!-- ABOUT -->
+    <!-- =========================================================================
+         [HTML.7] ABOUT
+         ========================================================================= -->
     <section class="about-section" id="about">
         <div class="container">
             <div class="about-content">
@@ -649,7 +856,32 @@
         </div>
     </section>
 
-    <!-- CONTACT -->
+    <!-- =========================================================================
+         [HTML.11] GALLERY (NEW) — hidden unless config has items
+         ========================================================================= -->
+    <section class="gallery-section" id="gallery" style="display:none;">
+        <div class="container">
+            <div class="section-header">
+                <h2 id="galleryTitle">Sacred Places &amp; Pilgrim Attractions</h2>
+                <p id="gallerySubtitle">Glimpses from our blessed journeys</p>
+            </div>
+            <div class="gallery-tabs" id="galleryTabs">
+                <button class="gallery-tab active" data-tab="photos">
+                    <i class="fas fa-camera"></i> Photos
+                </button>
+                <button class="gallery-tab" data-tab="videos">
+                    <i class="fas fa-video"></i> Videos
+                </button>
+            </div>
+            <div class="gallery-grid" id="galleryPhotos"></div>
+            <div class="gallery-grid gallery-videos" id="galleryVideos"
+                 style="display:none"></div>
+        </div>
+    </section>
+
+    <!-- =========================================================================
+         [HTML.8] CONTACT
+         ========================================================================= -->
     <section class="contact-section" id="contact">
         <div class="container">
             <div class="section-header">
@@ -660,7 +892,9 @@
         </div>
     </section>
 
-    <!-- FOOTER -->
+    <!-- =========================================================================
+         [HTML.9] FOOTER
+         ========================================================================= -->
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
@@ -673,6 +907,7 @@
                     <ul class="footer-links">
                         <li><a href="/"><i class="fas fa-chevron-right"></i> Home</a></li>
                         <li><a href="#packages"><i class="fas fa-chevron-right"></i> Packages</a></li>
+                        <li><a href="#gallery"><i class="fas fa-chevron-right"></i> Gallery</a></li>
                         <li><a href="#about"><i class="fas fa-chevron-right"></i> About Us</a></li>
                         <li><a href="#contact"><i class="fas fa-chevron-right"></i> Contact</a></li>
                         <li><a href="/traveler"><i class="fas fa-user"></i> Traveler Portal</a></li>
@@ -693,21 +928,33 @@
         </div>
     </footer>
 
-    <!-- FLOATING WHATSAPP -->
+    <!-- =========================================================================
+         [HTML.10] FLOATING WHATSAPP
+         ========================================================================= -->
     <a href="#" id="floatingWhatsapp" class="floating-whatsapp" target="_blank" aria-label="WhatsApp">
         <i class="fab fa-whatsapp"></i>
     </a>
 
+    <!-- =========================================================================
+         [HTML.12] LIGHTBOX (for gallery photos / videos)
+         ========================================================================= -->
+    <div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
+        <button class="lightbox-close" onclick="closeLightbox(event)">&times;</button>
+        <div id="lightboxContent"></div>
+        <div class="lightbox-caption" id="lightboxCaption"></div>
+    </div>
+
     <script>
-        // ============================================================
-        // STATE
-        // ============================================================
+        // =====================================================================
+        // [JS.0] STATE
+        // =====================================================================
         let CONFIG = null;
         let BATCHES = [];
+        let GALLERY = { photos: [], videos: [], enabled: false };
 
-        // ============================================================
-        // HELPERS
-        // ============================================================
+        // =====================================================================
+        // [JS.1] HELPERS
+        // =====================================================================
         function formatINR(amount) {
             try {
                 const n = Number(amount) || 0;
@@ -752,9 +999,9 @@
             return message ? `${base}?text=${encodeURIComponent(message)}` : base;
         }
 
-        // ============================================================
-        // FETCH CONFIG + BATCHES
-        // ============================================================
+        // =====================================================================
+        // [JS.2] DATA LOADING
+        // =====================================================================
         async function loadAll() {
             const [cfgResult, bResult] = await Promise.allSettled([
                 fetch('/api/frontpage', { cache: 'no-store' }).then(r => r.json()),
@@ -780,24 +1027,25 @@
             render();
         }
 
-        // ============================================================
-        // RENDER EVERYTHING
-        // ============================================================
+        // =====================================================================
+        // [JS.3] MASTER RENDER
+        // =====================================================================
         function render() {
             renderAlert(CONFIG.alert || {});
             renderHero(CONFIG.hero || {});
             renderFeatures(CONFIG.features || []);
             renderPackages(CONFIG.packages || {}, BATCHES);
             renderAbout(CONFIG.about || {});
+            renderGallery(CONFIG.gallery || {});
             renderContact(CONFIG.contact || {});
             renderFooter(CONFIG.footer || {}, CONFIG.contact || {});
             setupWhatsApp(CONFIG.contact || {});
             renderTopBar(CONFIG.contact || {}, CONFIG.social || {});
         }
 
-        // ============================================================
-        // ALERT
-        // ============================================================
+        // =====================================================================
+        // [JS.4] ALERT
+        // =====================================================================
         function renderAlert(a) {
             const banner = document.getElementById('alertBanner');
             const msgEl = document.getElementById('alertMessage');
@@ -862,9 +1110,9 @@
             }
         }
 
-        // ============================================================
-        // HERO
-        // ============================================================
+        // =====================================================================
+        // [JS.5] HERO
+        // =====================================================================
         function renderHero(h) {
             document.getElementById('heroHeading').textContent =
                 safeText(h.heading, 'Your Journey to the Holy Land');
@@ -876,9 +1124,9 @@
                 safeText(h.whatsapp_text, 'Chat on WhatsApp');
         }
 
-        // ============================================================
-        // FEATURES
-        // ============================================================
+        // =====================================================================
+        // [JS.6] FEATURES
+        // =====================================================================
         function renderFeatures(features) {
             const grid = document.getElementById('featuresGrid');
             grid.innerHTML = '';
@@ -906,9 +1154,9 @@
             }).join('');
         }
 
-        // ============================================================
-        // PACKAGES
-        // ============================================================
+        // =====================================================================
+        // [JS.7] PACKAGES
+        // =====================================================================
         function renderPackages(pcfg, batches) {
             document.getElementById('packagesTitle').textContent =
                 safeText(pcfg.title, 'Our Haj & Umrah Packages');
@@ -975,9 +1223,9 @@
             }).join('');
         }
 
-        // ============================================================
-        // ABOUT
-        // ============================================================
+        // =====================================================================
+        // [JS.8] ABOUT
+        // =====================================================================
         function renderAbout(a) {
             document.getElementById('aboutHeading').textContent =
                 safeText(a.heading, 'About Alhudha Haj Travel');
@@ -997,9 +1245,156 @@
                 </div>`).join('');
         }
 
-        // ============================================================
-        // CONTACT
-        // ============================================================
+        // =====================================================================
+        // [JS.11] GALLERY (NEW)
+        // =====================================================================
+        function renderGallery(g) {
+            const section = document.getElementById('gallery');
+
+            // Store for lightbox
+            GALLERY = {
+                photos: g.photos || [],
+                videos: g.videos || [],
+                enabled: !!g.enabled,
+            };
+
+            // Hide section entirely if disabled OR empty
+            const hasPhotos = (g.photos && g.photos.length > 0);
+            const hasVideos = (g.videos && g.videos.length > 0);
+            if (!g.enabled || (!hasPhotos && !hasVideos)) {
+                section.style.display = 'none';
+                return;
+            }
+            section.style.display = 'block';
+
+            // Titles
+            document.getElementById('galleryTitle').textContent =
+                safeText(g.title, 'Sacred Places & Pilgrim Attractions');
+            document.getElementById('gallerySubtitle').textContent =
+                safeText(g.subtitle, '');
+
+            // Limits
+            const maxP = Number(g.max_photos_shown) || 12;
+            const maxV = Number(g.max_videos_shown) || 6;
+
+            const photos = (g.photos || []).slice(0, maxP);
+            const videos = (g.videos || []).slice(0, maxV);
+
+            // ---- Photos grid ----
+            const photoGrid = document.getElementById('galleryPhotos');
+            if (photos.length === 0) {
+                photoGrid.innerHTML = `
+                    <div class="gallery-empty">
+                        <i class="fas fa-camera"></i>
+                        <p>No photos uploaded yet.</p>
+                    </div>`;
+            } else {
+                photoGrid.innerHTML = photos.map((p, idx) => `
+                    <div class="gallery-item"
+                         onclick="openLightbox('photo', ${idx})">
+                        <img src="${escapeHTML(p.url)}" loading="lazy"
+                             alt="${escapeHTML(p.caption || '')}">
+                        ${p.caption
+                            ? `<div class="caption">${escapeHTML(p.caption)}</div>`
+                            : ''}
+                    </div>`).join('');
+            }
+
+            // ---- Videos grid ----
+            const videoGrid = document.getElementById('galleryVideos');
+            if (videos.length === 0) {
+                videoGrid.innerHTML = `
+                    <div class="gallery-empty">
+                        <i class="fas fa-video"></i>
+                        <p>No videos uploaded yet.</p>
+                    </div>`;
+            } else {
+                videoGrid.innerHTML = videos.map((v, idx) => `
+                    <div class="gallery-item"
+                         onclick="openLightbox('video', ${idx})">
+                        <video src="${escapeHTML(v.url)}#t=0.5"
+                               preload="metadata" muted playsinline></video>
+                        <div class="play-badge">
+                            <i class="fas fa-play-circle"></i>
+                        </div>
+                        ${v.caption
+                            ? `<div class="caption">${escapeHTML(v.caption)}</div>`
+                            : ''}
+                    </div>`).join('');
+            }
+
+            // ---- Tab switching ----
+            const tabs = document.querySelectorAll('.gallery-tab');
+            tabs.forEach(btn => {
+                // Remove old listeners by cloning
+                const fresh = btn.cloneNode(true);
+                btn.parentNode.replaceChild(fresh, btn);
+                fresh.addEventListener('click', () => {
+                    document.querySelectorAll('.gallery-tab')
+                        .forEach(b => b.classList.remove('active'));
+                    fresh.classList.add('active');
+                    const isPhotos = fresh.dataset.tab === 'photos';
+                    photoGrid.style.display = isPhotos ? 'grid' : 'none';
+                    videoGrid.style.display = isPhotos ? 'none' : 'grid';
+                });
+            });
+
+            // Default: photos visible
+            photoGrid.style.display = 'grid';
+            videoGrid.style.display = 'none';
+        }
+
+        // ---------------------------------------------------------------------
+        // [JS.11.1] Lightbox
+        // ---------------------------------------------------------------------
+        function openLightbox(kind, idx) {
+            const lb = document.getElementById('lightbox');
+            const content = document.getElementById('lightboxContent');
+            const cap = document.getElementById('lightboxCaption');
+
+            let url = '';
+            let caption = '';
+
+            if (kind === 'photo' && GALLERY.photos[idx]) {
+                url = GALLERY.photos[idx].url;
+                caption = GALLERY.photos[idx].caption || '';
+                content.innerHTML = `<img src="${escapeHTML(url)}" alt="">`;
+            } else if (kind === 'video' && GALLERY.videos[idx]) {
+                url = GALLERY.videos[idx].url;
+                caption = GALLERY.videos[idx].caption || '';
+                content.innerHTML =
+                    `<video src="${escapeHTML(url)}" controls autoplay playsinline></video>`;
+            } else {
+                return;
+            }
+
+            cap.textContent = caption;
+            lb.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeLightbox(e) {
+            // Only close when clicking outside the media or the close button
+            if (e && e.target && e.target.id !== 'lightbox'
+                && !e.target.classList.contains('lightbox-close')) {
+                return;
+            }
+            const lb = document.getElementById('lightbox');
+            lb.classList.remove('active');
+            document.getElementById('lightboxContent').innerHTML = '';
+            document.body.style.overflow = '';
+        }
+
+        // Close lightbox on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeLightbox({ target: { id: 'lightbox' } });
+            }
+        });
+
+        // =====================================================================
+        // [JS.9] CONTACT
+        // =====================================================================
         function renderContact(c) {
             const grid = document.getElementById('contactGrid');
             const phone = safeText(c.phone, '');
@@ -1043,9 +1438,9 @@
                 '<div class="packages-empty">Contact information coming soon.</div>';
         }
 
-        // ============================================================
-        // FOOTER
-        // ============================================================
+        // =====================================================================
+        // [JS.10] FOOTER
+        // =====================================================================
         function renderFooter(f, c) {
             document.getElementById('footerAbout').textContent =
                 safeText(f.about_text, '');
@@ -1061,18 +1456,19 @@
 
             const footerSocial = document.getElementById('footerSocial');
             const socItems = [];
-            if (c.facebook || (CONFIG.social || {}).facebook)
-                socItems.push(`<li><a href="${escapeHTML(c.facebook || CONFIG.social.facebook)}" target="_blank"><i class="fab fa-facebook-f"></i> Facebook</a></li>`);
-            if (c.instagram || (CONFIG.social || {}).instagram)
-                socItems.push(`<li><a href="${escapeHTML(c.instagram || CONFIG.social.instagram)}" target="_blank"><i class="fab fa-instagram"></i> Instagram</a></li>`);
+            const social = CONFIG.social || {};
+            if (c.facebook || social.facebook)
+                socItems.push(`<li><a href="${escapeHTML(c.facebook || social.facebook)}" target="_blank"><i class="fab fa-facebook-f"></i> Facebook</a></li>`);
+            if (c.instagram || social.instagram)
+                socItems.push(`<li><a href="${escapeHTML(c.instagram || social.instagram)}" target="_blank"><i class="fab fa-instagram"></i> Instagram</a></li>`);
             if (c.whatsapp)
                 socItems.push(`<li><a href="${whatsappURL(c.whatsapp)}" target="_blank"><i class="fab fa-whatsapp"></i> WhatsApp</a></li>`);
             footerSocial.innerHTML = socItems.join('');
         }
 
-        // ============================================================
-        // TOP BAR
-        // ============================================================
+        // =====================================================================
+        // [JS.12] TOP BAR
+        // =====================================================================
         function renderTopBar(c, s) {
             const topBar = document.getElementById('topBarContact');
             const items = [];
@@ -1088,9 +1484,9 @@
             topBarSocial.innerHTML = socialItems.join('');
         }
 
-        // ============================================================
-        // WHATSAPP
-        // ============================================================
+        // =====================================================================
+        // [JS.13] WHATSAPP
+        // =====================================================================
         function setupWhatsApp(c) {
             const num = c.whatsapp || '919876543210';
             const url = whatsappURL(num);
@@ -1100,16 +1496,16 @@
             if (floatingWa) floatingWa.href = url;
         }
 
-        // ============================================================
-        // MOBILE MENU
-        // ============================================================
+        // =====================================================================
+        // [JS.14] MOBILE MENU
+        // =====================================================================
         function toggleMobileMenu() {
             document.getElementById('navMenu').classList.toggle('active');
         }
 
-        // ============================================================
-        // SMOOTH SCROLL
-        // ============================================================
+        // =====================================================================
+        // [JS.15] SMOOTH SCROLL
+        // =====================================================================
         document.querySelectorAll('a[href^="#"]').forEach(a => {
             a.addEventListener('click', function (e) {
                 const target = document.querySelector(this.getAttribute('href'));
@@ -1121,9 +1517,9 @@
             });
         });
 
-        // ============================================================
-        // BOOT
-        // ============================================================
+        // =====================================================================
+        // [JS.16] BOOT
+        // =====================================================================
         document.addEventListener('DOMContentLoaded', loadAll);
     </script>
 
