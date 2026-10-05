@@ -32,3 +32,7 @@ openpyxl~=3.1
 
 # ---- Image processing ----
 Pillow~=10.0
+
+# ---- File uploads (required for FastAPI File/Form) ----
+# Needed by /api/admin/gallery/upload — the gallery feature in the front page
+python-multipart>=0.0.9
