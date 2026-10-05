@@ -1,12 +1,13 @@
 # =================================================================================
 # main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.17 — Persist traveler documents on Railway Volume
-#   • NEW §21.2.6: _ensure_documents_symlink()
-#     /app/documents → /app/data/documents  (symlink)
-#     Prevents loss of passports/photos on every redeploy
-#   • All v2.16 features preserved (gallery, sessions, captcha, traveler portal,
-#     async-aware Back to Home, narrow Page.update patch)
+# v2.18 — Mobile scroll fix
+#   • §21.3.1: page.scroll = ScrollMode.ADAPTIVE
+#   • §21.3.3: show_login / show_main_window now wrap content in a
+#     scrollable Column so the login button stays reachable on short
+#     mobile viewports
+#   • All v2.17 features preserved (documents symlink, gallery,
+#     sessions, captcha, traveler portal, Page.update patch)
 #
 # SECTION INDEX
 #   21.1     Configuration & platform detection
@@ -20,7 +21,7 @@
 #   21.2.3   DB initializer with retries
 #   21.2.4   Signal handlers
 #   21.2.5   Admin session helpers
-#   21.2.6   Document directory symlink (NEW)
+#   21.2.6   Document directory symlink
 #   21.3     Flet admin entry point
 #   21.3.1   flet_main() — root function
 #   21.3.2   Back-to-home navigation
@@ -273,7 +274,7 @@ def _init_db():
 
 
 # ---------------------------------------------------------------------------------
-# 21.2.4 — Signal handlers (SIGTERM / SIGINT → flush DB)
+# 21.2.4 — Signal handlers
 # ---------------------------------------------------------------------------------
 def _install_signal_handlers():
     def _handler(signum, frame):
@@ -412,12 +413,6 @@ def _ensure_documents_symlink():
     This makes /app/documents a symlink → /app/data/documents/ (persistent
     Railway Volume). Any code that reads/writes 'documents/...' relative to
     /app keeps working without changes.
-
-    Migration logic:
-        • If /app/documents is already a symlink → nothing to do.
-        • If /app/documents is a real dir with content → move each item into
-          /app/data/documents, then replace the dir with a symlink.
-        • If neither exists → just create the symlink.
     """
     target = "/app/data/documents"
     link = "/app/documents"
@@ -428,7 +423,6 @@ def _ensure_documents_symlink():
         print(f"[DOCS] ❌ Could not create {target}: {e}", flush=True)
         return
 
-    # Already a symlink?
     if os.path.islink(link):
         try:
             resolved = os.path.realpath(link)
@@ -438,7 +432,6 @@ def _ensure_documents_symlink():
             print(f"[DOCS] ✅ {link} is a symlink", flush=True)
         return
 
-    # Real directory → migrate + replace with symlink
     if os.path.isdir(link):
         migrated = 0
         skipped = 0
@@ -454,7 +447,6 @@ def _ensure_documents_symlink():
             except Exception as e:
                 print(f"[DOCS] could not migrate '{item}': {e}", flush=True)
 
-        # Now remove the (hopefully) empty directory
         try:
             shutil.rmtree(link)
         except Exception as e:
@@ -465,7 +457,6 @@ def _ensure_documents_symlink():
         print(f"[DOCS] migrated {migrated} item(s), skipped {skipped} "
               f"(already present) → {target}", flush=True)
 
-    # Create the symlink
     try:
         os.symlink(target, link)
         print(f"[DOCS] ✅ {link} → {target} (persistent)", flush=True)
@@ -477,10 +468,24 @@ def _ensure_documents_symlink():
 # 21.3 — FLET ADMIN APP ENTRY POINT
 # =================================================================================
 def flet_main(page: ft.Page):
-    # ---- Page setup ----
+    # -----------------------------------------------------------------------------
+    # 21.3.1 — Page setup
+    # -----------------------------------------------------------------------------
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
+
+    # ---- NEW (v2.18): Page-level scrolling for mobile ----
+    # Without this, tall content can be clipped on small viewports —
+    # the login button ends up below the fold with no way to reach it
+    # on iOS Safari / Chrome mobile.
+    try:
+        page.scroll = ft.ScrollMode.ADAPTIVE
+    except Exception:
+        try:
+            page.scroll = ft.ScrollMode.AUTO
+        except Exception:
+            pass
 
     try:
         page.window.width = 400
@@ -586,7 +591,7 @@ def flet_main(page: ft.Page):
             print(f"[NAV] run_task failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # 21.3.3 — Screen switchers
+    # 21.3.3 — Screen switchers (v2.18: scrollable wrappers)
     # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
@@ -594,7 +599,16 @@ def flet_main(page: ft.Page):
             page=page, db=AppState.db,
             on_login_success=on_login_success,
             on_cancel=_go_home_page)
-        page.add(login.build())
+
+        # NEW: wrap in a scrollable column so the login button stays
+        # reachable on short mobile viewports.
+        wrapper = ft.Column(
+            controls=[login.build()],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        page.add(wrapper)
         try:
             page.update()
         except Exception as ex:
@@ -632,7 +646,14 @@ def flet_main(page: ft.Page):
             pass
         mw = MainWindowView(
             page, AppState.db, user, on_logout=on_logout)
-        page.add(mw.build())
+
+        # NEW: same scroll wrapper for the main window.
+        wrapper = ft.Column(
+            controls=[mw.build()],
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+        page.add(wrapper)
         try:
             page.update()
         except Exception as ex:
@@ -713,13 +734,11 @@ def _build_app() -> FastAPI:
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
-    # Gallery directories (persistent)
     gallery_root = os.path.join(base_path, "data", "gallery")
     os.makedirs(os.path.join(gallery_root, "photos"), exist_ok=True)
     os.makedirs(os.path.join(gallery_root, "videos"), exist_ok=True)
     AppState.gallery_root = gallery_root
 
-    # Traveler documents (persistent — via symlink set in 21.2.6)
     os.makedirs(os.path.join(base_path, "data", "documents"), exist_ok=True)
 
     try:
@@ -1251,11 +1270,6 @@ print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"👤  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
 print("=" * 66, flush=True)
 
-# ---- Boot sequence (order matters) ----
-# 1. Make /app/documents persistent (symlink → /app/data/documents)
-# 2. Copy seed CSVs to /app/data if the volume is empty
-# 3. Load the DB
-# 4. Install signal handlers
 _ensure_documents_symlink()
 _seed_volume_if_empty(base_path)
 _init_db()
