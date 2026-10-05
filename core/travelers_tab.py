@@ -1,14 +1,29 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.3 — Row Selection + Data-Loading Safety
-#   • Row tap SELECTS (does not open edit)
-#   • Toolbar PDF / Print act on selected row
-#   • on_select_change (correct Flet 1.0.0 param)
-#   • Icons 16 → 18 for easier tap
-#   • refresh() no longer calls db.reload_travelers() / reload_batches()
-#   • Dialogs no longer call reload_travelers() on save
-#   • All original features preserved
+# v1.4 — Date format DD-MM-YYYY
+#   • All date fields now use DD-MM-YYYY (dialog labels, storage, display)
+#   • Backward compatible: existing YYYY-MM-DD data auto-converts on load
+#   • Legacy ISO timestamps (e.g. 2026-08-13T17:29:09) still parse correctly
+#   • v1.3 features preserved (row selection, data-loading safety, etc.)
+#
+# SECTION INDEX
+#   [H]     Module-level helpers (number cleaning, date conversion)
+#   [8.1]   TravelersTab class
+#   [8.2]   setup_ui
+#   [8.3]   Helpers (safe_str, _get_photo_path)
+#   [8.4]   refresh
+#   [8.5]   display_travelers
+#   [8.5b]  _select_traveler
+#   [8.5c]  _get_selected_traveler
+#   [8.6]   Pagination
+#   [8.7]   Search
+#   [8.8]   Stats
+#   [8.9]   Dialog launchers
+#   [8.10]  View / Delete / Open doc
+#   [8.11]  Exports
+#   [9.1]   TravelerDialog (Add/Edit)
+#   [10.1]  TravelerViewDialog
 # =================================================================================
 
 import flet as ft
@@ -23,8 +38,10 @@ from core.helpers import get_app_base_path, send_file_to_user
 
 
 # =================================================================================
-# Helper — strip trailing ".0" from numeric-looking strings
+# [H] MODULE-LEVEL HELPERS
 # =================================================================================
+
+# ---- [H.1] Numeric-string fields (strip trailing ".0") ----
 _NUMERIC_STRING_FIELDS = {
     "pin",
     "mobile",
@@ -33,7 +50,19 @@ _NUMERIC_STRING_FIELDS = {
     "passport_no",
 }
 
+# ---- [H.2] Date fields (converted to/from DD-MM-YYYY) ----
+_DATE_FIELDS = {
+    "dob",
+    "passport_issue_date",
+    "passport_expiry_date",
+    "expected_return_date",
+}
 
+# ---- [H.3] Separator used in the display format: DD-MM-YYYY ----
+_DATE_SEP = "-"
+
+
+# ---- [H.4] _clean_number_string ----
 def _clean_number_string(value) -> str:
     if value is None:
         return ""
@@ -51,8 +80,85 @@ def _clean_number_string(value) -> str:
     return s
 
 
+# ---- [H.5] _to_display_date — normalise ANY stored date → DD-MM-YYYY ----
+def _to_display_date(value) -> str:
+    """
+    Convert a stored date value (any of the formats below) to DD-MM-YYYY:
+        • 2026-08-13              (legacy ISO date)
+        • 2026-08-13T17:29:09     (ISO timestamp)
+        • 13-08-2026              (current DD-MM-YYYY)
+        • 13/08/2026              (slash variant)
+        • 13-8-2026 / 13/8/2026   (short month/day)
+    Returns the original string unchanged if it can't be parsed.
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+
+    head = s[:10]
+
+    # Try each format
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    # Try ISO timestamp prefix (2026-08-13T...)
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", ""))
+        return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+    except Exception:
+        pass
+
+    return s  # give up — return as-is
+
+
+# ---- [H.6] _to_storage_date — user input → canonical DD-MM-YYYY ----
+def _to_storage_date(value) -> str:
+    """
+    Normalise a user-entered date into DD-MM-YYYY for storage.
+    Accepts DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, or bare ISO timestamps.
+    Returns the raw input if nothing matches (so user sees their typo).
+    """
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s or s.lower() in ("nan", "none", "nat", "null"):
+        return ""
+
+    head = s[:10]
+
+    # First try user-facing formats (DD-MM-YYYY / DD/MM/YYYY) — preferred
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    # Fall back to ISO (legacy)
+    for fmt in ("%Y-%m-%d",):
+        try:
+            dt = datetime.strptime(head, fmt)
+            return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+        except ValueError:
+            continue
+
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", ""))
+        return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
+    except Exception:
+        pass
+
+    return s
+
+
 # =================================================================================
-# 8.1 — CLASS: TravelersTab
+# [8.1] CLASS: TravelersTab
 # =================================================================================
 class TravelersTab:
 
@@ -86,7 +192,7 @@ class TravelersTab:
         return self.root
 
     # =============================================================================
-    # 8.2 — setup_ui
+    # [8.2] setup_ui
     # =============================================================================
     def setup_ui(self):
         # ---- STAT CARDS ----
@@ -295,7 +401,7 @@ class TravelersTab:
         )
 
     # =============================================================================
-    # 8.3 — Helpers
+    # [8.3] Helpers
     # =============================================================================
     def safe_str(self, value):
         if value is None:
@@ -326,16 +432,12 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # 8.4 — refresh  (no destructive reloads)
+    # [8.4] refresh (no destructive reloads)
     # =============================================================================
     def refresh(self):
         """
         Load travelers from the in-memory DB cache.
-
-        IMPORTANT: Do NOT call db.reload_travelers() here.
-        On Railway, reload_*() reads from a fixed CSV path that may differ
-        from the volume mount → cache gets wiped → tab shows zeros.
-        The DB layer's get_travelers() already returns live data.
+        Do NOT call db.reload_travelers() here.
         """
         try:
             self.batches = self.db.get_batches()
@@ -371,7 +473,7 @@ class TravelersTab:
             traceback.print_exc()
 
     # =============================================================================
-    # 8.5 — display_travelers
+    # [8.5] display_travelers
     # =============================================================================
     def display_travelers(self):
         start = (self.current_page - 1) * self.items_per_page
@@ -382,26 +484,11 @@ class TravelersTab:
         for i, t in enumerate(page_items):
             tid = t.get('id')
             passport = _clean_number_string(t.get('passport_no', '-'))
-            expiry = t.get('passport_expiry_date', '')
-            try:
-                if expiry:
-                    dt = datetime.strptime(str(expiry)[:10], "%Y-%m-%d")
-                    exp_disp = dt.strftime("%d/%m/%Y")
-                else:
-                    exp_disp = ""
-            except Exception:
-                exp_disp = str(expiry)
 
-            return_date = t.get('expected_return_date', '')
-            try:
-                if return_date:
-                    rd = datetime.strptime(str(return_date)[:10],
-                                           "%Y-%m-%d")
-                    ret_disp = rd.strftime("%d/%m/%Y")
-                else:
-                    ret_disp = "-"
-            except Exception:
-                ret_disp = str(return_date) if return_date else "-"
+            # ---- Date columns now display as DD-MM-YYYY ----
+            exp_disp = _to_display_date(t.get('passport_expiry_date', ''))
+            ret_disp = _to_display_date(
+                t.get('expected_return_date', '')) or "-"
 
             status = t.get('passport_status', 'Active')
             status_color = ("#27ae60" if status == "Active"
@@ -451,7 +538,6 @@ class TravelersTab:
 
             is_selected = (self._selected_traveler_id == tid)
 
-            # -------- ROW TAP → SELECT (not edit) --------
             def _on_row_tap(e, tt=t, tid=tid):
                 try:
                     self._select_traveler(tid)
@@ -463,7 +549,6 @@ class TravelersTab:
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -502,7 +587,7 @@ class TravelersTab:
         self.update_pagination()
 
     # =============================================================================
-    # 8.5b — _select_traveler
+    # [8.5b] _select_traveler
     # =============================================================================
     def _select_traveler(self, traveler_id):
         if self._selected_traveler_id == traveler_id:
@@ -510,7 +595,6 @@ class TravelersTab:
         else:
             self._selected_traveler_id = traveler_id
 
-        # Update selection label
         if self.selection_label:
             if self._selected_traveler_id:
                 t = next((x for x in self.travelers
@@ -534,7 +618,7 @@ class TravelersTab:
             pass
 
     # =============================================================================
-    # 8.5c — _get_selected_traveler
+    # [8.5c] _get_selected_traveler
     # =============================================================================
     def _get_selected_traveler(self):
         if not self._selected_traveler_id:
@@ -543,7 +627,7 @@ class TravelersTab:
                      if t.get('id') == self._selected_traveler_id), None)
 
     # =============================================================================
-    # 8.6 — Pagination
+    # [8.6] Pagination
     # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_travelers)
@@ -569,7 +653,7 @@ class TravelersTab:
             self.page.update()
 
     # =============================================================================
-    # 8.7 — Search
+    # [8.7] Search
     # =============================================================================
     def search_travelers(self, e):
         text = (self.search_input.value or "").strip().lower()
@@ -590,7 +674,7 @@ class TravelersTab:
         self.page.update()
 
     # =============================================================================
-    # 8.8 — Stats
+    # [8.8] Stats
     # =============================================================================
     def update_stats(self):
         total = len(self.travelers)
@@ -618,7 +702,7 @@ class TravelersTab:
         self.stats_labels['docs_complete'].value = str(docs_complete)
 
     # =============================================================================
-    # 8.9 — Dialog launchers
+    # [8.9] Dialog launchers
     # =============================================================================
     def open_add_dialog(self, e):
         dlg = TravelerDialog(self.page, self.db, self.current_user,
@@ -636,7 +720,7 @@ class TravelersTab:
         self.refresh()
 
     # =============================================================================
-    # 8.10 — View / Delete / Open doc
+    # [8.10] View / Delete / Open doc
     # =============================================================================
     def view_traveler(self, traveler):
         dlg = TravelerViewDialog(self.page, traveler, self.db)
@@ -701,7 +785,7 @@ class TravelersTab:
             self._snack(f"⚠️ Could not open: {ex}")
 
     # =============================================================================
-    # 8.11 — Exports (toolbar actions now act on selection when applicable)
+    # [8.11] Exports
     # =============================================================================
     def export_to_excel(self, e):
         if not self.travelers:
@@ -725,11 +809,12 @@ class TravelersTab:
                 data.append([
                     i, t.get('id', ''), t.get('first_name', ''),
                     t.get('last_name', ''), t.get('passport_name', ''),
-                    t.get('gender', ''), t.get('dob', ''),
+                    t.get('gender', ''),
+                    _to_display_date(t.get('dob', '')),
                     t.get('batch_id', ''), t.get('batch_name', ''),
                     _clean_number_string(t.get('passport_no', '')),
-                    t.get('passport_issue_date', ''),
-                    t.get('passport_expiry_date', ''),
+                    _to_display_date(t.get('passport_issue_date', '')),
+                    _to_display_date(t.get('passport_expiry_date', '')),
                     t.get('passport_status', ''),
                     _clean_number_string(t.get('mobile', '')),
                     t.get('email', ''),
@@ -743,7 +828,7 @@ class TravelersTab:
                     t.get('father_name', ''),
                     t.get('mother_name', ''),
                     t.get('spouse_name', ''),
-                    t.get('expected_return_date', ''),
+                    _to_display_date(t.get('expected_return_date', '')),
                     t.get('file_reference', ''),
                     _clean_number_string(t.get('pin', '')),
                     t.get('emergency_contact', ''),
@@ -773,7 +858,6 @@ class TravelersTab:
             self._snack(f"❌ Export error: {ex}")
 
     def export_to_pdf(self, e):
-        # If a row is selected, export only that traveler
         selected = self._get_selected_traveler()
         if selected:
             travelers_to_export = [selected]
@@ -837,7 +921,7 @@ class TravelersTab:
                     _clean_number_string(t.get('mobile', '')),
                     t.get('email', ''),
                     t.get('batch_name', ''),
-                    str(t.get('expected_return_date', ''))[:10],
+                    _to_display_date(t.get('expected_return_date', '')),
                     t.get('passport_status', ''),
                     t.get('vaccine_status', ''),
                 ]
@@ -886,7 +970,6 @@ class TravelersTab:
                 f"🖨️ Selected: {selected.get('first_name','')} "
                 f"{selected.get('last_name','')} — "
                 f"opening PDF to print…")
-            # Reuse PDF export → user prints from browser
             self.export_to_pdf(e)
         else:
             self._snack("⚠️ Tap a row to select, then tap 🖨️ Print. "
@@ -902,9 +985,12 @@ class TravelersTab:
             exports_dir.mkdir(exist_ok=True)
             file_path = exports_dir / "travelers_template.csv"
             headers = ["First Name", "Last Name", "Passport Number",
-                       "Mobile", "Email", "Gender", "Date of Birth",
-                       "Batch ID", "Passport Issue Date",
-                       "Passport Expiry Date", "Aadhaar", "PAN",
+                       "Mobile", "Email", "Gender",
+                       "Date of Birth (DD-MM-YYYY)",
+                       "Batch ID",
+                       "Passport Issue Date (DD-MM-YYYY)",
+                       "Passport Expiry Date (DD-MM-YYYY)",
+                       "Aadhaar", "PAN",
                        "Vaccine Status", "Place of Birth",
                        "Place of Issue", "Father Name", "Mother Name",
                        "File Reference", "PIN"]
@@ -932,7 +1018,7 @@ class TravelersTab:
 
 
 # =================================================================================
-# 9.1 — CLASS: TravelerDialog (Add/Edit)
+# [9.1] CLASS: TravelerDialog (Add/Edit)
 # =================================================================================
 class TravelerDialog:
 
@@ -993,6 +1079,7 @@ class TravelerDialog:
         passport_name_field = field("passport_name", "Passport Name")
         passport_name_field.read_only = True
 
+        # ---- Section 1: Personal (dates in DD-MM-YYYY) ----
         sec1 = ft.Column(
             controls=[
                 section_header("1. PERSONAL INFORMATION"),
@@ -1004,7 +1091,7 @@ class TravelerDialog:
                 ft.Row([
                     dropdown("gender",
                              ["", "Male", "Female", "Other"]),
-                    field("dob", "Date of Birth (YYYY-MM-DD)", 180),
+                    field("dob", "Date of Birth (DD-MM-YYYY)", 200),
                     dropdown("passport_status",
                              ["Active", "Expired", "Submitted",
                               "Processing"]),
@@ -1012,14 +1099,15 @@ class TravelerDialog:
                 ft.Row([
                     field("passport_no", "Passport Number", 180, True),
                     field("passport_issue_date",
-                          "Issue Date (YYYY-MM-DD)", 180),
+                          "Issue Date (DD-MM-YYYY)", 200),
                     field("passport_expiry_date",
-                          "Expiry Date (YYYY-MM-DD)", 180),
+                          "Expiry Date (DD-MM-YYYY)", 200),
                 ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
 
+        # ---- Section 2: Contact ----
         sec2 = ft.Column(
             controls=[
                 section_header("2. CONTACT INFORMATION"),
@@ -1041,6 +1129,7 @@ class TravelerDialog:
             spacing=10,
         )
 
+        # ---- Section 3: Address & Family ----
         passport_addr = ft.TextField(
             label="Passport Address", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
@@ -1068,6 +1157,7 @@ class TravelerDialog:
             spacing=10,
         )
 
+        # ---- Section 4: Travel & Batch (return date DD-MM-YYYY) ----
         batch_dropdown = ft.Dropdown(height=48, text_size=12)
         self.fields['batch_id'] = batch_dropdown
         try:
@@ -1088,13 +1178,14 @@ class TravelerDialog:
                 ft.Row([
                     batch_dropdown,
                     field("expected_return_date",
-                          "Expected Return (YYYY-MM-DD)", 220),
+                          "Expected Return (DD-MM-YYYY)", 220),
                     field("file_reference", "File Reference", 180),
                 ], spacing=10, wrap=True),
             ],
             spacing=10,
         )
 
+        # ---- Section 5: Document uploads ----
         doc_fields = [
             ("passport_scan", "Passport Scan", "📄"),
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
@@ -1126,6 +1217,7 @@ class TravelerDialog:
             spacing=10,
         )
 
+        # ---- Section 6: Additional ----
         med = ft.TextField(label="Medical Notes", multiline=True,
                            min_lines=2, max_lines=3, text_size=12)
         self.fields['medical_notes'] = med
@@ -1253,10 +1345,14 @@ class TravelerDialog:
             traceback.print_exc()
 
     def load_traveler(self, traveler):
+        """Populate the fields from a traveler dict.
+        Date fields are converted from any stored format to DD-MM-YYYY."""
         for key, field in self.fields.items():
             val = traveler.get(key, '')
             if key in _NUMERIC_STRING_FIELDS:
                 val = _clean_number_string(val)
+            if key in _DATE_FIELDS:
+                val = _to_display_date(val)
             if field.__class__.__name__ == "Dropdown":
                 field.value = str(val) if val else None
             else:
@@ -1282,6 +1378,8 @@ class TravelerDialog:
                     cleaned = (val or '').strip()
                     if key in _NUMERIC_STRING_FIELDS:
                         cleaned = _clean_number_string(cleaned)
+                    if key in _DATE_FIELDS:
+                        cleaned = _to_storage_date(cleaned)
                     data[key] = cleaned
 
             if not data.get('first_name') or not data.get('last_name'):
@@ -1346,9 +1444,6 @@ class TravelerDialog:
             except Exception:
                 pass
 
-            # NOTE: Do NOT call reload_travelers() here.
-            # add_traveler() / update_traveler() already update the cache.
-
             self.page.pop_dialog()
             self._snack(f"✅ {msg} successfully")
             if self.on_save_callback:
@@ -1375,7 +1470,7 @@ class TravelerDialog:
 
 
 # =================================================================================
-# 10.1 — CLASS: TravelerViewDialog
+# [10.1] CLASS: TravelerViewDialog
 # =================================================================================
 class TravelerViewDialog:
 
@@ -1447,14 +1542,15 @@ class TravelerViewDialog:
                 info_row("Full Name", full_name),
                 info_row("Passport Name", t.get('passport_name', '')),
                 info_row("Gender", t.get('gender', '')),
-                info_row("Date of Birth", self._fmt_date(t.get('dob'))),
+                info_row("Date of Birth",
+                         _to_display_date(t.get('dob'))),
                 info_row("Batch", batch_name),
                 info_row("Passport No",
                          _clean_number_string(t.get('passport_no', ''))),
                 info_row("Passport Issue",
-                         self._fmt_date(t.get('passport_issue_date'))),
+                         _to_display_date(t.get('passport_issue_date'))),
                 info_row("Passport Expiry",
-                         self._fmt_date(t.get('passport_expiry_date'))),
+                         _to_display_date(t.get('passport_expiry_date'))),
                 info_row("Passport Status", t.get('passport_status', '')),
             ])],
             spacing=12, scroll=ft.ScrollMode.AUTO,
@@ -1492,10 +1588,10 @@ class TravelerViewDialog:
         travel_tab = ft.Column(
             controls=[section_card("✈️ Travel Information", [
                 info_row("Expected Return",
-                         self._fmt_date(t.get('expected_return_date'))),
+                         _to_display_date(t.get('expected_return_date'))),
                 info_row("File Reference", t.get('file_reference', '')),
                 info_row("Registration Date",
-                         self._fmt_date(t.get('registration_date'))),
+                         _to_display_date(t.get('registration_date'))),
             ])],
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
@@ -1571,7 +1667,7 @@ class TravelerViewDialog:
                          _clean_number_string(t.get('emergency_phone', ''))),
                 info_row("Medical Notes", t.get('medical_notes', '')),
                 info_row("Created At",
-                         self._fmt_date(t.get('created_at'))),
+                         _to_display_date(t.get('created_at'))),
             ])],
             spacing=12, scroll=ft.ScrollMode.AUTO,
         )
@@ -1627,16 +1723,6 @@ class TravelerViewDialog:
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
-
-    def _fmt_date(self, value):
-        if not value:
-            return ''
-        try:
-            s = str(value)[:10]
-            dt = datetime.strptime(s, "%Y-%m-%d")
-            return dt.strftime("%d/%m/%Y")
-        except Exception:
-            return str(value)
 
     def _open_document(self, abs_path):
         try:
