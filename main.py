@@ -1,17 +1,17 @@
 # =================================================================================
 # main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.16 — Dynamic front-page gallery (photos + videos)
-#   • NEW: gallery media serving, upload, delete endpoints
-#   • Files persist on Railway Volume at /app/data/gallery/{photos,videos}/
-#   • All v2.15 patches preserved (sessions, captcha, traveler portal,
+# v2.17 — Persist traveler documents on Railway Volume
+#   • NEW §21.2.6: _ensure_documents_symlink()
+#     /app/documents → /app/data/documents  (symlink)
+#     Prevents loss of passports/photos on every redeploy
+#   • All v2.16 features preserved (gallery, sessions, captcha, traveler portal,
 #     async-aware Back to Home, narrow Page.update patch)
 #
 # SECTION INDEX
 #   21.1     Configuration & platform detection
 #   21.1.1   Platform detection
 #   21.1.2   Boot logger
-#   21.1.3   (reserved)
 #   21.1.4   JSON sanitizer
 #   21.1.5   Narrow Page.update() monkey patch
 #   21.2     Application state
@@ -20,6 +20,7 @@
 #   21.2.3   DB initializer with retries
 #   21.2.4   Signal handlers
 #   21.2.5   Admin session helpers
+#   21.2.6   Document directory symlink (NEW)
 #   21.3     Flet admin entry point
 #   21.3.1   flet_main() — root function
 #   21.3.2   Back-to-home navigation
@@ -35,9 +36,9 @@
 #   21.5.6   /api/batches
 #   21.5.7   Captcha endpoints
 #   21.5.8   Traveler portal endpoints
-#   21.5.9   NEW — Gallery media serving
-#   21.5.10  NEW — Gallery upload
-#   21.5.11  NEW — Gallery delete
+#   21.5.9   Gallery media serving
+#   21.5.10  Gallery upload
+#   21.5.11  Gallery delete
 #   21.5.12  Mount Flet admin
 #   21.5.13  Mount /static
 #   21.5.14  Root route "/"
@@ -113,7 +114,6 @@ def _boot_log(msg: str):
 
 # =================================================================================
 # 21.1.4 — JSON SANITIZER
-# Recursively converts NaN / Infinity to JSON-safe values.
 # =================================================================================
 def _json_safe(obj):
     if obj is None:
@@ -207,11 +207,11 @@ class AppState:
     static_dir = ""
     logo_path = ""
     flet_assets_dir = ""
-    gallery_root = ""      # NEW — set in _build_app()
+    gallery_root = ""
 
 
 # ---------------------------------------------------------------------------------
-# 21.2.2 — Volume seeder (copies seed_data/*.csv → data/ if missing)
+# 21.2.2 — Volume seeder
 # ---------------------------------------------------------------------------------
 def _seed_volume_if_empty(base_path: str):
     try:
@@ -401,6 +401,79 @@ async def _clear_session(page):
 
 
 # =================================================================================
+# 21.2.6 — ENSURE /app/documents IS A SYMLINK TO /app/data/documents
+# =================================================================================
+def _ensure_documents_symlink():
+    """
+    Uploaded traveler documents (passports, photos, aadhaar, pan, vaccine)
+    would otherwise live at /app/documents/ — an EPHEMERAL path on Railway
+    that is wiped on every redeploy.
+
+    This makes /app/documents a symlink → /app/data/documents/ (persistent
+    Railway Volume). Any code that reads/writes 'documents/...' relative to
+    /app keeps working without changes.
+
+    Migration logic:
+        • If /app/documents is already a symlink → nothing to do.
+        • If /app/documents is a real dir with content → move each item into
+          /app/data/documents, then replace the dir with a symlink.
+        • If neither exists → just create the symlink.
+    """
+    target = "/app/data/documents"
+    link = "/app/documents"
+
+    try:
+        os.makedirs(target, exist_ok=True)
+    except Exception as e:
+        print(f"[DOCS] ❌ Could not create {target}: {e}", flush=True)
+        return
+
+    # Already a symlink?
+    if os.path.islink(link):
+        try:
+            resolved = os.path.realpath(link)
+            print(f"[DOCS] ✅ {link} → {resolved} (already set)",
+                  flush=True)
+        except Exception:
+            print(f"[DOCS] ✅ {link} is a symlink", flush=True)
+        return
+
+    # Real directory → migrate + replace with symlink
+    if os.path.isdir(link):
+        migrated = 0
+        skipped = 0
+        for item in os.listdir(link):
+            src = os.path.join(link, item)
+            dst = os.path.join(target, item)
+            if os.path.exists(dst):
+                skipped += 1
+                continue
+            try:
+                shutil.move(src, dst)
+                migrated += 1
+            except Exception as e:
+                print(f"[DOCS] could not migrate '{item}': {e}", flush=True)
+
+        # Now remove the (hopefully) empty directory
+        try:
+            shutil.rmtree(link)
+        except Exception as e:
+            print(f"[DOCS] ❌ Could not remove old dir {link}: {e}",
+                  flush=True)
+            return
+
+        print(f"[DOCS] migrated {migrated} item(s), skipped {skipped} "
+              f"(already present) → {target}", flush=True)
+
+    # Create the symlink
+    try:
+        os.symlink(target, link)
+        print(f"[DOCS] ✅ {link} → {target} (persistent)", flush=True)
+    except Exception as e:
+        print(f"[DOCS] ❌ symlink failed: {e}", flush=True)
+
+
+# =================================================================================
 # 21.3 — FLET ADMIN APP ENTRY POINT
 # =================================================================================
 def flet_main(page: ft.Page):
@@ -463,7 +536,6 @@ def flet_main(page: ft.Page):
         print("[NAV] Back to Home clicked → scheduling navigation")
 
         async def _do():
-            # Attempt 1: UrlLauncher service with _self
             try:
                 launcher = ft.UrlLauncher()
                 result = launcher.launch_url("/", web_window_name="_self")
@@ -474,7 +546,6 @@ def flet_main(page: ft.Page):
             except Exception as e:
                 print(f"[NAV] UrlLauncher(_self) failed: {e}")
 
-            # Attempt 2: page.launch_url with _self
             try:
                 result = page.launch_url("/", web_window_name="_self")
                 if asyncio.iscoroutine(result):
@@ -484,7 +555,6 @@ def flet_main(page: ft.Page):
             except Exception as e:
                 print(f"[NAV] page.launch_url(_self) failed: {e}")
 
-            # Attempt 3: UrlLauncher default (new tab)
             try:
                 launcher = ft.UrlLauncher()
                 result = launcher.launch_url("/")
@@ -495,7 +565,6 @@ def flet_main(page: ft.Page):
             except Exception as e:
                 print(f"[NAV] UrlLauncher(default) failed: {e}")
 
-            # Attempt 4: page.launch_url default (new tab)
             try:
                 result = page.launch_url("/")
                 if asyncio.iscoroutine(result):
@@ -505,7 +574,6 @@ def flet_main(page: ft.Page):
             except Exception as e:
                 print(f"[NAV] page.launch_url(default) failed: {e}")
 
-            # Attempt 5: page.go (Flet route)
             try:
                 page.go("/")
                 print("[NAV] ⚠️ page.go('/') attempted")
@@ -645,11 +713,14 @@ def _build_app() -> FastAPI:
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
-    # NEW — gallery directories
+    # Gallery directories (persistent)
     gallery_root = os.path.join(base_path, "data", "gallery")
     os.makedirs(os.path.join(gallery_root, "photos"), exist_ok=True)
     os.makedirs(os.path.join(gallery_root, "videos"), exist_ok=True)
     AppState.gallery_root = gallery_root
+
+    # Traveler documents (persistent — via symlink set in 21.2.6)
+    os.makedirs(os.path.join(base_path, "data", "documents"), exist_ok=True)
 
     try:
         if os.path.exists(logo_path):
@@ -706,7 +777,7 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — /api/frontpage — reads frontpage_config.json
+    # 21.5.5 — /api/frontpage
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
@@ -718,7 +789,7 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches — packages shown on front page
+    # 21.5.6 — /api/batches
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
@@ -987,9 +1058,7 @@ def _build_app() -> FastAPI:
     _boot_log("Traveler portal endpoints registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.9 — NEW — Gallery media serving
-    #   GET /media/gallery/{photos|videos}/{filename}
-    #   Serves files from /app/data/gallery/<kind>/ (Railway Volume)
+    # 21.5.9 — Gallery media serving
     # -----------------------------------------------------------------------------
     GALLERY_ROOT = Path(AppState.gallery_root)
 
@@ -998,7 +1067,6 @@ def _build_app() -> FastAPI:
         if kind not in ("photos", "videos"):
             raise HTTPException(status_code=404, detail="Not found")
 
-        # Path-traversal guard: strip any directory components
         safe_name = os.path.basename(name)
         p = GALLERY_ROOT / kind / safe_name
 
@@ -1012,17 +1080,12 @@ def _build_app() -> FastAPI:
             headers={"Cache-Control": "public, max-age=86400"})
 
     # -----------------------------------------------------------------------------
-    # 21.5.10 — NEW — Gallery upload
-    #   POST /api/admin/gallery/upload
-    #   multipart/form-data:
-    #     file       : UploadFile (required)
-    #     media_type : "photos" | "videos"
-    #     caption    : str (optional)
+    # 21.5.10 — Gallery upload
     # -----------------------------------------------------------------------------
     ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     ALLOWED_VIDEO_EXT = {".mp4", ".webm", ".mov", ".m4v"}
-    MAX_PHOTO_BYTES = 15 * 1024 * 1024      # 15 MB
-    MAX_VIDEO_BYTES = 100 * 1024 * 1024     # 100 MB
+    MAX_PHOTO_BYTES = 15 * 1024 * 1024
+    MAX_VIDEO_BYTES = 100 * 1024 * 1024
 
     @app.post("/api/admin/gallery/upload")
     async def upload_gallery_media(
@@ -1030,13 +1093,11 @@ def _build_app() -> FastAPI:
         media_type: str = Form(...),
         caption: str = Form(""),
     ):
-        # ---- 21.5.10.1  Validate media_type ----
         if media_type not in ("photos", "videos"):
             raise HTTPException(
                 status_code=400,
                 detail="media_type must be 'photos' or 'videos'")
 
-        # ---- 21.5.10.2  Validate extension ----
         ext = os.path.splitext(file.filename or "")[1].lower()
         allowed = (ALLOWED_PHOTO_EXT if media_type == "photos"
                    else ALLOWED_VIDEO_EXT)
@@ -1046,7 +1107,6 @@ def _build_app() -> FastAPI:
                 detail=(f"Unsupported {media_type[:-1]} format: {ext}. "
                         f"Allowed: {', '.join(sorted(allowed))}"))
 
-        # ---- 21.5.10.3  Read + size check ----
         try:
             data = await file.read()
         except Exception as e:
@@ -1063,7 +1123,6 @@ def _build_app() -> FastAPI:
                         f"({len(data) // 1024 // 1024} MB). "
                         f"Max {limit // 1024 // 1024} MB."))
 
-        # ---- 21.5.10.4  Write to volume ----
         unique = uuid.uuid4().hex[:12]
         fname = f"{unique}{ext}"
         target_dir = GALLERY_ROOT / media_type
@@ -1077,7 +1136,6 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500,
                                 detail=f"Write failed: {e}")
 
-        # ---- 21.5.10.5  Update config ----
         item = {
             "url": f"/media/gallery/{media_type}/{fname}",
             "caption": (caption or "").strip(),
@@ -1092,7 +1150,6 @@ def _build_app() -> FastAPI:
             if not ok:
                 raise RuntimeError("add_gallery_item returned False")
         except Exception as e:
-            # Roll back the file write so config and disk stay in sync
             try:
                 target.unlink(missing_ok=True)
             except Exception:
@@ -1106,13 +1163,10 @@ def _build_app() -> FastAPI:
         return {"success": True, "item": item}
 
     # -----------------------------------------------------------------------------
-    # 21.5.11 — NEW — Gallery delete
-    #   DELETE /api/admin/gallery/item?media_type=photos&url=/media/...
-    #   Removes both the file on disk and the entry in the config.
+    # 21.5.11 — Gallery delete
     # -----------------------------------------------------------------------------
     @app.delete("/api/admin/gallery/item")
     async def delete_gallery_media(media_type: str, url: str):
-        # ---- 21.5.11.1  Validate ----
         if media_type not in ("photos", "videos"):
             raise HTTPException(status_code=400,
                                 detail="bad media_type")
@@ -1121,7 +1175,6 @@ def _build_app() -> FastAPI:
         if not url.startswith(prefix):
             raise HTTPException(status_code=400, detail="bad url")
 
-        # ---- 21.5.11.2  Delete file ----
         fname = os.path.basename(url)
         target = GALLERY_ROOT / media_type / fname
         try:
@@ -1129,7 +1182,6 @@ def _build_app() -> FastAPI:
         except Exception as e:
             _boot_log(f"Gallery delete file failed: {e}")
 
-        # ---- 21.5.11.3  Remove from config ----
         try:
             from core.frontpage_config import remove_gallery_item
             remove_gallery_item(media_type, url)
@@ -1199,6 +1251,12 @@ print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"👤  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
 print("=" * 66, flush=True)
 
+# ---- Boot sequence (order matters) ----
+# 1. Make /app/documents persistent (symlink → /app/data/documents)
+# 2. Copy seed CSVs to /app/data if the volume is empty
+# 3. Load the DB
+# 4. Install signal handlers
+_ensure_documents_symlink()
 _seed_volume_if_empty(base_path)
 _init_db()
 _install_signal_handlers()
