@@ -763,8 +763,7 @@ var API = {
     logout:     '/api/traveler/logout',
     me:         '/api/traveler/me',
     doc:        function(key) { return '/api/traveler/document/' + key; },
-    captchaNew:     '/api/captcha/new',
-    captchaVerify:  '/api/captcha/verify'
+    captchaNew:     '/api/captcha/new'
 };
 
 var currentData = null;
@@ -831,7 +830,8 @@ function setLoginLoading(loading) {
 }
 
 /* =========================================================
-   CAPTCHA
+   CAPTCHA — only loads a fresh question. Verification
+   happens server-side inside /api/traveler/login.
    ========================================================= */
 async function loadCaptcha() {
     var q = $('captchaQuestion');
@@ -862,35 +862,6 @@ async function loadCaptcha() {
     }
 }
 
-async function verifyCaptcha() {
-    var answer = ($('captchaAnswer').value || '').trim();
-    if (!answer) return { ok: false, reason: 'empty' };
-
-    try {
-        var res = await fetch(API.captchaVerify, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({
-                session_id: captchaSessionId,
-                answer: answer
-            })
-        });
-        if (!res.ok) {
-            var fallback = { ok: false, reason: 'HTTP ' + res.status };
-            try {
-                var errJson = await res.json();
-                if (errJson && errJson.detail) fallback.reason = errJson.detail;
-            } catch (e) { /* ignore */ }
-            return fallback;
-        }
-        return await res.json();
-    } catch (e) {
-        console.error('[captcha] verify failed', e);
-        return { ok: false, reason: 'network' };
-    }
-}
-
 function captchaErrorText(reason) {
     var m = {
         empty: 'Please answer the security question.',
@@ -905,12 +876,16 @@ function captchaErrorText(reason) {
 
 /* =========================================================
    LOGIN
+   Sends passport_no, pin, captcha_session_id, captcha_answer
+   in ONE request. The server verifies the captcha itself and
+   either succeeds or returns a captcha-specific error message.
    ========================================================= */
 async function doLogin() {
     clearLoginError();
 
     var passport = ($('passportInput').value || '').trim().toUpperCase();
     var pin = ($('pinInput').value || '').trim();
+    var captchaAns = ($('captchaAnswer').value || '').trim();
 
     if (!passport) {
         showLoginError('Please enter your passport number.');
@@ -922,12 +897,8 @@ async function doLogin() {
         $('pinInput').focus();
         return;
     }
-
-    // ---- CAPTCHA FIRST ----
-    var captchaResult = await verifyCaptcha();
-    if (!captchaResult || !captchaResult.ok) {
-        showLoginError(captchaErrorText(captchaResult && captchaResult.reason));
-        await loadCaptcha();     // refresh question
+    if (!captchaAns) {
+        showLoginError('Please answer the security question.');
         $('captchaAnswer').focus();
         return;
     }
@@ -939,31 +910,51 @@ async function doLogin() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             credentials: 'same-origin',
-            body: JSON.stringify({ passport_no: passport, pin: pin })
+            body: JSON.stringify({
+                passport_no: passport,
+                pin: pin,
+                captcha_session_id: captchaSessionId,
+                captcha_answer: captchaAns
+            })
         });
 
         if (!res.ok) {
             var msg = 'Login failed. Please try again.';
+            var isCaptchaErr = false;
             try {
                 var data = await res.json();
-                if (data && data.detail) msg = data.detail;
-            } catch (e) { /* ignore */ }
+                if (data && data.detail) {
+                    msg = data.detail;
+                    var low = String(msg).toLowerCase();
+                    if (low.indexOf('security') !== -1
+                        || low.indexOf('session') !== -1
+                        || low.indexOf('too many') !== -1
+                        || low.indexOf('captcha') !== -1) {
+                        isCaptchaErr = true;
+                    }
+                }
+            } catch (e) { /* ignore JSON parse failure */ }
+
             showLoginError(msg);
             setLoginLoading(false);
-            await loadCaptcha();     // new question on failure
+            if (isCaptchaErr) {
+                await loadCaptcha();     // fresh question on captcha failure
+                $('captchaAnswer').focus();
+            }
             return;
         }
 
+        // ---- success ----
         $('loginWrap').style.display = 'none';
         $('portalWrap').classList.add('active');
         $('userGreeting').style.display = 'block';
         $('logoutBtn').style.display = 'inline-flex';
         await loadTravelerData();
+
     } catch (err) {
         console.error(err);
         showLoginError('Network error. Please check your connection.');
         setLoginLoading(false);
-        await loadCaptcha();
     }
 }
 
@@ -976,7 +967,7 @@ async function doLogout() {
     } catch (e) { /* ignore */ }
 
     currentData = null;
-    captchaSessionId = '';     // new session → new CAPTCHA
+    captchaSessionId = '';
     $('portalWrap').classList.remove('active');
     $('portalContent').style.display = 'none';
     $('loadingOverlay').classList.remove('active');
@@ -987,7 +978,7 @@ async function doLogout() {
     $('pinInput').value = '';
     $('passportInput').focus();
     setLoginLoading(false);
-    await loadCaptcha();       // fresh CAPTCHA for the new login attempt
+    await loadCaptcha();
     showToast('You have been logged out.', 'success');
 }
 
@@ -1324,7 +1315,7 @@ async function bootstrap() {
     } catch (e) { /* not logged in */ }
 
     $('loginWrap').style.display = 'flex';
-    await loadCaptcha();     // load a fresh CAPTCHA when login form is shown
+    await loadCaptcha();
     $('passportInput').focus();
 }
 
