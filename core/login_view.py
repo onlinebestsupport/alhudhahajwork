@@ -1,11 +1,27 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.6 — 2026-10-03
+# v1.7 — 2026-10-05
+#   • ✅ Mobile scroll fix: root is now a scrollable Column so the
+#        Login button stays reachable on short viewports (iOS Safari,
+#        small Android, split-screen)
 #   • ✅ Back to Home uses async-aware navigation (Flet 1.0)
 #   • ✅ CAPTCHA on login (math, self-hosted)
 #   • ✅ Session persistence helpers
 #   • ✅ Same-tab navigation with _self target
+#
+# SECTION INDEX
+#   2.1     _hash_password
+#   2.2     _safe_str
+#   2.3     Session helpers (save / load / clear)
+#   2.4     class LoginView
+#   2.4.1   _build              ← updated for mobile scroll
+#   2.4.2   build
+#   2.4.3   _go_home
+#   2.4.4   CAPTCHA helpers
+#   2.4.5   _set_status
+#   2.4.6   _do_login
+#   2.4.7   _safe_update
 # =================================================================================
 
 import asyncio
@@ -37,7 +53,7 @@ except ImportError:
         return None
 
 
-# Session storage key — will be saved in browser's localStorage
+# Session storage key — saved in browser's localStorage
 _SESSION_KEY = "alhudha_admin_session"
 _SESSION_TTL = 8 * 3600  # 8 hours
 
@@ -363,18 +379,35 @@ class LoginView:
         )
 
         # ---- Root ----
+        # NEW (v1.7): The whole page is a scrollable Column so the
+        # Login / Home buttons stay reachable on short mobile viewports.
+        #
+        #   Outer Column (scroll=AUTO, expand=True)   ← makes the page scroll
+        #     ├─ back_bar                              (always at top)
+        #     └─ inner Column (expand, centered)       (pins card to middle)
+        #         └─ card                              (fixed width 420)
+        #
+        # On tall screens the card is centred; on short screens the
+        # user can scroll to reach the buttons.
         self.root = ft.Container(
-            content=ft.Column([
-                back_bar,
-                ft.Container(
-                    content=ft.Column([card],
-                                      horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                      alignment=ft.MainAxisAlignment.CENTER,
-                                      expand=True),
-                    expand=True,
-                    alignment=ft.Alignment.CENTER,
-                ),
-            ], spacing=0, expand=True),
+            content=ft.Column(
+                controls=[
+                    back_bar,
+                    ft.Container(
+                        content=ft.Column(
+                            controls=[card],
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        ),
+                        alignment=ft.Alignment.CENTER,
+                        padding=ft.Padding.symmetric(vertical=20),
+                    ),
+                ],
+                spacing=0,
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,          # ← the fix
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
             expand=True,
             bgcolor="#f0f2f5",
         )
