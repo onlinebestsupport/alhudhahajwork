@@ -1,13 +1,14 @@
 # =================================================================================
 # main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.18 — Mobile scroll fix
-#   • §21.3.1: page.scroll = ScrollMode.ADAPTIVE
-#   • §21.3.3: show_login / show_main_window now wrap content in a
-#     scrollable Column so the login button stays reachable on short
-#     mobile viewports
-#   • All v2.17 features preserved (documents symlink, gallery,
-#     sessions, captcha, traveler portal, Page.update patch)
+# v2.19 — Desktop scroll fix
+#   • §21.3.1: REMOVED page.scroll = ADAPTIVE (was fighting inner scrolls)
+#   • §21.3.3 show_main_window: REMOVED outer scroll wrapper
+#     (MainWindowView and each tab has its own internal scroll —
+#      wrapping it again caused nested-scroll conflicts on desktop)
+#   • §21.3.3 show_login: KEPT the wrapper (needed for mobile)
+#   • All v2.18 features preserved (login wrapper, documents symlink,
+#     gallery, sessions, captcha, traveler portal, Page.update patch)
 #
 # SECTION INDEX
 #   21.1     Configuration & platform detection
@@ -469,23 +470,17 @@ def _ensure_documents_symlink():
 # =================================================================================
 def flet_main(page: ft.Page):
     # -----------------------------------------------------------------------------
-    # 21.3.1 — Page setup
+    # 21.3.1 — Page setup  (v2.19: page.scroll intentionally NOT set)
     # -----------------------------------------------------------------------------
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
-    # ---- NEW (v2.18): Page-level scrolling for mobile ----
-    # Without this, tall content can be clipped on small viewports —
-    # the login button ends up below the fold with no way to reach it
-    # on iOS Safari / Chrome mobile.
-    try:
-        page.scroll = ft.ScrollMode.ADAPTIVE
-    except Exception:
-        try:
-            page.scroll = ft.ScrollMode.AUTO
-        except Exception:
-            pass
+    # NOTE: We deliberately do NOT set page.scroll here. The LoginView
+    # is wrapped in its own scroll container in show_login() below, and
+    # every tab inside MainWindowView has its own internal scroll. Setting
+    # page.scroll on top of those creates nested-scroll conflicts that
+    # break desktop mouse-wheel behaviour.
 
     try:
         page.window.width = 400
@@ -591,7 +586,9 @@ def flet_main(page: ft.Page):
             print(f"[NAV] run_task failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # 21.3.3 — Screen switchers (v2.18: scrollable wrappers)
+    # 21.3.3 — Screen switchers (v2.19)
+    #   • show_login:   wrap in scroll container (mobile needs it)
+    #   • show_main_window: NO wrapper (each tab has its own scroll)
     # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
@@ -600,8 +597,9 @@ def flet_main(page: ft.Page):
             on_login_success=on_login_success,
             on_cancel=_go_home_page)
 
-        # NEW: wrap in a scrollable column so the login button stays
-        # reachable on short mobile viewports.
+        # Scroll wrapper needed so the Login button stays reachable on
+        # short mobile viewports (iOS Safari, split-screen, etc.).
+        # LoginView has no internal scroll, so nesting is safe here.
         wrapper = ft.Column(
             controls=[login.build()],
             scroll=ft.ScrollMode.AUTO,
@@ -647,13 +645,12 @@ def flet_main(page: ft.Page):
         mw = MainWindowView(
             page, AppState.db, user, on_logout=on_logout)
 
-        # NEW: same scroll wrapper for the main window.
-        wrapper = ft.Column(
-            controls=[mw.build()],
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        )
-        page.add(wrapper)
+        # NOTE (v2.19): no outer scroll wrapper. MainWindowView and each
+        # of its tabs (FrontPageSettingsTab, DataAdminTab, etc.) already
+        # manage their own scrolling. Wrapping it again creates nested
+        # scroll containers — on desktop the outer wrapper eats the mouse
+        # wheel and content gets stuck below the fold.
+        page.add(mw.build())
         try:
             page.update()
         except Exception as ex:
