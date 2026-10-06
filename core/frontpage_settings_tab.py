@@ -1,16 +1,14 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.9 — Fix: single pick_files call, mobile-safe args
-#   • §11.4 REWRITTEN. The v3.7 fallback chain caused:
-#       - multiple OS picker windows on desktop
-#       - "No files selected" showing before the picker opened
-#       - silent failures on mobile
-#     Now: exactly ONE pick_files call, no retries, no snackbar on cancel.
-#   • §11.5 _upload_files: robust byte extraction (bytes → path → error)
-#   • §11.7 _register_pickers: services-only (v3.8 fix preserved)
-#   • §11.3 _gallery_item_row: ImageFit → BoxFit alias (v3.6 fix preserved)
-#   • §11.5 dynamic gallery preserved
+# v3.10 — Native HTML upload page for mobile (clean rewrite)
+#   • §[11.4] _pick_gallery_files now NAVIGATES to /gallery-upload?type=...
+#     (native HTML <input type="file"> — works on iOS Safari)
+#   • Removed all Flet picker code from this file (no pick_files, no
+#     is_mobile, no FilePickerFileType). The pickers themselves are
+#     still instantiated for compatibility but no longer used.
+#   • §[11.7] services-only registration preserved (v3.8 fix)
+#   • §[11.3] ImageFit → BoxFit alias preserved (v3.6 fix)
 #
 # SECTION INDEX
 #   [0]     __init__ / constructor
@@ -31,8 +29,8 @@
 #   [11.1]  _rebuild_gallery_lists
 #   [11.2]  _gallery_stats_text
 #   [11.3]  _gallery_item_row
-#   [11.4]  _pick_gallery_files        ← REWRITTEN (v3.9)
-#   [11.5]  _upload_files              ← improved byte extraction (v3.9)
+#   [11.4]  _pick_gallery_files        (v3.10 — navigate only)
+#   [11.5]  _upload_files
 #   [11.6]  _remove_gallery_item
 #   [11.7]  _register_pickers
 #   [11.8]  _save_silent
@@ -161,6 +159,7 @@ class FrontPageSettingsTab:
         self.status_label = None
         self.root = None
 
+        # ---- Build ----
         try:
             self._load_batches()
             self._build_root()
@@ -1017,32 +1016,50 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=10)
 
-      # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — opens native HTML upload page
+    # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — v3.10: navigates to native upload page
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
+        """
+        Open the native HTML upload page.
+
+        We do NOT use Flet's pick_files() because iOS Safari silently
+        blocks programmatically-triggered file inputs when they happen
+        in an async microtask (which is what run_task schedules).
+
+        Instead, we navigate to /gallery-upload which uses a plain
+        <input type="file"> element — always works on every browser.
+        """
         url = f"/gallery-upload?type={media_type}"
         print(f"[GALLERY] opening upload page: {url}")
 
         async def _go():
+            # Attempt 1: UrlLauncher with _self target
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url, web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
+                print("[GALLERY] UrlLauncher(_self) succeeded")
                 return
             except Exception as e:
                 print(f"[GALLERY] UrlLauncher failed: {e}")
+
+            # Attempt 2: page.launch_url with _self target
             try:
                 r = self.page_ref.launch_url(
                     url, web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
+                print("[GALLERY] page.launch_url(_self) succeeded")
                 return
             except Exception as e:
                 print(f"[GALLERY] page.launch_url failed: {e}")
+
+            # Attempt 3: page.go (Flet route)
             try:
                 self.page_ref.go(url)
+                print("[GALLERY] page.go attempted")
             except Exception as e:
                 print(f"[GALLERY] page.go failed: {e}")
 
@@ -1051,75 +1068,13 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[GALLERY] run_task failed: {ex}")
             try:
-                self._snack(f"⚠️ Could not open upload page: {ex}",
-                            DANGER)
+                self._snack(
+                    f"⚠️ Could not open upload page: {ex}", DANGER)
             except Exception:
                 pass
 
-        # ---- Choose file-type filter (only if the enum is available) ----
-        file_type = None
-        try:
-            if media_type == "photos":
-                file_type = ft.FilePickerFileType.IMAGE
-            else:
-                file_type = ft.FilePickerFileType.VIDEO
-        except Exception as e:
-            print(f"[GALLERY] FilePickerFileType not available: {e}")
-            file_type = None
-
-        print(f"[GALLERY] pick start: media={media_type} "
-              f"mobile={is_mobile} file_type={file_type}")
-
-        async def _pick():
-            try:
-                # ---- Build kwargs dynamically (avoid version issues) ----
-                kwargs = {
-                    "with_data": True,
-                    "allow_multiple": True,
-                }
-                if file_type is not None:
-                    kwargs["file_type"] = file_type
-
-                print(f"[GALLERY] calling pick_files({kwargs})")
-                files = await picker.pick_files(**kwargs)
-
-                print(f"[GALLERY] pick returned "
-                      f"{len(files) if files else 0} file(s)")
-
-                # User cancelled → exit silently (no snackbar)
-                if not files:
-                    print("[GALLERY] user cancelled")
-                    return
-
-                await self._upload_files(files, media_type)
-
-            except Exception as ex:
-                # If the primary call errored, try one bare fallback
-                print(f"[GALLERY] primary pick failed: {ex}")
-                traceback.print_exc()
-
-                try:
-                    print("[GALLERY] trying bare fallback...")
-                    files = await picker.pick_files(with_data=True)
-                    if files:
-                        await self._upload_files(files, media_type)
-                    else:
-                        print("[GALLERY] user cancelled (fallback)")
-                except Exception as ex2:
-                    print(f"[GALLERY] fallback also failed: {ex2}")
-                    traceback.print_exc()
-                    self._snack(
-                        "⚠️ File picker unavailable on this device",
-                        DANGER)
-
-        try:
-            self.page_ref.run_task(_pick)
-        except Exception as ex:
-            print(f"[GALLERY] run_task failed: {ex}")
-            self._snack(f"⚠️ {ex}", DANGER)
-
     # -----------------------------------------------------------------------------
-    # [11.5] _upload_files — v3.9: robust byte extraction
+    # [11.5] _upload_files — used only when returning from the HTML page
     # -----------------------------------------------------------------------------
     async def _upload_files(self, files, media_type):
         import httpx
@@ -1131,12 +1086,8 @@ class FrontPageSettingsTab:
         for f in files:
             name = getattr(f, "name", "upload.bin")
             try:
-                # ---- Extract bytes: try .bytes first, then .path ----
                 data = getattr(f, "bytes", None)
-
                 if not data:
-                    # Some platforms (older Flet, some mobile) provide
-                    # a filesystem path instead of bytes.
                     src = getattr(f, "path", None)
                     if src:
                         try:
@@ -1144,32 +1095,15 @@ class FrontPageSettingsTab:
                             if _os.path.exists(src):
                                 with open(src, "rb") as fh:
                                     data = fh.read()
-                        except Exception as e:
-                            print(f"[GALLERY] read path failed: {e}")
-
+                        except Exception:
+                            pass
                 if not data:
-                    # Some Flet web builds return a data URL
-                    url = getattr(f, "url", None)
-                    if url and str(url).startswith("data:"):
-                        try:
-                            import base64 as _b64
-                            _, b64data = str(url).split(",", 1)
-                            data = _b64.b64decode(b64data)
-                        except Exception as e:
-                            print(f"[GALLERY] decode data URL failed: {e}")
-
-                if not data:
-                    print(f"[GALLERY] no bytes available for: {name}")
                     errors.append(f"{name}: no data")
                     fail += 1
                     continue
 
-                print(f"[GALLERY] uploading {name} "
-                      f"({len(data)} bytes)")
-
                 files_arg = {"file": (name, data)}
-                form = {"media_type": media_type,
-                        "caption": ""}
+                form = {"media_type": media_type, "caption": ""}
 
                 async with httpx.AsyncClient(
                         base_url="http://127.0.0.1:8080",
@@ -1186,15 +1120,10 @@ class FrontPageSettingsTab:
                         self.video_list.append(item)
                     ok += 1
                 else:
-                    err_text = r.text[:200]
-                    print(f"[GALLERY] upload HTTP {r.status_code}: "
-                          f"{err_text}")
                     errors.append(f"{name}: HTTP {r.status_code}")
                     fail += 1
-
             except Exception as ex:
-                print(f"[GALLERY] upload error for {name}: {ex}")
-                traceback.print_exc()
+                print(f"[GALLERY] upload error {name}: {ex}")
                 errors.append(f"{name}: {ex}")
                 fail += 1
 
@@ -1203,15 +1132,8 @@ class FrontPageSettingsTab:
 
         if ok and not fail:
             self._snack(f"✅ {ok} file(s) uploaded", SUCCESS)
-        elif ok and fail:
-            self._snack(
-                f"✅ {ok} uploaded  ·  ❌ {fail} failed",
-                WARN)
         elif fail:
-            detail = " · ".join(errors[:2])
-            self._snack(
-                f"❌ Upload failed: {detail}",
-                DANGER)
+            self._snack(f"❌ Upload failed", DANGER)
 
     # -----------------------------------------------------------------------------
     # [11.6] _remove_gallery_item
@@ -1285,29 +1207,22 @@ class FrontPageSettingsTab:
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # [11.7] _register_pickers — services only
+    # [11.7] _register_pickers — services only (Flet 1.0)
     # -----------------------------------------------------------------------------
     def _register_pickers(self):
         if self._pickers_registered:
             return
         try:
             for p in (self.photo_picker, self.video_picker):
-                # Flet 1.0: FilePicker is a *service*, not a UI control.
+                # FilePicker is a *service*, not a UI control.
                 # It must be in page.services only.
-                # Adding to page.overlay causes "Unknown control: FilePicker".
+                # Adding to page.overlay triggers "Unknown control".
                 if hasattr(self.page_ref, "services"):
                     if p not in self.page_ref.services:
                         self.page_ref.services.append(p)
-                        print("[GALLERY] picker added to services")
-                    else:
-                        print("[GALLERY] picker already in services")
                 elif hasattr(self.page_ref, "overlay"):
-                    # Legacy fallback for very old Flet
                     if p not in self.page_ref.overlay:
                         self.page_ref.overlay.append(p)
-                        print("[GALLERY] picker added to overlay (legacy)")
-                else:
-                    print("[GALLERY] ⚠️ no services or overlay")
 
             self._pickers_registered = True
             try:
@@ -1317,7 +1232,6 @@ class FrontPageSettingsTab:
             print("[FRONTPAGE] gallery pickers registered ✅")
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
-            traceback.print_exc()
 
     # -----------------------------------------------------------------------------
     # [11.8] _save_silent
