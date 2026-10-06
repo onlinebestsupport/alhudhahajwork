@@ -40,9 +40,9 @@
 #   [A]     Actions
 # =================================================================================
 
+import asyncio
 import json
 import traceback
-import asyncio
 from datetime import datetime
 
 import flet as ft
