@@ -1,17 +1,18 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.4 — Date format DD-MM-YYYY
-#   • All date fields now use DD-MM-YYYY (dialog labels, storage, display)
-#   • Backward compatible: existing YYYY-MM-DD data auto-converts on load
-#   • Legacy ISO timestamps (e.g. 2026-08-13T17:29:09) still parse correctly
-#   • v1.3 features preserved (row selection, data-loading safety, etc.)
+# v1.5 — Document upload via native browser page (mobile fix)
+#   • NEW §8.10b: _open_browser_upload() — opens /traveler-doc-upload
+#   • Document rows now have a 🌐 button (browser upload) alongside 📎
+#   • save() merges server-side doc paths for existing travelers
+#   • save() scans moved new_traveler folder for pending uploads
+#   • v1.4 date format DD-MM-YYYY preserved
 #
 # SECTION INDEX
-#   [H]     Module-level helpers (number cleaning, date conversion)
+#   [H]     Module-level helpers
 #   [8.1]   TravelersTab class
 #   [8.2]   setup_ui
-#   [8.3]   Helpers (safe_str, _get_photo_path)
+#   [8.3]   Helpers
 #   [8.4]   refresh
 #   [8.5]   display_travelers
 #   [8.5b]  _select_traveler
@@ -21,12 +22,14 @@
 #   [8.8]   Stats
 #   [8.9]   Dialog launchers
 #   [8.10]  View / Delete / Open doc
+#   [8.10b] Browser upload                          ← NEW
 #   [8.11]  Exports
 #   [9.1]   TravelerDialog (Add/Edit)
 #   [10.1]  TravelerViewDialog
 # =================================================================================
 
 import flet as ft
+import asyncio
 import base64
 import os
 import shutil
@@ -41,28 +44,18 @@ from core.helpers import get_app_base_path, send_file_to_user
 # [H] MODULE-LEVEL HELPERS
 # =================================================================================
 
-# ---- [H.1] Numeric-string fields (strip trailing ".0") ----
 _NUMERIC_STRING_FIELDS = {
-    "pin",
-    "mobile",
-    "emergency_phone",
-    "aadhaar",
-    "passport_no",
+    "pin", "mobile", "emergency_phone", "aadhaar", "passport_no",
 }
 
-# ---- [H.2] Date fields (converted to/from DD-MM-YYYY) ----
 _DATE_FIELDS = {
-    "dob",
-    "passport_issue_date",
-    "passport_expiry_date",
+    "dob", "passport_issue_date", "passport_expiry_date",
     "expected_return_date",
 }
 
-# ---- [H.3] Separator used in the display format: DD-MM-YYYY ----
 _DATE_SEP = "-"
 
 
-# ---- [H.4] _clean_number_string ----
 def _clean_number_string(value) -> str:
     if value is None:
         return ""
@@ -80,80 +73,52 @@ def _clean_number_string(value) -> str:
     return s
 
 
-# ---- [H.5] _to_display_date — normalise ANY stored date → DD-MM-YYYY ----
 def _to_display_date(value) -> str:
-    """
-    Convert a stored date value (any of the formats below) to DD-MM-YYYY:
-        • 2026-08-13              (legacy ISO date)
-        • 2026-08-13T17:29:09     (ISO timestamp)
-        • 13-08-2026              (current DD-MM-YYYY)
-        • 13/08/2026              (slash variant)
-        • 13-8-2026 / 13/8/2026   (short month/day)
-    Returns the original string unchanged if it can't be parsed.
-    """
     if value is None:
         return ""
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-
     head = s[:10]
-
-    # Try each format
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y",
+                "%d-%m-%y", "%d/%m/%y"):
         try:
             dt = datetime.strptime(head, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
-    # Try ISO timestamp prefix (2026-08-13T...)
     try:
         dt = datetime.fromisoformat(s.replace("Z", ""))
         return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
     except Exception:
         pass
+    return s
 
-    return s  # give up — return as-is
 
-
-# ---- [H.6] _to_storage_date — user input → canonical DD-MM-YYYY ----
 def _to_storage_date(value) -> str:
-    """
-    Normalise a user-entered date into DD-MM-YYYY for storage.
-    Accepts DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, or bare ISO timestamps.
-    Returns the raw input if nothing matches (so user sees their typo).
-    """
     if value is None:
         return ""
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-
     head = s[:10]
-
-    # First try user-facing formats (DD-MM-YYYY / DD/MM/YYYY) — preferred
     for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
         try:
             dt = datetime.strptime(head, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
-    # Fall back to ISO (legacy)
     for fmt in ("%Y-%m-%d",):
         try:
             dt = datetime.strptime(head, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
     try:
         dt = datetime.fromisoformat(s.replace("Z", ""))
         return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
     except Exception:
         pass
-
     return s
 
 
@@ -181,8 +146,6 @@ class TravelersTab:
         self.next_btn = None
         self.root = None
         self.selection_label = None
-
-        # Currently selected traveler (for toolbar PDF/Print)
         self._selected_traveler_id = None
 
         self.setup_ui()
@@ -195,7 +158,6 @@ class TravelersTab:
     # [8.2] setup_ui
     # =============================================================================
     def setup_ui(self):
-        # ---- STAT CARDS ----
         stat_configs = [
             ("total",         "Total Travelers",   "👥", "#3498db"),
             ("active",        "Active Passports",  "✅", "#27ae60"),
@@ -228,10 +190,7 @@ class TravelersTab:
                     spacing=4,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
-                padding=10,
-                bgcolor=color,
-                border_radius=12,
-                height=80,
+                padding=10, bgcolor=color, border_radius=12, height=80,
             )
             stat_cards.append(card)
 
@@ -244,7 +203,6 @@ class TravelersTab:
             spacing=8, run_spacing=8,
         )
 
-        # ---- TOOLBAR ----
         def _toolbar_btn(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
@@ -252,9 +210,7 @@ class TravelersTab:
                                 color=ft.Colors.WHITE,
                                 no_wrap=True,
                                 overflow=ft.TextOverflow.ELLIPSIS),
-                on_click=handler,
-                height=40,
-                bgcolor=color,
+                on_click=handler, height=40, bgcolor=color,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
@@ -300,7 +256,6 @@ class TravelersTab:
             spacing=8, run_spacing=8,
         )
 
-        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Sel", size=11)),
@@ -326,7 +281,6 @@ class TravelersTab:
             horizontal_lines=ft.BorderSide(1, ft.Colors.GREY_200),
         )
 
-        # ---- PAGINATION ----
         self.pagination_label = ft.Text("Showing 0 to 0 of 0",
                                         size=11,
                                         weight=ft.FontWeight.BOLD,
@@ -337,26 +291,20 @@ class TravelersTab:
             content=ft.Text("◀ Prev", size=11),
             on_click=self.prev_page,
             bgcolor=ft.Colors.BLUE_600,
-            color=ft.Colors.WHITE,
-            disabled=True,
-            height=34,
+            color=ft.Colors.WHITE, disabled=True, height=34,
         )
         self.next_btn = ft.Button(
             content=ft.Text("Next ▶", size=11),
             on_click=self.next_page,
             bgcolor=ft.Colors.BLUE_600,
-            color=ft.Colors.WHITE,
-            disabled=True,
-            height=34,
+            color=ft.Colors.WHITE, disabled=True, height=34,
         )
 
         pagination_row = ft.Row(
             controls=[
                 ft.Container(content=self.pagination_label, expand=True),
-                self.prev_btn,
-                self.next_btn,
-            ],
-            spacing=8,
+                self.prev_btn, self.next_btn,
+            ], spacing=8,
         )
 
         self.selection_label = ft.Text("", size=10,
@@ -364,7 +312,6 @@ class TravelersTab:
                                        weight=ft.FontWeight.BOLD,
                                        italic=True)
 
-        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -381,23 +328,17 @@ class TravelersTab:
                                     color=ft.Colors.GREY_600,
                                     italic=True),
                             self.selection_label,
-                            ft.Row(
-                                [self.table],
-                                scroll=ft.ScrollMode.ADAPTIVE,
-                            ),
+                            ft.Row([self.table],
+                                   scroll=ft.ScrollMode.ADAPTIVE),
                         ], spacing=6),
                         bgcolor=ft.Colors.WHITE,
-                        border_radius=10,
-                        padding=10,
+                        border_radius=10, padding=10,
                     ),
                     pagination_row,
                 ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                spacing=10, scroll=ft.ScrollMode.AUTO,
             ),
-            padding=10,
-            bgcolor="#f0f2f5",
-            expand=True,
+            padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
     # =============================================================================
@@ -432,13 +373,9 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # [8.4] refresh (no destructive reloads)
+    # [8.4] refresh
     # =============================================================================
     def refresh(self):
-        """
-        Load travelers from the in-memory DB cache.
-        Do NOT call db.reload_travelers() here.
-        """
         try:
             self.batches = self.db.get_batches()
             self.travelers = self.db.get_travelers()
@@ -484,8 +421,6 @@ class TravelersTab:
         for i, t in enumerate(page_items):
             tid = t.get('id')
             passport = _clean_number_string(t.get('passport_no', '-'))
-
-            # ---- Date columns now display as DD-MM-YYYY ----
             exp_disp = _to_display_date(t.get('passport_expiry_date', ''))
             ret_disp = _to_display_date(
                 t.get('expected_return_date', '')) or "-"
@@ -532,8 +467,7 @@ class TravelersTab:
                         icon_color="#e74c3c", icon_size=18,
                         tooltip="Delete",
                         on_click=lambda e, tt=t: self.delete_traveler(tt)),
-                ],
-                spacing=0,
+                ], spacing=0,
             )
 
             is_selected = (self._selected_traveler_id == tid)
@@ -634,8 +568,7 @@ class TravelersTab:
         start = ((self.current_page - 1) * self.items_per_page + 1
                  if total else 0)
         end = min(self.current_page * self.items_per_page, total)
-        self.pagination_label.value = (
-            f"{start}–{end} of {total}")
+        self.pagination_label.value = f"{start}–{end} of {total}"
         self.prev_btn.disabled = self.current_page <= 1
         self.next_btn.disabled = end >= total
 
@@ -779,10 +712,64 @@ class TravelersTab:
                     pass
                 self._snack(f"📎 Opened: {os.path.basename(abs_path)}")
             else:
-                self._snack(f"⚠️ Could not serve file")
+                self._snack("⚠️ Could not serve file")
         except Exception as ex:
             print(f"[TRAVELERS] open_document error: {ex}")
             self._snack(f"⚠️ Could not open: {ex}")
+
+    # =============================================================================
+    # [8.10b] _open_browser_upload — NEW v1.5
+    #         Opens the native HTML upload page in a new tab.
+    #         Used for mobile Safari where Flet's picker is blocked.
+    # =============================================================================
+    def _open_browser_upload(self, traveler_id, doc_key, mode):
+        url = (f"/traveler-doc-upload"
+               f"?traveler_id={traveler_id}"
+               f"&doc_key={doc_key}"
+               f"&mode={mode}")
+        print(f"[TRAVELERS] opening browser upload: {url}")
+
+        async def _go():
+            # Flet 1.0 param
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url,
+                                        web_only_window_name="_blank")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[TRAVELERS] OK web_only_window_name=_blank")
+                return
+            except TypeError as te:
+                print(f"[TRAVELERS] 1.0 param rejected: {te}")
+            except Exception as e:
+                print(f"[TRAVELERS] 1.0 param raised: {e}")
+
+            # Legacy param
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_window_name="_blank")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[TRAVELERS] OK web_window_name=_blank")
+                return
+            except Exception as e:
+                print(f"[TRAVELERS] legacy param failed: {e}")
+
+            # Bare — new tab
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url)
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[TRAVELERS] OK bare — new tab")
+                return
+            except Exception as e:
+                print(f"[TRAVELERS] bare failed: {e}")
+
+        try:
+            self.page.run_task(_go)
+        except Exception as ex:
+            print(f"[TRAVELERS] run_task failed: {ex}")
 
     # =============================================================================
     # [8.11] Exports
@@ -1042,14 +1029,16 @@ class TravelerDialog:
         if self.is_edit:
             self.load_traveler(traveler)
 
+    # -----------------------------------------------------------------------------
+    # [9.1.1] setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         self.file_picker = ft.FilePicker()
 
         def field(key, hint="", width=None, required=False):
             f = ft.TextField(
                 label=hint + (" *" if required else ""),
-                width=width,
-                height=48,
+                width=width, height=48,
                 content_padding=ft.Padding.symmetric(horizontal=10,
                                                      vertical=10),
                 text_size=12,
@@ -1070,16 +1059,13 @@ class TravelerDialog:
                 content=ft.Text(title, size=12,
                                 weight=ft.FontWeight.BOLD,
                                 color="#1e40af"),
-                padding=8,
-                bgcolor="#eaf2f8",
-                border_radius=6,
+                padding=8, bgcolor="#eaf2f8", border_radius=6,
                 border=ft.Border(left=ft.BorderSide(4, "#3498db")),
             )
 
         passport_name_field = field("passport_name", "Passport Name")
         passport_name_field.read_only = True
 
-        # ---- Section 1: Personal (dates in DD-MM-YYYY) ----
         sec1 = ft.Column(
             controls=[
                 section_header("1. PERSONAL INFORMATION"),
@@ -1089,8 +1075,7 @@ class TravelerDialog:
                     passport_name_field,
                 ], spacing=10, wrap=True),
                 ft.Row([
-                    dropdown("gender",
-                             ["", "Male", "Female", "Other"]),
+                    dropdown("gender", ["", "Male", "Female", "Other"]),
                     field("dob", "Date of Birth (DD-MM-YYYY)", 200),
                     dropdown("passport_status",
                              ["Active", "Expired", "Submitted",
@@ -1103,11 +1088,9 @@ class TravelerDialog:
                     field("passport_expiry_date",
                           "Expiry Date (DD-MM-YYYY)", 200),
                 ], spacing=10, wrap=True),
-            ],
-            spacing=10,
+            ], spacing=10,
         )
 
-        # ---- Section 2: Contact ----
         sec2 = ft.Column(
             controls=[
                 section_header("2. CONTACT INFORMATION"),
@@ -1125,11 +1108,9 @@ class TravelerDialog:
                               "Fully Vaccinated", "Booster"]),
                     dropdown("wheelchair", ["No", "Yes"]),
                 ], spacing=10, wrap=True),
-            ],
-            spacing=10,
+            ], spacing=10,
         )
 
-        # ---- Section 3: Address & Family ----
         passport_addr = ft.TextField(
             label="Passport Address", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
@@ -1153,11 +1134,9 @@ class TravelerDialog:
                     field("mother_name", "Mother's Name", 200),
                     field("spouse_name", "Spouse Name", 200),
                 ], spacing=10, wrap=True),
-            ],
-            spacing=10,
+            ], spacing=10,
         )
 
-        # ---- Section 4: Travel & Batch (return date DD-MM-YYYY) ----
         batch_dropdown = ft.Dropdown(height=48, text_size=12)
         self.fields['batch_id'] = batch_dropdown
         try:
@@ -1181,11 +1160,10 @@ class TravelerDialog:
                           "Expected Return (DD-MM-YYYY)", 220),
                     field("file_reference", "File Reference", 180),
                 ], spacing=10, wrap=True),
-            ],
-            spacing=10,
+            ], spacing=10,
         )
 
-        # ---- Section 5: Document uploads ----
+        # ---- Section 5: Document uploads (v1.5 — dual button) ----
         doc_fields = [
             ("passport_scan", "Passport Scan", "📄"),
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
@@ -1199,25 +1177,44 @@ class TravelerDialog:
             status_lbl = ft.Text("No file", size=11, color="#95a5a6")
             self.doc_status_labels[key] = status_lbl
 
-            btn = ft.Button(
-                content=ft.Text("📎 Choose"),
+            # Flet picker button (desktop)
+            btn_flet = ft.Button(
+                content=ft.Text("📎 Pick", size=11),
                 on_click=lambda e, k=key: self.choose_document(k),
                 height=34, bgcolor="#16a085", color=ft.Colors.WHITE,
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=8)),
             )
+
+            # Browser upload button (mobile)
+            btn_browser = ft.Button(
+                content=ft.Text("🌐", size=11),
+                on_click=lambda e, k=key: self._open_browser_upload(k),
+                height=34, bgcolor="#7c3aed", color=ft.Colors.WHITE,
+                tooltip="Open in browser (mobile-friendly)",
+                style=ft.ButtonStyle(
+                    shape=ft.RoundedRectangleBorder(radius=8)),
+            )
+
             doc_rows.append(
                 ft.Row([
-                    ft.Text(f"{icon} {lbl}", size=11, width=160),
-                    btn,
+                    ft.Text(f"{icon} {lbl}", size=11, width=150),
+                    btn_flet,
+                    btn_browser,
                     status_lbl,
-                ], spacing=10, wrap=True,
+                ], spacing=6, wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER))
 
         sec5 = ft.Column(
-            controls=[section_header("5. DOCUMENT UPLOADS")] + doc_rows,
+            controls=[
+                section_header("5. DOCUMENT UPLOADS"),
+                ft.Text("📎 = desktop picker · 🌐 = browser upload "
+                        "(works on mobile)",
+                        size=9, color="#64748b", italic=True),
+            ] + doc_rows,
             spacing=10,
         )
 
-        # ---- Section 6: Additional ----
         med = ft.TextField(label="Medical Notes", multiline=True,
                            min_lines=2, max_lines=3, text_size=12)
         self.fields['medical_notes'] = med
@@ -1229,7 +1226,8 @@ class TravelerDialog:
             keyboard_type=ft.KeyboardType.NUMBER,
             input_filter=ft.InputFilter(allow=True,
                                         regex_string=r"[0-9]*"),
-            content_padding=ft.Padding.symmetric(horizontal=10, vertical=10),
+            content_padding=ft.Padding.symmetric(horizontal=10,
+                                                 vertical=10),
         )
         self.fields['pin'] = pin_field
 
@@ -1242,8 +1240,7 @@ class TravelerDialog:
                     field("emergency_phone", "Emergency Phone", 180),
                 ], spacing=10, wrap=True),
                 med,
-            ],
-            spacing=10,
+            ], spacing=10,
         )
 
         self.fields['first_name'].on_change = self._update_passport_name
@@ -1251,8 +1248,7 @@ class TravelerDialog:
 
         content = ft.Column(
             controls=[sec1, sec2, sec3, sec4, sec5, sec6],
-            spacing=15,
-            scroll=ft.ScrollMode.AUTO,
+            spacing=15, scroll=ft.ScrollMode.AUTO,
         )
 
         title = "✏️ Edit Traveler" if self.is_edit else "➕ Add Traveler"
@@ -1261,9 +1257,7 @@ class TravelerDialog:
             modal=True,
             title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(
-                content=content,
-                width=850, height=580,
-                padding=10,
+                content=content, width=850, height=580, padding=10,
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
@@ -1275,6 +1269,9 @@ class TravelerDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+    # -----------------------------------------------------------------------------
+    # [9.1.2] _update_passport_name
+    # -----------------------------------------------------------------------------
     def _update_passport_name(self, e):
         first = (self.fields['first_name'].value or "").strip()
         last = (self.fields['last_name'].value or "").strip()
@@ -1282,6 +1279,9 @@ class TravelerDialog:
         self.fields['passport_name'].value = name
         self.page.update()
 
+    # -----------------------------------------------------------------------------
+    # [9.1.3] choose_document (Flet picker — desktop)
+    # -----------------------------------------------------------------------------
     def choose_document(self, key):
         self._current_doc_key = key
         try:
@@ -1289,10 +1289,86 @@ class TravelerDialog:
         except Exception as ex:
             print(f"run_task failed: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # [9.1.4] _open_browser_upload (v1.5 — native HTML page)
+    # -----------------------------------------------------------------------------
+    def _open_browser_upload(self, key):
+        """Open /traveler-doc-upload in a new tab."""
+        if self.is_edit and self.traveler:
+            traveler_id = str(self.traveler.get('id', ''))
+            mode = "edit"
+        else:
+            traveler_id = ""
+            mode = "new"
+
+        url = (f"/traveler-doc-upload"
+               f"?traveler_id={traveler_id}"
+               f"&doc_key={key}"
+               f"&mode={mode}")
+        print(f"[TRAVELER-DIALOG] browser upload: {url}")
+
+        async def _go():
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url,
+                                        web_only_window_name="_blank")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[TRAVELER-DIALOG] OK new tab")
+                return
+            except TypeError:
+                pass
+            except Exception as e:
+                print(f"[TRAVELER-DIALOG] 1.0 param failed: {e}")
+
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_window_name="_blank")
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[TRAVELER-DIALOG] legacy failed: {e}")
+
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url)
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[TRAVELER-DIALOG] bare failed: {e}")
+
+        try:
+            self.page.run_task(_go)
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] run_task failed: {ex}")
+            self._snack("⚠️ Could not open browser upload")
+
+        # Show hint to user
+        self._snack("🌐 Opened upload page in a new tab. "
+                    "Upload the file, then return here.")
+
+    # -----------------------------------------------------------------------------
+    # [9.1.5] _pick_doc_async (Flet picker — desktop)
+    # -----------------------------------------------------------------------------
     async def _pick_doc_async(self):
         try:
-            files = await self.file_picker.pick_files(
-                allow_multiple=False, with_data=True)
+            # Flet 1.0-friendly: use file_type where possible
+            file_type = None
+            try:
+                if self._current_doc_key == "photo":
+                    file_type = ft.FilePickerFileType.IMAGE
+                else:
+                    file_type = ft.FilePickerFileType.MEDIA
+            except Exception:
+                file_type = None
+
+            kwargs = {"allow_multiple": False, "with_data": True}
+            if file_type is not None:
+                kwargs["file_type"] = file_type
+
+            files = await self.file_picker.pick_files(**kwargs)
             if not files:
                 return
             f = files[0]
@@ -1304,7 +1380,6 @@ class TravelerDialog:
                 if src_path and os.path.exists(src_path):
                     with open(src_path, 'rb') as fh:
                         data = fh.read()
-
             if not data:
                 return
 
@@ -1341,12 +1416,15 @@ class TravelerDialog:
                 lbl.color = "#27ae60"
             self.page.update()
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            print(f"[TRAVELER-DIALOG] pick failed: {ex}")
+            traceback_print()
+            self._snack(f"⚠️ Picker error: {ex}. "
+                        f"Try the 🌐 button for browser upload.")
 
+    # -----------------------------------------------------------------------------
+    # [9.1.6] load_traveler
+    # -----------------------------------------------------------------------------
     def load_traveler(self, traveler):
-        """Populate the fields from a traveler dict.
-        Date fields are converted from any stored format to DD-MM-YYYY."""
         for key, field in self.fields.items():
             val = traveler.get(key, '')
             if key in _NUMERIC_STRING_FIELDS:
@@ -1367,6 +1445,9 @@ class TravelerDialog:
                                  f"{os.path.basename(str(traveler[key]))}")
                     lbl.color = "#27ae60"
 
+    # -----------------------------------------------------------------------------
+    # [9.1.7] save (v1.5 — merges server-side docs)
+    # -----------------------------------------------------------------------------
     def save(self, e):
         try:
             data = {}
@@ -1403,8 +1484,32 @@ class TravelerDialog:
                 self._snack("⚠️ PIN must be 4–8 digits")
                 return
 
+            # ---- Merge in dialog's picked docs ----
             for key, rel in self.doc_paths.items():
                 data[key] = rel
+
+            # ---- v1.5: merge server-side uploaded docs (from CSV) ----
+            # If the user uploaded via the browser page in a new tab,
+            # the server wrote the path into travelers.csv directly.
+            # We need to preserve those here so save() doesn't wipe them.
+            if self.is_edit and self.traveler:
+                try:
+                    base = get_app_base_path()
+                    csv_path = Path(base) / "data" / "travelers.csv"
+                    if csv_path.exists():
+                        _df = pd.read_csv(csv_path, dtype=str).fillna("")
+                        _row = _df[_df['id'] == self.traveler['id']]
+                        if not _row.empty:
+                            for key in ['passport_scan', 'aadhaar_scan',
+                                        'pan_scan', 'vaccine_scan',
+                                        'photo']:
+                                if key in self.doc_paths:
+                                    continue
+                                _sv = _row.iloc[0].get(key, '')
+                                if _sv:
+                                    data[key] = _sv
+                except Exception as _e:
+                    print(f"[TRAVELER-DIALOG] merge docs failed: {_e}")
 
             if 'status' not in data or not data.get('status'):
                 data['status'] = 'Active'
@@ -1419,18 +1524,40 @@ class TravelerDialog:
                 action = "add_traveler"
                 msg = "Traveler added"
 
+                # Move new_traveler folder → documents/<tid>/
                 base = get_app_base_path()
                 src = Path(base) / "documents" / "new_traveler"
                 dst = Path(base) / "documents" / (
                     str(tid).replace('/', '_').replace('\\', '_'))
                 if src.exists() and not dst.exists():
                     shutil.move(str(src), str(dst))
-                    for key in list(self.doc_paths.keys()):
-                        old = self.doc_paths[key]
-                        new = old.replace(
-                            "documents/new_traveler/",
-                            f"documents/{str(tid).replace('/', '_')}/")
-                        self.doc_paths[key] = new
+
+                    # v1.5: scan the moved folder for browser uploads
+                    subfolder_map = {
+                        'passport_scan': 'passports',
+                        'aadhaar_scan': 'aadhaar',
+                        'pan_scan': 'pan',
+                        'vaccine_scan': 'vaccine',
+                        'photo': 'photos',
+                    }
+                    for key, sub in subfolder_map.items():
+                        if key in self.doc_paths and self.doc_paths[key]:
+                            continue
+                        subpath = dst / sub
+                        if not subpath.exists():
+                            continue
+                        matches = sorted(
+                            subpath.glob(f"{key}_*"),
+                            key=lambda p: p.stat().st_mtime,
+                            reverse=True)
+                        if matches:
+                            newest = matches[0]
+                            folder_name = str(tid).replace('/', '_')
+                            rel = (f"documents/{folder_name}/"
+                                   f"{sub}/{newest.name}")
+                            self.doc_paths[key] = rel
+                            data[key] = rel
+
                     try:
                         self.db.update_traveler(tid, self.doc_paths)
                     except Exception:
@@ -1453,6 +1580,9 @@ class TravelerDialog:
             traceback.print_exc()
             self._snack(f"❌ Error: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # [9.1.8] show
+    # -----------------------------------------------------------------------------
     def show(self):
         try:
             if hasattr(self.page, 'services'):
@@ -1467,6 +1597,11 @@ class TravelerDialog:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
         except Exception:
             pass
+
+
+def traceback_print():
+    import traceback
+    traceback.print_exc()
 
 
 # =================================================================================
@@ -1517,8 +1652,7 @@ class TravelerViewDialog:
                                 color="#1e40af"),
                         ft.Divider(height=8),
                         *rows,
-                    ],
-                    spacing=6,
+                    ], spacing=6,
                 ),
                 padding=14, bgcolor=ft.Colors.WHITE,
                 border_radius=8,
@@ -1678,8 +1812,7 @@ class TravelerViewDialog:
             length=6,
             expand=True,
             content=ft.Column(
-                expand=True,
-                spacing=0,
+                expand=True, spacing=0,
                 controls=[
                     ft.TabBar(
                         tabs=[
