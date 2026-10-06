@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+<title>Upload Document — Alhudha Admin</title>
+<link rel="icon" href="/static/logo.png">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  background: #f1f5f9;
+  min-height: 100vh;
+  padding: 16px;
+  color: #0f172a;
+  -webkit-text-size-adjust: 100%;
+}
+.card {
+  max-width: 520px; margin: 0 auto;
+  background: white; border-radius: 16px;
+  padding: 22px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+}
+h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
+.sub { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+.traveler-id { font-size: 12px; color: #0ea5e9; font-weight: 600; margin-bottom: 18px; word-break: break-all; }
+
+.drop-zone {
+  border: 2px dashed #cbd5e1; border-radius: 12px;
+  padding: 36px 20px; text-align: center;
+  cursor: pointer; transition: all 0.15s;
+  background: #f8fafc;
+  -webkit-tap-highlight-color: transparent;
+}
+.drop-zone:active { border-color: #2563eb; background: #eff6ff; }
+.drop-zone .icon { font-size: 46px; margin-bottom: 8px; }
+.drop-zone .text { font-size: 15px; font-weight: 600; color: #1e3a8a; }
+.drop-zone .hint { font-size: 12px; color: #64748b; margin-top: 6px; }
+
+#file-input { display: none; }
+
+.btn {
+  display: block; width: 100%; padding: 14px;
+  border: none; border-radius: 10px;
+  font-size: 15px; font-weight: 700;
+  cursor: pointer; margin-top: 14px;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-primary { background: #2563eb; color: white; }
+.btn-primary:disabled { opacity: 0.5; }
+.btn-secondary { background: #e2e8f0; color: #1e3a8a; }
+
+.file-list {
+  margin-top: 14px; border-radius: 10px;
+  overflow: hidden; border: 1px solid #e2e8f0;
+  display: none;
+}
+.file-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px; background: white; font-size: 13px;
+}
+.file-item .name {
+  flex: 1; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.file-item .size { color: #64748b; font-size: 11px; }
+.file-item .status { font-size: 15px; }
+.status-pending { color: #94a3b8; }
+.status-uploading { color: #2563eb; }
+.status-success { color: #059669; }
+.status-error { color: #dc2626; }
+
+.progress {
+  height: 4px; background: #e2e8f0;
+  border-radius: 2px; overflow: hidden;
+  margin-top: 14px; display: none;
+}
+.progress-bar {
+  height: 100%; background: #2563eb;
+  width: 0; transition: width 0.3s;
+}
+
+.toast {
+  position: fixed; bottom: 18px; left: 16px; right: 16px;
+  padding: 14px 18px; border-radius: 12px;
+  color: white; font-size: 14px; font-weight: 600;
+  transform: translateY(200px); transition: transform 0.3s;
+  z-index: 100; text-align: center;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.toast.show { transform: translateY(0); }
+.toast.success { background: #059669; }
+.toast.error { background: #dc2626; }
+
+.result-box {
+  margin-top: 16px; padding: 14px;
+  border-radius: 10px; display: none;
+  background: #d1fae5; color: #065f46;
+  font-size: 14px; line-height: 1.5;
+}
+.result-box.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1 id="title">📤 Upload Document</h1>
+  <p class="sub" id="subtitle">Select a file to upload</p>
+  <p class="traveler-id" id="traveler-info"></p>
+
+  <div class="drop-zone" id="drop-zone" onclick="pickFiles()">
+    <div class="icon">📁</div>
+    <div class="text">Tap to select file</div>
+    <div class="hint" id="hint">JPG, PNG, PDF · max 15 MB</div>
+  </div>
+
+  <input type="file" id="file-input" onchange="onFilePicked(event)">
+
+  <div class="file-list" id="file-list"></div>
+  <div class="progress" id="progress"><div class="progress-bar" id="progress-bar"></div></div>
+
+  <button class="btn btn-primary" id="upload-btn"
+          onclick="startUpload()" disabled>
+    Upload
+  </button>
+
+  <button class="btn btn-secondary" onclick="finishAndClose()">
+    ✓ Done — Close this tab
+  </button>
+
+  <div class="result-box" id="result-box"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var params = new URLSearchParams(window.location.search);
+var travelerId = params.get('traveler_id') || '';
+var docKey = params.get('doc_key') || 'photo';
+var mode = params.get('mode') || 'new';
+
+var DOC_INFO = {
+  'passport_scan': {label: 'Passport Scan',
+                    accept: 'image/*,application/pdf',
+                    hint: 'JPG, PNG, PDF · max 15 MB'},
+  'aadhaar_scan':  {label: 'Aadhaar Scan',
+                    accept: 'image/*,application/pdf',
+                    hint: 'JPG, PNG, PDF · max 15 MB'},
+  'pan_scan':      {label: 'PAN Scan',
+                    accept: 'image/*,application/pdf',
+                    hint: 'JPG, PNG, PDF · max 15 MB'},
+  'vaccine_scan':  {label: 'Vaccine Certificate',
+                    accept: 'image/*,application/pdf',
+                    hint: 'JPG, PNG, PDF · max 15 MB'},
+  'photo':         {label: 'Photo',
+                    accept: 'image/*',
+                    hint: 'JPG, PNG · max 15 MB'}
+};
+
+var info = DOC_INFO[docKey] || DOC_INFO['photo'];
+var selectedFile = null;
+
+function $(id) { return document.getElementById(id); }
+
+function showToast(msg, type) {
+  var t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + (type || '');
+  clearTimeout(t._t);
+  t._t = setTimeout(function () { t.className = 'toast'; }, 3800);
+}
+
+function formatSize(b) {
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function pickFiles() {
+  $('file-input').click();
+}
+
+function onFilePicked(ev) {
+  var files = ev.target.files;
+  if (!files || files.length === 0) return;
+  selectedFile = files[0];
+
+  var list = $('file-list');
+  list.innerHTML = '';
+  var div = document.createElement('div');
+  div.className = 'file-item';
+  div.innerHTML =
+    '<span class="name">' + escapeHtml(selectedFile.name) + '</span>' +
+    '<span class="size">' + formatSize(selectedFile.size) + '</span>' +
+    '<span class="status status-pending" id="status-0">⏳</span>';
+  list.appendChild(div);
+  list.style.display = 'block';
+
+  $('upload-btn').disabled = false;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function setStatus(cls, icon) {
+  var el = $('status-0');
+  if (el) {
+    el.className = 'status status-' + cls;
+    el.textContent = icon;
+  }
+}
+
+async function startUpload() {
+  if (!selectedFile) return;
+
+  $('upload-btn').disabled = true;
+  $('progress').style.display = 'block';
+  setStatus('uploading', '⬆️');
+
+  try {
+    var fd = new FormData();
+    fd.append('file', selectedFile, selectedFile.name);
+    fd.append('doc_key', docKey);
+    fd.append('traveler_id', travelerId);
+    fd.append('mode', mode);
+
+    var res = await fetch('/api/admin/traveler/upload-doc', {
+      method: 'POST',
+      body: fd,
+    });
+
+    if (!res.ok) {
+      var errText = await res.text();
+      console.error('upload failed:', res.status, errText);
+      setStatus('error', '❌');
+      showToast('Upload failed: ' + errText.substring(0, 80), 'error');
+      $('upload-btn').disabled = false;
+      $('progress').style.display = 'none';
+      return;
+    }
+
+    var data = await res.json();
+    setStatus('success', '✅');
+    $('progress-bar').style.width = '100%';
+    showToast('✅ Uploaded successfully', 'success');
+
+    var box = $('result-box');
+    box.innerHTML =
+      '<strong>✅ ' + info.label + ' uploaded</strong><br>' +
+      'File: <code>' + escapeHtml(data.filename || '') + '</code><br>' +
+      (mode === 'edit'
+        ? 'This document is now linked to ' + escapeHtml(travelerId) +
+          '.<br><br>Close this tab and click <b>Reload</b> in the ' +
+          'Traveler dialog to see it.'
+        : 'File saved to the pending folder.<br><br>Close this tab and ' +
+          'click <b>Save</b> on the Add Traveler form to link it.');
+    box.classList.add('show');
+
+    $('upload-btn').disabled = true;
+    $('drop-zone').style.display = 'none';
+  } catch (e) {
+    console.error('upload error:', e);
+    setStatus('error', '❌');
+    showToast('Network error: ' + e.message, 'error');
+    $('upload-btn').disabled = false;
+    $('progress').style.display = 'none';
+  }
+}
+
+function finishAndClose() {
+  try { window.close(); } catch (e) {}
+  setTimeout(function () {
+    var card = document.querySelector('.card');
+    if (card) {
+      card.innerHTML =
+        '<h1 style="text-align:center">✓ Done</h1>' +
+        '<p class="sub" style="text-align:center">' +
+        'You can close this tab and return to the admin page.</p>';
+    }
+  }, 300);
+}
+
+// Init
+(function() {
+  $('title').textContent = '📤 Upload ' + info.label;
+  $('subtitle').textContent = 'Select a file to upload';
+  $('hint').textContent = info.hint;
+  $('file-input').setAttribute('accept', info.accept);
+
+  if (mode === 'edit' && travelerId) {
+    $('traveler-info').textContent = '👤 Traveler: ' + travelerId;
+  } else {
+    $('traveler-info').textContent = '📝 New traveler (will be linked when you save)';
+  }
+})();
+</script>
+
+</body>
+</html>
