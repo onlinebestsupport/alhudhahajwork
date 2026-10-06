@@ -2,3 +2,5 @@ __pycache__/
 *.pyc 
 *.save 
 users_OLD_STALE_20261005.csv 
+data/powershell 
+data/users.csv 
