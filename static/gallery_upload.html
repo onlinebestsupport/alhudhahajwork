@@ -1,0 +1,52 @@
+    # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — v3.10: opens native HTML upload page
+    #
+    # iOS Safari blocks programmatically-triggered file inputs unless the
+    # click happens synchronously inside the user gesture. Flet's
+    # pick_files() runs in an async microtask via run_task(), which breaks
+    # the gesture chain → iOS Safari silently ignores the picker.
+    #
+    # Workaround: open a plain HTML page (/gallery-upload) in the SAME tab
+    # that uses a native <input type="file"> — that always works.
+    # After uploading, the user taps "Back to Admin" to return.
+    # -----------------------------------------------------------------------------
+    def _pick_gallery_files(self, media_type):
+        url = f"/gallery-upload?type={media_type}"
+        print(f"[GALLERY] opening native upload page: {url}")
+
+        async def _go():
+            # Try UrlLauncher first (Flet 1.0 service)
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[GALLERY] UrlLauncher failed: {e}")
+
+            # Fallback: page.launch_url
+            try:
+                r = self.page_ref.launch_url(
+                    url, web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[GALLERY] page.launch_url failed: {e}")
+
+            # Last resort: page.go
+            try:
+                self.page_ref.go(url)
+            except Exception as e:
+                print(f"[GALLERY] page.go failed: {e}")
+
+        try:
+            self.page_ref.run_task(_go)
+        except Exception as ex:
+            print(f"[GALLERY] run_task failed: {ex}")
+            try:
+                self._snack(f"⚠️ Could not open upload page: {ex}",
+                            DANGER)
+            except Exception:
+                pass
