@@ -1,19 +1,13 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.7 — Mobile-friendly gallery file picker
-#   • §[11.4] _pick_gallery_files — 3-tier fallback:
-#         1. file_type filter (best for mobile: iOS Safari, Android Chrome)
-#         2. allowed_extensions (desktop fallback)
-#         3. bare picker with no filters
-#       Mobile detection also disables allow_multiple (mobile browsers
-#       frequently abort multi-select on the picker).
-#   • §[11.7] _register_pickers — adds each picker to BOTH
-#         page.services AND page.overlay (some Flet web builds only
-#         honour one of them for the hidden <input type="file">).
-#   • v3.6 ImageFit → BoxFit fix preserved
-#   • v3.5 dynamic gallery preserved
-#   • v3.4 batch list grey-box fix preserved
+# v3.8 — Fix: FilePicker must be registered in page.services ONLY
+#   • v3.7's dual (services + overlay) registration caused
+#     "Unknown control: FilePicker" red overlay — Flet 1.0 tries
+#     to render overlay children as visible controls.
+#   • §11.7 reverted to services-only (with overlay fallback for
+#     legacy Flet versions that lack .services).
+#   • §11.4 mobile-friendly picker (3-tier fallback) preserved.
 #
 # SECTION INDEX
 #   [0]     __init__ / constructor
@@ -30,14 +24,14 @@
 #   [7]     Contact Info
 #   [8]     Social Links
 #   [9]     Footer
-#   [11]    Gallery                             ← updated
+#   [11]    Gallery
 #   [11.1]  _rebuild_gallery_lists
 #   [11.2]  _gallery_stats_text
 #   [11.3]  _gallery_item_row
-#   [11.4]  _pick_gallery_files                 ← UPDATED (mobile fix)
+#   [11.4]  _pick_gallery_files         ← mobile-friendly (v3.7)
 #   [11.5]  _upload_files
 #   [11.6]  _remove_gallery_item
-#   [11.7]  _register_pickers                   ← UPDATED (dual register)
+#   [11.7]  _register_pickers           ← FIXED (v3.8: services only)
 #   [11.8]  _save_silent
 #   [10]    Action Bar
 #   [A]     Actions
@@ -1021,7 +1015,7 @@ class FrontPageSettingsTab:
             border_radius=10)
 
     # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — v3.7 MOBILE-FRIENDLY (3-tier fallback)
+    # [11.4] _pick_gallery_files — mobile-friendly (v3.7)
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
         picker = (self.photo_picker if media_type == "photos"
@@ -1038,9 +1032,6 @@ class FrontPageSettingsTab:
             pass
 
         # -------- File-type mapping --------
-        # Flet exposes ft.FilePickerFileType. On mobile this is the
-        # ONLY reliable filter — allowed_extensions silently breaks
-        # the picker on iOS Safari and Chrome mobile.
         try:
             if media_type == "photos":
                 file_type = ft.FilePickerFileType.IMAGE
@@ -1231,37 +1222,35 @@ class FrontPageSettingsTab:
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # [11.7] _register_pickers — v3.7 DUAL REGISTRATION (services + overlay)
+    # [11.7] _register_pickers — v3.8: services ONLY
     # -----------------------------------------------------------------------------
     def _register_pickers(self):
         if self._pickers_registered:
             return
         try:
             for p in (self.photo_picker, self.video_picker):
-                # ---- Belt and suspenders ----
-                # Flet 1.0 expects services in page.services.
-                # But some web builds need the picker in page.overlay
-                # for the hidden <input type="file"> to attach on mobile.
-                # Add to BOTH if available.
-                added = False
-
+                # Flet 1.0: FilePicker is a *service*, not a UI control.
+                # Add to page.services only.
+                #
+                # DO NOT add to page.overlay — Flet will try to render
+                # it as a visible control and fail with
+                # "Unknown control: FilePicker".
+                #
+                # For very old Flet versions (pre-1.0) that don't have
+                # page.services, fall back to overlay.
                 if hasattr(self.page_ref, "services"):
-                    try:
-                        if p not in self.page_ref.services:
-                            self.page_ref.services.append(p)
-                            added = True
-                    except Exception as e:
-                        print(f"[GALLERY] services.append failed: {e}")
-
-                if hasattr(self.page_ref, "overlay"):
-                    try:
-                        if p not in self.page_ref.overlay:
-                            self.page_ref.overlay.append(p)
-                            added = True
-                    except Exception as e:
-                        print(f"[GALLERY] overlay.append failed: {e}")
-
-                print(f"[GALLERY] picker registered: {added}")
+                    if p not in self.page_ref.services:
+                        self.page_ref.services.append(p)
+                        print("[GALLERY] picker added to services")
+                    else:
+                        print("[GALLERY] picker already in services")
+                elif hasattr(self.page_ref, "overlay"):
+                    # Legacy fallback
+                    if p not in self.page_ref.overlay:
+                        self.page_ref.overlay.append(p)
+                        print("[GALLERY] picker added to overlay (legacy)")
+                else:
+                    print("[GALLERY] ⚠️ no services or overlay available")
 
             self._pickers_registered = True
             try:
