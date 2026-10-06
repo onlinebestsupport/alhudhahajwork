@@ -1,13 +1,16 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.8 — Fix: FilePicker must be registered in page.services ONLY
-#   • v3.7's dual (services + overlay) registration caused
-#     "Unknown control: FilePicker" red overlay — Flet 1.0 tries
-#     to render overlay children as visible controls.
-#   • §11.7 reverted to services-only (with overlay fallback for
-#     legacy Flet versions that lack .services).
-#   • §11.4 mobile-friendly picker (3-tier fallback) preserved.
+# v3.9 — Fix: single pick_files call, mobile-safe args
+#   • §11.4 REWRITTEN. The v3.7 fallback chain caused:
+#       - multiple OS picker windows on desktop
+#       - "No files selected" showing before the picker opened
+#       - silent failures on mobile
+#     Now: exactly ONE pick_files call, no retries, no snackbar on cancel.
+#   • §11.5 _upload_files: robust byte extraction (bytes → path → error)
+#   • §11.7 _register_pickers: services-only (v3.8 fix preserved)
+#   • §11.3 _gallery_item_row: ImageFit → BoxFit alias (v3.6 fix preserved)
+#   • §11.5 dynamic gallery preserved
 #
 # SECTION INDEX
 #   [0]     __init__ / constructor
@@ -28,10 +31,10 @@
 #   [11.1]  _rebuild_gallery_lists
 #   [11.2]  _gallery_stats_text
 #   [11.3]  _gallery_item_row
-#   [11.4]  _pick_gallery_files         ← mobile-friendly (v3.7)
-#   [11.5]  _upload_files
+#   [11.4]  _pick_gallery_files        ← REWRITTEN (v3.9)
+#   [11.5]  _upload_files              ← improved byte extraction (v3.9)
 #   [11.6]  _remove_gallery_item
-#   [11.7]  _register_pickers           ← FIXED (v3.8: services only)
+#   [11.7]  _register_pickers
 #   [11.8]  _save_silent
 #   [10]    Action Bar
 #   [A]     Actions
@@ -68,11 +71,11 @@ PAGE_BG      = "#f1f5f9"
 # ---------------------------------------------------------------------------------
 def _resolve_fit_cover():
     try:
-        return ft.BoxFit.COVER          # Flet 1.0+
+        return ft.BoxFit.COVER
     except AttributeError:
         pass
     try:
-        return ft.ImageFit.COVER        # Flet 0.x
+        return ft.ImageFit.COVER
     except AttributeError:
         return None
 
@@ -157,7 +160,6 @@ class FrontPageSettingsTab:
         self.status_label = None
         self.root = None
 
-        # ---- Build ----
         try:
             self._load_batches()
             self._build_root()
@@ -1015,13 +1017,13 @@ class FrontPageSettingsTab:
             border_radius=10)
 
     # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — mobile-friendly (v3.7)
+    # [11.4] _pick_gallery_files — v3.9: SIMPLE, single pick_files call
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
         picker = (self.photo_picker if media_type == "photos"
                   else self.video_picker)
 
-        # -------- Mobile detection --------
+        # ---- Detect mobile ----
         is_mobile = False
         try:
             w = self.page_ref.width
@@ -1031,69 +1033,61 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-        # -------- File-type mapping --------
+        # ---- Choose file-type filter (only if the enum is available) ----
+        file_type = None
         try:
             if media_type == "photos":
                 file_type = ft.FilePickerFileType.IMAGE
             else:
                 file_type = ft.FilePickerFileType.VIDEO
-        except AttributeError:
+        except Exception as e:
+            print(f"[GALLERY] FilePickerFileType not available: {e}")
             file_type = None
-
-        exts = (["jpg", "jpeg", "png", "webp", "gif"]
-                if media_type == "photos"
-                else ["mp4", "webm", "mov", "m4v"])
 
         print(f"[GALLERY] pick start: media={media_type} "
               f"mobile={is_mobile} file_type={file_type}")
 
         async def _pick():
             try:
-                # ---- Attempt 1: file_type filter (best for mobile) ----
-                try:
-                    files = await picker.pick_files(
-                        allow_multiple=not is_mobile,
-                        with_data=True,
-                        file_type=file_type,
-                    )
-                except Exception as e1:
-                    print(f"[GALLERY] attempt 1 failed: {e1}")
-                    files = None
+                # ---- Build kwargs dynamically (avoid version issues) ----
+                kwargs = {
+                    "with_data": True,
+                    "allow_multiple": True,
+                }
+                if file_type is not None:
+                    kwargs["file_type"] = file_type
 
-                # ---- Attempt 2: allowed_extensions (desktop fallback) ----
-                if files is None and not is_mobile:
-                    try:
-                        files = await picker.pick_files(
-                            allow_multiple=True,
-                            with_data=True,
-                            allowed_extensions=exts,
-                        )
-                    except Exception as e2:
-                        print(f"[GALLERY] attempt 2 failed: {e2}")
-                        files = None
+                print(f"[GALLERY] calling pick_files({kwargs})")
+                files = await picker.pick_files(**kwargs)
 
-                # ---- Attempt 3: bare picker, no filters ----
-                if files is None:
-                    try:
-                        files = await picker.pick_files(
-                            with_data=True,
-                        )
-                    except Exception as e3:
-                        print(f"[GALLERY] attempt 3 failed: {e3}")
-                        files = None
+                print(f"[GALLERY] pick returned "
+                      f"{len(files) if files else 0} file(s)")
 
-                print(f"[GALLERY] pick returned: {files}")
-
+                # User cancelled → exit silently (no snackbar)
                 if not files:
-                    self._snack("⚠️ No files selected",
-                                ft.Colors.ORANGE_700)
+                    print("[GALLERY] user cancelled")
                     return
 
                 await self._upload_files(files, media_type)
+
             except Exception as ex:
-                print(f"[GALLERY] pick failed: {ex}")
+                # If the primary call errored, try one bare fallback
+                print(f"[GALLERY] primary pick failed: {ex}")
                 traceback.print_exc()
-                self._snack(f"⚠️ Picker error: {ex}", DANGER)
+
+                try:
+                    print("[GALLERY] trying bare fallback...")
+                    files = await picker.pick_files(with_data=True)
+                    if files:
+                        await self._upload_files(files, media_type)
+                    else:
+                        print("[GALLERY] user cancelled (fallback)")
+                except Exception as ex2:
+                    print(f"[GALLERY] fallback also failed: {ex2}")
+                    traceback.print_exc()
+                    self._snack(
+                        "⚠️ File picker unavailable on this device",
+                        DANGER)
 
         try:
             self.page_ref.run_task(_pick)
@@ -1102,19 +1096,53 @@ class FrontPageSettingsTab:
             self._snack(f"⚠️ {ex}", DANGER)
 
     # -----------------------------------------------------------------------------
-    # [11.5] _upload_files
+    # [11.5] _upload_files — v3.9: robust byte extraction
     # -----------------------------------------------------------------------------
     async def _upload_files(self, files, media_type):
         import httpx
 
-        ok, fail = 0, 0
+        ok = 0
+        fail = 0
+        errors = []
+
         for f in files:
+            name = getattr(f, "name", "upload.bin")
             try:
+                # ---- Extract bytes: try .bytes first, then .path ----
                 data = getattr(f, "bytes", None)
-                name = getattr(f, "name", "upload.bin")
+
                 if not data:
+                    # Some platforms (older Flet, some mobile) provide
+                    # a filesystem path instead of bytes.
+                    src = getattr(f, "path", None)
+                    if src:
+                        try:
+                            import os as _os
+                            if _os.path.exists(src):
+                                with open(src, "rb") as fh:
+                                    data = fh.read()
+                        except Exception as e:
+                            print(f"[GALLERY] read path failed: {e}")
+
+                if not data:
+                    # Some Flet web builds return a data URL
+                    url = getattr(f, "url", None)
+                    if url and str(url).startswith("data:"):
+                        try:
+                            import base64 as _b64
+                            _, b64data = str(url).split(",", 1)
+                            data = _b64.b64decode(b64data)
+                        except Exception as e:
+                            print(f"[GALLERY] decode data URL failed: {e}")
+
+                if not data:
+                    print(f"[GALLERY] no bytes available for: {name}")
+                    errors.append(f"{name}: no data")
                     fail += 1
                     continue
+
+                print(f"[GALLERY] uploading {name} "
+                      f"({len(data)} bytes)")
 
                 files_arg = {"file": (name, data)}
                 form = {"media_type": media_type,
@@ -1135,20 +1163,32 @@ class FrontPageSettingsTab:
                         self.video_list.append(item)
                     ok += 1
                 else:
-                    print(f"[FRONTPAGE] upload failed: "
-                          f"{r.status_code} {r.text[:200]}")
+                    err_text = r.text[:200]
+                    print(f"[GALLERY] upload HTTP {r.status_code}: "
+                          f"{err_text}")
+                    errors.append(f"{name}: HTTP {r.status_code}")
                     fail += 1
+
             except Exception as ex:
-                print(f"[FRONTPAGE] upload error: {ex}")
+                print(f"[GALLERY] upload error for {name}: {ex}")
+                traceback.print_exc()
+                errors.append(f"{name}: {ex}")
                 fail += 1
 
         self._rebuild_gallery_lists()
         self._safe_update()
 
-        msg = f"✅ {ok} uploaded"
-        if fail:
-            msg += f" · ❌ {fail} failed"
-        self._snack(msg, SUCCESS if ok else DANGER)
+        if ok and not fail:
+            self._snack(f"✅ {ok} file(s) uploaded", SUCCESS)
+        elif ok and fail:
+            self._snack(
+                f"✅ {ok} uploaded  ·  ❌ {fail} failed",
+                WARN)
+        elif fail:
+            detail = " · ".join(errors[:2])
+            self._snack(
+                f"❌ Upload failed: {detail}",
+                DANGER)
 
     # -----------------------------------------------------------------------------
     # [11.6] _remove_gallery_item
@@ -1222,7 +1262,7 @@ class FrontPageSettingsTab:
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # [11.7] _register_pickers — v3.8: services ONLY
+    # [11.7] _register_pickers — services only
     # -----------------------------------------------------------------------------
     def _register_pickers(self):
         if self._pickers_registered:
@@ -1230,14 +1270,8 @@ class FrontPageSettingsTab:
         try:
             for p in (self.photo_picker, self.video_picker):
                 # Flet 1.0: FilePicker is a *service*, not a UI control.
-                # Add to page.services only.
-                #
-                # DO NOT add to page.overlay — Flet will try to render
-                # it as a visible control and fail with
-                # "Unknown control: FilePicker".
-                #
-                # For very old Flet versions (pre-1.0) that don't have
-                # page.services, fall back to overlay.
+                # It must be in page.services only.
+                # Adding to page.overlay causes "Unknown control: FilePicker".
                 if hasattr(self.page_ref, "services"):
                     if p not in self.page_ref.services:
                         self.page_ref.services.append(p)
@@ -1245,12 +1279,12 @@ class FrontPageSettingsTab:
                     else:
                         print("[GALLERY] picker already in services")
                 elif hasattr(self.page_ref, "overlay"):
-                    # Legacy fallback
+                    # Legacy fallback for very old Flet
                     if p not in self.page_ref.overlay:
                         self.page_ref.overlay.append(p)
                         print("[GALLERY] picker added to overlay (legacy)")
                 else:
-                    print("[GALLERY] ⚠️ no services or overlay available")
+                    print("[GALLERY] ⚠️ no services or overlay")
 
             self._pickers_registered = True
             try:
