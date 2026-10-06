@@ -532,53 +532,41 @@ def flet_main(page: ft.Page):
     # -----------------------------------------------------------------------------
     # 21.3.2 — Back to Home (async-aware for Flet 1.0)
     # -----------------------------------------------------------------------------
-    def _go_home_page():
+        def _go_home_page():
         print("[NAV] Back to Home clicked → scheduling navigation")
 
         async def _do():
+            # Flet 1.0 param
             try:
                 launcher = ft.UrlLauncher()
-                result = launcher.launch_url("/", web_window_name="_self")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[NAV] ✅ UrlLauncher(_self) succeeded")
+                r = launcher.launch_url("/", web_only_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[NAV] ✅ web_only_window_name=_self")
                 return
             except Exception as e:
-                print(f"[NAV] UrlLauncher(_self) failed: {e}")
+                print(f"[NAV] 1.0 param failed: {e}")
 
-            try:
-                result = page.launch_url("/", web_window_name="_self")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[NAV] ✅ page.launch_url(_self) succeeded")
-                return
-            except Exception as e:
-                print(f"[NAV] page.launch_url(_self) failed: {e}")
-
+            # Legacy param
             try:
                 launcher = ft.UrlLauncher()
-                result = launcher.launch_url("/")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[NAV] ⚠️ UrlLauncher(default) opened new tab")
+                r = launcher.launch_url("/", web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[NAV] ✅ web_window_name=_self")
                 return
             except Exception as e:
-                print(f"[NAV] UrlLauncher(default) failed: {e}")
+                print(f"[NAV] legacy param failed: {e}")
 
+            # Bare — new tab
             try:
-                result = page.launch_url("/")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[NAV] ⚠️ page.launch_url(default) opened new tab")
-                return
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url("/")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[NAV] ✅ bare — new tab")
             except Exception as e:
-                print(f"[NAV] page.launch_url(default) failed: {e}")
-
-            try:
-                page.go("/")
-                print("[NAV] ⚠️ page.go('/') attempted")
-            except Exception as e:
-                print(f"[NAV] page.go('/') failed: {e}")
+                print(f"[NAV] bare failed: {e}")
 
         try:
             page.run_task(_do)
