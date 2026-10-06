@@ -1,23 +1,23 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.7 — 2026-10-05
-#   • ✅ Mobile scroll fix: root is now a scrollable Column so the
-#        Login button stays reachable on short viewports (iOS Safari,
-#        small Android, split-screen)
-#   • ✅ Back to Home uses async-aware navigation (Flet 1.0)
+# v1.8 — 2026-10-06
+#   • ✅ FIX: _go_home now uses Flet 1.0's web_only_window_name
+#        (v1.7 called web_window_name → TypeError → all attempts failed)
+#   • ✅ Removed page.launch_url / page.go calls (removed in Flet 1.0)
+#   • ✅ 3-tier fallback: web_only_window_name → web_window_name → bare
+#   • ✅ Mobile scroll fix preserved (root is scrollable Column)
 #   • ✅ CAPTCHA on login (math, self-hosted)
 #   • ✅ Session persistence helpers
-#   • ✅ Same-tab navigation with _self target
 #
 # SECTION INDEX
 #   2.1     _hash_password
 #   2.2     _safe_str
 #   2.3     Session helpers (save / load / clear)
 #   2.4     class LoginView
-#   2.4.1   _build              ← updated for mobile scroll
+#   2.4.1   _build              (mobile-scroll version, unchanged)
 #   2.4.2   build
-#   2.4.3   _go_home
+#   2.4.3   _go_home            ← UPDATED for Flet 1.0
 #   2.4.4   CAPTCHA helpers
 #   2.4.5   _set_status
 #   2.4.6   _do_login
@@ -379,16 +379,13 @@ class LoginView:
         )
 
         # ---- Root ----
-        # NEW (v1.7): The whole page is a scrollable Column so the
+        # v1.7: The whole page is a scrollable Column so the
         # Login / Home buttons stay reachable on short mobile viewports.
         #
         #   Outer Column (scroll=AUTO, expand=True)   ← makes the page scroll
         #     ├─ back_bar                              (always at top)
         #     └─ inner Column (expand, centered)       (pins card to middle)
         #         └─ card                              (fixed width 420)
-        #
-        # On tall screens the card is centred; on short screens the
-        # user can scroll to reach the buttons.
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -405,7 +402,7 @@ class LoginView:
                 ],
                 spacing=0,
                 expand=True,
-                scroll=ft.ScrollMode.AUTO,          # ← the fix
+                scroll=ft.ScrollMode.AUTO,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             expand=True,
@@ -422,16 +419,21 @@ class LoginView:
         return self.root
 
     # -----------------------------------------------------------------------------
-    # 2.4.3 — _go_home  [FIX v1.6] async-aware navigation
+    # 2.4.3 — _go_home  [FIX v1.8 — Flet 1.0 API]
+    #
+    # Flet 1.0 renamed the parameter:
+    #   web_window_name  →  web_only_window_name
+    # and removed page.launch_url() and page.go() entirely.
+    #
+    # 3-tier fallback:
+    #   1. ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
+    #   2. ft.UrlLauncher().launch_url(url, web_window_name="_self")  (legacy)
+    #   3. ft.UrlLauncher().launch_url(url)                           (new tab)
     # -----------------------------------------------------------------------------
     def _go_home(self, e=None):
-        """
-        Back to Home: navigate to / in the SAME browser tab.
-        Flet 1.0's launch_url is async — must be awaited via run_task.
-        """
         print("[LOGIN] Back to Home clicked")
 
-        # Preferred: delegate to main.py handler (it has full fallback chain)
+        # Preferred: delegate to main.py handler (it has the same fallback)
         try:
             if self.on_cancel:
                 self.on_cancel()
@@ -439,58 +441,44 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] on_cancel failed: {ex}")
 
-        # Fallback: navigate directly with async wrapper
+        # Direct fallback with Flet 1.0-aware parameter names
         async def _do():
-            # Attempt 1: UrlLauncher with _self target
+            # --- Attempt 1: Flet 1.0 param — same tab ---
             try:
                 launcher = ft.UrlLauncher()
-                result = launcher.launch_url(
-                    "/", web_window_name="_self")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[LOGIN] ✅ UrlLauncher(_self) succeeded")
+                r = launcher.launch_url("/",
+                                        web_only_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[LOGIN] ✅ launch_url(web_only_window_name=_self)")
                 return
-            except Exception as ex:
-                print(f"[LOGIN] UrlLauncher(_self) failed: {ex}")
+            except TypeError as te:
+                print(f"[LOGIN] 1.0 param rejected: {te}")
+            except Exception as e:
+                print(f"[LOGIN] 1.0 param raised: {e}")
 
-            # Attempt 2: page.launch_url with _self target
-            try:
-                result = self.page.launch_url(
-                    "/", web_window_name="_self")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[LOGIN] ✅ page.launch_url(_self) succeeded")
-                return
-            except Exception as ex:
-                print(f"[LOGIN] page.launch_url(_self) failed: {ex}")
-
-            # Attempt 3: UrlLauncher default (new tab fallback)
+            # --- Attempt 2: legacy param — same tab ---
             try:
                 launcher = ft.UrlLauncher()
-                result = launcher.launch_url("/")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[LOGIN] ⚠️ UrlLauncher(default) opened new tab")
+                r = launcher.launch_url("/",
+                                        web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[LOGIN] ✅ launch_url(web_window_name=_self)")
                 return
-            except Exception as ex:
-                print(f"[LOGIN] UrlLauncher(default) failed: {ex}")
+            except Exception as e:
+                print(f"[LOGIN] legacy param failed: {e}")
 
-            # Attempt 4: page.launch_url default
+            # --- Attempt 3: bare call — new tab ---
             try:
-                result = self.page.launch_url("/")
-                if asyncio.iscoroutine(result):
-                    await result
-                print("[LOGIN] ⚠️ page.launch_url(default) opened new tab")
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url("/")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[LOGIN] ✅ launch_url() — new tab")
                 return
-            except Exception as ex:
-                print(f"[LOGIN] page.launch_url(default) failed: {ex}")
-
-            # Attempt 5: page.go
-            try:
-                self.page.go("/")
-                print("[LOGIN] ⚠️ page.go('/') attempted")
-            except Exception as ex:
-                print(f"[LOGIN] page.go('/') failed: {ex}")
+            except Exception as e:
+                print(f"[LOGIN] bare launch_url failed: {e}")
 
         try:
             self.page.run_task(_do)
