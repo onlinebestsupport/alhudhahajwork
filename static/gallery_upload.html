@@ -1,52 +1,298 @@
-    # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — v3.10: opens native HTML upload page
-    #
-    # iOS Safari blocks programmatically-triggered file inputs unless the
-    # click happens synchronously inside the user gesture. Flet's
-    # pick_files() runs in an async microtask via run_task(), which breaks
-    # the gesture chain → iOS Safari silently ignores the picker.
-    #
-    # Workaround: open a plain HTML page (/gallery-upload) in the SAME tab
-    # that uses a native <input type="file"> — that always works.
-    # After uploading, the user taps "Back to Admin" to return.
-    # -----------------------------------------------------------------------------
-    def _pick_gallery_files(self, media_type):
-        url = f"/gallery-upload?type={media_type}"
-        print(f"[GALLERY] opening native upload page: {url}")
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+<title>Upload Media — Alhudha Admin</title>
+<link rel="icon" href="/static/logo.png">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  background: #f1f5f9;
+  min-height: 100vh;
+  padding: 16px;
+  color: #0f172a;
+  -webkit-text-size-adjust: 100%;
+}
+.card {
+  max-width: 520px; margin: 0 auto;
+  background: white; border-radius: 16px;
+  padding: 22px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+}
+h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
+.sub { font-size: 13px; color: #64748b; margin-bottom: 18px; }
 
-        async def _go():
-            # Try UrlLauncher first (Flet 1.0 service)
-            try:
-                launcher = ft.UrlLauncher()
-                r = launcher.launch_url(url, web_window_name="_self")
-                if asyncio.iscoroutine(r):
-                    await r
-                return
-            except Exception as e:
-                print(f"[GALLERY] UrlLauncher failed: {e}")
+.type-toggle {
+  display: flex; gap: 6px; margin-bottom: 16px;
+  background: #f1f5f9; padding: 4px; border-radius: 10px;
+}
+.type-toggle button {
+  flex: 1; padding: 11px 8px;
+  border: none; background: transparent;
+  border-radius: 8px; font-size: 14px;
+  font-weight: 600; cursor: pointer;
+  font-family: inherit; color: #64748b;
+  transition: all 0.15s;
+}
+.type-toggle button.active {
+  background: white; color: #1e3a8a;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
 
-            # Fallback: page.launch_url
-            try:
-                r = self.page_ref.launch_url(
-                    url, web_window_name="_self")
-                if asyncio.iscoroutine(r):
-                    await r
-                return
-            except Exception as e:
-                print(f"[GALLERY] page.launch_url failed: {e}")
+.drop-zone {
+  border: 2px dashed #cbd5e1; border-radius: 12px;
+  padding: 36px 20px; text-align: center;
+  cursor: pointer; transition: all 0.15s;
+  background: #f8fafc;
+  -webkit-tap-highlight-color: transparent;
+}
+.drop-zone:active { border-color: #2563eb; background: #eff6ff; }
+.drop-zone .icon { font-size: 46px; margin-bottom: 8px; }
+.drop-zone .text { font-size: 15px; font-weight: 600; color: #1e3a8a; }
+.drop-zone .hint { font-size: 12px; color: #64748b; margin-top: 6px; }
 
-            # Last resort: page.go
-            try:
-                self.page_ref.go(url)
-            except Exception as e:
-                print(f"[GALLERY] page.go failed: {e}")
+#file-input { display: none; }
 
-        try:
-            self.page_ref.run_task(_go)
-        except Exception as ex:
-            print(f"[GALLERY] run_task failed: {ex}")
-            try:
-                self._snack(f"⚠️ Could not open upload page: {ex}",
-                            DANGER)
-            except Exception:
-                pass
+.btn {
+  display: block; width: 100%; padding: 14px;
+  border: none; border-radius: 10px;
+  font-size: 15px; font-weight: 700;
+  cursor: pointer; margin-top: 14px;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-primary { background: #2563eb; color: white; }
+.btn-primary:disabled { opacity: 0.5; }
+.btn-secondary {
+  background: #e2e8f0; color: #1e3a8a;
+  text-decoration: none; text-align: center;
+}
+
+.file-list {
+  margin-top: 14px; border-radius: 10px;
+  overflow: hidden; border: 1px solid #e2e8f0;
+  display: none;
+}
+.file-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 13px; background: white;
+  border-bottom: 1px solid #e2e8f0; font-size: 13px;
+}
+.file-item:last-child { border-bottom: none; }
+.file-item .name {
+  flex: 1; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.file-item .size { color: #64748b; font-size: 11px; }
+.file-item .status { font-size: 15px; }
+.status-pending { color: #94a3b8; }
+.status-uploading { color: #2563eb; }
+.status-success { color: #059669; }
+.status-error { color: #dc2626; }
+
+.progress {
+  height: 4px; background: #e2e8f0;
+  border-radius: 2px; overflow: hidden;
+  margin-top: 14px; display: none;
+}
+.progress-bar {
+  height: 100%; background: #2563eb;
+  width: 0; transition: width 0.3s;
+}
+
+.toast {
+  position: fixed; bottom: 18px; left: 16px; right: 16px;
+  padding: 14px 18px; border-radius: 12px;
+  color: white; font-size: 14px; font-weight: 600;
+  transform: translateY(200px); transition: transform 0.3s;
+  z-index: 100; text-align: center;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+}
+.toast.show { transform: translateY(0); }
+.toast.success { background: #059669; }
+.toast.error { background: #dc2626; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>📤 Upload Media</h1>
+  <p class="sub">Add photos or videos to the front-page gallery</p>
+
+  <div class="type-toggle">
+    <button id="btn-photos" class="active" onclick="setType('photos')">📷 Photos</button>
+    <button id="btn-videos" onclick="setType('videos')">🎥 Videos</button>
+  </div>
+
+  <div class="drop-zone" id="drop-zone" onclick="pickFiles()">
+    <div class="icon">📁</div>
+    <div class="text">Tap to select files</div>
+    <div class="hint" id="type-hint">JPG, PNG, WEBP, GIF · max 15 MB each</div>
+  </div>
+
+  <input type="file" id="file-input" multiple
+         accept="image/*" onchange="onFilesPicked(event)">
+
+  <div class="file-list" id="file-list"></div>
+
+  <div class="progress" id="progress">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+
+  <button class="btn btn-primary" id="upload-btn"
+          onclick="startUpload()" disabled>
+    Upload
+  </button>
+
+  <a class="btn btn-secondary" href="/admin/" target="_self">
+    ← Back to Admin
+  </a>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var currentType = 'photos';
+var pendingFiles = [];
+
+function $(id) { return document.getElementById(id); }
+
+function showToast(msg, type) {
+  var t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(t._t);
+  t._t = setTimeout(function () { t.className = 'toast'; }, 3800);
+}
+
+function setType(type) {
+  currentType = type;
+  $('btn-photos').classList.toggle('active', type === 'photos');
+  $('btn-videos').classList.toggle('active', type === 'videos');
+  $('file-input').setAttribute('accept',
+    type === 'photos' ? 'image/*' : 'video/*');
+  $('type-hint').textContent = type === 'photos'
+    ? 'JPG, PNG, WEBP, GIF · max 15 MB each'
+    : 'MP4, WEBM, MOV · max 100 MB each';
+}
+
+function pickFiles() {
+  // CRITICAL: click the input SYNCHRONOUSLY inside the tap handler.
+  // iOS Safari requires the click to happen in the same synchronous
+  // stack as the user gesture — any async delay breaks it.
+  $('file-input').click();
+}
+
+function onFilesPicked(ev) {
+  var files = ev.target.files;
+  if (!files || files.length === 0) return;
+  pendingFiles = Array.prototype.slice.call(files);
+  renderFileList();
+  $('upload-btn').disabled = false;
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function renderFileList() {
+  var list = $('file-list');
+  list.innerHTML = '';
+  if (pendingFiles.length === 0) {
+    list.style.display = 'none';
+    return;
+  }
+  list.style.display = 'block';
+  for (var i = 0; i < pendingFiles.length; i++) {
+    var f = pendingFiles[i];
+    var div = document.createElement('div');
+    div.className = 'file-item';
+    div.innerHTML =
+      '<span class="name">' + escapeHtml(f.name) + '</span>' +
+      '<span class="size">' + formatSize(f.size) + '</span>' +
+      '<span class="status status-pending" id="status-' + i + '">⏳</span>';
+    list.appendChild(div);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function setStatus(index, cls, icon) {
+  var el = $('status-' + index);
+  if (!el) return;
+  el.className = 'status status-' + cls;
+  el.textContent = icon;
+}
+
+async function startUpload() {
+  if (pendingFiles.length === 0) return;
+
+  $('upload-btn').disabled = true;
+  $('progress').style.display = 'block';
+
+  var ok = 0, fail = 0;
+
+  for (var i = 0; i < pendingFiles.length; i++) {
+    var f = pendingFiles[i];
+    setStatus(i, 'uploading', '⬆️');
+    try {
+      var fd = new FormData();
+      fd.append('file', f, f.name);
+      fd.append('media_type', currentType);
+      fd.append('caption', '');
+
+      var res = await fetch('/api/admin/gallery/upload', {
+        method: 'POST',
+        body: fd,
+      });
+
+      if (res.ok) {
+        setStatus(i, 'success', '✅');
+        ok++;
+      } else {
+        var err = await res.text();
+        console.error('upload failed:', err);
+        setStatus(i, 'error', '❌');
+        fail++;
+      }
+    } catch (e) {
+      console.error('upload error:', e);
+      setStatus(i, 'error', '❌');
+      fail++;
+    }
+    var pct = Math.round(((i + 1) / pendingFiles.length) * 100);
+    $('progress-bar').style.width = pct + '%';
+  }
+
+  if (fail === 0) {
+    showToast('✅ ' + ok + ' file(s) uploaded', 'success');
+    pendingFiles = [];
+    $('file-input').value = '';
+    setTimeout(renderFileList, 2500);
+  } else {
+    showToast('✅ ' + ok + ' uploaded · ❌ ' + fail + ' failed', 'error');
+  }
+
+  $('upload-btn').disabled = false;
+  $('progress-bar').style.width = '0';
+  setTimeout(function () { $('progress').style.display = 'none'; }, 1500);
+}
+
+(function() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var t = params.get('type');
+    if (t === 'videos' || t === 'photos') setType(t);
+  } catch (e) {}
+})();
+</script>
+
+</body>
+</html>
