@@ -1,48 +1,10 @@
 # =================================================================================
 # main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.20 — Flet 1.0 navigation fix
-#   • §21.3.2 _go_home_page: uses web_only_window_name (not web_window_name)
-#   • Removed page.launch_url / page.go (removed in Flet 1.0)
-#   • 3-tier fallback: web_only_window_name → web_window_name → bare
-#   • All v2.19 fixes preserved (no page.scroll, no main-window wrapper)
-#
-# SECTION INDEX
-#   21.1     Configuration & platform detection
-#   21.1.1   Platform detection
-#   21.1.2   Boot logger
-#   21.1.4   JSON sanitizer
-#   21.1.5   Narrow Page.update() monkey patch
-#   21.2     Application state
-#   21.2.1   AppState class
-#   21.2.2   Volume seeder
-#   21.2.3   DB initializer with retries
-#   21.2.4   Signal handlers
-#   21.2.5   Admin session helpers
-#   21.2.6   Document directory symlink
-#   21.3     Flet admin entry point
-#   21.3.1   flet_main() — root function
-#   21.3.2   Back-to-home navigation (Flet 1.0 fix)
-#   21.3.3   Login / main / logout screens
-#   21.3.4   Bootstrap session restore
-#   21.4     Favicon middleware
-#   21.5     FastAPI app assembly
-#   21.5.1   Directory setup & asset seeding
-#   21.5.2   FastAPI creation
-#   21.5.3   Global error handler
-#   21.5.4   /download/{filename}
-#   21.5.5   /api/frontpage
-#   21.5.6   /api/batches
-#   21.5.7   Captcha endpoints
-#   21.5.8   Traveler portal endpoints
-#   21.5.8b  /gallery-upload (mobile-friendly upload page)
-#   21.5.9   Gallery media serving
-#   21.5.10  Gallery upload
-#   21.5.11  Gallery delete
-#   21.5.12  Mount Flet admin
-#   21.5.13  Mount /static
-#   21.5.14  Root route "/"
-#   21.6     Entry point
+# v2.21 — Admin session via Flet 1.0.3 page.session.store
+#   • §21.2.5: _save_session / _load_session / _clear_session now use
+#     page.session.store (client_storage removed in Flet 1.0.3)
+#   • All v2.20 features preserved (Flet 1.0 navigation, /gallery-upload route)
 # =================================================================================
 
 
@@ -196,10 +158,6 @@ _patch_page_update()
 # =================================================================================
 # 21.2 — APPLICATION STATE
 # =================================================================================
-
-# ---------------------------------------------------------------------------------
-# 21.2.1 — AppState class
-# ---------------------------------------------------------------------------------
 class AppState:
     db = None
     db_ready = False
@@ -296,7 +254,7 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — ADMIN SESSION HELPERS
+# 21.2.5 — ADMIN SESSION HELPERS (v2.21 — page.session.store)
 # =================================================================================
 def _find_user_by_id(db, user_id):
     try:
@@ -316,103 +274,109 @@ async def _save_session(page, user, max_retries=3):
     if not uid:
         return
 
+    # Primary: Flet 1.0.3 page.session.store
+    try:
+        page.session.store.set("admin_user_id", str(uid))
+        page.session.store.set("admin_username",
+                               str(user.get("username", "")))
+        page.session.store.set("admin_role",
+                               str(user.get("role", "")))
+        print(f"[SESSION] Saved to page.session.store: {uid}")
+        return
+    except Exception as ex:
+        print(f"[SESSION] page.session.store write failed: {ex}")
+
+    # Fallback: legacy client_storage (silent if unavailable)
     for attempt in range(max_retries):
         try:
             storage = getattr(page, "client_storage", None)
             if storage is None:
-                print(f"[SESSION] save: client_storage is None "
-                      f"(attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(0.3)
-                continue
-
+                return
             result = storage.set(SESSION_KEY, str(uid))
             if asyncio.iscoroutine(result):
                 await result
-
-            print(f"[SESSION] Saved user_id={uid} to client_storage")
+            print(f"[SESSION] Saved via client_storage: {uid}")
             return
         except Exception as e:
-            print(f"[SESSION] save attempt {attempt + 1} failed: {e}")
+            print(f"[SESSION] client_storage attempt {attempt + 1}: {e}")
             await asyncio.sleep(0.3)
-
-    print(f"[SESSION] Save failed after {max_retries} attempts")
 
 
 async def _load_session(page, max_retries=4):
+    # Primary: Flet 1.0.3 page.session.store
+    try:
+        if page.session.store.contains_key("admin_user_id"):
+            uid = page.session.store.get("admin_user_id")
+            if uid:
+                user = _find_user_by_id(AppState.db, uid)
+                if user:
+                    print(f"[SESSION] Restored from "
+                          f"page.session.store: {uid}")
+                    return user
+                else:
+                    print(f"[SESSION] uid={uid} not found, clearing")
+                    try:
+                        page.session.store.remove("admin_user_id")
+                    except Exception:
+                        pass
+                    return None
+    except Exception as ex:
+        print(f"[SESSION] page.session.store read failed: {ex}")
+
+    # Fallback: legacy client_storage
     for attempt in range(max_retries):
         try:
             storage = getattr(page, "client_storage", None)
             if storage is None:
-                print(f"[SESSION] load: client_storage is None "
-                      f"(attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(0.3)
-                continue
-
+                return None
             result = storage.get(SESSION_KEY)
             if asyncio.iscoroutine(result):
                 uid = await result
             else:
                 uid = result
-
-            print(f"[SESSION] load attempt {attempt + 1}: uid={uid!r}")
-
             if uid:
                 user = _find_user_by_id(AppState.db, uid)
                 if user:
-                    print(f"[SESSION] Restored user "
-                          f"'{user.get('username')}'")
+                    print(f"[SESSION] Restored via client_storage: {uid}")
                     return user
-                else:
-                    print(f"[SESSION] user_id={uid} no longer exists — "
-                          f"clearing stale session")
-                    try:
-                        r = storage.remove(SESSION_KEY)
-                        if asyncio.iscoroutine(r):
-                            await r
-                    except Exception:
-                        pass
-                    return None
-            else:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(0.4)
-                    continue
-                print("[SESSION] no saved session found")
-                return None
-
+            return None
         except Exception as e:
-            print(f"[SESSION] load attempt {attempt + 1} failed: {e}")
+            print(f"[SESSION] client_storage load {attempt + 1}: {e}")
             await asyncio.sleep(0.3)
-
-    print(f"[SESSION] Load failed after {max_retries} attempts")
     return None
 
 
 async def _clear_session(page):
+    # Primary: page.session.store
+    try:
+        page.session.store.remove("admin_user_id")
+    except Exception:
+        pass
+    try:
+        page.session.store.remove("admin_username")
+    except Exception:
+        pass
+    try:
+        page.session.store.remove("admin_role")
+    except Exception:
+        pass
+
+    # Fallback: client_storage
     try:
         storage = getattr(page, "client_storage", None)
-        if storage is None:
-            return
-        result = storage.remove(SESSION_KEY)
-        if asyncio.iscoroutine(result):
-            await result
-        print("[SESSION] Cleared saved session")
-    except Exception as e:
-        print(f"[SESSION] clear failed: {e}")
+        if storage is not None:
+            result = storage.remove(SESSION_KEY)
+            if asyncio.iscoroutine(result):
+                await result
+    except Exception:
+        pass
+    print("[SESSION] Cleared")
 
 
 # =================================================================================
 # 21.2.6 — ENSURE /app/documents IS A SYMLINK TO /app/data/documents
 # =================================================================================
 def _ensure_documents_symlink():
-    """
-    Uploaded traveler documents (passports, photos, aadhaar, pan, vaccine)
-    would otherwise live at /app/documents/ — an EPHEMERAL path on Railway
-    that is wiped on every redeploy.
-
-    This makes /app/documents a symlink → /app/data/documents/ (persistent
-    Railway Volume). Any code that reads/writes 'documents/...' relative to
-    /app keeps working without changes.
-    """
     target = "/app/data/documents"
     link = "/app/documents"
 
@@ -472,10 +436,6 @@ def flet_main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
-    # NOTE: page.scroll is intentionally NOT set. LoginView and every tab
-    # inside MainWindowView have their own internal scroll. Adding a
-    # page-level scroll on top creates nested-scroll conflicts on desktop.
-
     try:
         page.window.width = 400
         page.window.height = 800
@@ -503,7 +463,6 @@ def flet_main(page: ft.Page):
     except Exception:
         pass
 
-    # ---- DB failure UI ----
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -525,51 +484,43 @@ def flet_main(page: ft.Page):
 
     # -----------------------------------------------------------------------------
     # 21.3.2 — Back to Home (Flet 1.0-aware)
-    #
-    # Flet 1.0 renamed web_window_name -> web_only_window_name and removed
-    # page.launch_url() and page.go(). This function tries the correct
-    # parameter first, then falls back to the legacy name, then to a bare
-    # call (which opens in a new tab — always works).
     # -----------------------------------------------------------------------------
     def _go_home_page():
         print("[NAV] Back to Home clicked -> scheduling navigation")
 
         async def _do():
-            # --- Attempt 1: Flet 1.0 param name — same tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/",
                                         web_only_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] OK launch_url(web_only_window_name=_self)")
+                print("[NAV] OK web_only_window_name=_self")
                 return
             except TypeError as te:
                 print(f"[NAV] 1.0 param rejected: {te}")
             except Exception as e:
                 print(f"[NAV] 1.0 param raised: {e}")
 
-            # --- Attempt 2: legacy param name — same tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/", web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] OK launch_url(web_window_name=_self)")
+                print("[NAV] OK web_window_name=_self")
                 return
             except Exception as e:
                 print(f"[NAV] legacy param failed: {e}")
 
-            # --- Attempt 3: bare call — new tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] OK launch_url() — new tab")
+                print("[NAV] OK bare — new tab")
                 return
             except Exception as e:
-                print(f"[NAV] bare launch_url failed: {e}")
+                print(f"[NAV] bare failed: {e}")
 
         try:
             page.run_task(_do)
@@ -578,8 +529,6 @@ def flet_main(page: ft.Page):
 
     # -----------------------------------------------------------------------------
     # 21.3.3 — Screen switchers
-    #   show_login: scrollable wrapper (needed for mobile)
-    #   show_main_window: no wrapper (each tab has its own scroll)
     # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
@@ -587,9 +536,6 @@ def flet_main(page: ft.Page):
             page=page, db=AppState.db,
             on_login_success=on_login_success,
             on_cancel=_go_home_page)
-
-        # Scroll wrapper for short mobile viewports. LoginView has no
-        # internal scroll, so nesting here is safe.
         wrapper = ft.Column(
             controls=[login.build()],
             scroll=ft.ScrollMode.AUTO,
@@ -634,8 +580,6 @@ def flet_main(page: ft.Page):
             pass
         mw = MainWindowView(
             page, AppState.db, user, on_logout=on_logout)
-        # No outer scroll wrapper — MainWindowView and each tab manage
-        # their own scroll. Nesting causes conflicts on desktop.
         page.add(mw.build())
         try:
             page.update()
@@ -711,9 +655,6 @@ def _build_app() -> FastAPI:
     logo_path = os.path.join(static_dir, "logo.png")
     flet_assets_dir = os.path.join(base_path, "flet_assets")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.1 — Directory setup + asset seeding
-    # -----------------------------------------------------------------------------
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
@@ -745,15 +686,9 @@ def _build_app() -> FastAPI:
     _boot_log(f"Flet assets dir : {flet_assets_dir}")
     _boot_log(f"Gallery root    : {gallery_root}")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.2 — FastAPI creation + middleware
-    # -----------------------------------------------------------------------------
     app = FastAPI(title="Alhudha Haj Travel System")
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
 
-    # -----------------------------------------------------------------------------
-    # 21.5.3 — Global error handler
-    # -----------------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
         _boot_log(f"Unhandled error on {request.url.path}: {exc}")
@@ -762,9 +697,6 @@ def _build_app() -> FastAPI:
             status_code=500,
             content={"detail": f"Internal server error: {exc}"})
 
-    # -----------------------------------------------------------------------------
-    # 21.5.4 — /download/{filename}
-    # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
         safe_name = os.path.basename(filename)
@@ -778,9 +710,6 @@ def _build_app() -> FastAPI:
                 "Content-Disposition": f'attachment; filename="{safe_name}"'
             })
 
-    # -----------------------------------------------------------------------------
-    # 21.5.5 — /api/frontpage
-    # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
         try:
@@ -790,9 +719,6 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches
-    # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
         try:
@@ -837,9 +763,6 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    # -----------------------------------------------------------------------------
-    # 21.5.7 — Captcha endpoints
-    # -----------------------------------------------------------------------------
     from pydantic import BaseModel
 
     class CaptchaVerifyPayload(BaseModel):
@@ -864,9 +787,6 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             return {"ok": False, "reason": "error", "detail": str(e)}
 
-    # -----------------------------------------------------------------------------
-    # 21.5.8 — Traveler portal endpoints
-    # -----------------------------------------------------------------------------
     @app.get("/traveler")
     async def traveler_portal_page():
         if os.path.exists(traveler_html):
@@ -1059,9 +979,6 @@ def _build_app() -> FastAPI:
 
     _boot_log("Traveler portal endpoints registered")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.8b — /gallery-upload (native HTML5 uploader for mobile browsers)
-    # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
     @app.get("/gallery-upload")
@@ -1072,9 +989,6 @@ def _build_app() -> FastAPI:
         raise HTTPException(status_code=404,
                             detail="Upload page not found")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.9 — Gallery media serving
-    # -----------------------------------------------------------------------------
     GALLERY_ROOT = Path(AppState.gallery_root)
 
     @app.get("/media/gallery/{kind}/{name}")
@@ -1094,9 +1008,6 @@ def _build_app() -> FastAPI:
             media_type=mt or "application/octet-stream",
             headers={"Cache-Control": "public, max-age=86400"})
 
-    # -----------------------------------------------------------------------------
-    # 21.5.10 — Gallery upload
-    # -----------------------------------------------------------------------------
     ALLOWED_PHOTO_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
     ALLOWED_VIDEO_EXT = {".mp4", ".webm", ".mov", ".m4v"}
     MAX_PHOTO_BYTES = 15 * 1024 * 1024
@@ -1177,9 +1088,6 @@ def _build_app() -> FastAPI:
                   f"({len(data) // 1024} KB)")
         return {"success": True, "item": item}
 
-    # -----------------------------------------------------------------------------
-    # 21.5.11 — Gallery delete
-    # -----------------------------------------------------------------------------
     @app.delete("/api/admin/gallery/item")
     async def delete_gallery_media(media_type: str, url: str):
         if media_type not in ("photos", "videos"):
@@ -1208,22 +1116,13 @@ def _build_app() -> FastAPI:
         _boot_log(f"Gallery delete OK: {url}")
         return {"success": True}
 
-    # -----------------------------------------------------------------------------
-    # 21.5.12 — Mount Flet admin at /admin
-    # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
     _boot_log(f"Mounted Flet admin at /admin (assets_dir={flet_assets_dir})")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.13 — Mount /static
-    # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.14 — Root route "/"
-    # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
