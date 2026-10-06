@@ -1,17 +1,89 @@
 # =================================================================================
-# SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, Mobile-Responsive)
+# SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, MOBILE-RESPONSIVE)
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Header: compact, close button stays visible
-#   • Filters card: wraps to 1-2 fields per row on mobile
-#   • Body split: side-by-side on desktop, stacked on mobile
-#   • Left column selector: full-width on mobile, fixed on desktop
-#   • Preview area: shorter height on mobile
-#   • Buttons: wrap to 2 per row on mobile
-#   • Dialog width/height clamp to viewport
-#   • All original business logic preserved verbatim
+# PURPOSE
+#   A self-contained report generator embedded in the admin app. Lets the
+#   user pick columns from Travelers / Batches / Payments, filter by date,
+#   batch, status, method, amount, and generate a summary or ledger report
+#   with export to Excel / CSV / PDF.
+#
+# VERSION
+#   v1.3 — 2026-10-06
+#     • §17.3.3 setup_ui rewritten: the whole dialog body is now wrapped
+#       in a scrollable Column so the bottom buttons stay reachable on
+#       any viewport height (fixes mobile Safari where the action row
+#       was cut off and unreachable).
+#     • Dialog width/height clamp to viewport − margins.
+#     • Preview height reduced on narrow screens.
+#     • All v1.2 features preserved verbatim.
+#
+# SECTION INDEX
+#   17.1   Module header (this block)
+#   17.1b  _fmt_inr_                — INR number formatter
+#   17.1c  _app_base                — find project root
+#   17.1d  _export_dir / _assets_export_dir / _open_local_file
+#   17.1e  _fmt_date_ddmmyyyy / _parse_ui_date
+#   17.1f  _photo_data_uri / _find_photo_path
+#   17.1g  _is_money_label
+#   17.1h  FIELD CATALOGS (TRAVELER_FIELDS / BATCH_FIELDS /
+#          PAYMENT_FIELDS / MONEY_FIELDS / _dyn_label)
+#
+#   17.2   class ColumnOrderDialog
+#   17.2.1   __init__
+#   17.2.2   _rebuild_list
+#   17.2.3   setup_ui
+#   17.2.4   show
+#
+#   17.3   class CustomReportDialog
+#   17.3.1   __init__
+#   17.3.1b  _fmt_money_inr
+#   17.3.1c  _load_live_tax_rates
+#   17.3.1d  _refresh_invoice_caches
+#   17.3.1e  _resolve_invoice_for_payment
+#   17.3.1f  _is_invoice_paid_for_payment
+#   17.3.1g  _get_payment_share
+#   17.3.1h  _get_invoice_share
+#   17.3.2   PATH HELPERS (get_app_base_path / get_photo_path / safe_str /
+#            safe_csv_value / format_date_to_ddmmyyyy /
+#            convert_scientific_to_number / wrap_text)
+#   17.3.3   setup_ui                 ← rewritten in v1.3 (scroll fix)
+#   17.3.4   setup_left_panel
+#   17.3.5   setup_traveler_tab
+#   17.3.6   setup_batch_tab
+#   17.3.7   setup_payment_tab
+#   17.3.8   setup_right_panel
+#   17.3.9   setup_filters
+#   17.3.9b  _on_report_format_changed
+#   17.3.10  setup_preview
+#   17.3.11  setup_buttons
+#   17.3.12  setup_status
+#   17.3.13  create_checkbox_group
+#   17.3.14  select_all_checkboxes
+#   17.3.15  get_selected_columns
+#   17.3.16  date quick filter handlers
+#   17.3.17  open_column_ordering_dialog
+#   17.3.18  load_data_preview
+#   17.3.18b _force_reload_csv
+#   17.3.18c _diagnose
+#   17.3.19  generate_preview
+#   17.3.19b _generate_ledger_preview
+#   17.3.20  _build_row_wide
+#   17.3.21  _format_payment_value
+#   17.3.22  display_preview
+#   17.3.23  export_to_excel
+#   17.3.24  export_to_csv
+#   17.3.25  export_to_pdf
+#   17.3.26  generate_pdf_report
+#   17.3.27  _build_pdf_photo_cell
+#   17.3.28  show / reject / _snack / _set_status
+#
+#   17.4   MAINTENANCE WARNINGS
 # =================================================================================
 
+
+# =================================================================================
+# 17.1 — IMPORTS
+# =================================================================================
 import os
 import sys
 import csv
@@ -40,6 +112,9 @@ except ImportError:
 
 # =================================================================================
 # 17.1b — MODULE HELPER: _fmt_inr_
+# PURPOSE
+#   Format a number as Indian Rupees with lakh/crore grouping
+#   (e.g. 1234567.89 → "12,34,567.89"). Never raises.
 # =================================================================================
 if '_fmt_inr_' not in globals():
     def _fmt_inr_(value):
@@ -47,7 +122,7 @@ if '_fmt_inr_' not in globals():
             v = float(value or 0)
         except (TypeError, ValueError):
             return "0.00"
-        if v != v:
+        if v != v:  # NaN
             return "0.00"
         negative = v < 0
         v = abs(v)
@@ -76,6 +151,9 @@ if '_fmt_inr_' not in globals():
 
 # =================================================================================
 # 17.1c — MODULE HELPER: _app_base
+# PURPOSE
+#   Locate the project root regardless of whether the app is frozen
+#   (PyInstaller) or running from core/ inside the repo.
 # =================================================================================
 def _app_base():
     if getattr(sys, "frozen", False):
@@ -97,6 +175,9 @@ def _app_base():
 
 # =================================================================================
 # 17.1d — MODULE HELPERS: export dirs
+# PURPOSE
+#   Return (and create) the correct export folders under the project root.
+#   _open_local_file is a no-op on web — kept for API compatibility.
 # =================================================================================
 def _export_dir(sub):
     d = Path(_app_base()) / "exports" / sub
@@ -116,7 +197,10 @@ def _open_local_file(path):
 
 
 # =================================================================================
-# 17.1e — MODULE HELPER: date formatting
+# 17.1e — MODULE HELPERS: date formatting
+# PURPOSE
+#   _fmt_date_ddmmyyyy: normalise any date value → "DD/MM/YYYY" string.
+#   _parse_ui_date:     parse a UI string into a datetime or None.
 # =================================================================================
 def _fmt_date_ddmmyyyy(dv):
     if dv is None:
@@ -164,7 +248,10 @@ def _parse_ui_date(s):
 
 
 # =================================================================================
-# 17.1f — MODULE HELPER: photo helpers
+# 17.1f — MODULE HELPERS: photo helpers
+# PURPOSE
+#   _photo_data_uri: read a photo from disk → data URI for Flet Image.
+#   _find_photo_path: scan documents/<traveler_id>/photos for a photo.
 # =================================================================================
 def _photo_data_uri(path):
     if not path or not os.path.exists(path):
@@ -208,6 +295,9 @@ def _find_photo_path(t):
 
 # =================================================================================
 # 17.1g — MODULE HELPER: money label detection
+# PURPOSE
+#   Decide whether a column label represents a currency value so we
+#   render it right-aligned with the correct ₹ formatting.
 # =================================================================================
 def _is_money_label(label):
     if not label:
@@ -227,6 +317,9 @@ def _is_money_label(label):
 
 # =================================================================================
 # 17.1h — FIELD CATALOGS
+# PURPOSE
+#   Static lists of every column the user can pick from, grouped by source
+#   (traveler / batch / payment) plus helper metadata.
 # =================================================================================
 TRAVELER_FIELDS = [
     ("id", "ID"), ("first_name", "First Name"),
@@ -349,6 +442,7 @@ MONEY_FIELDS = {
 
 
 def _dyn_label(key, n):
+    """Return the per-slot label for a dynamic payment column."""
     return {
         "__dyn_amount":    f"Payment {n} Amount",
         "__dyn_date":      f"Payment {n} Date",
@@ -363,10 +457,17 @@ def _dyn_label(key, n):
 
 
 # =================================================================================
-# 17.2 — CLASS: ColumnOrderDialog  (Mobile-Responsive)
+# 17.2 — CLASS: ColumnOrderDialog
+# =================================================================================
+# PURPOSE
+#   Small modal for reordering the columns in the current report. Shows
+#   the selected columns as a list; tap a row, use Up/Down to move it.
 # =================================================================================
 class ColumnOrderDialog:
 
+    # -----------------------------------------------------------------------------
+    # 17.2.1 — __init__
+    # -----------------------------------------------------------------------------
     def __init__(self, page, columns, on_apply):
         self.page = page
         self.columns = list(columns)
@@ -377,6 +478,11 @@ class ColumnOrderDialog:
         self._rebuild_list()
         self.setup_ui()
 
+    # -----------------------------------------------------------------------------
+    # 17.2.2 — _rebuild_list
+    # PURPOSE
+    #   Redraw the clickable list of columns. Selected row is highlighted.
+    # -----------------------------------------------------------------------------
     def _rebuild_list(self):
         self._list.controls.clear()
         for i, col in enumerate(self.columns):
@@ -407,6 +513,9 @@ class ColumnOrderDialog:
                 else ft.Border.all(1, ft.Colors.GREY_200),
                 border_radius=6, on_click=_click, ink=True))
 
+    # -----------------------------------------------------------------------------
+    # 17.2.3 — setup_ui
+    # -----------------------------------------------------------------------------
     def setup_ui(self):
         header = ft.Container(
             content=ft.Row([
@@ -506,20 +615,25 @@ class ColumnOrderDialog:
             ],
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
+    # -----------------------------------------------------------------------------
+    # 17.2.4 — show
+    # -----------------------------------------------------------------------------
     def show(self):
         self.page.show_dialog(self.dialog)
 
 
 # =================================================================================
-# 17.3 — CLASS: CustomReportDialog  (Mobile-Responsive)
+# 17.3 — CLASS: CustomReportDialog
 # =================================================================================
 class CustomReportDialog:
 
     _MONEY_FIELDS = MONEY_FIELDS
-    HARD_CAP = 10
+    HARD_CAP = 10  # max dynamic payment slots
 
     # =============================================================================
     # 17.3.1 — __init__
+    # PURPOSE
+    #   Load data, prime invoice caches, then build the UI.
     # =============================================================================
     def __init__(self, page, db, current_user):
         self.page = page
@@ -567,7 +681,6 @@ class CustomReportDialog:
         self.record_count_label = None
         self.dialog = None
 
-        # Layout containers we need to re-style for mobile
         self._left_panel_container = None
         self._body_responsive_row = None
 
@@ -584,6 +697,8 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1c — _load_live_tax_rates
+    # PURPOSE
+    #   Read GST and TCS percentages from SettingsManager.
     # =============================================================================
     def _load_live_tax_rates(self):
         try:
@@ -599,6 +714,12 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1d — _refresh_invoice_caches   (FIX-PAID-CASCADE)
+    # PURPOSE
+    #   Build three dicts from the invoices table:
+    #     invoice_by_id / invoice_by_no       — fast lookup by ID or number
+    #     default_invoice_by_traveler         — fallback invoice per traveler
+    #     traveler_invoice_data               — SUM per traveler (all invoices)
+    #   This is what lets us pro-rate any payment across its invoice.
     # =============================================================================
     def _refresh_invoice_caches(self):
         self.traveler_invoice_data = {}
@@ -695,6 +816,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1e — _resolve_invoice_for_payment
+    # PURPOSE
+    #   Find the invoice that a payment belongs to. Uses payment.invoice_id
+    #   first, then falls back to the traveler's default invoice.
     # =============================================================================
     def _resolve_invoice_for_payment(self, payment, traveler_id):
         inv_id = str(payment.get('invoice_id', '') or '').strip()
@@ -713,6 +837,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1f — _is_invoice_paid_for_payment
+    # PURPOSE
+    #   True if the payment's invoice is marked Paid. Falls back to
+    #   a live DB scan if the cache misses.
     # =============================================================================
     def _is_invoice_paid_for_payment(self, payment, traveler_id):
         try:
@@ -733,6 +860,10 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1g — _get_payment_share
+    # PURPOSE
+    #   Given a single payment and its traveler, return the pro-rated
+    #   invoice components (base, discount, taxable, GST, TCS, total)
+    #   that this payment represents.
     # =============================================================================
     def _get_payment_share(self, payment, traveler_id):
         amt = 0.0
@@ -774,6 +905,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1h — _get_invoice_share
+    # PURPOSE
+    #   Fallback when no single invoice can be resolved: pro-rate the
+    #   traveler's total invoice components by the payment amount.
     # =============================================================================
     def _get_invoice_share(self, traveler_id, payment_amount):
         data = self.traveler_invoice_data.get(traveler_id)
@@ -828,7 +962,7 @@ class CustomReportDialog:
         }
 
     # =============================================================================
-    # 17.3.2 — PATH HELPERS
+    # 17.3.2 — PATH / STRING HELPERS
     # =============================================================================
     def get_app_base_path(self):
         return _app_base()
@@ -969,37 +1103,43 @@ class CustomReportDialog:
         return '\n'.join(lines)
 
     # =============================================================================
-    # 17.3.3 — setup_ui   (MOBILE-RESPONSIVE)
+    # 17.3.3 — setup_ui   (MOBILE-RESPONSIVE + SCROLL)  ← v1.3 FIX
+    # PURPOSE
+    #   Build the dialog. Everything below the header is inside a
+    #   scrollable Column so the bottom buttons stay reachable on any
+    #   viewport height. Dialog clamps to (viewport − margins).
     # =============================================================================
     def setup_ui(self):
+        # ---- 17.3.3.1  Header (compact, close always visible) ----
         header = ft.Container(
             content=ft.Row([
-                ft.Text("📊", size=22),
+                ft.Text("📊", size=20),
                 ft.Column([
-                    ft.Text("Custom Report Generator", size=14,
+                    ft.Text("Custom Report Generator", size=13,
                             weight=ft.FontWeight.BOLD,
                             color=ft.Colors.WHITE,
                             no_wrap=False, max_lines=2),
                     ft.Text("Traveler Summary OR Payment Ledger",
                             size=9, color=ft.Colors.BLUE_100),
-                ], spacing=2, expand=True),
-                ft.IconButton(icon=ft.Icons.CLOSE,
-                              icon_color=ft.Colors.WHITE,
-                              icon_size=20,
-                              tooltip="Close",
-                              on_click=lambda e: self.reject()),
-            ], spacing=8),
-            padding=ft.Padding.symmetric(horizontal=14, vertical=10),
+                ], spacing=1, expand=True),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    icon_color=ft.Colors.WHITE,
+                    icon_size=20,
+                    tooltip="Close",
+                    on_click=lambda e: self.reject()),
+            ], spacing=6),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
             gradient=ft.LinearGradient(
                 begin=ft.Alignment.CENTER_LEFT,
                 end=ft.Alignment.CENTER_RIGHT,
                 colors=["#1e40af", "#2563eb", "#7c3aed"]),
-            border_radius=12)
+            border_radius=10)
 
+        # ---- 17.3.3.2  Build panels ----
         left_panel = self.setup_left_panel()
         right_panel = self.setup_right_panel()
 
-        # Responsive split: stacked on mobile, side-by-side on desktop
         self._body_responsive_row = ft.ResponsiveRow(
             controls=[
                 ft.Container(content=left_panel,
@@ -1007,41 +1147,70 @@ class CustomReportDialog:
                 ft.Container(content=right_panel,
                              col={"xs": 12, "sm": 12, "md": 8, "lg": 8}),
             ],
-            spacing=12, run_spacing=12,
+            spacing=10, run_spacing=10,
         )
-        body = ft.Container(
-            content=self._body_responsive_row,
-            expand=True)
 
         filters_card = self.setup_filters()
         buttons = self.setup_buttons()
         status = self.setup_status()
 
-        pw = self.page.width or 1400
-        ph = self.page.height or 900
-        init_w = max(340, min(1400, pw - 30))
-        init_h = max(500, min(800, ph - 60))
+        # ---- 17.3.3.3  Inner scrollable column ----
+        # KEY FIX: everything below the header scrolls independently of
+        # the dialog chrome. Buttons + status row are inside the scroll
+        # so the user can always reach them by scrolling down.
+        inner = ft.Column(
+            controls=[
+                filters_card,
+                self._body_responsive_row,
+                buttons,
+                status,
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True,
+        )
+
+        # ---- 17.3.3.4  Dialog clamped to viewport ----
+        # Never exceeds viewport height minus ~60px so the OS chrome
+        # (mobile Safari bottom bar, Android nav bar) doesn't cover
+        # the action buttons.
+        try:
+            vw = self.page.width or 400
+        except Exception:
+            vw = 400
+        try:
+            vh = self.page.height or 700
+        except Exception:
+            vh = 700
+
+        dlg_w = max(320, min(1400, vw - 24))
+        dlg_h = max(400, min(800, vh - 60))
 
         dialog_content = ft.Container(
             content=ft.Column([
                 header,
-                filters_card,
-                body,
-                buttons,
-                status,
-            ], spacing=10, expand=True),
-            width=init_w, height=init_h, padding=4)
+                ft.Container(content=inner, expand=True),
+            ], spacing=8, expand=True),
+            width=dlg_w,
+            height=dlg_h,
+            padding=4)
 
+        # No title bar — the header is inside the content, saving
+        # valuable vertical space on mobile.
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("📊 Custom Report Generator",
-                          weight=ft.FontWeight.BOLD, size=15),
+            title=None,
             content=dialog_content,
             actions=[],
-            actions_alignment=ft.MainAxisAlignment.CENTER)
+            actions_alignment=ft.MainAxisAlignment.CENTER,
+            inset_padding=ft.Padding.symmetric(horizontal=6, vertical=6),
+        )
 
     # =============================================================================
-    # 17.3.4 — setup_left_panel   (MOBILE-RESPONSIVE)
+    # 17.3.4 — setup_left_panel
+    # PURPOSE
+    #   Wrap the column selector tabs in a fixed-height card that
+    #   stacks full-width on mobile, sits 380px wide on desktop.
     # =============================================================================
     def setup_left_panel(self):
         column_group_title = ft.Text(
@@ -1067,7 +1236,6 @@ class CustomReportDialog:
                 ]),
             ], expand=True))
 
-        # On mobile: full-width, shorter. On desktop: fixed 380px, 560 tall.
         self._left_panel_container = ft.Container(
             content=ft.Column([
                 column_group_title,
@@ -1085,6 +1253,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.5 — setup_traveler_tab
+    # PURPOSE
+    #   Build the "Travelers" tab in the column selector with All/Clear
+    #   buttons and a scrollable list of checkboxes.
     # =============================================================================
     def setup_traveler_tab(self):
         for k, l in TRAVELER_FIELDS:
@@ -1211,7 +1382,10 @@ class CustomReportDialog:
             padding=0, expand=True)
 
     # =============================================================================
-    # 17.3.9 — setup_filters   (MOBILE-RESPONSIVE)
+    # 17.3.9 — setup_filters
+    # PURPOSE
+    #   Build the entire filter bar. Uses ResponsiveRow so each field
+    #   wraps to its own row on xs, packs tighter on md and up.
     # =============================================================================
     def setup_filters(self):
         self.report_format_dropdown = ft.Dropdown(
@@ -1287,7 +1461,6 @@ class CustomReportDialog:
                 on_click=_quick(days), height=32,
                 bgcolor="#e0f2fe", color="#0369a1")
 
-        # Responsive rows for filters
         row1 = ft.ResponsiveRow(
             controls=[
                 ft.Container(content=self.report_format_dropdown,
@@ -1355,11 +1528,13 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.10 — setup_preview   (MOBILE-RESPONSIVE: shorter height)
+    # PURPOSE
+    #   Build the preview area with horizontal scroll. Height is
+    #   smaller on mobile (220px) than desktop (380px).
     # =============================================================================
     def setup_preview(self):
         pw = self.page.width or 1000
-        # Shorter on mobile
-        PREVIEW_H = 260 if pw < 700 else 380
+        PREVIEW_H = 220 if pw < 700 else 380
 
         self.preview_table = ft.DataTable(
             columns=[ft.DataColumn(ft.Text("Preview", size=11,
@@ -1408,7 +1583,10 @@ class CustomReportDialog:
             border_radius=10, expand=True)
 
     # =============================================================================
-    # 17.3.11 — setup_buttons   (MOBILE-RESPONSIVE: 2 per row)
+    # 17.3.11 — setup_buttons   (MOBILE-RESPONSIVE)
+    # PURPOSE
+    #   Action buttons row. Uses ResponsiveRow so on mobile each button
+    #   takes a half-width (6/12), fitting two per row.
     # =============================================================================
     def setup_buttons(self):
         def _btn(label, icon, color, handler):
@@ -1498,6 +1676,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.15 — get_selected_columns
+    # PURPOSE
+    #   Return the list of {key, label, source} for every checked box
+    #   across the three column tabs.
     # =============================================================================
     def get_selected_columns(self):
         selected = []
@@ -1519,7 +1700,9 @@ class CustomReportDialog:
         return selected
 
     # =============================================================================
-    # 17.3.16 — date quick filters (compat wrappers)
+    # 17.3.16 — date quick filter handlers
+    # PURPOSE
+    #   Convenience handlers that set From/To and trigger a preview.
     # =============================================================================
     def set_date_today(self):
         self.reg_date_from.value = datetime.now().strftime("%d/%m/%Y")
@@ -1593,6 +1776,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.18 — load_data_preview   (FIX-CSV-AUTHORITY)
+    # PURPOSE
+    #   Initial data load. Chooses between DB memory and CSV file by
+    #   row count (CSV is authoritative if it has more rows).
     # =============================================================================
     def load_data_preview(self):
         try:
@@ -1677,6 +1863,8 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.18b — _force_reload_csv
+    # PURPOSE
+    #   Force a fresh read of payments.csv and regenerate the preview.
     # =============================================================================
     def _force_reload_csv(self, e=None):
         try:
@@ -1734,6 +1922,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.18c — _diagnose
+    # PURPOSE
+    #   Dump the payment source and per-traveler counts to stdout so
+    #   the user can debug why a report is empty.
     # =============================================================================
     def _diagnose(self, e=None):
         try:
@@ -1771,6 +1962,10 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.19 — generate_preview   (FIX-FRESH-DATA preserved)
+    # PURPOSE
+    #   Main entry point for report generation. Reloads payments +
+    #   invoices from the DB, then either generates the summary (with
+    #   column picker) or delegates to ledger generation.
     # =============================================================================
     def generate_preview(self, e=None):
         try:
@@ -1855,6 +2050,7 @@ class CustomReportDialog:
             payment_cols = [c for c in selected if c['source'] == 'payment']
             has_payment_cols = len(payment_cols) > 0
 
+            # ---- Filter travelers ----
             filtered_travelers = []
             for traveler in self.traveler_data:
                 try:
@@ -1894,6 +2090,7 @@ class CustomReportDialog:
                 except Exception as ex:
                     print(f"[CR] Error filtering traveler: {ex}")
 
+            # ---- Determine how many payment slots are needed ----
             max_slots = 0
             if has_payment_cols:
                 for traveler in filtered_travelers:
@@ -1917,6 +2114,7 @@ class CustomReportDialog:
                 if max_slots < 1:
                     max_slots = 1
 
+            # ---- Classify payment columns ----
             slot_source_fields = [
                 pf for pf in payment_cols
                 if not pf['key'].startswith('__sum_')
@@ -1936,6 +2134,7 @@ class CustomReportDialog:
                 if pf['key'].startswith('__inv_paid_')
             ]
 
+            # ---- Expand dynamic columns ----
             dynamic_payment_cols = []
             if has_payment_cols:
                 for slot in range(1, max_slots + 1):
@@ -1971,6 +2170,7 @@ class CustomReportDialog:
             final_columns = (traveler_cols + batch_cols
                              + dynamic_payment_cols)
 
+            # ---- Build rows ----
             report_data = []
             batch_lookup = {b['id']: b for b in self.db.get_batches()}
             for traveler in filtered_travelers:
@@ -2033,6 +2233,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.19b — _generate_ledger_preview
+    # PURPOSE
+    #   Alternate flow: one row per payment (flattened). Filters apply
+    #   to both payment and traveler sides. Auto-managed columns.
     # =============================================================================
     def _generate_ledger_preview(self):
         try:
@@ -2233,14 +2436,22 @@ class CustomReportDialog:
         except Exception as ex:
             traceback.print_exc()
             self._set_status("❌", f"Ledger error: {ex}", "#dc2626")
-
-    # =============================================================================
-    # 17.3.20 — _build_row_wide   (all logic preserved)
+            # =============================================================================
+    # 17.3.20 — _build_row_wide
+    # PURPOSE
+    #   Flatten one traveler + its batch + its payments into a single
+    #   dict keyed by column label. Handles:
+    #     • traveler-side fields (dates, aadhaar grouping, photos)
+    #     • batch-side fields (name, dates, price)
+    #     • dynamic payment slots (Payment 1, Payment 2, ...)
+    #     • summary totals (Total Paid, GST, Outstanding, etc.)
+    #     • invoice snapshots for paid invoices
     # =============================================================================
     def _build_row_wide(self, traveler_cols, batch_cols, payment_cols,
                         traveler, batch, payments, max_slots):
         row = {}
 
+        # ---- 17.3.20.1  Batch name resolver ----
         def _resolve_batch_name(traveler, batch):
             if batch:
                 try:
@@ -2268,6 +2479,7 @@ class CustomReportDialog:
         path_columns = ['passport_scan', 'aadhaar_scan', 'pan_scan',
                         'vaccine_scan', 'photo']
 
+        # ---- 17.3.20.2  Traveler columns ----
         for col in traveler_cols:
             key = col['key']
             label = col['label']
@@ -2309,6 +2521,7 @@ class CustomReportDialog:
                 value = self.safe_str(value)
             row[label] = value
 
+        # ---- 17.3.20.3  Batch columns ----
         for col in batch_cols:
             key = col['key']
             label = col['label']
@@ -2328,6 +2541,7 @@ class CustomReportDialog:
             else:
                 row[label] = self.safe_str(batch.get(key, ''))
 
+        # ---- 17.3.20.4  Payment columns ----
         traveler_id = traveler.get('id')
         base_total = 0.0
         discount_total = 0.0
@@ -2373,6 +2587,7 @@ class CustomReportDialog:
                 if pf['key'].startswith('__dyn_')
             ]
 
+            # ---- 17.3.20.5  Per-slot columns ----
             for slot in range(1, max_slots + 1):
                 idx = slot - 1
                 for pf in slot_fields:
@@ -2390,6 +2605,7 @@ class CustomReportDialog:
                     else:
                         row[label] = ''
 
+            # ---- 17.3.20.6  Summary totals ----
             total_paid = sum(
                 float(p.get('amount', 0) or 0) for p in payments)
             overflow = payments[max_slots:]
@@ -2453,6 +2669,7 @@ class CustomReportDialog:
                 if label in requested_summary_labels:
                     row[label] = value
 
+            # ---- 17.3.20.7  Invoice snapshot columns ----
             inv = self.default_invoice_by_traveler.get(traveler_id)
             requested_snapshots = {
                 pf['label'] for pf in payment_cols
@@ -2489,6 +2706,10 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.21 — _format_payment_value
+    # PURPOSE
+    #   Format one field from one payment row (used by dynamic and
+    #   per-slot column expansion). Money fields are ₹-formatted; dates
+    #   become DD/MM/YYYY; other fields pass through safe_str.
     # =============================================================================
     def _format_payment_value(self, key, payment, traveler):
         if key == 'passport_name':
@@ -2587,7 +2808,11 @@ class CustomReportDialog:
         return ''
 
     # =============================================================================
-    # 17.3.22 — display_preview   (MOBILE-RESPONSIVE: narrower columns)
+    # 17.3.22 — display_preview
+    # PURPOSE
+    #   Render the preview DataTable from the generated rows.
+    #   Column widths adapt to viewport; money cells are right-aligned;
+    #   photo cells use base64 data URIs.
     # =============================================================================
     def display_preview(self, selected, report_data):
         try:
@@ -2660,6 +2885,10 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.23 — export_to_excel   (FIX-CLOUD-EXPORTS preserved)
+    # PURPOSE
+    #   Generate a .xlsx with two sheets: "Report" and "Summary".
+    #   Photo cells embed the actual image (via Pillow). Money cells use
+    #   the INR number format.
     # =============================================================================
     def export_to_excel(self, e=None):
         if not self.report_data:
@@ -2784,6 +3013,7 @@ class CustomReportDialog:
 
             ws.freeze_panes = 'A2'
 
+            # ---- Summary sheet ----
             summary_ws = wb.create_sheet("Summary")
             summary_ws['A1'] = "Report Summary"
             summary_ws['A1'].font = Font(bold=True, size=14)
@@ -2816,6 +3046,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.24 — export_to_csv
+    # PURPOSE
+    #   Write the report as a UTF-8-BOM CSV with a metadata header block
+    #   (7 comment lines) followed by the table.
     # =============================================================================
     def export_to_csv(self, e=None):
         if not self.report_data:
@@ -2898,6 +3131,9 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.25 — export_to_pdf
+    # PURPOSE
+    #   Thin wrapper around generate_pdf_report() that saves to the PDF
+    #   export folder and serves the file.
     # =============================================================================
     def export_to_pdf(self, e=None):
         if not self.report_data:
@@ -2926,7 +3162,11 @@ class CustomReportDialog:
             self._snack(f"❌ PDF export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.26 — generate_pdf_report   (all logic preserved)
+    # 17.3.26 — generate_pdf_report
+    # PURPOSE
+    #   Build a landscape PDF with reportlab. If more than 7 columns,
+    #   splits the table into multiple pages (7 columns per page) so
+    #   nothing gets squished. Photo cells embed the actual image.
     # =============================================================================
     def generate_pdf_report(self, filepath, selected, report_data):
         try:
@@ -3025,6 +3265,7 @@ class CustomReportDialog:
                     f"Columns {start_c}–{end_c} of {total_cols}", page_lbl))
                 elements.append(Spacer(1, 4))
 
+                # ---- Build the table ----
                 table_data = [[Paragraph(l, header_style) for l in chunk]]
                 for row in report_data:
                     row_cells = []
@@ -3071,6 +3312,7 @@ class CustomReportDialog:
                         row_cells.append(Paragraph(txt or '&nbsp;', st))
                     table_data.append(row_cells)
 
+                # ---- Column widths ----
                 min_w = []
                 for l in chunk:
                     if l == 'Photo':
@@ -3124,6 +3366,10 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.27 — _build_pdf_photo_cell
+    # PURPOSE
+    #   Helper to build a scaled reportlab image cell for a photo path.
+    #   Not used by the main PDF flow (which inlines the logic), but kept
+    #   for future reuse.
     # =============================================================================
     def _build_pdf_photo_cell(self, rel_path, base_path, max_size,
                               cell_style):
@@ -3153,6 +3399,12 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.28 — SHOW / REJECT / SNACK / STATUS HELPERS
+    # PURPOSE
+    #   show()         — display the dialog and trigger initial preview
+    #   _auto_preview()— background task that generates the first report
+    #   reject()       — close the dialog
+    #   _snack()       — transient notification
+    #   _set_status()  — update the status icon + label
     # =============================================================================
     def show(self):
         try:
@@ -3199,20 +3451,26 @@ class CustomReportDialog:
 # =================================================================================
 # 17.4 — MAINTENANCE WARNINGS
 # =================================================================================
-# 17.4.1  — FIX-CLOUD-EXPORTS : exports use send_file_to_user (HTTP)
-# 17.4.2  — FIX-FRESH-DATA    : generate_preview() reloads CSVs first
+# 17.4.1  — FIX-CLOUD-EXPORTS : exports use send_file_to_user (HTTP).
+#            Files are written to /app/exports/<type>/ on the volume.
+# 17.4.2  — FIX-FRESH-DATA    : generate_preview() reloads CSVs first.
 # 17.4.3  — All prior fixes preserved (paid-cascade, per-invoice share,
 #              dynamic payments, CSV authority, tax-in-source,
 #              slot columns, INR format, ledger, filters, outstanding,
 #              pro UI, ledger auto-columns, summary outstanding,
 #              excel/pdf meta).
-# 17.4.4  — MOBILE-RESPONSIVE (v1.2):
-#              • Header compact with visible Close button
-#              • Filters wrap to 1-2 per row on xs
-#              • Left/Right panels stack on mobile via ResponsiveRow
-#              • Preview height shrinks on narrow screens
-#              • Action buttons 2 per row on mobile
-#              • Dialog clamps to viewport width/height
+# 17.4.4  — MOBILE-RESPONSIVE (v1.3):
+#              • §17.3.3 setup_ui: entire dialog body is inside a
+#                scrollable Column. Buttons + status reachable on any
+#                viewport height.
+#              • Dialog clamps to (viewport − 60px) so nothing gets
+#                clipped by OS chrome.
+#              • §17.3.10 setup_preview: preview height 220 (mobile)
+#                vs 380 (desktop).
+#              • §17.3.11 setup_buttons: buttons use ResponsiveRow
+#                so they wrap to 2 per row on xs.
+#              • Header included INSIDE the scroll content so no title
+#                bar steals vertical space.
 # =================================================================================
 # SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION)
 # =================================================================================
