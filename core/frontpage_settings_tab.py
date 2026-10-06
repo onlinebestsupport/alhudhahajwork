@@ -1017,22 +1017,44 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=10)
 
-    # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — v3.9: SIMPLE, single pick_files call
+      # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — opens native HTML upload page
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
-        picker = (self.photo_picker if media_type == "photos"
-                  else self.video_picker)
+        url = f"/gallery-upload?type={media_type}"
+        print(f"[GALLERY] opening upload page: {url}")
 
-        # ---- Detect mobile ----
-        is_mobile = False
+        async def _go():
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[GALLERY] UrlLauncher failed: {e}")
+            try:
+                r = self.page_ref.launch_url(
+                    url, web_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                return
+            except Exception as e:
+                print(f"[GALLERY] page.launch_url failed: {e}")
+            try:
+                self.page_ref.go(url)
+            except Exception as e:
+                print(f"[GALLERY] page.go failed: {e}")
+
         try:
-            w = self.page_ref.width
-            if w is None:
-                w = getattr(self.page_ref.window, "width", None)
-            is_mobile = (w or 1200) < 700
-        except Exception:
-            pass
+            self.page_ref.run_task(_go)
+        except Exception as ex:
+            print(f"[GALLERY] run_task failed: {ex}")
+            try:
+                self._snack(f"⚠️ Could not open upload page: {ex}",
+                            DANGER)
+            except Exception:
+                pass
 
         # ---- Choose file-type filter (only if the enum is available) ----
         file_type = None
