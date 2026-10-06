@@ -1,32 +1,46 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.6 — Fix: Flet 1.0 renamed ImageFit → BoxFit
-#   • Added _FIT_COVER module-level fallback (works on both old and new Flet)
-#   • Section [11.3] _gallery_item_row now uses the fallback
-#   • v3.5 dynamic gallery (photos + videos) preserved
-#   • v3.4 batch list grey-box fix preserved (no wrapper Container)
-#   • Plain class — NOT ft.Column subclass
-#   • self.root = ft.Container(content=Column(scroll=AUTO), expand=True)
+# v3.7 — Mobile-friendly gallery file picker
+#   • §[11.4] _pick_gallery_files — 3-tier fallback:
+#         1. file_type filter (best for mobile: iOS Safari, Android Chrome)
+#         2. allowed_extensions (desktop fallback)
+#         3. bare picker with no filters
+#       Mobile detection also disables allow_multiple (mobile browsers
+#       frequently abort multi-select on the picker).
+#   • §[11.7] _register_pickers — adds each picker to BOTH
+#         page.services AND page.overlay (some Flet web builds only
+#         honour one of them for the hidden <input type="file">).
+#   • v3.6 ImageFit → BoxFit fix preserved
+#   • v3.5 dynamic gallery preserved
+#   • v3.4 batch list grey-box fix preserved
 #
 # SECTION INDEX
 #   [0]     __init__ / constructor
 #   [H]     Shared helpers
-#   [H.1]   _section_card — the boxed card wrapper
-#   [H.2]   _field — TextField factory
-#   [H.3]   _two_col — two TextFields side by side
-#   [1]     Header banner           _section_1_header
-#   [2]     Hero Section            _section_2_hero
-#   [3]     Alert Banner            _section_3_alert
-#   [4]     Features                _section_4_features
-#   [5]     Packages Section        _section_5_packages
-#   [6]     About Section           _section_6_about
-#   [7]     Contact Info            _section_7_contact
-#   [8]     Social Links            _section_8_social
-#   [9]     Footer                  _section_9_footer
-#   [11]    Gallery                 _section_11_gallery
-#   [10]    Action Bar              _section_10_action_bar
-#   [A]     Actions — save, reset, preview, snack
+#   [H.1]   _section_card
+#   [H.2]   _field
+#   [H.3]   _two_col
+#   [1]     Header banner
+#   [2]     Hero Section
+#   [3]     Alert Banner
+#   [4]     Features
+#   [5]     Packages Section
+#   [6]     About Section
+#   [7]     Contact Info
+#   [8]     Social Links
+#   [9]     Footer
+#   [11]    Gallery                             ← updated
+#   [11.1]  _rebuild_gallery_lists
+#   [11.2]  _gallery_stats_text
+#   [11.3]  _gallery_item_row
+#   [11.4]  _pick_gallery_files                 ← UPDATED (mobile fix)
+#   [11.5]  _upload_files
+#   [11.6]  _remove_gallery_item
+#   [11.7]  _register_pickers                   ← UPDATED (dual register)
+#   [11.8]  _save_silent
+#   [10]    Action Bar
+#   [A]     Actions
 # =================================================================================
 
 import json
@@ -88,25 +102,21 @@ class FrontPageSettingsTab:
         self.all_batches = []
         self.batch_checkboxes = {}
 
-        # ---- Field handles (filled in by section builders) ----
-        # Hero
+        # ---- Field handles ----
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
 
-        # Alert
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
 
-        # Features
         self.feature_rows_container = None
         self.feature_entries = []
 
-        # Packages
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
@@ -114,14 +124,12 @@ class FrontPageSettingsTab:
         self.pkg_subtitle = None
         self._batch_ui = None
 
-        # About
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
 
-        # Contact
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
@@ -129,12 +137,10 @@ class FrontPageSettingsTab:
         self.contact_addr1 = None
         self.contact_addr2 = None
 
-        # Social
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
 
-        # Footer
         self.footer_about = None
         self.footer_copyright = None
 
@@ -944,7 +950,6 @@ class FrontPageSettingsTab:
 
     # -----------------------------------------------------------------------------
     # [11.3] _gallery_item_row
-    #   FIXED: uses _FIT_COVER (version-agnostic) instead of ft.ImageFit
     # -----------------------------------------------------------------------------
     def _gallery_item_row(self, item, media_type):
         url = item.get("url", "")
@@ -952,7 +957,6 @@ class FrontPageSettingsTab:
         size_kb = int((item.get("size", 0) or 0) // 1024)
         original = item.get("original_name", "")
 
-        # ---- Thumbnail ----
         if media_type == "photos":
             img_kwargs = dict(src=url, width=56, height=56,
                               border_radius=6)
@@ -972,7 +976,6 @@ class FrontPageSettingsTab:
                 bgcolor="#f1f5f9", border_radius=6,
                 border=ft.Border.all(1, BORDER))
 
-        # ---- Caption field ----
         caption_field = self._field(
             "Caption (optional)", caption)
 
@@ -985,7 +988,6 @@ class FrontPageSettingsTab:
 
         caption_field.on_blur = _save_caption
 
-        # ---- Delete handler ----
         def _remove(ev, _item=item, _mt=media_type):
             self._remove_gallery_item(_mt, _item)
 
@@ -1019,32 +1021,93 @@ class FrontPageSettingsTab:
             border_radius=10)
 
     # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files
+    # [11.4] _pick_gallery_files — v3.7 MOBILE-FRIENDLY (3-tier fallback)
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
         picker = (self.photo_picker if media_type == "photos"
                   else self.video_picker)
 
+        # -------- Mobile detection --------
+        is_mobile = False
+        try:
+            w = self.page_ref.width
+            if w is None:
+                w = getattr(self.page_ref.window, "width", None)
+            is_mobile = (w or 1200) < 700
+        except Exception:
+            pass
+
+        # -------- File-type mapping --------
+        # Flet exposes ft.FilePickerFileType. On mobile this is the
+        # ONLY reliable filter — allowed_extensions silently breaks
+        # the picker on iOS Safari and Chrome mobile.
+        try:
+            if media_type == "photos":
+                file_type = ft.FilePickerFileType.IMAGE
+            else:
+                file_type = ft.FilePickerFileType.VIDEO
+        except AttributeError:
+            file_type = None
+
+        exts = (["jpg", "jpeg", "png", "webp", "gif"]
+                if media_type == "photos"
+                else ["mp4", "webm", "mov", "m4v"])
+
+        print(f"[GALLERY] pick start: media={media_type} "
+              f"mobile={is_mobile} file_type={file_type}")
+
         async def _pick():
             try:
-                exts = (["jpg", "jpeg", "png", "webp", "gif"]
-                        if media_type == "photos"
-                        else ["mp4", "webm", "mov", "m4v"])
-                files = await picker.pick_files(
-                    allow_multiple=True,
-                    with_data=True,
-                    allowed_extensions=exts)
+                # ---- Attempt 1: file_type filter (best for mobile) ----
+                try:
+                    files = await picker.pick_files(
+                        allow_multiple=not is_mobile,
+                        with_data=True,
+                        file_type=file_type,
+                    )
+                except Exception as e1:
+                    print(f"[GALLERY] attempt 1 failed: {e1}")
+                    files = None
+
+                # ---- Attempt 2: allowed_extensions (desktop fallback) ----
+                if files is None and not is_mobile:
+                    try:
+                        files = await picker.pick_files(
+                            allow_multiple=True,
+                            with_data=True,
+                            allowed_extensions=exts,
+                        )
+                    except Exception as e2:
+                        print(f"[GALLERY] attempt 2 failed: {e2}")
+                        files = None
+
+                # ---- Attempt 3: bare picker, no filters ----
+                if files is None:
+                    try:
+                        files = await picker.pick_files(
+                            with_data=True,
+                        )
+                    except Exception as e3:
+                        print(f"[GALLERY] attempt 3 failed: {e3}")
+                        files = None
+
+                print(f"[GALLERY] pick returned: {files}")
+
                 if not files:
+                    self._snack("⚠️ No files selected",
+                                ft.Colors.ORANGE_700)
                     return
+
                 await self._upload_files(files, media_type)
             except Exception as ex:
-                print(f"[FRONTPAGE] gallery pick failed: {ex}")
+                print(f"[GALLERY] pick failed: {ex}")
                 traceback.print_exc()
                 self._snack(f"⚠️ Picker error: {ex}", DANGER)
 
         try:
             self.page_ref.run_task(_pick)
         except Exception as ex:
+            print(f"[GALLERY] run_task failed: {ex}")
             self._snack(f"⚠️ {ex}", DANGER)
 
     # -----------------------------------------------------------------------------
@@ -1168,18 +1231,38 @@ class FrontPageSettingsTab:
         self.page_ref.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
-    # [11.7] _register_pickers
+    # [11.7] _register_pickers — v3.7 DUAL REGISTRATION (services + overlay)
     # -----------------------------------------------------------------------------
     def _register_pickers(self):
         if self._pickers_registered:
             return
         try:
             for p in (self.photo_picker, self.video_picker):
+                # ---- Belt and suspenders ----
+                # Flet 1.0 expects services in page.services.
+                # But some web builds need the picker in page.overlay
+                # for the hidden <input type="file"> to attach on mobile.
+                # Add to BOTH if available.
+                added = False
+
                 if hasattr(self.page_ref, "services"):
-                    if p not in self.page_ref.services:
-                        self.page_ref.services.append(p)
-                elif p not in self.page_ref.overlay:
-                    self.page_ref.overlay.append(p)
+                    try:
+                        if p not in self.page_ref.services:
+                            self.page_ref.services.append(p)
+                            added = True
+                    except Exception as e:
+                        print(f"[GALLERY] services.append failed: {e}")
+
+                if hasattr(self.page_ref, "overlay"):
+                    try:
+                        if p not in self.page_ref.overlay:
+                            self.page_ref.overlay.append(p)
+                            added = True
+                    except Exception as e:
+                        print(f"[GALLERY] overlay.append failed: {e}")
+
+                print(f"[GALLERY] picker registered: {added}")
+
             self._pickers_registered = True
             try:
                 self.page_ref.update()
@@ -1188,6 +1271,7 @@ class FrontPageSettingsTab:
             print("[FRONTPAGE] gallery pickers registered ✅")
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
+            traceback.print_exc()
 
     # -----------------------------------------------------------------------------
     # [11.8] _save_silent
