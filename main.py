@@ -1071,7 +1071,19 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    _boot_log("Traveler portal endpoints registered")
+    _boot_log("Traveler portal endpoints registered")  
+    # -----------------------------------------------------------------------------
+    # 21.5.8b — /gallery-upload  (native HTML5 uploader for mobile browsers)
+    # -----------------------------------------------------------------------------
+    gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
+
+    @app.get("/gallery-upload")
+    async def gallery_upload_page():
+        if os.path.exists(gallery_upload_html):
+            return FileResponse(gallery_upload_html,
+                                media_type="text/html")
+        raise HTTPException(status_code=404,
+                            detail="Upload page not found")
 
     # -----------------------------------------------------------------------------
     # 21.5.9 — Gallery media serving
