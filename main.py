@@ -1,14 +1,11 @@
 # =================================================================================
 # main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# v2.19 — Desktop scroll fix
-#   • §21.3.1: REMOVED page.scroll = ADAPTIVE (was fighting inner scrolls)
-#   • §21.3.3 show_main_window: REMOVED outer scroll wrapper
-#     (MainWindowView and each tab has its own internal scroll —
-#      wrapping it again caused nested-scroll conflicts on desktop)
-#   • §21.3.3 show_login: KEPT the wrapper (needed for mobile)
-#   • All v2.18 features preserved (login wrapper, documents symlink,
-#     gallery, sessions, captcha, traveler portal, Page.update patch)
+# v2.20 — Flet 1.0 navigation fix
+#   • §21.3.2 _go_home_page: uses web_only_window_name (not web_window_name)
+#   • Removed page.launch_url / page.go (removed in Flet 1.0)
+#   • 3-tier fallback: web_only_window_name → web_window_name → bare
+#   • All v2.19 fixes preserved (no page.scroll, no main-window wrapper)
 #
 # SECTION INDEX
 #   21.1     Configuration & platform detection
@@ -25,7 +22,7 @@
 #   21.2.6   Document directory symlink
 #   21.3     Flet admin entry point
 #   21.3.1   flet_main() — root function
-#   21.3.2   Back-to-home navigation
+#   21.3.2   Back-to-home navigation (Flet 1.0 fix)
 #   21.3.3   Login / main / logout screens
 #   21.3.4   Bootstrap session restore
 #   21.4     Favicon middleware
@@ -38,6 +35,7 @@
 #   21.5.6   /api/batches
 #   21.5.7   Captcha endpoints
 #   21.5.8   Traveler portal endpoints
+#   21.5.8b  /gallery-upload (mobile-friendly upload page)
 #   21.5.9   Gallery media serving
 #   21.5.10  Gallery upload
 #   21.5.11  Gallery delete
@@ -172,7 +170,7 @@ def _patch_page_update():
         except Exception:
             continue
     if Page is None:
-        _boot_log("❌ Could not locate Page class")
+        _boot_log("Could not locate Page class")
         return
     try:
         _original_update = Page.update
@@ -187,9 +185,9 @@ def _patch_page_update():
 
         Page.update = _safe_update
         _PATCH_INSTALLED = True
-        _boot_log("✅ Patched Page.update() (narrow)")
+        _boot_log("Patched Page.update() (narrow)")
     except Exception as e:
-        _boot_log(f"❌ Patch failed: {e}")
+        _boot_log(f"Patch failed: {e}")
 
 
 _patch_page_update()
@@ -239,7 +237,7 @@ def _seed_volume_if_empty(base_path: str):
             print(f"[SEED] Copied {len(seeded)} file(s) to {data_dir}: "
                   f"{seeded}", flush=True)
         else:
-            print(f"[SEED] Volume already populated — no seeding needed",
+            print("[SEED] Volume already populated — no seeding needed",
                   flush=True)
     except Exception as e:
         print(f"[SEED] Failed: {e}", flush=True)
@@ -331,13 +329,13 @@ async def _save_session(page, user, max_retries=3):
             if asyncio.iscoroutine(result):
                 await result
 
-            print(f"[SESSION] ✅ Saved user_id={uid} to client_storage")
+            print(f"[SESSION] Saved user_id={uid} to client_storage")
             return
         except Exception as e:
             print(f"[SESSION] save attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(0.3)
 
-    print(f"[SESSION] ❌ Save failed after {max_retries} attempts")
+    print(f"[SESSION] Save failed after {max_retries} attempts")
 
 
 async def _load_session(page, max_retries=4):
@@ -361,7 +359,7 @@ async def _load_session(page, max_retries=4):
             if uid:
                 user = _find_user_by_id(AppState.db, uid)
                 if user:
-                    print(f"[SESSION] ✅ Restored user "
+                    print(f"[SESSION] Restored user "
                           f"'{user.get('username')}'")
                     return user
                 else:
@@ -385,7 +383,7 @@ async def _load_session(page, max_retries=4):
             print(f"[SESSION] load attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(0.3)
 
-    print(f"[SESSION] ❌ Load failed after {max_retries} attempts")
+    print(f"[SESSION] Load failed after {max_retries} attempts")
     return None
 
 
@@ -397,7 +395,7 @@ async def _clear_session(page):
         result = storage.remove(SESSION_KEY)
         if asyncio.iscoroutine(result):
             await result
-        print("[SESSION] ✅ Cleared saved session")
+        print("[SESSION] Cleared saved session")
     except Exception as e:
         print(f"[SESSION] clear failed: {e}")
 
@@ -421,16 +419,15 @@ def _ensure_documents_symlink():
     try:
         os.makedirs(target, exist_ok=True)
     except Exception as e:
-        print(f"[DOCS] ❌ Could not create {target}: {e}", flush=True)
+        print(f"[DOCS] Could not create {target}: {e}", flush=True)
         return
 
     if os.path.islink(link):
         try:
             resolved = os.path.realpath(link)
-            print(f"[DOCS] ✅ {link} → {resolved} (already set)",
-                  flush=True)
+            print(f"[DOCS] {link} -> {resolved} (already set)", flush=True)
         except Exception:
-            print(f"[DOCS] ✅ {link} is a symlink", flush=True)
+            print(f"[DOCS] {link} is a symlink", flush=True)
         return
 
     if os.path.isdir(link):
@@ -451,18 +448,17 @@ def _ensure_documents_symlink():
         try:
             shutil.rmtree(link)
         except Exception as e:
-            print(f"[DOCS] ❌ Could not remove old dir {link}: {e}",
-                  flush=True)
+            print(f"[DOCS] Could not remove old dir {link}: {e}", flush=True)
             return
 
         print(f"[DOCS] migrated {migrated} item(s), skipped {skipped} "
-              f"(already present) → {target}", flush=True)
+              f"(already present) -> {target}", flush=True)
 
     try:
         os.symlink(target, link)
-        print(f"[DOCS] ✅ {link} → {target} (persistent)", flush=True)
+        print(f"[DOCS] {link} -> {target} (persistent)", flush=True)
     except Exception as e:
-        print(f"[DOCS] ❌ symlink failed: {e}", flush=True)
+        print(f"[DOCS] symlink failed: {e}", flush=True)
 
 
 # =================================================================================
@@ -470,17 +466,15 @@ def _ensure_documents_symlink():
 # =================================================================================
 def flet_main(page: ft.Page):
     # -----------------------------------------------------------------------------
-    # 21.3.1 — Page setup  (v2.19: page.scroll intentionally NOT set)
+    # 21.3.1 — Page setup
     # -----------------------------------------------------------------------------
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
 
-    # NOTE: We deliberately do NOT set page.scroll here. The LoginView
-    # is wrapped in its own scroll container in show_login() below, and
-    # every tab inside MainWindowView has its own internal scroll. Setting
-    # page.scroll on top of those creates nested-scroll conflicts that
-    # break desktop mouse-wheel behaviour.
+    # NOTE: page.scroll is intentionally NOT set. LoginView and every tab
+    # inside MainWindowView have their own internal scroll. Adding a
+    # page-level scroll on top creates nested-scroll conflicts on desktop.
 
     try:
         page.window.width = 400
@@ -530,43 +524,52 @@ def flet_main(page: ft.Page):
     state = {"user": None}
 
     # -----------------------------------------------------------------------------
-    # 21.3.2 — Back to Home (async-aware for Flet 1.0)
+    # 21.3.2 — Back to Home (Flet 1.0-aware)
+    #
+    # Flet 1.0 renamed web_window_name -> web_only_window_name and removed
+    # page.launch_url() and page.go(). This function tries the correct
+    # parameter first, then falls back to the legacy name, then to a bare
+    # call (which opens in a new tab — always works).
     # -----------------------------------------------------------------------------
-        def _go_home_page():
-        print("[NAV] Back to Home clicked → scheduling navigation")
+    def _go_home_page():
+        print("[NAV] Back to Home clicked -> scheduling navigation")
 
         async def _do():
-            # Flet 1.0 param
+            # --- Attempt 1: Flet 1.0 param name — same tab ---
             try:
                 launcher = ft.UrlLauncher()
-                r = launcher.launch_url("/", web_only_window_name="_self")
+                r = launcher.launch_url("/",
+                                        web_only_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] ✅ web_only_window_name=_self")
+                print("[NAV] OK launch_url(web_only_window_name=_self)")
                 return
+            except TypeError as te:
+                print(f"[NAV] 1.0 param rejected: {te}")
             except Exception as e:
-                print(f"[NAV] 1.0 param failed: {e}")
+                print(f"[NAV] 1.0 param raised: {e}")
 
-            # Legacy param
+            # --- Attempt 2: legacy param name — same tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/", web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] ✅ web_window_name=_self")
+                print("[NAV] OK launch_url(web_window_name=_self)")
                 return
             except Exception as e:
                 print(f"[NAV] legacy param failed: {e}")
 
-            # Bare — new tab
+            # --- Attempt 3: bare call — new tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[NAV] ✅ bare — new tab")
+                print("[NAV] OK launch_url() — new tab")
+                return
             except Exception as e:
-                print(f"[NAV] bare failed: {e}")
+                print(f"[NAV] bare launch_url failed: {e}")
 
         try:
             page.run_task(_do)
@@ -574,9 +577,9 @@ def flet_main(page: ft.Page):
             print(f"[NAV] run_task failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # 21.3.3 — Screen switchers (v2.19)
-    #   • show_login:   wrap in scroll container (mobile needs it)
-    #   • show_main_window: NO wrapper (each tab has its own scroll)
+    # 21.3.3 — Screen switchers
+    #   show_login: scrollable wrapper (needed for mobile)
+    #   show_main_window: no wrapper (each tab has its own scroll)
     # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
@@ -585,9 +588,8 @@ def flet_main(page: ft.Page):
             on_login_success=on_login_success,
             on_cancel=_go_home_page)
 
-        # Scroll wrapper needed so the Login button stays reachable on
-        # short mobile viewports (iOS Safari, split-screen, etc.).
-        # LoginView has no internal scroll, so nesting is safe here.
+        # Scroll wrapper for short mobile viewports. LoginView has no
+        # internal scroll, so nesting here is safe.
         wrapper = ft.Column(
             controls=[login.build()],
             scroll=ft.ScrollMode.AUTO,
@@ -632,12 +634,8 @@ def flet_main(page: ft.Page):
             pass
         mw = MainWindowView(
             page, AppState.db, user, on_logout=on_logout)
-
-        # NOTE (v2.19): no outer scroll wrapper. MainWindowView and each
-        # of its tabs (FrontPageSettingsTab, DataAdminTab, etc.) already
-        # manage their own scrolling. Wrapping it again creates nested
-        # scroll containers — on desktop the outer wrapper eats the mouse
-        # wheel and content gets stuck below the fold.
+        # No outer scroll wrapper — MainWindowView and each tab manage
+        # their own scroll. Nesting causes conflicts on desktop.
         page.add(mw.build())
         try:
             page.update()
@@ -648,7 +646,7 @@ def flet_main(page: ft.Page):
     # 21.3.4 — Bootstrap session restore
     # -----------------------------------------------------------------------------
     async def _bootstrap():
-        print("[SESSION] → Bootstrap starting...")
+        print("[SESSION] Bootstrap starting...")
         try:
             restored = await _load_session(page)
         except Exception as ex:
@@ -657,12 +655,12 @@ def flet_main(page: ft.Page):
             restored = None
 
         if restored:
-            print(f"[SESSION] → Showing main window for "
+            print(f"[SESSION] Showing main window for "
                   f"'{restored.get('username')}'")
             state["user"] = restored
             show_main_window(restored)
         else:
-            print("[SESSION] → No session — showing login")
+            print("[SESSION] No session — showing login")
             show_login()
 
     try:
@@ -758,7 +756,7 @@ def _build_app() -> FastAPI:
     # -----------------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
-        _boot_log(f"❌ Unhandled error on {request.url.path}: {exc}")
+        _boot_log(f"Unhandled error on {request.url.path}: {exc}")
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
@@ -996,7 +994,7 @@ def _build_app() -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            _boot_log(f"❌ /api/traveler/me failed: {e}")
+            _boot_log(f"/api/traveler/me failed: {e}")
             traceback.print_exc()
             raise HTTPException(
                 status_code=500,
@@ -1055,13 +1053,14 @@ def _build_app() -> FastAPI:
         except HTTPException:
             raise
         except Exception as e:
-            _boot_log(f"❌ /api/traveler/document/{doc_key} failed: {e}")
+            _boot_log(f"/api/traveler/document/{doc_key} failed: {e}")
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
-    _boot_log("Traveler portal endpoints registered")  
+    _boot_log("Traveler portal endpoints registered")
+
     # -----------------------------------------------------------------------------
-    # 21.5.8b — /gallery-upload  (native HTML5 uploader for mobile browsers)
+    # 21.5.8b — /gallery-upload (native HTML5 uploader for mobile browsers)
     # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
@@ -1248,23 +1247,23 @@ os.makedirs(os.path.join(base_path, "flet_assets", "icons"), exist_ok=True)
 _boot_log(f"Launching — host={APP_HOST} port={APP_PORT} platform={PLATFORM}")
 
 print("=" * 66, flush=True)
-print("🏆  Alhudha Haj Travel System — Web Edition", flush=True)
-print(f"📦  Platform       : {PLATFORM}", flush=True)
-print(f"📁  Base path      : {base_path}", flush=True)
-print(f"📁  Data dir       : {os.path.join(base_path, 'data')}", flush=True)
-print(f"📁  Static dir     : {static_dir}", flush=True)
-print(f"🌐  Host           : {APP_HOST}", flush=True)
-print(f"🚪  Port           : {APP_PORT}", flush=True)
-print(f"🕐  Started        : "
+print("  Alhudha Haj Travel System — Web Edition", flush=True)
+print(f"  Platform       : {PLATFORM}", flush=True)
+print(f"  Base path      : {base_path}", flush=True)
+print(f"  Data dir       : {os.path.join(base_path, 'data')}", flush=True)
+print(f"  Static dir     : {static_dir}", flush=True)
+print(f"  Host           : {APP_HOST}", flush=True)
+print(f"  Port           : {APP_PORT}", flush=True)
+print(f"  Started        : "
       f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
-    print(f"💾  Volume         : "
+    print(f"  Volume         : "
           f"{os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
-print(f"🩹  Patch          : "
+print(f"  Patch          : "
       f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
-print(f"🏠  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
-print(f"🔐  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
-print(f"👤  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
+print(f"  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
+print(f"  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
+print(f"  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
 print("=" * 66, flush=True)
 
 _ensure_documents_symlink()
