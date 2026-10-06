@@ -25,7 +25,6 @@ import base64
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
-import asyncio
 
 from core.settings_manager import SettingsManager
 from core.helpers import get_app_base_path
