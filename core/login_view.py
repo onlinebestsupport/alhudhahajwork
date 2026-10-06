@@ -1,27 +1,10 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.8 — 2026-10-06
-#   • ✅ FIX: _go_home now uses Flet 1.0's web_only_window_name
-#        (v1.7 called web_window_name → TypeError → all attempts failed)
-#   • ✅ Removed page.launch_url / page.go calls (removed in Flet 1.0)
-#   • ✅ 3-tier fallback: web_only_window_name → web_window_name → bare
-#   • ✅ Mobile scroll fix preserved (root is scrollable Column)
-#   • ✅ CAPTCHA on login (math, self-hosted)
-#   • ✅ Session persistence helpers
-#
-# SECTION INDEX
-#   2.1     _hash_password
-#   2.2     _safe_str
-#   2.3     Session helpers (save / load / clear)
-#   2.4     class LoginView
-#   2.4.1   _build              (mobile-scroll version, unchanged)
-#   2.4.2   build
-#   2.4.3   _go_home            ← UPDATED for Flet 1.0
-#   2.4.4   CAPTCHA helpers
-#   2.4.5   _set_status
-#   2.4.6   _do_login
-#   2.4.7   _safe_update
+# v1.9 — 2026-10-06
+#   • Session helpers now use Flet 1.0.3's page.session.store
+#     (client_storage was removed in Flet 1.0.3)
+#   • Everything else identical to v1.8
 # =================================================================================
 
 import asyncio
@@ -41,7 +24,7 @@ try:
         invalidate_captcha,
     )
 except ImportError:
-    print("[LOGIN] ⚠️ captcha.py missing — running without CAPTCHA")
+    print("[LOGIN] captcha.py missing — running without CAPTCHA")
 
     def generate_math_captcha(sid):
         return {"question": "0 + 0", "session_id": sid, "expires_in": 300}
@@ -53,9 +36,8 @@ except ImportError:
         return None
 
 
-# Session storage key — saved in browser's localStorage
 _SESSION_KEY = "alhudha_admin_session"
-_SESSION_TTL = 8 * 3600  # 8 hours
+_SESSION_TTL = 8 * 3600
 
 
 # =================================================================================
@@ -83,48 +65,89 @@ def _safe_str(v) -> str:
 
 
 # =================================================================================
-# 2.3 — Session helpers (using page.client_storage)
+# 2.3 — Session helpers (v1.9 — page.session.store)
 # =================================================================================
 def save_session_to_storage(page, user: dict):
-    """Save user session to browser's client_storage (persists across refresh)."""
+    """Save user session to Flet's per-session store (Flet 1.0.3)."""
     try:
-        payload = {
-            "user_id": _safe_str(user.get("id", "")),
-            "username": _safe_str(user.get("username", "")),
-            "full_name": _safe_str(user.get("full_name", "")),
-            "role": _safe_str(user.get("role", "")),
-            "permissions": user.get("permissions", ""),
-            "saved_at": time.time(),
-            "expires_at": time.time() + _SESSION_TTL,
-        }
-        page.client_storage.set(_SESSION_KEY, json.dumps(payload))
-        print(f"[LOGIN] Session saved for user={payload['username']}")
+        uid = _safe_str(user.get("id", ""))
+        if not uid:
+            return
+        page.session.store.set("admin_user_id", uid)
+        page.session.store.set("admin_username",
+                               _safe_str(user.get("username", "")))
+        page.session.store.set("admin_role",
+                               _safe_str(user.get("role", "")))
+        print(f"[LOGIN] Session saved to page.session.store: {uid}")
     except Exception as ex:
-        print(f"[LOGIN] session save failed: {ex}")
+        print(f"[LOGIN] page.session.store write failed: {ex}")
+        # Legacy fallback
+        try:
+            storage = getattr(page, "client_storage", None)
+            if storage is not None:
+                payload = {
+                    "user_id": _safe_str(user.get("id", "")),
+                    "username": _safe_str(user.get("username", "")),
+                    "role": _safe_str(user.get("role", "")),
+                    "expires_at": time.time() + _SESSION_TTL,
+                }
+                storage.set(_SESSION_KEY, json.dumps(payload))
+                print("[LOGIN] Session saved via client_storage fallback")
+        except Exception as e2:
+            print(f"[LOGIN] client_storage fallback failed: {e2}")
 
 
 def load_session_from_storage(page):
-    """Load and validate saved session. Returns user dict or None."""
+    """Load saved session from Flet's per-session store."""
     try:
-        raw = page.client_storage.get(_SESSION_KEY)
+        if page.session.store.contains_key("admin_user_id"):
+            uid = page.session.store.get("admin_user_id")
+            if uid:
+                return {
+                    "user_id": uid,
+                    "username": page.session.store.get("admin_username", ""),
+                    "role": page.session.store.get("admin_role", ""),
+                }
+    except Exception as ex:
+        print(f"[LOGIN] page.session.store read failed: {ex}")
+
+    # Legacy fallback
+    try:
+        storage = getattr(page, "client_storage", None)
+        if storage is None:
+            return None
+        raw = storage.get(_SESSION_KEY)
         if not raw:
             return None
         data = json.loads(raw)
         if time.time() > data.get("expires_at", 0):
-            print("[LOGIN] saved session expired")
-            page.client_storage.remove(_SESSION_KEY)
+            try:
+                storage.remove(_SESSION_KEY)
+            except Exception:
+                pass
             return None
         return data
     except Exception as ex:
-        print(f"[LOGIN] session load failed: {ex}")
+        print(f"[LOGIN] client_storage read failed: {ex}")
         return None
 
 
 def clear_session_from_storage(page):
-    """Delete saved session."""
+    """Clear saved session."""
     try:
-        page.client_storage.remove(_SESSION_KEY)
-        print("[LOGIN] Session cleared")
+        for k in ("admin_user_id", "admin_username", "admin_role"):
+            try:
+                page.session.store.remove(k)
+            except Exception:
+                pass
+        print("[LOGIN] Session cleared (page.session.store)")
+    except Exception as ex:
+        print(f"[LOGIN] clear failed: {ex}")
+    # Legacy fallback
+    try:
+        storage = getattr(page, "client_storage", None)
+        if storage is not None:
+            storage.remove(_SESSION_KEY)
     except Exception:
         pass
 
@@ -147,16 +170,12 @@ class LoginView:
         self.login_btn = None
         self.root = None
 
-        # CAPTCHA state
         self.captcha_session_id = str(uuid.uuid4())
         self.captcha_question_label = None
         self.captcha_answer_field = None
 
         self._build()
 
-    # -----------------------------------------------------------------------------
-    # 2.4.1 — _build
-    # -----------------------------------------------------------------------------
     def _build(self):
         company_name = "Alhudha Haj Travel System"
         try:
@@ -169,7 +188,6 @@ class LoginView:
         except Exception:
             pass
 
-        # ---- Top back bar ----
         back_bar = ft.Container(
             content=ft.Row([
                 ft.TextButton(
@@ -190,7 +208,6 @@ class LoginView:
             padding=ft.Padding.symmetric(horizontal=8, vertical=4),
         )
 
-        # ---- Logo ----
         logo = ft.Image(
             src="/static/logo.png",
             width=100, height=100,
@@ -212,7 +229,6 @@ class LoginView:
             text_align=ft.TextAlign.CENTER,
         )
 
-        # ---- Username field ----
         self.username_field = ft.TextField(
             label="Username",
             hint_text="Enter username",
@@ -223,7 +239,6 @@ class LoginView:
             on_submit=lambda e: self._do_login(None),
         )
 
-        # ---- Password field ----
         self.password_field = ft.TextField(
             label="Password",
             hint_text="Enter password",
@@ -235,7 +250,6 @@ class LoginView:
             on_submit=lambda e: self._do_login(None),
         )
 
-        # ---- CAPTCHA ----
         self.captcha_question_label = ft.Text(
             "Loading…",
             size=18,
@@ -303,12 +317,10 @@ class LoginView:
         ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER,
            tight=True)
 
-        # ---- Status ----
         self.status_label = ft.Text(
             "", size=11, color=ft.Colors.RED_500,
             text_align=ft.TextAlign.CENTER)
 
-        # ---- Login button ----
         self.login_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(ft.Icons.LOGIN, size=18, color=ft.Colors.WHITE),
@@ -325,7 +337,6 @@ class LoginView:
             expand=True,
         )
 
-        # ---- Back to Home button ----
         home_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(ft.Icons.HOME, size=16, color=ft.Colors.WHITE),
@@ -342,7 +353,6 @@ class LoginView:
             expand=True,
         )
 
-        # ---- Card ----
         card = ft.Container(
             content=ft.Column([
                 ft.Container(content=logo, width=100, height=100,
@@ -378,14 +388,6 @@ class LoginView:
                 offset=ft.Offset(0, 8)),
         )
 
-        # ---- Root ----
-        # v1.7: The whole page is a scrollable Column so the
-        # Login / Home buttons stay reachable on short mobile viewports.
-        #
-        #   Outer Column (scroll=AUTO, expand=True)   ← makes the page scroll
-        #     ├─ back_bar                              (always at top)
-        #     └─ inner Column (expand, centered)       (pins card to middle)
-        #         └─ card                              (fixed width 420)
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -409,31 +411,14 @@ class LoginView:
             bgcolor="#f0f2f5",
         )
 
-        # ---- Load first CAPTCHA ----
         self._refresh_captcha()
 
-    # -----------------------------------------------------------------------------
-    # 2.4.2 — build
-    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
-    # 2.4.3 — _go_home  [FIX v1.8 — Flet 1.0 API]
-    #
-    # Flet 1.0 renamed the parameter:
-    #   web_window_name  →  web_only_window_name
-    # and removed page.launch_url() and page.go() entirely.
-    #
-    # 3-tier fallback:
-    #   1. ft.UrlLauncher().launch_url(url, web_only_window_name="_self")
-    #   2. ft.UrlLauncher().launch_url(url, web_window_name="_self")  (legacy)
-    #   3. ft.UrlLauncher().launch_url(url)                           (new tab)
-    # -----------------------------------------------------------------------------
     def _go_home(self, e=None):
         print("[LOGIN] Back to Home clicked")
 
-        # Preferred: delegate to main.py handler (it has the same fallback)
         try:
             if self.on_cancel:
                 self.on_cancel()
@@ -441,53 +426,45 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] on_cancel failed: {ex}")
 
-        # Direct fallback with Flet 1.0-aware parameter names
         async def _do():
-            # --- Attempt 1: Flet 1.0 param — same tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/",
                                         web_only_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[LOGIN] ✅ launch_url(web_only_window_name=_self)")
+                print("[LOGIN] OK web_only_window_name=_self")
                 return
             except TypeError as te:
                 print(f"[LOGIN] 1.0 param rejected: {te}")
             except Exception as e:
                 print(f"[LOGIN] 1.0 param raised: {e}")
 
-            # --- Attempt 2: legacy param — same tab ---
             try:
                 launcher = ft.UrlLauncher()
-                r = launcher.launch_url("/",
-                                        web_window_name="_self")
+                r = launcher.launch_url("/", web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[LOGIN] ✅ launch_url(web_window_name=_self)")
+                print("[LOGIN] OK web_window_name=_self")
                 return
             except Exception as e:
                 print(f"[LOGIN] legacy param failed: {e}")
 
-            # --- Attempt 3: bare call — new tab ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[LOGIN] ✅ launch_url() — new tab")
+                print("[LOGIN] OK bare — new tab")
                 return
             except Exception as e:
-                print(f"[LOGIN] bare launch_url failed: {e}")
+                print(f"[LOGIN] bare failed: {e}")
 
         try:
             self.page.run_task(_do)
         except Exception as ex:
             print(f"[LOGIN] run_task failed: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 2.4.4 — CAPTCHA helpers
-    # -----------------------------------------------------------------------------
     def _refresh_captcha(self, e=None):
         try:
             challenge = generate_math_captcha(self.captcha_session_id)
@@ -528,9 +505,6 @@ class LoginView:
             self._set_status("❌ Security check error.")
             return False
 
-    # -----------------------------------------------------------------------------
-    # 2.4.5 — _set_status
-    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=ft.Colors.RED_500):
         try:
             if self.status_label is not None:
@@ -540,9 +514,6 @@ class LoginView:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # 2.4.6 — _do_login
-    # -----------------------------------------------------------------------------
     def _do_login(self, e):
         username = _safe_str(self.username_field.value)
         password = _safe_str(self.password_field.value)
@@ -554,7 +525,6 @@ class LoginView:
             self._set_status("⚠️ Password is required.")
             return
 
-        # CAPTCHA first
         if not self._verify_captcha():
             return
 
@@ -597,8 +567,7 @@ class LoginView:
             self._refresh_captcha()
             return
 
-        # ---- Success ----
-        print(f"[LOGIN] ✅ Success: {username} "
+        print(f"[LOGIN] Success: {username} "
               f"(role={match.get('role', '?')})")
 
         try:
@@ -609,10 +578,9 @@ class LoginView:
         user = dict(match)
         user.pop("password_hash", None)
 
-        # Save session to storage for auto-login on refresh
+        # v1.9: save to page.session.store
         save_session_to_storage(self.page, user)
 
-        # Update last_login
         try:
             if hasattr(self.db, "update_user"):
                 try:
@@ -625,13 +593,11 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] last_login update failed: {ex}")
 
-        # Log activity
         try:
             self.db.log_activity(user["id"], "login", "User logged in")
         except Exception as ex:
             print(f"[LOGIN] log_activity failed: {ex}")
 
-        # Notify parent
         try:
             if self.on_login_success:
                 self.on_login_success(user)
@@ -639,9 +605,6 @@ class LoginView:
             traceback.print_exc()
             self._set_status(f"❌ Login handler failed: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 2.4.7 — _safe_update
-    # -----------------------------------------------------------------------------
     def _safe_update(self):
         try:
             self.page.update()
