@@ -1016,52 +1016,48 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=10)
 
-    # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — v3.10: navigates to native upload page
+        # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — Flet 1.0-aware navigation
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
-        """
-        Open the native HTML upload page.
-
-        We do NOT use Flet's pick_files() because iOS Safari silently
-        blocks programmatically-triggered file inputs when they happen
-        in an async microtask (which is what run_task schedules).
-
-        Instead, we navigate to /gallery-upload which uses a plain
-        <input type="file"> element — always works on every browser.
-        """
         url = f"/gallery-upload?type={media_type}"
         print(f"[GALLERY] opening upload page: {url}")
 
         async def _go():
-            # Attempt 1: UrlLauncher with _self target
+            # --- Flet 1.0 API: web_only_window_name ---
+            try:
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_only_window_name="_self")
+                if asyncio.iscoroutine(r):
+                    await r
+                print("[GALLERY] ✅ launch_url(web_only_window_name=_self)")
+                return
+            except TypeError as te:
+                print(f"[GALLERY] 1.0 param failed: {te}")
+            except Exception as e:
+                print(f"[GALLERY] 1.0 param raised: {e}")
+
+            # --- Older Flet API: web_window_name ---
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url, web_window_name="_self")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] UrlLauncher(_self) succeeded")
+                print("[GALLERY] ✅ launch_url(web_window_name=_self)")
                 return
             except Exception as e:
-                print(f"[GALLERY] UrlLauncher failed: {e}")
+                print(f"[GALLERY] legacy param failed: {e}")
 
-            # Attempt 2: page.launch_url with _self target
+            # --- Bare call — opens in new tab (always works) ---
             try:
-                r = self.page_ref.launch_url(
-                    url, web_window_name="_self")
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url)
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] page.launch_url(_self) succeeded")
+                print("[GALLERY] ✅ launch_url() — new tab")
                 return
             except Exception as e:
-                print(f"[GALLERY] page.launch_url failed: {e}")
-
-            # Attempt 3: page.go (Flet route)
-            try:
-                self.page_ref.go(url)
-                print("[GALLERY] page.go attempted")
-            except Exception as e:
-                print(f"[GALLERY] page.go failed: {e}")
+                print(f"[GALLERY] bare launch_url failed: {e}")
 
         try:
             self.page_ref.run_task(_go)
@@ -1072,7 +1068,6 @@ class FrontPageSettingsTab:
                     f"⚠️ Could not open upload page: {ex}", DANGER)
             except Exception:
                 pass
-
     # -----------------------------------------------------------------------------
     # [11.5] _upload_files — used only when returning from the HTML page
     # -----------------------------------------------------------------------------
