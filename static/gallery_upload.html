@@ -9,10 +9,8 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
-  background: #f1f5f9;
-  min-height: 100vh;
-  padding: 16px;
-  color: #0f172a;
+  background: #f1f5f9; min-height: 100vh;
+  padding: 16px; color: #0f172a;
   -webkit-text-size-adjust: 100%;
 }
 .card {
@@ -28,10 +26,9 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
   background: #f1f5f9; padding: 4px; border-radius: 10px;
 }
 .type-toggle button {
-  flex: 1; padding: 11px 8px;
-  border: none; background: transparent;
-  border-radius: 8px; font-size: 14px;
-  font-weight: 600; cursor: pointer;
+  flex: 1; padding: 11px 8px; border: none;
+  background: transparent; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer;
   font-family: inherit; color: #64748b;
   transition: all 0.15s;
 }
@@ -64,10 +61,7 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
 }
 .btn-primary { background: #2563eb; color: white; }
 .btn-primary:disabled { opacity: 0.5; }
-.btn-secondary {
-  background: #e2e8f0; color: #1e3a8a;
-  text-decoration: none; text-align: center;
-}
+.btn-secondary { background: #e2e8f0; color: #1e3a8a; }
 
 .file-list {
   margin-top: 14px; border-radius: 10px;
@@ -112,13 +106,29 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
 .toast.show { transform: translateY(0); }
 .toast.success { background: #059669; }
 .toast.error { background: #dc2626; }
+
+.success-screen {
+  text-align: center; padding: 20px 10px;
+}
+.success-screen .big-check {
+  font-size: 72px; color: #059669;
+  margin-bottom: 12px; line-height: 1;
+}
+.success-screen h2 {
+  font-size: 22px; color: #059669;
+  margin-bottom: 8px;
+}
+.success-screen p {
+  color: #64748b; font-size: 14px;
+  margin-bottom: 4px;
+}
 </style>
 </head>
 <body>
 
-<div class="card">
-  <h1>📤 Upload Media</h1>
-  <p class="sub">Add photos or videos to the front-page gallery</p>
+<div class="card" id="main-card">
+  <h1 id="title">📤 Upload Media</h1>
+  <p class="sub" id="subtitle">Select files to upload</p>
 
   <div class="type-toggle">
     <button id="btn-photos" class="active" onclick="setType('photos')">📷 Photos</button>
@@ -135,7 +145,6 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
          accept="image/*" onchange="onFilesPicked(event)">
 
   <div class="file-list" id="file-list"></div>
-
   <div class="progress" id="progress">
     <div class="progress-bar" id="progress-bar"></div>
   </div>
@@ -145,8 +154,8 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
     Upload
   </button>
 
-    <button class="btn btn-secondary" onclick="finishAndClose()">
-    ✓ Done — Close this tab
+  <button class="btn btn-secondary" onclick="forceClose()">
+    ✕ Close This Tab
   </button>
 </div>
 
@@ -155,13 +164,14 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
 <script>
 var currentType = 'photos';
 var pendingFiles = [];
+var uploadFinished = false;
 
 function $(id) { return document.getElementById(id); }
 
 function showToast(msg, type) {
   var t = $('toast');
   t.textContent = msg;
-  t.className = 'toast show ' + type;
+  t.className = 'toast show ' + (type || '');
   clearTimeout(t._t);
   t._t = setTimeout(function () { t.className = 'toast'; }, 3800);
 }
@@ -178,9 +188,8 @@ function setType(type) {
 }
 
 function pickFiles() {
-  // CRITICAL: click the input SYNCHRONOUSLY inside the tap handler.
-  // iOS Safari requires the click to happen in the same synchronous
-  // stack as the user gesture — any async delay breaks it.
+  // Click input synchronously inside the tap handler — iOS Safari
+  // requires this to be in the same gesture chain.
   $('file-input').click();
 }
 
@@ -271,21 +280,70 @@ async function startUpload() {
     $('progress-bar').style.width = pct + '%';
   }
 
-  if (fail === 0) {
-    showToast('✅ ' + ok + ' file(s) uploaded', 'success');
-    pendingFiles = [];
-    $('file-input').value = '';
-    setTimeout(renderFileList, 2500);
-  } else {
-    showToast('✅ ' + ok + ' uploaded · ❌ ' + fail + ' failed', 'error');
-  }
+  uploadFinished = true;
 
-  $('upload-btn').disabled = false;
-  $('progress-bar').style.width = '0';
-  setTimeout(function () { $('progress').style.display = 'none'; }, 1500);
+  if (fail === 0) {
+    // Show success screen
+    showSuccessScreen(ok);
+    // Auto-close after 2 seconds
+    setTimeout(function () {
+      forceClose();
+    }, 2000);
+  } else if (ok > 0) {
+    showToast('✅ ' + ok + ' uploaded · ❌ ' + fail + ' failed', 'error');
+    $('upload-btn').disabled = false;
+    $('progress').style.display = 'none';
+  } else {
+    showToast('❌ All uploads failed', 'error');
+    $('upload-btn').disabled = false;
+    $('progress').style.display = 'none';
+  }
 }
 
-(function() {
+function showSuccessScreen(count) {
+  var card = $('main-card');
+  card.innerHTML =
+    '<div class="success-screen">' +
+    '<div class="big-check">✅</div>' +
+    '<h2>' + count + ' file' + (count === 1 ? '' : 's') +
+    ' uploaded</h2>' +
+    '<p>Your ' + currentType + ' have been added to the gallery.</p>' +
+    '<p style="margin-top:14px;font-size:13px;color:#94a3b8">' +
+    'This window will close automatically…</p>' +
+    '<button class="btn btn-primary" onclick="forceClose()" ' +
+    'style="margin-top:20px;max-width:200px;margin-left:auto;' +
+    'margin-right:auto">Close Now</button>' +
+    '</div>';
+}
+
+function forceClose() {
+  // Try multiple methods — one will work depending on the browser
+  try { window.close(); } catch (e) {}
+  try { window.open('', '_self'); window.close(); } catch (e) {}
+  try { self.close(); } catch (e) {}
+  try { top.close(); } catch (e) {}
+
+  // If we're still here after 400ms, show fallback
+  setTimeout(function () {
+    if (!document.body) return;
+    document.body.innerHTML =
+      '<div style="padding:60px 20px;text-align:center;' +
+      'font-family:-apple-system,sans-serif">' +
+      '<div style="font-size:72px;color:#059669;line-height:1">✅</div>' +
+      '<h2 style="color:#059669;margin:16px 0 8px;font-size:22px">' +
+      'Upload Complete</h2>' +
+      '<p style="color:#64748b;font-size:15px;margin-bottom:24px">' +
+      'Your browser blocked automatic closing.<br>' +
+      'You can now close this tab manually.</p>' +
+      '<button onclick="window.close()" style="padding:14px 28px;' +
+      'font-size:16px;background:#2563eb;color:white;border:none;' +
+      'border-radius:10px;cursor:pointer;font-weight:600">' +
+      '✕ Close This Tab</button>' +
+      '</div>';
+  }, 400);
+}
+
+(function () {
   try {
     var params = new URLSearchParams(window.location.search);
     var t = params.get('type');
