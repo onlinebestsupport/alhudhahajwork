@@ -1,52 +1,35 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.19 — FIXES for admin-area state desync:
+# v3.20 — Admin scroll no longer resets; toggles auto-save; max_shown=9
 #
-#   [ROOT-FIX-1] _build_root() now REUSES the existing self.root container
-#                instead of replacing it. This was the #1 cause of "sometimes
-#                works / sometimes doesn't" — after any refresh, the admin
-#                shell still held the OLD root reference in the page tree,
-#                so updates to the NEW root went nowhere.
+#   CHANGES vs v3.19:
+#   • §[0.1]  NEW: self._inner_column, self._auto_save_timer
+#   • §[ROOT] _build_root REUSES the SAME inner Column → scroll position
+#             survives every refresh. THIS FIXES the auto-scroll-to-top bug.
+#   • §[5]    Max packages field defaults to 9 (was 0)
+#   • §[5.0b] _toggle_batch_row_by_id → per-control .update(), NO full
+#             rebuild. THIS FIXES the 5-10 s scroll-reset on toggle.
+#   • §[5.3]  _toggle_batches → same per-control approach
+#   • §[5.4]  NEW _auto_save_batch_state() — writes only batch IDs to
+#             disk so the public page reflects changes instantly
 #
-#   [ROOT-FIX-2] _rebuild_batch_rows() — every toggle (row / All / Clear)
-#                now rebuilds the row visuals from self._batch_check_state
-#                so the UI can NEVER drift from the state. No more relying
-#                on per-control .update() calls that may silently fail.
-#
-#   [ROOT-FIX-3] _safe_update() now falls back to page.update() if
-#                root.update() throws (root not attached / detached).
-#
-#   [ROOT-FIX-4] _toggle_batch_row_by_id / _toggle_batches now use
-#                _rebuild_batch_rows() — single reliable path.
-#
-#   [ROOT-FIX-5] refresh() no longer creates a new root — it rebuilds
-#                content inside the existing root. Batch state is re-seeded
-#                from saved config on every refresh.
-#
-#   [ROOT-FIX-6] Click handling: only the Container has on_click (with
-#                ink=True). Nested on_click on Icon/Text was causing
-#                inconsistent hit-targets across browsers.
-#
-# v3.18 preserved:
-#   • §[5.0b] _toggle_batch_row_by_id
-#   • §[5.3]  _toggle_batches
-#
-# v3.15 preserved:
-#   • ft.Icon(icon=...) — Flet 1.0 API
-#
-# v3.14 preserved:
-#   • Custom clickable rows replace ft.Checkbox — no stale-value bug
-#   • Authoritative self._batch_check_state dict is source of truth
+#   PRESERVED from v3.19:
+#   • Root Container object is NEVER recreated
+#   • Single authoritative state dict (self._batch_check_state)
+#   • _safe_update() falls back to page.update()
+#   • Custom clickable rows (no ft.Checkbox)
+#   • Gallery upload flow (/gallery-upload?type=...)
+#   • Flet 1.0 API (ft.Icon(icon=...), ft.Button, ft.UrlLauncher)
 #
 # SECTION INDEX
-#   [0]      Class setup
-#   [ROOT]   _build_root (now reuses root)
-#   [H]      Shared helpers
-#   [1]-[9]  Section builders
-#   [11]     Gallery
-#   [10]     Action bar
-#   [A]      Actions
+#   §0      Class setup (__init__ / build / refresh / helpers)
+#   §ROOT   _build_root
+#   §H      Shared helpers
+#   §1-§9   Section builders (hero → footer)
+#   §10     Action bar
+#   §11     Gallery
+#   §A      Actions (_collect_config, _save, _reset, etc.)
 # =================================================================================
 
 import asyncio
@@ -57,7 +40,8 @@ import flet as ft
 
 from core.frontpage_config import (
     DEFAULT_CONFIG, load_config, save_config, _deep_merge,
-    gallery_dir, gallery_summary)
+    gallery_dir, gallery_summary,
+    MAX_PACKAGES_SHOWN_DEFAULT)
 
 
 # ---- Palette ----
@@ -88,12 +72,12 @@ _FIT_COVER = _resolve_fit_cover()
 
 
 # =================================================================================
-# [0] class FrontPageSettingsTab
+# §0 — class FrontPageSettingsTab
 # =================================================================================
 class FrontPageSettingsTab:
 
     # -----------------------------------------------------------------------------
-    # [0.1] __init__
+    # §0.1 — __init__
     # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         self.page_ref = page
@@ -103,36 +87,40 @@ class FrontPageSettingsTab:
         self.all_batches = []
         self.batch_checkboxes = {}
 
-        # Form field handles
+        # Hero
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
 
+        # Alert
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
 
+        # Features
         self.feature_rows_container = None
         self.feature_entries = []
 
+        # Packages
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
         self.pkg_title = None
         self.pkg_subtitle = None
         self._batch_ui = None
+        self._batch_check_state = {}     # authoritative source of truth
 
-        self._batch_check_state = {}
-
+        # About
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
 
+        # Contact
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
@@ -140,10 +128,12 @@ class FrontPageSettingsTab:
         self.contact_addr1 = None
         self.contact_addr2 = None
 
+        # Social
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
 
+        # Footer
         self.footer_about = None
         self.footer_copyright = None
 
@@ -164,6 +154,9 @@ class FrontPageSettingsTab:
 
         # Action bar
         self.status_label = None
+
+        # --- v3.20 NEW: inner Column + root Container, created ONCE ---
+        self._inner_column = None
         self.root = None
 
         # Build
@@ -176,15 +169,16 @@ class FrontPageSettingsTab:
             self.root = self._error_ui(e)
 
     # -----------------------------------------------------------------------------
-    # [0.2] build
+    # §0.2 — build
     # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
     # -----------------------------------------------------------------------------
-    # [0.3] refresh — reload config + batches, rebuild CONTENT inside existing root
+    # §0.3 — refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
+        """Reload config + batches, rebuild content in the SAME root."""
         try:
             self.cfg = load_config()
             self._load_batches()
@@ -200,7 +194,7 @@ class FrontPageSettingsTab:
                 pass
 
     # -----------------------------------------------------------------------------
-    # [0.4] _load_batches
+    # §0.4 — _load_batches
     # -----------------------------------------------------------------------------
     def _load_batches(self):
         try:
@@ -216,7 +210,7 @@ class FrontPageSettingsTab:
             self.all_batches = []
 
     # -----------------------------------------------------------------------------
-    # [0.5] _error_ui
+    # §0.5 — _error_ui
     # -----------------------------------------------------------------------------
     def _error_ui(self, exc):
         return ft.Container(
@@ -232,57 +226,63 @@ class FrontPageSettingsTab:
             padding=40, bgcolor="#fef3c7", border_radius=12,
             alignment=ft.Alignment.CENTER, expand=True)
 
-    # =============================================================================
-    # [ROOT] _build_root — REUSES self.root when it already exists
-    # =============================================================================
+
+# =================================================================================
+# §ROOT — _build_root (REUSES inner Column — scroll preserved)
+# =================================================================================
     def _build_root(self):
-        # Reset local maps that get repopulated by section builders
+        """
+        Build (or rebuild) the entire settings page.
+
+        CRITICAL:  self._inner_column and self.root are created ONLY ONCE.
+        On every later call, we just swap `self._inner_column.controls`.
+        This preserves the user's scroll position and prevents the
+        automatic jump-to-top that was happening every few seconds.
+        """
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
 
-        # Build fresh content
-        inner_column = ft.Column(
-            controls=[
-                self._section_1_header(),
-                ft.Container(height=8),
-                self._section_2_hero(),
-                self._section_3_alert(),
-                self._section_4_features(),
-                self._section_5_packages(),
-                self._section_6_about(),
-                self._section_7_contact(),
-                self._section_8_social(),
-                self._section_9_footer(),
-                self._section_11_gallery(),
-                ft.Container(height=12),
-                self._section_10_action_bar(),
-                ft.Container(height=20),
-            ],
-            spacing=10,
-            scroll=ft.ScrollMode.AUTO,
-        )
+        sections = [
+            self._section_1_header(),
+            ft.Container(height=8),
+            self._section_2_hero(),
+            self._section_3_alert(),
+            self._section_4_features(),
+            self._section_5_packages(),
+            self._section_6_about(),
+            self._section_7_contact(),
+            self._section_8_social(),
+            self._section_9_footer(),
+            self._section_11_gallery(),
+            ft.Container(height=12),
+            self._section_10_action_bar(),
+            ft.Container(height=20),
+        ]
 
-        # ── KEY FIX: reuse the existing Container so the page tree stays valid ──
-        if self.root is None or not isinstance(self.root, ft.Container):
+        if self._inner_column is None:
+            # First build
+            self._inner_column = ft.Column(
+                controls=sections,
+                spacing=10,
+                scroll=ft.ScrollMode.AUTO,
+            )
             self.root = ft.Container(
-                content=inner_column,
+                content=self._inner_column,
                 padding=10,
                 bgcolor=PAGE_BG,
                 expand=True,
             )
         else:
-            # Just swap the content — same Container object stays in page tree
-            self.root.content = inner_column
-            self.root.padding = 10
-            self.root.bgcolor = PAGE_BG
-            self.root.expand = True
+            # Later rebuilds — swap content, keep the SAME Column instance
+            self._inner_column.controls = sections
 
         self._register_pickers()
 
-    # =============================================================================
-    # [H] SHARED HELPERS
-    # =============================================================================
+
+# =================================================================================
+# §H — SHARED HELPERS
+# =================================================================================
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
             ft.Container(
@@ -340,9 +340,10 @@ class FrontPageSettingsTab:
         ], spacing=10,
            vertical_alignment=ft.CrossAxisAlignment.START)
 
-    # =============================================================================
-    # [1] HEADER BANNER
-    # =============================================================================
+
+# =================================================================================
+# §1 — HEADER BANNER
+# =================================================================================
     def _section_1_header(self):
         return ft.Container(
             content=ft.Row([
@@ -379,9 +380,10 @@ class FrontPageSettingsTab:
                 colors=[PRIMARY, PRIMARY_LT, ACCENT]),
             border_radius=14)
 
-    # =============================================================================
-    # [2] HERO
-    # =============================================================================
+
+# =================================================================================
+# §2 — HERO
+# =================================================================================
     def _section_2_hero(self):
         h = self.cfg.get("hero", {})
         self.hero_heading = self._field("Heading", h.get("heading", ""))
@@ -402,9 +404,10 @@ class FrontPageSettingsTab:
                 self._two_col(self.hero_button, self.hero_whatsapp),
             ])
 
-    # =============================================================================
-    # [3] ALERT
-    # =============================================================================
+
+# =================================================================================
+# §3 — ALERT
+# =================================================================================
     def _section_3_alert(self):
         a = self.cfg.get("alert", {})
         self.alert_enabled = ft.Switch(
@@ -441,9 +444,10 @@ class FrontPageSettingsTab:
                 self._two_col(self.alert_color, self.alert_style),
             ], accent=WARN)
 
-    # =============================================================================
-    # [4] FEATURES
-    # =============================================================================
+
+# =================================================================================
+# §4 — FEATURES
+# =================================================================================
     def _section_4_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
         self.feature_entries = []
@@ -516,9 +520,10 @@ class FrontPageSettingsTab:
         self._add_feature_row("fa-check-circle", "", "")
         self._safe_update()
 
-    # =============================================================================
-    # [5] PACKAGES
-    # =============================================================================
+
+# =================================================================================
+# §5 — PACKAGES  (max_shown default = 9 now)
+# =================================================================================
     def _section_5_packages(self):
         p = self.cfg.get("packages", {})
 
@@ -539,13 +544,16 @@ class FrontPageSettingsTab:
             border_radius=8)
         self.pkg_source.on_change = self._on_pkg_source_change
 
-        max_shown_val = p.get("max_shown", 0)
+        # ── max_shown: default = 9 ──
+        max_shown_val = p.get("max_shown", MAX_PACKAGES_SHOWN_DEFAULT)
         try:
             max_shown_val_int = int(max_shown_val or 0)
         except Exception:
-            max_shown_val_int = 0
+            max_shown_val_int = MAX_PACKAGES_SHOWN_DEFAULT
+        if max_shown_val_int <= 0:
+            max_shown_val_int = MAX_PACKAGES_SHOWN_DEFAULT
         self.pkg_max_shown = self._field(
-            "Max packages shown (0 = show all checked)",
+            f"Max packages shown (default {MAX_PACKAGES_SHOWN_DEFAULT})",
             str(max_shown_val_int))
 
         select_all_btn = ft.TextButton(
@@ -555,7 +563,7 @@ class FrontPageSettingsTab:
             content=ft.Text("✗ Clear", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
-        # ── Seed state dict fresh from saved config ──
+        # Seed state from saved config
         selected_ids = set()
         try:
             for x in (p.get("selected_batch_ids") or []):
@@ -566,15 +574,11 @@ class FrontPageSettingsTab:
         self._batch_check_state = {}
         self.batch_checkboxes = {}
 
-        # Seed each batch's state
         for b in self.all_batches:
             bid = str(b.get("id", "")).strip()
             self._batch_check_state[bid] = (bid in selected_ids)
 
-        # Container for the rows
         self.pkg_batch_container = ft.Column(spacing=4)
-
-        # Build rows from state
         self._rebuild_batch_rows()
 
         self._batch_ui = ft.Column([
@@ -586,7 +590,7 @@ class FrontPageSettingsTab:
                 clear_all_btn,
             ], spacing=4),
             ft.Text(
-                "Tap a row to toggle. Nothing selected = no packages shown.",
+                "Tap a row to toggle. Auto-saves instantly.",
                 size=10, color=MUTED, italic=True),
             self.pkg_batch_container,
         ], spacing=8)
@@ -604,9 +608,10 @@ class FrontPageSettingsTab:
             ], accent=ACCENT)
 
     # -----------------------------------------------------------------------------
-    # [5.0] _make_batch_row — build ONE row (Container has the on_click)
+    # §5.0 — _make_batch_row  (Container is the only click target)
     # -----------------------------------------------------------------------------
-    def _make_batch_row(self, batch_id, name, status, price_str, is_checked):
+    def _make_batch_row(self, batch_id, name, status, price_str,
+                        is_checked):
         icon = ft.Icon(
             icon=(ft.Icons.CHECK_BOX if is_checked
                   else ft.Icons.CHECK_BOX_OUTLINE_BLANK),
@@ -617,7 +622,6 @@ class FrontPageSettingsTab:
             f"{name}  ·  {status}  ·  {price_str}",
             size=11, expand=True,
             color="#0f172a" if is_checked else MUTED,
-            selectable=False,
         )
         inner_row = ft.Row(
             [icon, label],
@@ -632,9 +636,9 @@ class FrontPageSettingsTab:
                 1, "#a7f3d0" if is_checked else "#e2e8f0"),
             border_radius=8,
             ink=True,
-            on_click=lambda e, _bid=batch_id: self._toggle_batch_row_by_id(_bid),
+            on_click=lambda e, _bid=batch_id:
+                self._toggle_batch_row_by_id(_bid),
         )
-
         self.batch_checkboxes[batch_id] = {
             "container": container,
             "icon": icon,
@@ -643,13 +647,12 @@ class FrontPageSettingsTab:
         return container
 
     # -----------------------------------------------------------------------------
-    # [5.0b] _rebuild_batch_rows — rebuild visual rows from state dict
+    # §5.0b — _rebuild_batch_rows  (used only on initial build / refresh)
     # -----------------------------------------------------------------------------
     def _rebuild_batch_rows(self):
-        """Rebuild all batch rows from self._batch_check_state.
-        This is the ONLY path that changes visual state — guaranteed
-        visual/state sync. Called from toggles and from section build.
-        """
+        """Rebuild ALL rows from state. Only called from
+        _section_5_packages() during initial build / refresh — NOT
+        from toggles (toggles use per-control updates)."""
         if self.pkg_batch_container is None:
             return
 
@@ -671,42 +674,65 @@ class FrontPageSettingsTab:
                 price_str = f"₹{float(price):,.0f}"
             except Exception:
                 price_str = f"₹{price}"
-
             is_checked = self._batch_check_state.get(bid, False)
             row = self._make_batch_row(
                 bid, name, status, price_str, is_checked)
             self.pkg_batch_container.controls.append(row)
 
     # -----------------------------------------------------------------------------
-    # [5.0c] _toggle_batch_row_by_id — flip state, rebuild rows, refresh
+    # §5.0c — _toggle_batch_row_by_id  (PER-CONTROL update, NO rebuild)
     # -----------------------------------------------------------------------------
     def _toggle_batch_row_by_id(self, batch_id):
-        if batch_id not in self._batch_check_state:
-            # fallback: still create an entry so it can be toggled
-            self._batch_check_state[batch_id] = False
+        """
+        Flip ONE row. Repaint ONLY its three widgets.
+        Then silently auto-save the batch state to disk.
+
+        This avoids the previous full-rebuild that was resetting the
+        admin's scroll position every 5-10 seconds.
+        """
+        entry = self.batch_checkboxes.get(batch_id)
+        if not entry:
+            print(f"[FRONTPAGE] toggle: no entry for {batch_id!r}")
+            return
 
         current = bool(self._batch_check_state.get(batch_id, False))
         new_val = not current
         self._batch_check_state[batch_id] = new_val
 
-        # Rebuild ALL rows from state — visual = state, always
-        self._rebuild_batch_rows()
+        # ---- Per-control repaint ----
+        try:
+            entry["icon"].icon = (
+                ft.Icons.CHECK_BOX if new_val
+                else ft.Icons.CHECK_BOX_OUTLINE_BLANK)
+            entry["icon"].color = SUCCESS if new_val else MUTED
+            entry["label"].color = "#0f172a" if new_val else MUTED
+            entry["container"].bgcolor = (
+                "#ecfdf5" if new_val else "#f8fafc")
+            entry["container"].border = ft.Border.all(
+                1, "#a7f3d0" if new_val else "#e2e8f0")
 
-        # Single refresh call — root is attached, update works
-        self._safe_update()
+            for k in ("icon", "label", "container"):
+                try:
+                    entry[k].update()
+                except Exception as e:
+                    print(f"[FRONTPAGE] {k}.update() failed: {e}")
+        except Exception as e:
+            print(f"[FRONTPAGE] row visual update failed: {e}")
 
-        print(f"[FRONTPAGE] toggle batch {batch_id}: "
-              f"{current} -> {new_val}")
+        # ---- Silent auto-save (partial: batch IDs only) ----
+        self._auto_save_batch_state()
+
+        print(f"[FRONTPAGE] toggle {batch_id!r}: {current} -> {new_val}")
 
     # -----------------------------------------------------------------------------
-    # [5.1] _on_pkg_source_change
+    # §5.1 — _on_pkg_source_change
     # -----------------------------------------------------------------------------
     def _on_pkg_source_change(self, e=None):
         self._update_source_visibility()
         self._safe_update()
 
     # -----------------------------------------------------------------------------
-    # [5.2] _update_source_visibility
+    # §5.2 — _update_source_visibility
     # -----------------------------------------------------------------------------
     def _update_source_visibility(self):
         try:
@@ -717,30 +743,78 @@ class FrontPageSettingsTab:
             pass
 
     # -----------------------------------------------------------------------------
-    # [5.3] _toggle_batches — All / Clear (single reliable path)
+    # §5.3 — _toggle_batches (All / Clear — per-control, NO rebuild)
     # -----------------------------------------------------------------------------
     def _toggle_batches(self, value):
         print(f"[FRONTPAGE] _toggle_batches("
               f"{'All' if value else 'Clear'})")
 
-        # 1) Write state for every known batch
-        for bid in list(self._batch_check_state.keys()):
+        for bid, entry in self.batch_checkboxes.items():
             self._batch_check_state[bid] = bool(value)
+            try:
+                entry["icon"].icon = (
+                    ft.Icons.CHECK_BOX if value
+                    else ft.Icons.CHECK_BOX_OUTLINE_BLANK)
+                entry["icon"].color = SUCCESS if value else MUTED
+                entry["label"].color = "#0f172a" if value else MUTED
+                entry["container"].bgcolor = (
+                    "#ecfdf5" if value else "#f8fafc")
+                entry["container"].border = ft.Border.all(
+                    1, "#a7f3d0" if value else "#e2e8f0")
+                for k in ("icon", "label", "container"):
+                    try:
+                        entry[k].update()
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"[FRONTPAGE] _toggle_batches error on {bid!r}: {e}")
 
-        # 2) Also cover batches that may not be in the state yet
-        for b in self.all_batches:
-            bid = str(b.get("id", "")).strip()
-            self._batch_check_state[bid] = bool(value)
+        # Silent auto-save
+        self._auto_save_batch_state()
 
-        # 3) Rebuild rows from state
-        self._rebuild_batch_rows()
+    # -----------------------------------------------------------------------------
+    # §5.4 — _auto_save_batch_state  (NEW in v3.20)
+    # -----------------------------------------------------------------------------
+    def _auto_save_batch_state(self):
+        """
+        Silent partial save — writes ONLY packages.selected_batch_ids
+        to disk. Called after every toggle / All / Clear.
 
-        # 4) Single page refresh
-        self._safe_update()
+        Loads the freshest config from disk first, then patches only
+        the batch ID list — so unsaved text edits elsewhere aren't lost.
+        """
+        try:
+            from core.frontpage_config import (
+                load_config, save_config, normalize_batch_ids)
 
-    # =============================================================================
-    # [6] ABOUT
-    # =============================================================================
+            checked = [
+                bid for bid, is_on
+                in self._batch_check_state.items() if is_on
+            ]
+            checked = normalize_batch_ids(checked)
+
+            cfg = load_config()
+            pkg = cfg.setdefault("packages", {})
+            pkg["selected_batch_ids"] = checked
+
+            ok = save_config(cfg)
+            if ok:
+                try:
+                    self.cfg.setdefault("packages", {})[
+                        "selected_batch_ids"] = checked
+                except Exception:
+                    pass
+                print(f"[FRONTPAGE] auto-saved {len(checked)} batch id(s)")
+            else:
+                print("[FRONTPAGE] auto-save FAILED")
+        except Exception as e:
+            print(f"[FRONTPAGE] auto-save error: {e}")
+            traceback.print_exc()
+
+
+# =================================================================================
+# §6 — ABOUT
+# =================================================================================
     def _section_6_about(self):
         a = self.cfg.get("about", {})
         self.about_heading = self._field("Heading", a.get("heading", ""))
@@ -821,9 +895,10 @@ class FrontPageSettingsTab:
         self._add_stat_row("", "")
         self._safe_update()
 
-    # =============================================================================
-    # [7] CONTACT
-    # =============================================================================
+
+# =================================================================================
+# §7 — CONTACT
+# =================================================================================
     def _section_7_contact(self):
         c = self.cfg.get("contact", {})
         self.contact_phone = self._field(
@@ -848,9 +923,10 @@ class FrontPageSettingsTab:
                 self._two_col(self.contact_addr1, self.contact_addr2),
             ])
 
-    # =============================================================================
-    # [8] SOCIAL
-    # =============================================================================
+
+# =================================================================================
+# §8 — SOCIAL
+# =================================================================================
     def _section_8_social(self):
         s = self.cfg.get("social", {})
         self.social_facebook = self._field(
@@ -869,9 +945,10 @@ class FrontPageSettingsTab:
                 self.social_twitter,
             ])
 
-    # =============================================================================
-    # [9] FOOTER
-    # =============================================================================
+
+# =================================================================================
+# §9 — FOOTER
+# =================================================================================
     def _section_9_footer(self):
         f = self.cfg.get("footer", {})
         self.footer_about = self._field(
@@ -885,9 +962,10 @@ class FrontPageSettingsTab:
             "Bottom-of-page content",
             [self.footer_about, self.footer_copyright])
 
-    # =============================================================================
-    # [11] GALLERY
-    # =============================================================================
+
+# =================================================================================
+# §11 — GALLERY
+# =================================================================================
     def _section_11_gallery(self):
         g = self.cfg.get("gallery", {}) or {}
 
@@ -971,6 +1049,7 @@ class FrontPageSettingsTab:
                 self.video_list_container,
             ], accent=ACCENT)
 
+    # §11.1
     def _rebuild_gallery_lists(self):
         if self.photo_list_container is None:
             return
@@ -1001,6 +1080,7 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
+    # §11.2
     def _gallery_stats_text(self):
         total_bytes = (sum(int(x.get("size", 0) or 0)
                            for x in (self.photo_list or []))
@@ -1024,6 +1104,7 @@ class FrontPageSettingsTab:
                 f"{len(self.video_list)} videos · "
                 f"{_human(total_bytes)} total")
 
+    # §11.3
     def _gallery_item_row(self, item, media_type):
         url = item.get("url", "")
         caption = item.get("caption", "")
@@ -1085,6 +1166,7 @@ class FrontPageSettingsTab:
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
 
+    # §11.4
     def _pick_gallery_files(self, media_type):
         url = f"/gallery-upload?type={media_type}"
         print(f"[GALLERY] opening upload page in NEW tab: {url}")
@@ -1131,6 +1213,7 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
+    # §11.5 (fallback path)
     async def _upload_files(self, files, media_type):
         import httpx
         ok = 0
@@ -1179,6 +1262,7 @@ class FrontPageSettingsTab:
         elif fail:
             self._snack("❌ Upload failed", DANGER)
 
+    # §11.6
     def _remove_gallery_item(self, media_type, item):
         url = item.get("url", "")
         caption = item.get("caption", "") or url
@@ -1246,6 +1330,7 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
+    # §11.7
     def _register_pickers(self):
         if self._pickers_registered:
             return
@@ -1266,6 +1351,7 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
 
+    # §11.8
     def _save_silent(self):
         try:
             cfg = self._collect_config()
@@ -1274,9 +1360,10 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[FRONTPAGE] silent save failed: {ex}")
 
-    # =============================================================================
-    # [10] ACTION BAR
-    # =============================================================================
+
+# =================================================================================
+# §10 — ACTION BAR
+# =================================================================================
     def _section_10_action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
@@ -1329,9 +1416,11 @@ class FrontPageSettingsTab:
             padding=14, bgcolor=SECTION_BG,
             border=ft.Border.all(1, BORDER), border_radius=14)
 
-    # =============================================================================
-    # [A] ACTIONS
-    # =============================================================================
+
+# =================================================================================
+# §A — ACTIONS
+# =================================================================================
+    # §A.1 — _collect_config
     def _collect_config(self):
         def _v(field):
             try:
@@ -1348,11 +1437,11 @@ class FrontPageSettingsTab:
             except Exception:
                 return default
 
-        max_shown = _int(self.pkg_max_shown, 0)
-        if max_shown < 0:
-            max_shown = 0
+        max_shown = _int(self.pkg_max_shown, MAX_PACKAGES_SHOWN_DEFAULT)
+        if max_shown <= 0:
+            max_shown = MAX_PACKAGES_SHOWN_DEFAULT
 
-        # Batch selection — ONLY from authoritative state dict
+        # Batch selection — only from state dict
         selected_ids = []
         try:
             for bid, checked in self._batch_check_state.items():
@@ -1367,8 +1456,6 @@ class FrontPageSettingsTab:
         for sid in selected_ids:
             print(f"[FRONTPAGE]     • {sid!r}")
         print(f"[FRONTPAGE]   max_shown        : {max_shown}")
-        print(f"[FRONTPAGE]   check state      : "
-              f"{self._batch_check_state}")
         print("=" * 60)
 
         features = []
@@ -1456,6 +1543,7 @@ class FrontPageSettingsTab:
             },
         }
 
+    # §A.2 — _save
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -1485,6 +1573,7 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
+    # §A.3 — _reset_confirm
     def _reset_confirm(self, e=None):
         def do_reset(ev):
             try:
@@ -1528,6 +1617,7 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
+    # §A.4 — _open_preview
     def _open_preview(self, e=None):
         try:
             async def _do():
@@ -1552,6 +1642,7 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
+    # §A.5 — _set_status
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
@@ -1561,6 +1652,7 @@ class FrontPageSettingsTab:
             pass
         self._safe_update()
 
+    # §A.6 — _snack
     def _snack(self, msg, color=ft.Colors.GREEN_700):
         try:
             self.page_ref.show_dialog(
@@ -1568,11 +1660,9 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # [A.7] _safe_update — robust: tries root.update() then page.update()
-    # -----------------------------------------------------------------------------
+    # §A.7 — _safe_update
     def _safe_update(self):
-        # Try the local root first (fast path)
+        """Try root.update(); fall back to page.update() if not attached."""
         try:
             if self.root is not None:
                 self.root.update()
@@ -1580,8 +1670,6 @@ class FrontPageSettingsTab:
         except Exception as e:
             print(f"[FRONTPAGE] root.update() failed, "
                   f"falling back to page.update(): {e}")
-
-        # Fallback — always works if page is alive
         try:
             self.page_ref.update()
         except Exception as e:
@@ -1589,5 +1677,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.19
+# SECTION END — core/frontpage_settings_tab.py v3.20
 # =================================================================================
