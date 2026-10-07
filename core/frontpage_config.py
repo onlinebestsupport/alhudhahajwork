@@ -1,13 +1,21 @@
 # =================================================================================
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
-# v1.1 — Dynamic gallery (photos + videos for pilgrim attractions)
+# v1.2 — Strict checkbox semantics for batch selection
+#   • get_selected_batches() now treats the checkbox list literally:
+#       Checked   → shown on public page (regardless of batch status)
+#       Unchecked → hidden from public page
+#       Nothing   → public page shows zero packages
+#     This matches what admins expect. Previously "nothing checked" meant
+#     "show all open batches", which prevented admins from hiding full
+#     or closed batches.
 #
-# Loads/saves the JSON file that drives the marketing front page.
-# File location: <base>/data/frontpage_config.json
+# PURPOSE
+#   Loads/saves the JSON file that drives the marketing front page.
+#   File location: <base>/data/frontpage_config.json
 #
-# Every value has a sensible default baked in. If the JSON file is
-# missing or has missing keys, defaults fill in automatically.
+#   Every value has a sensible default baked in. If the JSON file is
+#   missing or has missing keys, defaults fill in automatically.
 #
 # PATTERNS:
 #   • Admin edits via core/frontpage_settings_tab.py
@@ -25,12 +33,12 @@
 #   1.6     Packages
 #   1.7     About
 #   1.8     Footer
-#   1.9     NEW — Gallery
+#   1.9     Gallery
 #   2     Path resolution (_config_path)
 #   3     Deep merge helper (_deep_merge)
 #   4     Public API (load_config, save_config, public_view)
 #   5     Batch selection helper (get_selected_batches)
-#   6     NEW — Gallery storage helpers
+#   6     Gallery storage helpers
 #   6.1     gallery_dir()
 #   6.2     add_gallery_item()
 #   6.3     remove_gallery_item()
@@ -114,8 +122,11 @@ DEFAULT_CONFIG = {
     # 1.6 — Packages section
     #   source = "batches" → pull from real batches (recommended)
     #   source = "manual"  → use the manual list below
-    #   selected_batch_ids = [] → show ALL open batches (up to max_shown)
-    #   selected_batch_ids = ["HAJ/BCH/2027/001", ...] → only those
+    #
+    #   selected_batch_ids is the CRITICAL field:
+    #     [] → public page shows NO packages
+    #     ["HAJ/BCH/2027/001", "HAJ/BCH/2027/002"] → shows exactly those
+    #   Each ID must match a batch ID in the DB.
     # -----------------------------------------------------------------------------
     "packages": {
         "title": "Our Haj & Umrah Packages",
@@ -168,7 +179,7 @@ DEFAULT_CONFIG = {
     },
 
     # -----------------------------------------------------------------------------
-    # 1.9 — NEW — Gallery (photos + videos)
+    # 1.9 — Gallery (photos + videos)
     #   Files live at /app/data/gallery/{photos,videos}/ on the Railway Volume.
     #   Each item in photos[] / videos[] looks like:
     #     {
@@ -224,7 +235,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
     - Lists are NOT merged — the override list replaces the base list.
       This is intentional: an empty `photos: []` in the saved config
       must be respected as "no photos", not silently refilled with
-      any defaults.
+      any defaults. Same for `selected_batch_ids: []` — must stay empty.
     """
     result = dict(base)
     for k, v in (override or {}).items():
@@ -309,15 +320,21 @@ def public_view(cfg: dict = None) -> dict:
 # =================================================================================
 def get_selected_batches(cfg: dict, all_batches: list) -> list:
     """
-    Given the config and the full list of batches (from db.get_batches()),
-    return the batches that should appear as packages on the front page.
+    Return the batches that should appear on the public front page.
 
-    Logic:
-      • If source == "manual"  → return cfg["packages"]["manual"] list
-      • If source == "batches" → filter real batches:
-          - If selected_batch_ids is empty → show ALL open/closing batches
-          - Otherwise → show only the selected batch IDs
-          - Always limit to cfg["packages"]["max_shown"]
+    STRICT CHECKBOX SEMANTICS (v1.2):
+        • Checked   → batch appears on the front page
+                      (regardless of its status — Full, Closed, Open)
+        • Unchecked → batch does NOT appear
+        • Nothing checked → front page shows ZERO packages
+
+    This is the intuitive behaviour: what the admin checks in the
+    "Batches to show as packages" list is exactly what appears on
+    the public site. Previously:
+        • "nothing checked" = show all open batches (surprising)
+        • Full/Closed batches were always hidden even if checked
+
+    Returns a list of dicts (the batch rows themselves).
     """
     pcfg = (cfg or {}).get("packages", {}) or {}
     source = pcfg.get("source", "batches")
@@ -331,32 +348,32 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
         manual = pcfg.get("manual", []) or []
         return list(manual)[:max_shown]
 
-    # ---- Real batches ----
+    # ---- Real batches (source == "batches") ----
     selected_ids = pcfg.get("selected_batch_ids", []) or []
     selected_ids_str = [str(x) for x in selected_ids if x]
+
+    # Nothing checked → show NOTHING on the public page.
+    if not selected_ids_str:
+        print("[frontpage_config] no batches selected — "
+              "public page will show 0 packages")
+        return []
 
     out = []
     for b in (all_batches or []):
         bid = str(b.get("id", ""))
-
-        # Filter by selection if any IDs are explicitly chosen
-        if selected_ids_str and bid not in selected_ids_str:
+        if bid not in selected_ids_str:
             continue
-
-        # Only show open/closing batches on the public page
-        status = str(b.get("status", "")).lower().strip()
-        if status and status not in ("open", "closing soon"):
-            continue
-
         out.append(b)
         if len(out) >= max_shown:
             break
 
+    print(f"[frontpage_config] selected={len(selected_ids_str)} ids, "
+          f"returning {len(out)} batch(es)")
     return out
 
 
 # =================================================================================
-# 6 — NEW — GALLERY STORAGE HELPERS
+# 6 — GALLERY STORAGE HELPERS
 # =================================================================================
 
 # ---------------------------------------------------------------------------------
