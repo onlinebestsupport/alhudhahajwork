@@ -1,79 +1,61 @@
 # =================================================================================
-# main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
+# main.py — MAIN APPLICATION (FastAPI + uvicorn)
 # =================================================================================
-# PURPOSE
-#   Boots the FastAPI + Flet web server. Mounts:
-#     • /            → public front page (static/index.html)
-#     • /admin       → Flet admin app (login, dashboards, all tabs)
-#     • /traveler    → traveler portal (static/traveler.html)
-#     • /gallery-upload       → native HTML gallery upload page
-#     • /traveler-doc-upload  → native HTML traveler doc upload page
-#     • /static      → static assets (logo, etc.)
-#     • /media/gallery/... → serves uploaded gallery media
-#     • /api/*       → JSON endpoints (config, batches, captcha,
-#                       traveler login, gallery upload/delete,
-#                       traveler doc upload)
+# v2.23 — No-cache API headers
+#   • §21.5.5 /api/frontpage  — added no-store headers
+#   • §21.5.6 /api/batches    — added no-store headers + [API-BATCHES] log
+#   • §21.5.8c /gallery-upload — added no-store headers
+#   Why: browsers were caching these responses, so the admin UI changes
+#   (batch checkbox toggles, gallery uploads) didn't reflect immediately
+#   on the public page or in the upload tab.
 #
-# VERSION
-#   v2.22 — 2026-10-06
-#     • NEW §21.5.8c: /traveler-doc-upload + /api/admin/traveler/upload-doc
-#       (mobile-friendly document upload for the Add/Edit Traveler dialog)
-#     • v2.21 admin session via page.session.store preserved
-#     • v2.20 Flet 1.0 navigation fix preserved
-#     • v2.19 no page.scroll / no main-window scroll wrapper
+#   All v2.22 features preserved:
+#     • Flet 1.0 navigation (web_only_window_name)
+#     • page.session.store admin sessions
+#     • /traveler-doc-upload + /api/admin/traveler/upload-doc
+#     • /app/documents symlink to volume
+#     • /gallery-upload + /api/admin/gallery/*
 #
 # SECTION INDEX
-#   21.1      IMPORTS & CONFIGURATION
+#   21.1      Imports & configuration
 #   21.1.1    Platform detection
 #   21.1.2    Boot logger
-#   21.1.3    (reserved)
-#   21.1.4    JSON sanitizer (NaN/Infinity → null)
-#   21.1.5    Flet Page.update() monkey patch (swallow destroyed sessions)
-#
-#   21.2      APPLICATION STATE & BOOT HELPERS
-#   21.2.1    AppState class (global singletons)
+#   21.1.4    JSON sanitizer
+#   21.1.5    Page.update() monkey patch
+#   21.2      Application state & boot helpers
+#   21.2.1    AppState class
 #   21.2.2    Volume seeder
 #   21.2.3    DB initializer with retries
-#   21.2.4    Signal handlers (SIGTERM/SIGINT → flush DB)
-#   21.2.5    Admin session helpers (page.session.store)
-#   21.2.6    /app/documents symlink guard (persistence)
-#
-#   21.3      FLET ADMIN APP ENTRY POINT
-#   21.3.1    flet_main() — root
-#   21.3.2    _go_home_page() — back-to-home navigation
-#   21.3.3    show_login / on_login_success / on_logout / show_main_window
-#   21.3.4    _bootstrap() — session restore
-#
-#   21.4      FAVICON MIDDLEWARE
-#
-#   21.5      FASTAPI APP ASSEMBLY (routes + mounts)
-#   21.5.1    Directory setup + asset seeding
+#   21.2.4    Signal handlers
+#   21.2.5    Admin session helpers
+#   21.2.6    /app/documents symlink guard
+#   21.3      Flet admin app entry point
+#   21.3.1    flet_main() root
+#   21.3.2    _go_home_page
+#   21.3.3    show_login / main_window / logout
+#   21.3.4    _bootstrap
+#   21.4      Favicon middleware
+#   21.5      FastAPI app assembly
+#   21.5.1    Directory setup & asset seeding
 #   21.5.2    FastAPI creation + middleware
 #   21.5.3    Global error handler
 #   21.5.4    /download/{filename}
-#   21.5.5    /api/frontpage
-#   21.5.6    /api/batches
-#   21.5.7    /api/captcha/new + /api/captcha/verify
-#   21.5.8    /traveler + traveler auth API
-#   21.5.8b   /gallery-upload + gallery media serving + upload/delete
-#   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc  ← NEW
+#   21.5.5    /api/frontpage        ← v2.23 no-cache
+#   21.5.6    /api/batches          ← v2.23 no-cache
+#   21.5.7    /api/captcha/*
+#   21.5.8    /traveler + /api/traveler/*
+#   21.5.8b   /gallery-upload + /api/admin/gallery/*
+#   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc
 #   21.5.9    Mount Flet admin at /admin
 #   21.5.10   Mount /static
 #   21.5.11   Root route "/"
-#
-#   21.6      ENTRY POINT (uvicorn.run)
+#   21.6      Entry point (uvicorn.run)
 # =================================================================================
 
 
 # =================================================================================
 # 21.1 — IMPORTS & CONFIGURATION
 # =================================================================================
-# PURPOSE
-#   Load all dependencies, define constants (port, host, cookie names),
-#   detect the current platform, and install the Flet Page.update()
-#   monkey patch. Runs at import time — must succeed before anything else.
-# =================================================================================
-
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import (FastAPI, HTTPException, Request, File,
@@ -102,12 +84,9 @@ from core.login_view import LoginView
 from core.main_window import MainWindowView
 
 
-# ---------------------------------------------------------------------------------
+# =================================================================================
 # 21.1.1 — Platform detection
-# PURPOSE
-#   Detect where we're running (Railway / Render / Fly / Heroku / local)
-#   so we can log it and conditionally change behavior.
-# ---------------------------------------------------------------------------------
+# =================================================================================
 APP_PORT = int(os.getenv("PORT", 8000))
 APP_HOST = "0.0.0.0"
 
@@ -133,22 +112,16 @@ def _detect_platform() -> str:
 PLATFORM = _detect_platform()
 
 
-# ---------------------------------------------------------------------------------
+# =================================================================================
 # 21.1.2 — Boot logger
-# PURPOSE
-#   Single-line log helper used during startup so Railway logs are greppable
-#   by the [BOOT] prefix.
-# ---------------------------------------------------------------------------------
+# =================================================================================
 def _boot_log(msg: str):
     print(f"[BOOT] {msg}", flush=True)
 
 
-# ---------------------------------------------------------------------------------
-# 21.1.4 — JSON sanitizer
-# PURPOSE
-#   Recursively converts NaN / Infinity / null-like strings to None so
-#   FastAPI's JSONResponse never chokes on pandas output.
-# ---------------------------------------------------------------------------------
+# =================================================================================
+# 21.1.4 — JSON SANITIZER
+# =================================================================================
 def _json_safe(obj):
     if obj is None:
         return None
@@ -183,13 +156,9 @@ def _json_safe(obj):
         return None
 
 
-# ---------------------------------------------------------------------------------
-# 21.1.5 — Flet Page.update() monkey patch
-# PURPOSE
-#   Flet raises RuntimeError("destroyed session") when a background task
-#   tries to update a page whose browser has already disconnected.
-#   We silently swallow ONLY that error class, letting all others raise.
-# ---------------------------------------------------------------------------------
+# =================================================================================
+# 21.1.5 — PAGE.UPDATE() MONKEY PATCH
+# =================================================================================
 _PATCH_INSTALLED = False
 
 
@@ -234,44 +203,31 @@ _patch_page_update()
 # =================================================================================
 # 21.2 — APPLICATION STATE & BOOT HELPERS
 # =================================================================================
-# PURPOSE
-#   AppState holds module-level singletons (db, static dir, gallery root).
-#   Boot helpers prepare the filesystem, load the DB, install signal
-#   handlers, and provide session read/write for the admin app.
-# =================================================================================
-
 
 # ---------------------------------------------------------------------------------
 # 21.2.1 — AppState class
-# PURPOSE
-#   Global state container. Populated in §21.6 entry point.
 # ---------------------------------------------------------------------------------
 class AppState:
-    db = None               # HajDatabase instance
-    db_ready = False        # True once DB loaded successfully
-    db_error = ""           # Last DB error message (shown in UI if failed)
-    static_dir = ""         # <base>/static
-    logo_path = ""          # <base>/static/logo.png
-    flet_assets_dir = ""    # <base>/flet_assets
-    gallery_root = ""       # <base>/data/gallery
+    db = None
+    db_ready = False
+    db_error = ""
+    static_dir = ""
+    logo_path = ""
+    flet_assets_dir = ""
+    gallery_root = ""
 
 
 # ---------------------------------------------------------------------------------
 # 21.2.2 — Volume seeder
-# PURPOSE
-#   On first boot, copy seed_data/*.csv → data/ for any file that doesn't
-#   already exist. Never overwrites existing data. Silent if seed folder absent.
 # ---------------------------------------------------------------------------------
 def _seed_volume_if_empty(base_path: str):
     try:
         data_dir = os.path.join(base_path, "data")
         seed_dir = os.path.join(base_path, "seed_data")
         os.makedirs(data_dir, exist_ok=True)
-
         if not os.path.isdir(seed_dir):
             print(f"[SEED] No seed_data folder at {seed_dir}", flush=True)
             return
-
         seeded = []
         for fname in os.listdir(seed_dir):
             if not fname.endswith(".csv"):
@@ -281,7 +237,6 @@ def _seed_volume_if_empty(base_path: str):
                 continue
             shutil.copy2(os.path.join(seed_dir, fname), dest)
             seeded.append(fname)
-
         if seeded:
             print(f"[SEED] Copied {len(seeded)} file(s) to {data_dir}: "
                   f"{seeded}", flush=True)
@@ -294,9 +249,6 @@ def _seed_volume_if_empty(base_path: str):
 
 # ---------------------------------------------------------------------------------
 # 21.2.3 — DB initializer with retries
-# PURPOSE
-#   Load the HajDatabase with up to 3 attempts, backing off 1s → 2s → 4s.
-#   Records the failure reason in AppState.db_error if all attempts fail.
 # ---------------------------------------------------------------------------------
 def _init_db():
     import time
@@ -326,9 +278,6 @@ def _init_db():
 
 # ---------------------------------------------------------------------------------
 # 21.2.4 — Signal handlers
-# PURPOSE
-#   On SIGTERM (Railway restart) or SIGINT (Ctrl+C), flush the DB to disk
-#   before exiting so no in-memory writes are lost.
 # ---------------------------------------------------------------------------------
 def _install_signal_handlers():
     def _handler(signum, frame):
@@ -342,7 +291,6 @@ def _install_signal_handlers():
         except Exception as e:
             _boot_log(f"DB flush on shutdown failed: {e}")
         sys.exit(0)
-
     try:
         signal.signal(signal.SIGTERM, _handler)
         signal.signal(signal.SIGINT, _handler)
@@ -351,18 +299,9 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — ADMIN SESSION HELPERS
+# 21.2.5 — ADMIN SESSION HELPERS (page.session.store)
 # =================================================================================
-# PURPOSE
-#   Admin (Flet) sessions are stored in Flet 1.0.3's per-session store
-#   (page.session.store). It survives reconnects within a browser session
-#   and is removed on logout. Falls back to legacy client_storage if
-#   page.session.store is unavailable.
-# =================================================================================
-
-
 def _find_user_by_id(db, user_id):
-    """Find a user dict in the DB by ID. Returns dict or None."""
     try:
         from core.traveler_portal import _to_list
         for u in _to_list(db.get_users()):
@@ -374,17 +313,11 @@ def _find_user_by_id(db, user_id):
 
 
 async def _save_session(page, user, max_retries=3):
-    """
-    Persist the admin session after successful login.
-    Primary: page.session.store (Flet 1.0.3)
-    Fallback: page.client_storage (legacy — usually None on Flet 1.0.3)
-    """
     if not user:
         return
     uid = user.get("id")
     if not uid:
         return
-
     try:
         page.session.store.set("admin_user_id", str(uid))
         page.session.store.set("admin_username",
@@ -395,7 +328,6 @@ async def _save_session(page, user, max_retries=3):
         return
     except Exception as ex:
         print(f"[SESSION] page.session.store write failed: {ex}")
-
     for attempt in range(max_retries):
         try:
             storage = getattr(page, "client_storage", None)
@@ -412,12 +344,6 @@ async def _save_session(page, user, max_retries=3):
 
 
 async def _load_session(page, max_retries=4):
-    """
-    Read the admin session on boot.
-    Primary: page.session.store
-    Fallback: page.client_storage
-    Returns a user dict (fresh from DB) or None.
-    """
     try:
         if page.session.store.contains_key("admin_user_id"):
             uid = page.session.store.get("admin_user_id")
@@ -435,7 +361,6 @@ async def _load_session(page, max_retries=4):
                     return None
     except Exception as ex:
         print(f"[SESSION] page.session.store read failed: {ex}")
-
     for attempt in range(max_retries):
         try:
             storage = getattr(page, "client_storage", None)
@@ -459,7 +384,6 @@ async def _load_session(page, max_retries=4):
 
 
 async def _clear_session(page):
-    """Remove the admin session on logout."""
     try:
         page.session.store.remove("admin_user_id")
     except Exception:
@@ -484,24 +408,16 @@ async def _clear_session(page):
 
 
 # =================================================================================
-# 21.2.6 — /app/documents symlink guard
-# =================================================================================
-# PURPOSE
-#   Traveler documents (passports, photos, aadhaar, PAN, vaccine) are
-#   uploaded to /app/documents/... but /app itself is ephemeral on Railway.
-#   This makes /app/documents a SYMLINK to /app/data/documents (the volume).
-#   Migrates any existing real-dir contents on first boot. Idempotent.
+# 21.2.6 — /app/documents SYMLINK GUARD
 # =================================================================================
 def _ensure_documents_symlink():
     target = "/app/data/documents"
     link = "/app/documents"
-
     try:
         os.makedirs(target, exist_ok=True)
     except Exception as e:
         print(f"[DOCS] Could not create {target}: {e}", flush=True)
         return
-
     if os.path.islink(link):
         try:
             resolved = os.path.realpath(link)
@@ -509,7 +425,6 @@ def _ensure_documents_symlink():
         except Exception:
             print(f"[DOCS] {link} is a symlink", flush=True)
         return
-
     if os.path.isdir(link):
         migrated = 0
         skipped = 0
@@ -524,16 +439,13 @@ def _ensure_documents_symlink():
                 migrated += 1
             except Exception as e:
                 print(f"[DOCS] could not migrate '{item}': {e}", flush=True)
-
         try:
             shutil.rmtree(link)
         except Exception as e:
             print(f"[DOCS] Could not remove old dir {link}: {e}", flush=True)
             return
-
         print(f"[DOCS] migrated {migrated} item(s), skipped {skipped} "
               f"(already present) -> {target}", flush=True)
-
     try:
         os.symlink(target, link)
         print(f"[DOCS] {link} -> {target} (persistent)", flush=True)
@@ -544,19 +456,9 @@ def _ensure_documents_symlink():
 # =================================================================================
 # 21.3 — FLET ADMIN APP ENTRY POINT
 # =================================================================================
-# PURPOSE
-#   Defines flet_main(page) — the function Flet calls once per browser
-#   connection to /admin. Handles page setup, session restore, and the
-#   three primary screens (login, main window, DB failure).
-# =================================================================================
-
-
 def flet_main(page: ft.Page):
     # -----------------------------------------------------------------------------
     # 21.3.1 — Page setup
-    # PURPOSE
-    #   Title, theme, mobile-friendly viewport, error UI if DB isn't ready.
-    #   Deliberately does NOT set page.scroll — every inner view has its own.
     # -----------------------------------------------------------------------------
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
@@ -589,7 +491,6 @@ def flet_main(page: ft.Page):
     except Exception:
         pass
 
-    # ---- DB failure screen ----
     if not AppState.db_ready:
         page.controls.clear()
         page.add(ft.Container(
@@ -610,17 +511,12 @@ def flet_main(page: ft.Page):
     state = {"user": None}
 
     # -----------------------------------------------------------------------------
-    # 21.3.2 — _go_home_page (Back to Home)
-    # PURPOSE
-    #   Navigate the browser from /admin to / (public homepage).
-    #   Uses Flet 1.0's web_only_window_name="_self" (renamed from
-    #   web_window_name). Falls back to legacy param, then bare (new tab).
+    # 21.3.2 — Back to Home (Flet 1.0-aware)
     # -----------------------------------------------------------------------------
     def _go_home_page():
         print("[NAV] Back to Home clicked -> scheduling navigation")
 
         async def _do():
-            # Flet 1.0 param
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/",
@@ -633,8 +529,6 @@ def flet_main(page: ft.Page):
                 print(f"[NAV] 1.0 param rejected: {te}")
             except Exception as e:
                 print(f"[NAV] 1.0 param raised: {e}")
-
-            # Legacy param
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/", web_window_name="_self")
@@ -644,8 +538,6 @@ def flet_main(page: ft.Page):
                 return
             except Exception as e:
                 print(f"[NAV] legacy param failed: {e}")
-
-            # Bare — new tab
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url("/")
@@ -662,11 +554,7 @@ def flet_main(page: ft.Page):
             print(f"[NAV] run_task failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # 21.3.3 — Screen switchers (login / main / logout)
-    # PURPOSE
-    #   show_login wraps LoginView in a scrollable Column (mobile fix).
-    #   show_main_window adds MainWindowView directly (each tab has
-    #   its own scroll; extra wrapper causes nested-scroll conflicts).
+    # 21.3.3 — Screen switchers
     # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
@@ -678,8 +566,7 @@ def flet_main(page: ft.Page):
             controls=[login.build()],
             scroll=ft.ScrollMode.AUTO,
             expand=True,
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-        )
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER)
         page.add(wrapper)
         try:
             page.update()
@@ -725,10 +612,7 @@ def flet_main(page: ft.Page):
             _boot_log(f"show_main_window update failed: {ex}")
 
     # -----------------------------------------------------------------------------
-    # 21.3.4 — _bootstrap (session restore)
-    # PURPOSE
-    #   On every /admin page load, try to restore the admin session.
-    #   If found → main window. If not → login screen.
+    # 21.3.4 — _bootstrap
     # -----------------------------------------------------------------------------
     async def _bootstrap():
         print("[SESSION] Bootstrap starting...")
@@ -738,7 +622,6 @@ def flet_main(page: ft.Page):
             print(f"[SESSION] bootstrap load error: {ex}")
             traceback.print_exc()
             restored = None
-
         if restored:
             print(f"[SESSION] Showing main window for "
                   f"'{restored.get('username')}'")
@@ -757,11 +640,6 @@ def flet_main(page: ft.Page):
 
 # =================================================================================
 # 21.4 — FAVICON MIDDLEWARE
-# =================================================================================
-# PURPOSE
-#   Browsers request /favicon.ico automatically. This middleware intercepts
-#   those requests across the site (including /admin/*) and serves
-#   /static/logo.png instead, with no-cache headers.
 # =================================================================================
 class FaviconOverrideMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, logo_path: str):
@@ -792,11 +670,6 @@ class FaviconOverrideMiddleware(BaseHTTPMiddleware):
 # =================================================================================
 # 21.5 — FASTAPI APP ASSEMBLY
 # =================================================================================
-# PURPOSE
-#   _build_app() constructs the FastAPI app: mounts the Flet admin sub-app,
-#   static files, media serving, and registers all /api/* routes.
-#   Returns the assembled FastAPI instance.
-# =================================================================================
 def _build_app() -> FastAPI:
     base_path = get_app_base_path()
     static_dir = os.path.join(base_path, "static")
@@ -808,9 +681,6 @@ def _build_app() -> FastAPI:
 
     # -----------------------------------------------------------------------------
     # 21.5.1 — Directory setup + asset seeding
-    # PURPOSE
-    #   Ensure all required directories exist. Set AppState paths.
-    #   Copy logo to flet_assets on first boot.
     # -----------------------------------------------------------------------------
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
@@ -845,17 +715,12 @@ def _build_app() -> FastAPI:
 
     # -----------------------------------------------------------------------------
     # 21.5.2 — FastAPI creation + middleware
-    # PURPOSE
-    #   Instantiate the top-level FastAPI app and attach the favicon middleware.
     # -----------------------------------------------------------------------------
     app = FastAPI(title="Alhudha Haj Travel System")
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
 
     # -----------------------------------------------------------------------------
     # 21.5.3 — Global error handler
-    # PURPOSE
-    #   Catch any unhandled exception anywhere and return a JSON 500 with
-    #   a traceback logged to stdout.
     # -----------------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
@@ -866,10 +731,7 @@ def _build_app() -> FastAPI:
             content={"detail": f"Internal server error: {exc}"})
 
     # -----------------------------------------------------------------------------
-    # 21.5.4 — GET /download/{filename}
-    # PURPOSE
-    #   Serve a file from static/downloads with Content-Disposition: attachment.
-    #   Used by send_file_to_user() across the app.
+    # 21.5.4 — /download/{filename}
     # -----------------------------------------------------------------------------
     @app.get("/download/{filename}")
     async def download_file(filename: str):
@@ -885,31 +747,33 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — GET /api/frontpage
-    # PURPOSE
-    #   Return the entire frontpage_config.json (hero, features, gallery,
-    #   contact, etc.) as JSON-safe data for the public page.
+    # 21.5.5 — /api/frontpage   (v2.23: no-cache)
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
         try:
             from core.frontpage_config import load_config
-            return _json_safe(load_config())
+            data = _json_safe(load_config())
+            return JSONResponse(
+                content=data,
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — GET /api/batches
-    # PURPOSE
-    #   Return the batches selected for the public packages section.
-    #   Uses frontpage_config.get_selected_batches() to filter by year,
-    #   selected IDs, and max_shown.
+    # 21.5.6 — /api/batches   (v2.23: no-cache + [API-BATCHES] log)
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
         try:
-            from core.frontpage_config import load_config, get_selected_batches
+            from core.frontpage_config import (
+                load_config, get_selected_batches)
             from core.traveler_portal import _to_list
             cfg = load_config()
             all_batches = []
@@ -944,18 +808,24 @@ def _build_app() -> FastAPI:
                     "status": str(b.get("status", "") or ""),
                     "total_seats": seats_val,
                 })
-            return _json_safe({"success": True, "batches": packages,
-                               "count": len(packages)})
+            payload = _json_safe({"success": True, "batches": packages,
+                                  "count": len(packages)})
+            print(f"[API-BATCHES] returning {len(packages)} package(s) "
+                  f"from {len(all_batches)} DB batch(es)", flush=True)
+            return JSONResponse(
+                content=payload,
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
     # 21.5.7 — Captcha endpoints
-    # PURPOSE
-    #   Self-hosted math captcha for the traveler portal login.
-    #     GET  /api/captcha/new    → returns {ok, session_id, question}
-    #     POST /api/captcha/verify → checks the answer, returns {ok, reason}
     # -----------------------------------------------------------------------------
     from pydantic import BaseModel
 
@@ -981,18 +851,9 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             return {"ok": False, "reason": "error", "detail": str(e)}
 
-    # =============================================================================
+    # -----------------------------------------------------------------------------
     # 21.5.8 — Traveler portal
-    # =============================================================================
-    # PURPOSE
-    #   Serves /traveler (HTML), and the traveler-login API:
-    #     POST /api/traveler/login
-    #     POST /api/traveler/logout
-    #     GET  /api/traveler/me
-    #     GET  /api/traveler/document/{doc_key}
-    #   Auth is via passport_no + PIN + math captcha. Sessions stored
-    #   in cookies (alhudha_traveler_token).
-    # =============================================================================
+    # -----------------------------------------------------------------------------
     @app.get("/traveler")
     async def traveler_portal_page():
         if os.path.exists(traveler_html):
@@ -1007,23 +868,19 @@ def _build_app() -> FastAPI:
         except Exception:
             raise HTTPException(status_code=400,
                                 detail="Invalid JSON body")
-
         passport_no = str(body.get("passport_no", "")).strip()
         pin = str(body.get("pin", "")).strip()
         captcha_session_id = str(body.get("captcha_session_id", "")).strip()
         captcha_answer = str(body.get("captcha_answer", "")).strip()
-
         try:
             from core.traveler_portal import (
                 authenticate_traveler_with_captcha, create_session)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
-
         if not AppState.db_ready or AppState.db is None:
             raise HTTPException(status_code=503,
                                 detail="Database unavailable")
-
         try:
             traveler, err = authenticate_traveler_with_captcha(
                 AppState.db, passport_no, pin,
@@ -1031,7 +888,6 @@ def _build_app() -> FastAPI:
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
-
         if err:
             if err.startswith("captcha:"):
                 reason = err.split(":", 1)[1]
@@ -1047,25 +903,20 @@ def _build_app() -> FastAPI:
                     detail=msg_map.get(reason,
                                        "Security check failed."))
             raise HTTPException(status_code=401, detail=err)
-
         try:
             token = create_session(traveler)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Session create failed: {e}")
-
         _boot_log(f"Traveler login OK: {traveler.get('id')}")
-
         response = Response(
             content='{"success": true}',
             media_type="application/json")
         response.set_cookie(
             TRAVELER_COOKIE, token,
-            max_age=8 * 3600,
-            httponly=False,
-            samesite="lax",
-            path="/")
+            max_age=8 * 3600, httponly=False,
+            samesite="lax", path="/")
         return response
 
     @app.post("/api/traveler/logout")
@@ -1089,34 +940,26 @@ def _build_app() -> FastAPI:
             if not token:
                 raise HTTPException(status_code=401,
                                     detail="Not logged in")
-
             from core.traveler_portal import (
                 verify_session, build_traveler_view, _to_list)
-
             session = verify_session(token)
             if not session:
                 raise HTTPException(status_code=401,
                                     detail="Session expired")
-
             if not AppState.db_ready or AppState.db is None:
                 raise HTTPException(status_code=503,
                                     detail="Database unavailable")
-
             travelers = _to_list(AppState.db.get_travelers())
             traveler = None
             for t in travelers:
                 if str(t.get("id", "")) == session.get("traveler_id"):
                     traveler = dict(t)
                     break
-
             if not traveler:
                 raise HTTPException(status_code=404,
                                     detail="Traveler not found")
-
             data = build_traveler_view(AppState.db, traveler)
-            safe_data = _json_safe(data)
-            return {"success": True, "data": safe_data}
-
+            return {"success": True, "data": _json_safe(data)}
         except HTTPException:
             raise
         except Exception as e:
@@ -1133,35 +976,28 @@ def _build_app() -> FastAPI:
             if not token:
                 raise HTTPException(status_code=401,
                                     detail="Not logged in")
-
             from core.traveler_portal import (
                 verify_session, get_document_path, _to_list)
-
             session = verify_session(token)
             if not session:
                 raise HTTPException(status_code=401,
                                     detail="Session expired")
-
             if not AppState.db_ready or AppState.db is None:
                 raise HTTPException(status_code=503,
                                     detail="Database unavailable")
-
             travelers = _to_list(AppState.db.get_travelers())
             traveler = None
             for t in travelers:
                 if str(t.get("id", "")) == session.get("traveler_id"):
                     traveler = dict(t)
                     break
-
             if not traveler:
                 raise HTTPException(status_code=404,
                                     detail="Traveler not found")
-
             path = get_document_path(AppState.db, traveler, doc_key)
             if not path or not os.path.exists(path):
                 raise HTTPException(status_code=404,
                                     detail=f"Document '{doc_key}' not found")
-
             low = path.lower()
             if low.endswith(".pdf"):
                 media_type = "application/pdf"
@@ -1173,9 +1009,7 @@ def _build_app() -> FastAPI:
                 media_type = "image/bmp"
             else:
                 media_type = "image/jpeg"
-
             return FileResponse(path, media_type=media_type)
-
         except HTTPException:
             raise
         except Exception as e:
@@ -1185,23 +1019,23 @@ def _build_app() -> FastAPI:
 
     _boot_log("Traveler portal endpoints registered")
 
-    # =============================================================================
+    # -----------------------------------------------------------------------------
     # 21.5.8b — Gallery (upload page + media serving + upload/delete API)
-    # =============================================================================
-    # PURPOSE
-    #   Mobile-friendly gallery management:
-    #     GET    /gallery-upload          → native HTML upload page
-    #     GET    /media/gallery/{k}/{n}   → serve uploaded file
-    #     POST   /api/admin/gallery/upload → receive new file
-    #     DELETE /api/admin/gallery/item   → remove file
-    # =============================================================================
+    # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
     @app.get("/gallery-upload")
     async def gallery_upload_page():
         if os.path.exists(gallery_upload_html):
-            return FileResponse(gallery_upload_html,
-                                media_type="text/html")
+            return FileResponse(
+                gallery_upload_html,
+                media_type="text/html",
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
         raise HTTPException(status_code=404,
                             detail="Upload page not found")
 
@@ -1211,13 +1045,10 @@ def _build_app() -> FastAPI:
     async def serve_gallery_media(kind: str, name: str):
         if kind not in ("photos", "videos"):
             raise HTTPException(status_code=404, detail="Not found")
-
         safe_name = os.path.basename(name)
         p = GALLERY_ROOT / kind / safe_name
-
         if not p.exists() or not p.is_file():
             raise HTTPException(status_code=404, detail="Not found")
-
         mt, _ = mimetypes.guess_type(str(p))
         return FileResponse(
             str(p),
@@ -1239,7 +1070,6 @@ def _build_app() -> FastAPI:
             raise HTTPException(
                 status_code=400,
                 detail="media_type must be 'photos' or 'videos'")
-
         ext = os.path.splitext(file.filename or "")[1].lower()
         allowed = (ALLOWED_PHOTO_EXT if media_type == "photos"
                    else ALLOWED_VIDEO_EXT)
@@ -1248,14 +1078,12 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail=(f"Unsupported {media_type[:-1]} format: {ext}. "
                         f"Allowed: {', '.join(sorted(allowed))}"))
-
         try:
             data = await file.read()
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Read failed: {e}")
-
         limit = (MAX_PHOTO_BYTES if media_type == "photos"
                  else MAX_VIDEO_BYTES)
         if len(data) > limit:
@@ -1264,20 +1092,17 @@ def _build_app() -> FastAPI:
                 detail=(f"File too large "
                         f"({len(data) // 1024 // 1024} MB). "
                         f"Max {limit // 1024 // 1024} MB."))
-
         unique = uuid.uuid4().hex[:12]
         fname = f"{unique}{ext}"
         target_dir = GALLERY_ROOT / media_type
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
-
         try:
             target.write_bytes(data)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Write failed: {e}")
-
         item = {
             "url": f"/media/gallery/{media_type}/{fname}",
             "caption": (caption or "").strip(),
@@ -1285,7 +1110,6 @@ def _build_app() -> FastAPI:
             "size": len(data),
             "original_name": file.filename or fname,
         }
-
         try:
             from core.frontpage_config import add_gallery_item
             ok = add_gallery_item(media_type, item)
@@ -1299,7 +1123,6 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Config update failed: {e}")
-
         _boot_log(f"Gallery upload OK: {item['url']} "
                   f"({len(data) // 1024} KB)")
         return {"success": True, "item": item}
@@ -1309,18 +1132,15 @@ def _build_app() -> FastAPI:
         if media_type not in ("photos", "videos"):
             raise HTTPException(status_code=400,
                                 detail="bad media_type")
-
         prefix = f"/media/gallery/{media_type}/"
         if not url.startswith(prefix):
             raise HTTPException(status_code=400, detail="bad url")
-
         fname = os.path.basename(url)
         target = GALLERY_ROOT / media_type / fname
         try:
             target.unlink(missing_ok=True)
         except Exception as e:
             _boot_log(f"Gallery delete file failed: {e}")
-
         try:
             from core.frontpage_config import remove_gallery_item
             remove_gallery_item(media_type, url)
@@ -1328,47 +1148,27 @@ def _build_app() -> FastAPI:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Config update failed: {e}")
-
         _boot_log(f"Gallery delete OK: {url}")
         return {"success": True}
 
-    # =============================================================================
-    # 21.5.8c — Traveler documents (upload page + upload API)     ← NEW v2.22
-    # =============================================================================
-    # PURPOSE
-    #   Mobile-friendly document upload for the Add/Edit Traveler dialog.
-    #   Users tap the 🌐 button in the dialog (per document field) to open
-    #   this native HTML page, which uploads the file via a plain
-    #   <input type="file"> — bypasses Flet's picker (blocked on iOS).
-    #
-    #     GET  /traveler-doc-upload
-    #          Query: traveler_id, doc_key, mode ("new"|"edit")
-    #          Serves static/traveler_doc_upload.html
-    #
-    #     POST /api/admin/traveler/upload-doc
-    #          Form fields:
-    #            file         — the uploaded file
-    #            doc_key      — one of passport_scan, aadhaar_scan,
-    #                           pan_scan, vaccine_scan, photo
-    #            traveler_id  — existing traveler ID (for edit mode)
-    #            mode         — "new" (pending folder) or "edit"
-    #
-    #          Behavior:
-    #            mode=new   → saves to documents/new_traveler/<sub>/...
-    #            mode=edit  → saves to documents/<tid>/<sub>/...
-    #                          and updates travelers.csv doc_key column
-    #                          (reloads DB cache)
-    #
-    #          Files land on the volume via the /app/documents symlink.
-    # =============================================================================
+    # -----------------------------------------------------------------------------
+    # 21.5.8c — Traveler document upload
+    # -----------------------------------------------------------------------------
     traveler_doc_upload_html = os.path.join(static_dir,
                                             "traveler_doc_upload.html")
 
     @app.get("/traveler-doc-upload")
     async def traveler_doc_upload_page():
         if os.path.exists(traveler_doc_upload_html):
-            return FileResponse(traveler_doc_upload_html,
-                                media_type="text/html")
+            return FileResponse(
+                traveler_doc_upload_html,
+                media_type="text/html",
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
         raise HTTPException(status_code=404,
                             detail="Traveler upload page not found")
 
@@ -1379,14 +1179,11 @@ def _build_app() -> FastAPI:
         traveler_id: str = Form(""),
         mode: str = Form("new"),
     ):
-        # ---- 21.5.8c.1  Validate doc_key ----
         valid_keys = {"passport_scan", "aadhaar_scan", "pan_scan",
                       "vaccine_scan", "photo"}
         if doc_key not in valid_keys:
             raise HTTPException(status_code=400,
                                 detail=f"Invalid doc_key: {doc_key}")
-
-        # ---- 21.5.8c.2  Determine subfolder + target directory ----
         subfolder_map = {
             "passport_scan": "passports",
             "aadhaar_scan": "aadhaar",
@@ -1395,31 +1192,25 @@ def _build_app() -> FastAPI:
             "photo": "photos",
         }
         sub = subfolder_map.get(doc_key, "other")
-
         is_edit = (mode == "edit" and traveler_id)
         if is_edit:
             folder = traveler_id.replace("/", "_").replace("\\", "_")
         else:
             folder = "new_traveler"
-
-        # ---- 21.5.8c.3  Read + validate file ----
         try:
             data = await file.read()
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Read failed: {e}")
-
         if not data:
             raise HTTPException(status_code=400, detail="Empty file")
-
         MAX_BYTES = 15 * 1024 * 1024
         if len(data) > MAX_BYTES:
             raise HTTPException(
                 status_code=400,
                 detail=(f"File too large ({len(data)//1024//1024} MB). "
                         f"Max 15 MB."))
-
         ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".pdf",
                        ".webp", ".gif", ".bmp"}
         ext = os.path.splitext(file.filename or "")[1].lower()
@@ -1428,25 +1219,19 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail=(f"Unsupported format: {ext}. "
                         f"Allowed: {', '.join(sorted(ALLOWED_EXT))}"))
-
-        # ---- 21.5.8c.4  Save file to volume-backed /app/documents ----
         fname = (f"{doc_key}_"
                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
         target_dir = Path("/app/data/documents") / folder / sub
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
-
         try:
             target.write_bytes(data)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
                                 detail=f"Write failed: {e}")
-
         rel = f"documents/{folder}/{sub}/{fname}"
         print(f"[TRAVELER-DOC] Saved: {rel} ({len(data)} bytes)")
-
-        # ---- 21.5.8c.5  For edit mode, update travelers.csv + DB cache ----
         if is_edit:
             try:
                 csv_path = Path("/app/data/travelers.csv")
@@ -1475,8 +1260,6 @@ def _build_app() -> FastAPI:
             except Exception as e:
                 traceback.print_exc()
                 print(f"[TRAVELER-DOC] CSV update failed: {e}")
-                # Upload succeeded — do not fail the request
-
         return {
             "success": True,
             "path": rel,
@@ -1487,9 +1270,6 @@ def _build_app() -> FastAPI:
 
     # -----------------------------------------------------------------------------
     # 21.5.9 — Mount Flet admin at /admin
-    # PURPOSE
-    #   Mount the Flet admin app under /admin. All WebSocket traffic,
-    #   session handling, and static assets for the admin UI live here.
     # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
@@ -1497,23 +1277,25 @@ def _build_app() -> FastAPI:
 
     # -----------------------------------------------------------------------------
     # 21.5.10 — Mount /static
-    # PURPOSE
-    #   Serve /app/static/* (logo.png, index.html, traveler.html,
-    #   gallery_upload.html, traveler_doc_upload.html, etc.).
     # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
     # -----------------------------------------------------------------------------
     # 21.5.11 — Root route "/"
-    # PURPOSE
-    #   Serve static/index.html (the public marketing page). If missing,
-    #   redirect to /admin so the app is still reachable.
     # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
         if os.path.exists(index_html):
-            return FileResponse(index_html, media_type="text/html")
+            return FileResponse(
+                index_html,
+                media_type="text/html",
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                })
         return RedirectResponse(url="/admin")
 
     return app
@@ -1521,17 +1303,6 @@ def _build_app() -> FastAPI:
 
 # =================================================================================
 # 21.6 — ENTRY POINT
-# =================================================================================
-# PURPOSE
-#   Runs when uvicorn imports this file. Sequence:
-#     1. Ensure base directories exist.
-#     2. Print the boot banner.
-#     3. Symlink /app/documents → /app/data/documents (persistence).
-#     4. Seed CSVs into /app/data if volume is empty.
-#     5. Load the DB with retries.
-#     6. Install SIGTERM/SIGINT handlers.
-#     7. Assemble the FastAPI app.
-#     8. Under __main__, run uvicorn.
 # =================================================================================
 base_path = get_app_base_path()
 
@@ -1563,13 +1334,12 @@ print(f"  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
 print("=" * 66, flush=True)
 
-# ---- Boot sequence ----
-_ensure_documents_symlink()      # 1. persistent documents
-_seed_volume_if_empty(base_path) # 2. CSV seed on empty volume
-_init_db()                       # 3. load DB
-_install_signal_handlers()       # 4. graceful shutdown
+_ensure_documents_symlink()
+_seed_volume_if_empty(base_path)
+_init_db()
+_install_signal_handlers()
 
-app = _build_app()               # 5. FastAPI assembly
+app = _build_app()
 
 
 if __name__ == "__main__":
