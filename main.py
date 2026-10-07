@@ -1,20 +1,20 @@
 # =================================================================================
-# main.py — MAIN APPLICATION (FastAPI + uvicorn)
+# main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.23 — No-cache API headers
-#   • §21.5.5 /api/frontpage  — added no-store headers
-#   • §21.5.6 /api/batches    — added no-store headers + [API-BATCHES] log
-#   • §21.5.8c /gallery-upload — added no-store headers
-#   Why: browsers were caching these responses, so the admin UI changes
-#   (batch checkbox toggles, gallery uploads) didn't reflect immediately
-#   on the public page or in the upload tab.
+# v2.24 — Front page diagnostic endpoint + no-cache headers everywhere
+#   • §21.5.5 /api/frontpage     — no-cache headers
+#   • §21.5.6 /api/batches       — no-cache headers + [API-BATCHES] log
+#   • §21.5.6b /api/admin/frontpage/diagnose — NEW: read-only test
+#   • §21.5.8b /gallery-upload   — no-cache headers
+#   • §21.5.8c /traveler-doc-upload — no-cache headers
+#   • §21.5.11 /                 — no-cache headers
 #
-#   All v2.22 features preserved:
-#     • Flet 1.0 navigation (web_only_window_name)
-#     • page.session.store admin sessions
-#     • /traveler-doc-upload + /api/admin/traveler/upload-doc
-#     • /app/documents symlink to volume
-#     • /gallery-upload + /api/admin/gallery/*
+# v2.23 preserved:
+#   • Flet 1.0 navigation (web_only_window_name="_self")
+#   • page.session.store admin sessions
+#   • /traveler-doc-upload + /api/admin/traveler/upload-doc
+#   • /app/documents symlink to volume
+#   • /gallery-upload + /api/admin/gallery/*
 #
 # SECTION INDEX
 #   21.1      Imports & configuration
@@ -27,28 +27,29 @@
 #   21.2.2    Volume seeder
 #   21.2.3    DB initializer with retries
 #   21.2.4    Signal handlers
-#   21.2.5    Admin session helpers
+#   21.2.5    Admin session helpers (page.session.store)
 #   21.2.6    /app/documents symlink guard
 #   21.3      Flet admin app entry point
 #   21.3.1    flet_main() root
 #   21.3.2    _go_home_page
-#   21.3.3    show_login / main_window / logout
+#   21.3.3    show_login / show_main_window / on_logout
 #   21.3.4    _bootstrap
 #   21.4      Favicon middleware
 #   21.5      FastAPI app assembly
-#   21.5.1    Directory setup & asset seeding
+#   21.5.1    Directory setup + asset seeding
 #   21.5.2    FastAPI creation + middleware
 #   21.5.3    Global error handler
 #   21.5.4    /download/{filename}
-#   21.5.5    /api/frontpage        ← v2.23 no-cache
-#   21.5.6    /api/batches          ← v2.23 no-cache
+#   21.5.5    /api/frontpage           ← no-cache
+#   21.5.6    /api/batches             ← no-cache + log
+#   21.5.6b   /api/admin/frontpage/diagnose  ← NEW
 #   21.5.7    /api/captcha/*
 #   21.5.8    /traveler + /api/traveler/*
 #   21.5.8b   /gallery-upload + /api/admin/gallery/*
 #   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc
 #   21.5.9    Mount Flet admin at /admin
 #   21.5.10   Mount /static
-#   21.5.11   Root route "/"
+#   21.5.11   Root route "/"          ← no-cache
 #   21.6      Entry point (uvicorn.run)
 # =================================================================================
 
@@ -299,7 +300,7 @@ def _install_signal_handlers():
 
 
 # =================================================================================
-# 21.2.5 — ADMIN SESSION HELPERS (page.session.store)
+# 21.2.5 — ADMIN SESSION HELPERS
 # =================================================================================
 def _find_user_by_id(db, user_id):
     try:
@@ -495,13 +496,16 @@ def flet_main(page: ft.Page):
         page.controls.clear()
         page.add(ft.Container(
             content=ft.Column([
-                ft.Icon(ft.Icons.STORAGE, size=64, color=ft.Colors.RED_400),
+                ft.Icon(icon=ft.Icons.STORAGE, size=64,
+                        color=ft.Colors.RED_400),
                 ft.Text("Database unavailable", size=22,
-                        weight=ft.FontWeight.BOLD, color=ft.Colors.RED_700),
+                        weight=ft.FontWeight.BOLD,
+                        color=ft.Colors.RED_700),
                 ft.Text(f"Details: {AppState.db_error}",
                         size=11, color=ft.Colors.GREY_500,
                         selectable=True, text_align=ft.TextAlign.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+               spacing=12),
             padding=60, alignment=ft.Alignment.CENTER,
             expand=True, bgcolor="#fef2f2", border_radius=12,
             border=ft.Border.all(1, "#fecaca")))
@@ -747,7 +751,7 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — /api/frontpage   (v2.23: no-cache)
+    # 21.5.5 — /api/frontpage (v2.24 no-cache)
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
@@ -767,7 +771,7 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches   (v2.23: no-cache + [API-BATCHES] log)
+    # 21.5.6 — /api/batches (v2.24 no-cache + log)
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
@@ -825,18 +829,7 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6b — GET /api/admin/frontpage/diagnose
-    # PURPOSE
-    #   Read-only diagnostic for the entire Front Page system.
-    #   Reports:
-    #     • What's currently saved (selected_batch_ids, max_shown, source)
-    #     • Every batch in the DB with status
-    #     • What get_selected_batches() returns for current config
-    #     • Round-trip tests: save 0/1/2/3 IDs, reload, verify each
-    #     • Gallery helper round-trip: add a test item, list, remove
-    #     • Restores the original config at the end (nothing changes)
-    #
-    #   Open the URL in a browser to inspect the JSON report.
+    # 21.5.6b — /api/admin/frontpage/diagnose (v2.24 NEW)
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/diagnose")
     async def frontpage_diagnose():
@@ -849,7 +842,6 @@ def _build_app() -> FastAPI:
         report = {"ok": True}
 
         try:
-            # ---- Snapshot current config ----
             original_cfg = load_config()
             report["saved_config"] = {
                 "selected_batch_ids":
@@ -860,7 +852,6 @@ def _build_app() -> FastAPI:
                     original_cfg["packages"].get("source", "batches"),
             }
 
-            # ---- DB batches ----
             all_batches = []
             if AppState.db_ready and AppState.db is not None:
                 all_batches = _to_list(AppState.db.get_batches())
@@ -872,7 +863,6 @@ def _build_app() -> FastAPI:
                 for b in all_batches
             ]
 
-            # ---- What the current config produces ----
             current_selected = get_selected_batches(
                 original_cfg, all_batches)
             report["get_selected_batches_current"] = {
@@ -880,7 +870,6 @@ def _build_app() -> FastAPI:
                 "ids": [str(b.get("id", "")) for b in current_selected],
             }
 
-            # ---- Round-trip tests: 0, 1, 2, 3 selections ----
             all_ids = [str(b.get("id", "")).strip()
                        for b in all_batches if b.get("id")]
             tests = []
@@ -910,7 +899,6 @@ def _build_app() -> FastAPI:
                 })
             report["round_trip_tests"] = tests
 
-            # ---- Gallery helpers test ----
             try:
                 before = gallery_summary()
                 test_item = {
@@ -944,14 +932,12 @@ def _build_app() -> FastAPI:
                 traceback.print_exc()
                 report["gallery_test"] = {"error": str(ge)}
 
-            # ---- Restore original config ----
             save_config(original_cfg)
             final = load_config()
             report["restored_original"] = (
                 final["packages"].get("selected_batch_ids", [])
                 == original_cfg["packages"].get("selected_batch_ids", []))
 
-            # ---- Console log for tail ----
             print("=" * 60, flush=True)
             print("[DIAGNOSE] FRONT PAGE DIAGNOSTIC", flush=True)
             print(f"[DIAGNOSE] saved batches: "
@@ -964,8 +950,6 @@ def _build_app() -> FastAPI:
                       f"-> api returns {t['get_selected_returns']} "
                       f"-> {'OK' if t['match'] else 'FAIL'}",
                       flush=True)
-            print(f"[DIAGNOSE] gallery round-trip: "
-                  f"{report.get('gallery_test', {})}", flush=True)
             print("=" * 60, flush=True)
 
             return report
@@ -1008,7 +992,13 @@ def _build_app() -> FastAPI:
     @app.get("/traveler")
     async def traveler_portal_page():
         if os.path.exists(traveler_html):
-            return FileResponse(traveler_html, media_type="text/html")
+            return FileResponse(
+                traveler_html, media_type="text/html",
+                headers={
+                    "Cache-Control": "no-store, no-cache, "
+                                     "must-revalidate, max-age=0",
+                    "Pragma": "no-cache", "Expires": "0",
+                })
         raise HTTPException(status_code=404,
                             detail="Traveler portal not found")
 
@@ -1051,8 +1041,7 @@ def _build_app() -> FastAPI:
                 }
                 raise HTTPException(
                     status_code=400,
-                    detail=msg_map.get(reason,
-                                       "Security check failed."))
+                    detail=msg_map.get(reason, "Security check failed."))
             raise HTTPException(status_code=401, detail=err)
         try:
             token = create_session(traveler)
@@ -1171,7 +1160,7 @@ def _build_app() -> FastAPI:
     _boot_log("Traveler portal endpoints registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.8b — Gallery (upload page + media serving + upload/delete API)
+    # 21.5.8b — Gallery
     # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
@@ -1179,13 +1168,11 @@ def _build_app() -> FastAPI:
     async def gallery_upload_page():
         if os.path.exists(gallery_upload_html):
             return FileResponse(
-                gallery_upload_html,
-                media_type="text/html",
+                gallery_upload_html, media_type="text/html",
                 headers={
                     "Cache-Control": "no-store, no-cache, "
                                      "must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
+                    "Pragma": "no-cache", "Expires": "0",
                 })
         raise HTTPException(status_code=404,
                             detail="Upload page not found")
@@ -1312,13 +1299,11 @@ def _build_app() -> FastAPI:
     async def traveler_doc_upload_page():
         if os.path.exists(traveler_doc_upload_html):
             return FileResponse(
-                traveler_doc_upload_html,
-                media_type="text/html",
+                traveler_doc_upload_html, media_type="text/html",
                 headers={
                     "Cache-Control": "no-store, no-cache, "
                                      "must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
+                    "Pragma": "no-cache", "Expires": "0",
                 })
         raise HTTPException(status_code=404,
                             detail="Traveler upload page not found")
@@ -1439,13 +1424,11 @@ def _build_app() -> FastAPI:
     async def root():
         if os.path.exists(index_html):
             return FileResponse(
-                index_html,
-                media_type="text/html",
+                index_html, media_type="text/html",
                 headers={
                     "Cache-Control": "no-store, no-cache, "
                                      "must-revalidate, max-age=0",
-                    "Pragma": "no-cache",
-                    "Expires": "0",
+                    "Pragma": "no-cache", "Expires": "0",
                 })
         return RedirectResponse(url="/admin")
 
