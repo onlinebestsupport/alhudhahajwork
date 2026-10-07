@@ -1,37 +1,36 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.13 — Authoritative batch checkbox state
-#   • §[5] _section_5_packages: each checkbox now has an on_change handler
-#     that updates self._batch_check_state[bid] immediately on click.
-#   • §[5.0] _make_batch_change_handler: closure that captures the batch ID
-#     and writes the new value into the authoritative dict.
-#   • §[5.3] _toggle_batches: All/Clear now also updates the state dict.
-#   • §[A.1] _collect_config: reads batch selection from
-#     self._batch_check_state instead of cb.value (Flet 1.0 web can return
-#     stale cb.value for checkboxes before the state is flushed).
+# v3.14 — Custom clickable batch rows (fixes Flet Checkbox stale-value bug)
+#   • §[5]   _section_5_packages   — batch list now uses custom clickable
+#     Container rows instead of ft.Checkbox. Flet 1.0 web sends stale
+#     values in e.control.value when UNCHECKING, which caused "uncheck 1
+#     of 2, still saves both".
+#   • §[5.0] _make_batch_row       — NEW. Builds a clickable row with a
+#     checkbox icon and text label.
+#   • §[5.0b] _toggle_batch_row    — NEW. Flips authoritative state on
+#     click, updates visuals synchronously. No async round-trip.
+#   • §[5.3] _toggle_batches       — Updated to drive the new row visuals.
+#   • §[A.1] _collect_config       — Reads only from the authoritative
+#     state dict (no cb.value fallback).
 #
-#   WHY THIS FIX:
-#     Previously, unchecking all batches and clicking Save wrote the OLD
-#     selection (all 3 IDs) to config, because cb.value was still showing
-#     the pre-click value when _collect_config ran. Tracking state via
-#     on_change (which fires synchronously with the click) fixes that.
-#
-# v3.11 preserved:
+# v3.13 preserved:
 #   • §[11.4] _pick_gallery_files opens /gallery-upload in a NEW TAB
 #
 # SECTION INDEX
-#   [0]     __init__ / build / refresh
+#   [0]     __init__ / build / refresh / _load_batches / _error_ui
+#   [ROOT]  _build_root
 #   [H]     Shared helpers (_section_card, _field, _two_col)
 #   [1]     Header banner
 #   [2]     Hero
 #   [3]     Alert
 #   [4]     Features
-#   [5]     Packages                    ← v3.13 updated
-#   [5.0]   _make_batch_change_handler  ← NEW v3.13
+#   [5]     Packages                    ← v3.14 custom rows
+#   [5.0]   _make_batch_row             ← NEW
+#   [5.0b]  _toggle_batch_row           ← NEW
 #   [5.1]   _on_pkg_source_change
 #   [5.2]   _update_source_visibility
-#   [5.3]   _toggle_batches            ← v3.13 updated
+#   [5.3]   _toggle_batches             ← v3.14 updated
 #   [6]     About
 #   [7]     Contact
 #   [8]     Social
@@ -47,7 +46,7 @@
 #   [11.8]  _save_silent
 #   [10]    Action bar
 #   [A]     Actions
-#   [A.1]   _collect_config            ← v3.13 updated
+#   [A.1]   _collect_config            ← v3.14 simplified
 #   [A.2]   _save
 #   [A.3]   _reset_confirm
 #   [A.4]   _open_preview
@@ -68,9 +67,9 @@ from core.frontpage_config import (
     gallery_dir, gallery_summary)
 
 
-# ---------------------------------------------------------------------------------
+# =================================================================================
 # Palette
-# ---------------------------------------------------------------------------------
+# =================================================================================
 PRIMARY      = "#1e3a8a"
 PRIMARY_LT   = "#2563eb"
 ACCENT       = "#7c3aed"
@@ -83,9 +82,9 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 
-# ---------------------------------------------------------------------------------
+# =================================================================================
 # Cross-version alias — Flet 1.0 renamed ImageFit → BoxFit
-# ---------------------------------------------------------------------------------
+# =================================================================================
 def _resolve_fit_cover():
     try:
         return ft.BoxFit.COVER
@@ -138,8 +137,8 @@ class FrontPageSettingsTab:
         self.pkg_subtitle = None
         self._batch_ui = None
 
-        # NEW (v3.13): authoritative batch checkbox state.
-        # Updated by on_change handlers on every click.
+        # Authoritative batch checkbox state (v3.14).
+        # Updated synchronously by _toggle_batch_row on every click.
         # Read by _collect_config at save time.
         self._batch_check_state = {}
 
@@ -521,18 +520,20 @@ class FrontPageSettingsTab:
         self._safe_update()
 
     # =============================================================================
-    # [5] Packages Section (v3.13 — authoritative checkbox tracking)
+    # [5] Packages Section (v3.14 — custom clickable batch rows)
     # -----------------------------------------------------------------------------
     # PURPOSE
     #   Renders the Packages settings card with:
     #     • title / subtitle TextFields
     #     • source dropdown (batches / manual)
     #     • max_shown TextField (0 = no cap)
-    #     • batch checkboxes with All / Clear buttons
+    #     • batch rows with All / Clear buttons
     #
-    # Every checkbox's on_change handler updates self._batch_check_state.
-    # That dict is the SINGLE SOURCE OF TRUTH for what's checked —
-    # _collect_config reads from it, never from cb.value directly.
+    # WHY NOT ft.Checkbox:
+    #   Flet 1.0 web sends STALE values in e.control.value when the user
+    #   UNCHECKS a checkbox. That caused "uncheck one of two, still saves
+    #   both". We now render each batch as a clickable Container with an
+    #   icon, and toggle our own state synchronously on every click.
     # =============================================================================
     def _section_5_packages(self):
         p = self.cfg.get("packages", {})
@@ -578,10 +579,10 @@ class FrontPageSettingsTab:
         selected_ids = set(str(x).strip() for x in
                            (p.get("selected_batch_ids") or []))
 
-        # Reset authoritative state dict
+        # Reset authoritative state dict. Every row click writes here.
         self._batch_check_state = {}
+        self.batch_checkboxes = {}   # dict: bid -> {"container","icon","label"}
 
-        self.batch_checkboxes = {}
         batch_controls = []
 
         if not self.all_batches:
@@ -598,23 +599,15 @@ class FrontPageSettingsTab:
                     price_str = f"₹{float(price):,.0f}"
                 except Exception:
                     price_str = f"₹{price}"
-                label = f"{name}  ·  {status}  ·  {price_str}"
 
                 is_checked = (bid in selected_ids)
-                # Seed authoritative state
                 self._batch_check_state[bid] = is_checked
 
-                cb = ft.Checkbox(
-                    label=label,
-                    value=is_checked,
-                    label_style=ft.TextStyle(size=11))
-                # Attach on_change that writes to the state dict
-                cb.on_change = self._make_batch_change_handler(bid)
-                self.batch_checkboxes[bid] = cb
-                batch_controls.append(cb)
+                row = self._make_batch_row(
+                    bid, name, status, price_str, is_checked)
+                batch_controls.append(row)
 
-        self.pkg_batch_container = ft.Column(
-            batch_controls, spacing=4)
+        self.pkg_batch_container = ft.Column(batch_controls, spacing=4)
 
         self._batch_ui = ft.Column([
             ft.Row([
@@ -625,8 +618,7 @@ class FrontPageSettingsTab:
                 clear_all_btn,
             ], spacing=4),
             ft.Text(
-                "Check a batch to show it on the public page. "
-                "Uncheck to hide. Nothing checked = no packages shown.",
+                "Tap a row to toggle. Nothing selected = no packages shown.",
                 size=10, color=MUTED, italic=True),
             self.pkg_batch_container,
         ], spacing=8)
@@ -644,22 +636,78 @@ class FrontPageSettingsTab:
             ], accent=ACCENT)
 
     # -----------------------------------------------------------------------------
-    # [5.0] _make_batch_change_handler (NEW v3.13)
+    # [5.0] _make_batch_row (NEW v3.14)
     # PURPOSE
-    #   Return a closure that captures a specific batch ID and updates
-    #   self._batch_check_state[bid] whenever the checkbox is clicked.
-    #   This bypasses the stale cb.value problem on Flet 1.0 web.
+    #   Build a clickable batch row (custom checkbox replacement).
+    #   The row's visual state is driven entirely by our Python dict —
+    #   no Flet Checkbox, no stale-value bug.
     # -----------------------------------------------------------------------------
-    def _make_batch_change_handler(self, batch_id):
-        def _handler(e):
-            try:
-                val = bool(e.control.value)
-            except Exception:
-                cb = self.batch_checkboxes.get(batch_id)
-                val = bool(cb.value) if cb is not None else False
-            self._batch_check_state[batch_id] = val
-            print(f"[FRONTPAGE] checkbox {batch_id} -> {val}")
-        return _handler
+    def _make_batch_row(self, batch_id, name, status, price_str,
+                        is_checked):
+        icon = ft.Icon(
+            name=(ft.Icons.CHECK_BOX if is_checked
+                  else ft.Icons.CHECK_BOX_OUTLINE_BLANK),
+            color=SUCCESS if is_checked else MUTED,
+            size=20,
+        )
+        label = ft.Text(
+            f"{name}  ·  {status}  ·  {price_str}",
+            size=11, expand=True,
+            color="#0f172a" if is_checked else MUTED,
+        )
+
+        row_container = ft.Container(
+            content=ft.Row(
+                [icon, label],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            bgcolor="#ecfdf5" if is_checked else "#f8fafc",
+            border=ft.Border.all(
+                1, "#a7f3d0" if is_checked else "#e2e8f0"),
+            border_radius=8,
+            on_click=lambda e, _bid=batch_id, _ic=icon, _lb=label,
+                            _row=row_container: self._toggle_batch_row(
+                                _bid, _ic, _lb, _row),
+            ink=True,
+        )
+
+        # Store references for All / Clear to reach
+        self.batch_checkboxes[batch_id] = {
+            "container": row_container,
+            "icon": icon,
+            "label": label,
+        }
+        return row_container
+
+    # -----------------------------------------------------------------------------
+    # [5.0b] _toggle_batch_row (NEW v3.14)
+    # PURPOSE
+    #   Handle a click on a batch row. Flips the authoritative state,
+    #   updates the icon + colors to match. Called synchronously by
+    #   the Container.on_click — no WebSocket round-trip.
+    # -----------------------------------------------------------------------------
+    def _toggle_batch_row(self, batch_id, icon, label, row_container):
+        current = self._batch_check_state.get(batch_id, False)
+        new_val = not current
+        self._batch_check_state[batch_id] = new_val
+
+        # Update visuals
+        try:
+            icon.name = (ft.Icons.CHECK_BOX if new_val
+                         else ft.Icons.CHECK_BOX_OUTLINE_BLANK)
+            icon.color = SUCCESS if new_val else MUTED
+            label.color = "#0f172a" if new_val else MUTED
+            row_container.bgcolor = "#ecfdf5" if new_val else "#f8fafc"
+            row_container.border = ft.Border.all(
+                1, "#a7f3d0" if new_val else "#e2e8f0")
+            row_container.update()
+        except Exception as e:
+            print(f"[FRONTPAGE] batch row visual update failed: {e}")
+
+        print(f"[FRONTPAGE] toggle batch {batch_id}: "
+              f"{current} -> {new_val}")
 
     # -----------------------------------------------------------------------------
     # [5.1] _on_pkg_source_change
@@ -680,20 +728,25 @@ class FrontPageSettingsTab:
             pass
 
     # -----------------------------------------------------------------------------
-    # [5.3] _toggle_batches (v3.13 — also updates authoritative state)
-    # PURPOSE
-    #   All / Clear helper. Updates visible checkboxes AND the
-    #   authoritative state dict, so the next Save picks up correct values.
+    # [5.3] _toggle_batches (v3.14 — updates state dict + visuals)
     # -----------------------------------------------------------------------------
     def _toggle_batches(self, value):
         print(f"[FRONTPAGE] _toggle_batches("
               f"{'All' if value else 'Clear'})")
-        for bid, cb in self.batch_checkboxes.items():
-            try:
-                cb.value = value
-            except Exception:
-                pass
+        for bid, entry in self.batch_checkboxes.items():
             self._batch_check_state[bid] = bool(value)
+            try:
+                entry["icon"].name = (
+                    ft.Icons.CHECK_BOX if value
+                    else ft.Icons.CHECK_BOX_OUTLINE_BLANK)
+                entry["icon"].color = SUCCESS if value else MUTED
+                entry["label"].color = "#0f172a" if value else MUTED
+                entry["container"].bgcolor = (
+                    "#ecfdf5" if value else "#f8fafc")
+                entry["container"].border = ft.Border.all(
+                    1, "#a7f3d0" if value else "#e2e8f0")
+            except Exception as e:
+                print(f"[FRONTPAGE] _toggle_batches error on {bid}: {e}")
         self._safe_update()
 
     # =============================================================================
@@ -1349,7 +1402,7 @@ class FrontPageSettingsTab:
     # =============================================================================
 
     # -----------------------------------------------------------------------------
-    # [A.1] _collect_config (v3.13 — reads from _batch_check_state)
+    # [A.1] _collect_config (v3.14 — reads only from _batch_check_state)
     # -----------------------------------------------------------------------------
     def _collect_config(self):
         def _v(field):
@@ -1372,21 +1425,14 @@ class FrontPageSettingsTab:
         if max_shown < 0:
             max_shown = 0
 
-        # ---- Batch selection: read from authoritative state dict ----
+        # ---- Batch selection: ONLY from authoritative state dict ----
         selected_ids = []
         try:
-            for bid in self.batch_checkboxes.keys():
-                if self._batch_check_state.get(bid, False):
+            for bid, checked in self._batch_check_state.items():
+                if checked:
                     selected_ids.append(str(bid).strip())
         except Exception as e:
             print(f"[FRONTPAGE] _collect_config batch read failed: {e}")
-            # Fallback to cb.value
-            for bid, cb in self.batch_checkboxes.items():
-                try:
-                    if cb.value:
-                        selected_ids.append(str(bid).strip())
-                except Exception:
-                    pass
 
         # Log exactly what's being saved
         print("=" * 60)
