@@ -1,20 +1,25 @@
 # =================================================================================
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
-# v1.3 — Verbose batch-selection logging
-#   • get_selected_batches() now logs every step so we can pinpoint why
-#     N checkboxes produce M<N cards on the public page.
-#   • Strict checkbox semantics preserved (v1.2):
-#       Checked   → shown (regardless of batch status)
+# v1.3 — Strict checkbox semantics + verbose batch logging
+#   • get_selected_batches() now treats the checkbox list literally:
+#       Checked   → shown on public page (regardless of batch status)
 #       Unchecked → hidden
 #       Nothing   → 0 packages shown
+#   • Verbose [FP-BATCH] logs on every call so we can trace exactly
+#     which IDs are saved vs matched.
+#   • max_shown = 0 means "no cap" (show ALL checked batches).
+#
+# PURPOSE
+#   Loads/saves the JSON file that drives the marketing front page.
+#   File location: <base>/data/frontpage_config.json
 #
 # SECTION INDEX
 #   1     DEFAULT_CONFIG
 #   2     _config_path
 #   3     _deep_merge
 #   4     Public API (load_config / save_config / public_view)
-#   5     get_selected_batches   ← updated with logging
+#   5     get_selected_batches
 #   6     Gallery helpers
 # =================================================================================
 
@@ -81,9 +86,10 @@ DEFAULT_CONFIG = {
     ],
 
     # ---- 1.6 Packages ----
-    #   selected_batch_ids: the IDs of batches that should appear on
-    #   the public page. [] = none shown.
-    #   max_shown: safety cap. Set to 0 or omit to show ALL selected.
+    #   selected_batch_ids: the IDs of batches that appear on the
+    #     public page. [] = none shown.
+    #   max_shown: 0 or negative → no cap (show all checked)
+    #              positive N   → hard cap at N batches
     "packages": {
         "title": "Our Haj & Umrah Packages",
         "subtitle": (
@@ -91,7 +97,7 @@ DEFAULT_CONFIG = {
         ),
         "source": "batches",
         "selected_batch_ids": [],
-        "max_shown": 0,          # 0 = no cap (show all checked batches)
+        "max_shown": 0,
         "manual": [],
     },
 
@@ -162,7 +168,10 @@ def _config_path() -> str:
 # 3 — DEEP MERGE
 # =================================================================================
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Merge override onto base; lists replace, dicts merge."""
+    """
+    Merge override onto base; nested dicts merge, lists replace.
+    Empty [] in override is respected (not refilled from defaults).
+    """
     result = dict(base)
     for k, v in (override or {}).items():
         if (k in result
@@ -211,24 +220,16 @@ def public_view(cfg: dict = None) -> dict:
 
 
 # =================================================================================
-# 5 — BATCH SELECTION (v1.3 — verbose logging)
+# 5 — BATCH SELECTION HELPER (v1.3)
+# ---------------------------------------------------------------------------------
+# STRICT CHECKBOX SEMANTICS:
+#     Checked   → shown on public page
+#     Unchecked → hidden
+#     Nothing   → 0 packages
+# max_shown = 0 or negative → no cap
+# Verbose logs trace exact path.
 # =================================================================================
 def get_selected_batches(cfg: dict, all_batches: list) -> list:
-    """
-    Return the batches to show on the public front page.
-
-    STRICT CHECKBOX SEMANTICS:
-        Checked   → appears on front page
-        Unchecked → hidden
-        Nothing   → 0 packages shown
-
-    max_shown:
-        0 or negative → no cap (show all checked)
-        N > 0         → hard cap at N batches
-
-    Prints verbose [FP-BATCH] lines so we can trace the exact path
-    when the count doesn't match what the admin expected.
-    """
     pcfg = (cfg or {}).get("packages", {}) or {}
     source = pcfg.get("source", "batches")
 
@@ -236,17 +237,16 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
         max_shown = int(pcfg.get("max_shown", 0) or 0)
     except Exception:
         max_shown = 0
-    # 0 or negative = no cap
     cap_enabled = max_shown > 0
 
-    # ---- Manual list path ----
+    # ---- Manual list ----
     if source == "manual":
         manual = pcfg.get("manual", []) or []
         result = list(manual) if not cap_enabled else list(manual)[:max_shown]
         print(f"[FP-BATCH] source=manual  → {len(result)} batch(es)")
         return result
 
-    # ---- Real batches path ----
+    # ---- Real batches ----
     raw_ids = pcfg.get("selected_batch_ids", []) or []
     selected_ids_str = [str(x).strip() for x in raw_ids if x]
 
@@ -365,3 +365,8 @@ def gallery_summary() -> dict:
         "total_bytes": total,
         "total_human": _human(total),
     }
+
+
+# =================================================================================
+# SECTION END
+# =================================================================================
