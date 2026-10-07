@@ -720,14 +720,16 @@ class FrontPageSettingsTab:
     #     checked:   ☑  green icon, dark text, light-green bg
     #     unchecked: ☐  gray icon, muted text, light-gray bg
     #
-    #   The row stores a reference to its icon and label so that
-    #   _toggle_batch_row can flip them without rebuilding.
-    #
-    # v3.15 fix: ft.Icon(icon=...) — not name=...  (Flet 1.0 API)
+    # v3.16 fix:
+    #   The on_click handler is attached AFTER the Container is created.
+    #   v3.15 attached it inside the constructor, so the closure's default
+    #   argument `_row=row_container` referenced `row_container` before
+    #   Python had assigned it. Result:
+    #     "cannot access local variable 'row_container' where it is
+    #      not associated with value"
     # -----------------------------------------------------------------------------
     def _make_batch_row(self, batch_id, name, status, price_str,
                         is_checked):
-        # CHECK_BOX is the filled square; CHECK_BOX_OUTLINE_BLANK the empty
         icon = ft.Icon(
             icon=(ft.Icons.CHECK_BOX if is_checked
                   else ft.Icons.CHECK_BOX_OUTLINE_BLANK),
@@ -740,6 +742,7 @@ class FrontPageSettingsTab:
             color="#0f172a" if is_checked else MUTED,
         )
 
+        # Step 1: Build the Container WITHOUT on_click
         row_container = ft.Container(
             content=ft.Row(
                 [icon, label],
@@ -751,10 +754,15 @@ class FrontPageSettingsTab:
             border=ft.Border.all(
                 1, "#a7f3d0" if is_checked else "#e2e8f0"),
             border_radius=8,
-            on_click=lambda e, _bid=batch_id, _ic=icon, _lb=label,
-                            _row=row_container: self._toggle_batch_row(
-                                _bid, _ic, _lb, _row),
             ink=True,
+        )
+
+        # Step 2: Now attach the click handler.
+        # row_container is a bound name by this point, so the lambda's
+        # default-argument capture works correctly.
+        row_container.on_click = (
+            lambda e, _bid=batch_id, _ic=icon, _lb=label, _row=row_container:
+            self._toggle_batch_row(_bid, _ic, _lb, _row)
         )
 
         # Store references so All / Clear can reach them
