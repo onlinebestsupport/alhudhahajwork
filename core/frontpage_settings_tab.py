@@ -1,21 +1,19 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.10 — Native HTML upload page for mobile (clean rewrite)
-#   • §[11.4] _pick_gallery_files now NAVIGATES to /gallery-upload?type=...
-#     (native HTML <input type="file"> — works on iOS Safari)
-#   • Removed all Flet picker code from this file (no pick_files, no
-#     is_mobile, no FilePickerFileType). The pickers themselves are
-#     still instantiated for compatibility but no longer used.
-#   • §[11.7] services-only registration preserved (v3.8 fix)
-#   • §[11.3] ImageFit → BoxFit alias preserved (v3.6 fix)
+# v3.11 — New-tab upload for gallery
+#   • §[11.4] _pick_gallery_files now uses web_only_window_name="_blank"
+#     so the upload page opens in a NEW tab. The admin tab stays alive,
+#     which keeps the Flet session — no more forced re-login after
+#     adding a photo or video.
+#   • §[11.7] services-only registration (Flet 1.0) preserved
+#   • §[11.3] ImageFit → BoxFit alias preserved
+#   • §[11.5] dynamic gallery preserved
+#   • §[11.4] mobile-friendly picker preserved (unused but kept)
 #
 # SECTION INDEX
 #   [0]     __init__ / constructor
 #   [H]     Shared helpers
-#   [H.1]   _section_card
-#   [H.2]   _field
-#   [H.3]   _two_col
 #   [1]     Header banner
 #   [2]     Hero Section
 #   [3]     Alert Banner
@@ -29,7 +27,7 @@
 #   [11.1]  _rebuild_gallery_lists
 #   [11.2]  _gallery_stats_text
 #   [11.3]  _gallery_item_row
-#   [11.4]  _pick_gallery_files        (v3.10 — navigate only)
+#   [11.4]  _pick_gallery_files        ← updated v3.11 (new tab)
 #   [11.5]  _upload_files
 #   [11.6]  _remove_gallery_item
 #   [11.7]  _register_pickers
@@ -159,7 +157,6 @@ class FrontPageSettingsTab:
         self.status_label = None
         self.root = None
 
-        # ---- Build ----
         try:
             self._load_batches()
             self._build_root()
@@ -570,7 +567,7 @@ class FrontPageSettingsTab:
 
                 cb = ft.Checkbox(
                     label=label,
-                    value=(bid in selected_ids) if selected_ids else False,
+                    value=(bid in selected_ids),
                     label_style=ft.TextStyle(size=11))
                 self.batch_checkboxes[bid] = cb
                 batch_controls.append(cb)
@@ -587,7 +584,8 @@ class FrontPageSettingsTab:
                 clear_all_btn,
             ], spacing=4),
             ft.Text(
-                "Leave all unchecked to show every open batch.",
+                "Check a batch to show it on the public page. "
+                "Uncheck to hide. Nothing checked = no packages shown.",
                 size=10, color=MUTED, italic=True),
             self.pkg_batch_container,
         ], spacing=8)
@@ -1016,48 +1014,62 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER),
             border_radius=10)
 
-        # -----------------------------------------------------------------------------
-    # [11.4] _pick_gallery_files — Flet 1.0-aware navigation
+    # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — v3.11: opens /gallery-upload in NEW TAB
     # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
+        """
+        Open the native HTML upload page in a NEW browser tab.
+
+        We do NOT use Flet's pick_files() because iOS Safari silently
+        blocks programmatically-triggered file inputs when they happen
+        in an async microtask (which is what run_task schedules).
+
+        We use web_only_window_name="_blank" so the admin tab is not
+        navigated away from. This keeps the Flet session alive on the
+        admin tab — the user does not have to log in again after
+        closing the upload tab.
+        """
         url = f"/gallery-upload?type={media_type}"
-        print(f"[GALLERY] opening upload page: {url}")
+        print(f"[GALLERY] opening upload page in NEW tab: {url}")
 
         async def _go():
-            # --- Flet 1.0 API: web_only_window_name ---
+            # Attempt 1 — Flet 1.0 parameter name
             try:
                 launcher = ft.UrlLauncher()
-                r = launcher.launch_url(url, web_only_window_name="_self")
+                r = launcher.launch_url(url,
+                                        web_only_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] ✅ launch_url(web_only_window_name=_self)")
+                print("[GALLERY] OK new tab (web_only_window_name)")
                 return
             except TypeError as te:
-                print(f"[GALLERY] 1.0 param failed: {te}")
+                print(f"[GALLERY] 1.0 param rejected: {te}")
             except Exception as e:
                 print(f"[GALLERY] 1.0 param raised: {e}")
 
-            # --- Older Flet API: web_window_name ---
+            # Attempt 2 — legacy parameter name
             try:
                 launcher = ft.UrlLauncher()
-                r = launcher.launch_url(url, web_window_name="_self")
+                r = launcher.launch_url(url,
+                                        web_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] ✅ launch_url(web_window_name=_self)")
+                print("[GALLERY] OK new tab (web_window_name legacy)")
                 return
             except Exception as e:
                 print(f"[GALLERY] legacy param failed: {e}")
 
-            # --- Bare call — opens in new tab (always works) ---
+            # Attempt 3 — bare launch
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] ✅ launch_url() — new tab")
+                print("[GALLERY] OK bare launch")
                 return
             except Exception as e:
-                print(f"[GALLERY] bare launch_url failed: {e}")
+                print(f"[GALLERY] bare failed: {e}")
 
         try:
             self.page_ref.run_task(_go)
@@ -1068,6 +1080,7 @@ class FrontPageSettingsTab:
                     f"⚠️ Could not open upload page: {ex}", DANGER)
             except Exception:
                 pass
+
     # -----------------------------------------------------------------------------
     # [11.5] _upload_files — used only when returning from the HTML page
     # -----------------------------------------------------------------------------
@@ -1209,9 +1222,6 @@ class FrontPageSettingsTab:
             return
         try:
             for p in (self.photo_picker, self.video_picker):
-                # FilePicker is a *service*, not a UI control.
-                # It must be in page.services only.
-                # Adding to page.overlay triggers "Unknown control".
                 if hasattr(self.page_ref, "services"):
                     if p not in self.page_ref.services:
                         self.page_ref.services.append(p)
