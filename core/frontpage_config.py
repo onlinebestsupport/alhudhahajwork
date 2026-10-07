@@ -1,22 +1,38 @@
 # =================================================================================
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
-# v1.3 — Strict checkbox semantics + verbose batch logging
-#   • §[5] get_selected_batches treats the checkbox list literally:
-#       Checked   → shown on public page (regardless of batch status)
-#       Unchecked → hidden
-#       Nothing   → 0 packages shown
-#   • max_shown = 0 means "no cap" (show ALL checked batches)
-#   • Verbose [FP-BATCH] logs trace which IDs are saved vs matched
+# v2.0 — Atomic writes + batch-ID helpers, aligned with
+#        frontpage_settings_tab.py v3.19
 #
+#   • §3       _deep_merge — hardened against None
+#   • §3.1     _normalize_id        — single place that strips/coerces IDs
+#   • §4.2     save_config          — ATOMIC write (temp file + os.replace)
+#                                     Prevents corrupt JSON if the process
+#                                     dies mid-write (this was causing the
+#                                     intermittent "config won't save" and
+#                                     "checkbox state disappears" bugs).
+#   • §4.4     config_exists
+#   • §4.5     delete_config
+#   • §5       get_selected_batches — uses _normalize_id, matches order
+#   • §5.1     normalize_batch_ids
+#   • §5.2     get_selected_batch_ids
+#   • §5.3     set_selected_batch_ids
+#   • §5.4     count_selected_batches
+#   • §6.6     gallery_media_path    — build /media/gallery/... URLs
+#   • §6.7     gallery_media_url
+#
+#   Verbose logs use [FP-CFG] prefix so they pair with the tab's
+#   [FRONTPAGE] and the API's [FP-BATCH] lines.
+#
+# ---------------------------------------------------------------------------------
 # PURPOSE
 #   Loads/saves the JSON file that drives the marketing front page.
 #   File: <base>/data/frontpage_config.json
 #
 # USAGE
 #   • Admin UI reads/writes via core/frontpage_settings_tab.py
-#   • Public front page reads via GET /api/frontpage (main.py §21.5.5)
-#   • Packages built via GET /api/batches (main.py §21.5.6)
+#   • Public front page reads via GET /api/frontpage  (main.py §21.5.5)
+#   • Packages built via       GET /api/batches       (main.py §21.5.6)
 #   • Gallery media served from /media/gallery/{photos|videos}/{file}
 #
 # SECTION INDEX
@@ -30,21 +46,31 @@
 #   1.7     About
 #   1.8     Footer
 #   1.9     Gallery
-#   2     Path resolution (_config_path)
+#   2     Path resolution (_config_path, _data_dir, config_exists, delete_config)
 #   3     Deep merge helper (_deep_merge)
-#   4     Public API (load_config, save_config, public_view)
-#   5     Batch selection helper (get_selected_batches)
+#   3.1   ID normalization helper (_normalize_id)
+#   4     Public API (load_config, save_config, public_view,
+#                     config_exists, delete_config)
+#   5     Batch selection helpers
+#   5.1     normalize_batch_ids
+#   5.2     get_selected_batch_ids
+#   5.3     set_selected_batch_ids
+#   5.4     count_selected_batches
+#   5.5     get_selected_batches
 #   6     Gallery helpers
-#   6.1     gallery_dir()
-#   6.2     add_gallery_item()
-#   6.3     remove_gallery_item()
-#   6.4     list_gallery_items()
-#   6.5     gallery_summary()
+#   6.1     gallery_dir
+#   6.2     add_gallery_item
+#   6.3     remove_gallery_item
+#   6.4     list_gallery_items
+#   6.5     gallery_summary
+#   6.6     gallery_media_path
+#   6.7     gallery_media_url
 # =================================================================================
 
 
 import os
 import json
+import tempfile
 from datetime import datetime
 
 
@@ -204,12 +230,16 @@ DEFAULT_CONFIG = {
 # =================================================================================
 # 2 — PATH RESOLUTION
 # =================================================================================
-def _config_path() -> str:
-    """
-    Where the JSON file lives (inside the Railway Volume, persisted).
 
-    Falls back to <base>/data/ if core.helpers.get_app_base_path()
-    is unavailable for any reason.
+# ---------------------------------------------------------------------------------
+# 2.1 — _data_dir
+# ---------------------------------------------------------------------------------
+def _data_dir() -> str:
+    """
+    Absolute path to <base>/data/, creating it if missing.
+
+    Base is resolved through core.helpers.get_app_base_path(), which on
+    Railway maps to the mounted volume. Falls back to the repo root.
     """
     try:
         from core.helpers import get_app_base_path
@@ -217,9 +247,22 @@ def _config_path() -> str:
     except Exception:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-    data_dir = os.path.join(base, "data")
-    os.makedirs(data_dir, exist_ok=True)
-    return os.path.join(data_dir, "frontpage_config.json")
+    d = os.path.join(base, "data")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+# ---------------------------------------------------------------------------------
+# 2.2 — _config_path
+# ---------------------------------------------------------------------------------
+def _config_path() -> str:
+    """
+    Where the JSON file lives (inside the Railway Volume, persisted).
+
+    Falls back to <base>/data/ if core.helpers.get_app_base_path()
+    is unavailable for any reason.
+    """
+    return os.path.join(_data_dir(), "frontpage_config.json")
 
 
 # =================================================================================
@@ -232,9 +275,19 @@ def _deep_merge(base: dict, override: dict) -> dict:
     Lists are NOT concatenated. This is intentional so an empty
     `selected_batch_ids: []` in the saved config is respected as
     "no batches selected", not silently refilled with defaults.
+
+    Hardened:
+        • None override → returns a shallow copy of base
+        • None values inside override are ignored (keeps base value)
     """
-    result = dict(base)
-    for k, v in (override or {}).items():
+    result = dict(base or {})
+    if not override:
+        return result
+
+    for k, v in override.items():
+        if v is None:
+            # Do not clobber a real value with None
+            continue
         if (k in result
                 and isinstance(result[k], dict)
                 and isinstance(v, dict)):
@@ -242,6 +295,25 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[k] = v
     return result
+
+
+# =================================================================================
+# 3.1 — ID NORMALIZATION helper
+# =================================================================================
+def _normalize_id(x) -> str:
+    """
+    Single source of truth for batch-ID formatting.
+
+    • Coerces to str
+    • Strips whitespace
+    • Returns "" for None / empty
+    """
+    if x is None:
+        return ""
+    try:
+        return str(x).strip()
+    except Exception:
+        return ""
 
 
 # =================================================================================
@@ -262,37 +334,97 @@ def load_config() -> dict:
     path = _config_path()
 
     if not os.path.exists(path):
+        print(f"[FP-CFG] no config at {path} — creating defaults")
         save_config(DEFAULT_CONFIG)
         return dict(DEFAULT_CONFIG)
 
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return _deep_merge(DEFAULT_CONFIG, data)
+        merged = _deep_merge(DEFAULT_CONFIG, data)
+
+        # Visibility into what was persisted
+        try:
+            ids = merged.get("packages", {}).get("selected_batch_ids", []) or []
+            print(f"[FP-CFG] loaded {path} · "
+                  f"{len(ids)} selected batch(es)")
+        except Exception:
+            pass
+
+        return merged
     except Exception as e:
-        print(f"[frontpage_config] load failed: {e}")
+        print(f"[FP-CFG] load failed ({path}): {e}")
         return dict(DEFAULT_CONFIG)
 
 
 # ---------------------------------------------------------------------------------
-# 4.2 — save_config
+# 4.2 — save_config  (ATOMIC)
 # ---------------------------------------------------------------------------------
 def save_config(cfg: dict) -> bool:
     """
     Save config to disk (merged with defaults so partial payloads
     never truncate the schema).
 
+    ATOMIC WRITE:
+        1. Merge with defaults.
+        2. Write to a temp file in the same directory.
+        3. os.replace() → atomic on POSIX and NTFS.
+
+    This prevents a half-written JSON file if the process is killed
+    mid-write — that was the root cause of the intermittent
+    "checkbox state disappears after Reload" symptom.
+
     Returns True on success.
     """
     path = _config_path()
+    tmp_path = None
     try:
         merged = _deep_merge(DEFAULT_CONFIG, cfg or {})
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(merged, f, indent=2, ensure_ascii=False)
-        print(f"[frontpage_config] saved to {path}")
+
+        # Sanity: ensure `selected_batch_ids` is a list of clean strings
+        try:
+            pkg = merged.setdefault("packages", {})
+            raw = pkg.get("selected_batch_ids", []) or []
+            pkg["selected_batch_ids"] = [
+                _normalize_id(x) for x in raw if _normalize_id(x)
+            ]
+        except Exception as e:
+            print(f"[FP-CFG] warn: batch id cleanup failed: {e}")
+
+        d = os.path.dirname(path)
+        os.makedirs(d, exist_ok=True)
+
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".fp_cfg_", suffix=".json.tmp", dir=d)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(merged, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp_path, path)
+            tmp_path = None  # consumed
+        except Exception:
+            # Clean up temp file on failure
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise
+
+        try:
+            n = len(merged.get("packages", {})
+                         .get("selected_batch_ids", []) or [])
+            print(f"[FP-CFG] saved {path} · {n} selected batch(es)")
+        except Exception:
+            print(f"[FP-CFG] saved {path}")
+
         return True
     except Exception as e:
-        print(f"[frontpage_config] save failed: {e}")
+        print(f"[FP-CFG] save failed ({path}): {e}")
         return False
 
 
@@ -310,9 +442,109 @@ def public_view(cfg: dict = None) -> dict:
     return cfg
 
 
+# ---------------------------------------------------------------------------------
+# 4.4 — config_exists
+# ---------------------------------------------------------------------------------
+def config_exists() -> bool:
+    """
+    True if the config JSON file exists on disk.
+    Useful for the Reset flow and diagnostics.
+    """
+    try:
+        return os.path.exists(_config_path())
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------------
+# 4.5 — delete_config
+# ---------------------------------------------------------------------------------
+def delete_config() -> bool:
+    """
+    Delete the config file so the next load_config() recreates
+    defaults. Returns True if the file is gone afterwards.
+    """
+    path = _config_path()
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"[FP-CFG] deleted {path}")
+        return True
+    except Exception as e:
+        print(f"[FP-CFG] delete failed ({path}): {e}")
+        return False
+
+
 # =================================================================================
-# 5 — BATCH SELECTION helper
+# 5 — BATCH SELECTION helpers
 # =================================================================================
+
+# ---------------------------------------------------------------------------------
+# 5.1 — normalize_batch_ids
+# ---------------------------------------------------------------------------------
+def normalize_batch_ids(ids) -> list:
+    """
+    Return a clean, de-duplicated, order-preserving list of batch IDs.
+
+    Usage:
+        normalize_batch_ids([" HAJ/001 ", "", None, "HAJ/002", "HAJ/001"])
+        # → ["HAJ/001", "HAJ/002"]
+    """
+    out = []
+    seen = set()
+    for x in (ids or []):
+        s = _normalize_id(x)
+        if not s:
+            continue
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+# ---------------------------------------------------------------------------------
+# 5.2 — get_selected_batch_ids
+# ---------------------------------------------------------------------------------
+def get_selected_batch_ids(cfg: dict = None) -> list:
+    """
+    Return the normalized list of selected batch IDs from a config
+    (or the current one on disk).
+    """
+    if cfg is None:
+        cfg = load_config()
+    pkg = (cfg or {}).get("packages", {}) or {}
+    return normalize_batch_ids(pkg.get("selected_batch_ids", []) or [])
+
+
+# ---------------------------------------------------------------------------------
+# 5.3 — set_selected_batch_ids
+# ---------------------------------------------------------------------------------
+def set_selected_batch_ids(cfg: dict, ids) -> dict:
+    """
+    Update cfg["packages"]["selected_batch_ids"] with a normalized list
+    and return the modified config. Does NOT save.
+
+    Caller decides whether to persist via save_config(cfg).
+    """
+    if not isinstance(cfg, dict):
+        cfg = load_config()
+    pkg = cfg.setdefault("packages", {})
+    pkg["selected_batch_ids"] = normalize_batch_ids(ids)
+    return cfg
+
+
+# ---------------------------------------------------------------------------------
+# 5.4 — count_selected_batches
+# ---------------------------------------------------------------------------------
+def count_selected_batches(cfg: dict = None) -> int:
+    """Number of selected batch IDs in cfg (0 if none / malformed)."""
+    return len(get_selected_batch_ids(cfg))
+
+
+# ---------------------------------------------------------------------------------
+# 5.5 — get_selected_batches
+# ---------------------------------------------------------------------------------
 def get_selected_batches(cfg: dict, all_batches: list) -> list:
     """
     Return batches that should appear on the public front page.
@@ -326,6 +558,11 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
         0 or negative → no cap (show all checked)
         positive N    → hard cap at N batches
 
+    Order:
+        Preserves the order of `all_batches` (i.e., DB order).
+        The order of `selected_batch_ids` is intentionally ignored so
+        the public page stays stable when the admin re-ticks boxes.
+
     Prints verbose [FP-BATCH] lines for tracing.
     """
     pcfg = (cfg or {}).get("packages", {}) or {}
@@ -337,39 +574,53 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
         max_shown = 0
     cap_enabled = max_shown > 0
 
-    # ---- Manual list ----
+    # ---- Manual list --------------------------------------------------------
     if source == "manual":
         manual = pcfg.get("manual", []) or []
-        result = list(manual) if not cap_enabled else list(manual)[:max_shown]
+        result = (list(manual) if not cap_enabled
+                  else list(manual)[:max_shown])
         print(f"[FP-BATCH] source=manual  → {len(result)} batch(es)")
         return result
 
-    # ---- Real batches ----
-    raw_ids = pcfg.get("selected_batch_ids", []) or []
-    selected_ids_str = [str(x).strip() for x in raw_ids if x]
+    # ---- Real batches -------------------------------------------------------
+    selected_ids = get_selected_batch_ids(cfg)
+    all_batches = all_batches or []
 
     print("=" * 60)
     print(f"[FP-BATCH] source          : {source}")
     print(f"[FP-BATCH] cap_enabled     : {cap_enabled} "
           f"(max_shown={max_shown})")
-    print(f"[FP-BATCH] selected ids    : {len(selected_ids_str)}")
-    for sid in selected_ids_str:
+    print(f"[FP-BATCH] selected ids    : {len(selected_ids)}")
+    for sid in selected_ids:
         print(f"[FP-BATCH]   • {sid!r}")
-    print(f"[FP-BATCH] DB batches      : {len(all_batches or [])}")
-    for b in (all_batches or []):
-        print(f"[FP-BATCH]   • {str(b.get('id','')).strip()!r}  "
+    print(f"[FP-BATCH] DB batches      : {len(all_batches)}")
+
+    # Build a lookup of DB batch IDs to print diff quickly
+    db_ids = []
+    for b in all_batches:
+        bid = _normalize_id(b.get("id"))
+        db_ids.append(bid)
+        print(f"[FP-BATCH]   • {bid!r}  "
               f"name={b.get('batch_name')!r}  "
               f"status={b.get('status')!r}")
 
-    if not selected_ids_str:
+    # Warn about selected IDs that don't exist in DB (helps debugging)
+    missing = [sid for sid in selected_ids if sid not in db_ids]
+    if missing:
+        print(f"[FP-BATCH] ⚠ {len(missing)} selected ID(s) not in DB:")
+        for sid in missing:
+            print(f"[FP-BATCH]     • {sid!r}")
+
+    if not selected_ids:
         print("[FP-BATCH] → nothing selected, returning []")
         print("=" * 60)
         return []
 
     out = []
-    for b in (all_batches or []):
-        bid = str(b.get("id", "")).strip()
-        if bid not in selected_ids_str:
+    wanted = set(selected_ids)
+    for b in all_batches:
+        bid = _normalize_id(b.get("id"))
+        if bid not in wanted:
             continue
         out.append(b)
         if cap_enabled and len(out) >= max_shown:
@@ -399,13 +650,7 @@ def gallery_dir() -> str:
 
     Returns the top-level gallery path.
     """
-    try:
-        from core.helpers import get_app_base_path
-        base = get_app_base_path()
-    except Exception:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-    d = os.path.join(base, "data", "gallery")
+    d = os.path.join(_data_dir(), "gallery")
     os.makedirs(os.path.join(d, "photos"), exist_ok=True)
     os.makedirs(os.path.join(d, "videos"), exist_ok=True)
     return d
@@ -422,12 +667,12 @@ def add_gallery_item(media_type: str, item: dict) -> bool:
     item should contain url/caption/uploaded_at/size.
     """
     if media_type not in ("photos", "videos"):
-        print(f"[frontpage_config] add_gallery_item: bad media_type "
+        print(f"[FP-CFG] add_gallery_item: bad media_type "
               f"{media_type!r}")
         return False
 
     if not isinstance(item, dict) or not item.get("url"):
-        print("[frontpage_config] add_gallery_item: item missing url")
+        print("[FP-CFG] add_gallery_item: item missing url")
         return False
 
     try:
@@ -437,7 +682,7 @@ def add_gallery_item(media_type: str, item: dict) -> bool:
         gal[media_type].append(item)
         return save_config(cfg)
     except Exception as e:
-        print(f"[frontpage_config] add_gallery_item failed: {e}")
+        print(f"[FP-CFG] add_gallery_item failed: {e}")
         return False
 
 
@@ -463,7 +708,7 @@ def remove_gallery_item(media_type: str, url: str) -> bool:
         gal[media_type] = [x for x in lst if x.get("url") != url]
         return save_config(cfg)
     except Exception as e:
-        print(f"[frontpage_config] remove_gallery_item failed: {e}")
+        print(f"[FP-CFG] remove_gallery_item failed: {e}")
         return False
 
 
@@ -532,6 +777,46 @@ def gallery_summary() -> dict:
     }
 
 
+# ---------------------------------------------------------------------------------
+# 6.6 — gallery_media_path
+# ---------------------------------------------------------------------------------
+def gallery_media_path(media_type: str, filename: str) -> str:
+    """
+    Absolute path on disk to one gallery file.
+
+    Usage:
+        gallery_media_path("photos", "abc123.jpg")
+        # → /app/data/gallery/photos/abc123.jpg
+    """
+    if media_type not in ("photos", "videos"):
+        raise ValueError(f"bad media_type: {media_type!r}")
+    if not filename:
+        raise ValueError("filename is required")
+    # Prevent path traversal
+    filename = os.path.basename(str(filename))
+    return os.path.join(gallery_dir(), media_type, filename)
+
+
+# ---------------------------------------------------------------------------------
+# 6.7 — gallery_media_url
+# ---------------------------------------------------------------------------------
+def gallery_media_url(media_type: str, filename: str) -> str:
+    """
+    Public URL path for one gallery file (matches the static route
+    /media/gallery/{photos|videos}/{file} served by main.py).
+
+    Usage:
+        gallery_media_url("photos", "abc123.jpg")
+        # → /media/gallery/photos/abc123.jpg
+    """
+    if media_type not in ("photos", "videos"):
+        raise ValueError(f"bad media_type: {media_type!r}")
+    if not filename:
+        raise ValueError("filename is required")
+    filename = os.path.basename(str(filename))
+    return f"/media/gallery/{media_type}/{filename}"
+
+
 # =================================================================================
-# SECTION END — core/frontpage_config.py v1.3
+# SECTION END — core/frontpage_config.py v2.0
 # =================================================================================
