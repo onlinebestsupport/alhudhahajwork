@@ -2,26 +2,46 @@
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
 # v1.3 — Strict checkbox semantics + verbose batch logging
-#   • get_selected_batches() now treats the checkbox list literally:
+#   • §[5] get_selected_batches treats the checkbox list literally:
 #       Checked   → shown on public page (regardless of batch status)
 #       Unchecked → hidden
 #       Nothing   → 0 packages shown
-#   • Verbose [FP-BATCH] logs on every call so we can trace exactly
-#     which IDs are saved vs matched.
-#   • max_shown = 0 means "no cap" (show ALL checked batches).
+#   • max_shown = 0 means "no cap" (show ALL checked batches)
+#   • Verbose [FP-BATCH] logs trace which IDs are saved vs matched
 #
 # PURPOSE
 #   Loads/saves the JSON file that drives the marketing front page.
-#   File location: <base>/data/frontpage_config.json
+#   File: <base>/data/frontpage_config.json
+#
+# USAGE
+#   • Admin UI reads/writes via core/frontpage_settings_tab.py
+#   • Public front page reads via GET /api/frontpage (main.py §21.5.5)
+#   • Packages built via GET /api/batches (main.py §21.5.6)
+#   • Gallery media served from /media/gallery/{photos|videos}/{file}
 #
 # SECTION INDEX
-#   1     DEFAULT_CONFIG
-#   2     _config_path
-#   3     _deep_merge
-#   4     Public API (load_config / save_config / public_view)
-#   5     get_selected_batches
+#   1     DEFAULT_CONFIG (all default values)
+#   1.1     Hero
+#   1.2     Alert banner
+#   1.3     Contact info
+#   1.4     Social links
+#   1.5     Features
+#   1.6     Packages
+#   1.7     About
+#   1.8     Footer
+#   1.9     Gallery
+#   2     Path resolution (_config_path)
+#   3     Deep merge helper (_deep_merge)
+#   4     Public API (load_config, save_config, public_view)
+#   5     Batch selection helper (get_selected_batches)
 #   6     Gallery helpers
+#   6.1     gallery_dir()
+#   6.2     add_gallery_item()
+#   6.3     remove_gallery_item()
+#   6.4     list_gallery_items()
+#   6.5     gallery_summary()
 # =================================================================================
+
 
 import os
 import json
@@ -33,7 +53,9 @@ from datetime import datetime
 # =================================================================================
 DEFAULT_CONFIG = {
 
-    # ---- 1.1 Hero ----
+    # -----------------------------------------------------------------------------
+    # 1.1 — Hero section (top banner)
+    # -----------------------------------------------------------------------------
     "hero": {
         "heading": "Your Journey to the Holy Land",
         "subheading": (
@@ -44,7 +66,9 @@ DEFAULT_CONFIG = {
         "whatsapp_text": "Chat on WhatsApp",
     },
 
-    # ---- 1.2 Alert ----
+    # -----------------------------------------------------------------------------
+    # 1.2 — Alert banner (optional top-of-page announcement)
+    # -----------------------------------------------------------------------------
     "alert": {
         "enabled": False,
         "message": (
@@ -53,10 +77,12 @@ DEFAULT_CONFIG = {
         ),
         "link": "#",
         "color": "#f39c12",
-        "style": "pulse",
+        "style": "pulse",          # "pulse" | "blink" | "none"
     },
 
-    # ---- 1.3 Contact ----
+    # -----------------------------------------------------------------------------
+    # 1.3 — Contact info (top bar, contact section, footer)
+    # -----------------------------------------------------------------------------
     "contact": {
         "phone": "+91 98765 43210",
         "phone2": "",
@@ -66,14 +92,18 @@ DEFAULT_CONFIG = {
         "address_line2": "Mumbai - 400001, India",
     },
 
-    # ---- 1.4 Social ----
+    # -----------------------------------------------------------------------------
+    # 1.4 — Social links (empty string hides the network)
+    # -----------------------------------------------------------------------------
     "social": {
         "facebook": "",
         "instagram": "",
         "twitter": "",
     },
 
-    # ---- 1.5 Features ----
+    # -----------------------------------------------------------------------------
+    # 1.5 — Feature cards (4-6 recommended)
+    # -----------------------------------------------------------------------------
     "features": [
         {"icon": "fa-mosque", "title": "25+ Years Experience",
          "text": "Trusted by thousands of pilgrims worldwide"},
@@ -85,11 +115,17 @@ DEFAULT_CONFIG = {
          "text": "Knowledgeable guides throughout your journey"},
     ],
 
-    # ---- 1.6 Packages ----
-    #   selected_batch_ids: the IDs of batches that appear on the
-    #     public page. [] = none shown.
-    #   max_shown: 0 or negative → no cap (show all checked)
-    #              positive N   → hard cap at N batches
+    # -----------------------------------------------------------------------------
+    # 1.6 — Packages section
+    #   source = "batches" → pull from real batches (recommended)
+    #   source = "manual"  → use the manual list below
+    #
+    #   selected_batch_ids: the CRITICAL field.
+    #     [] → public page shows NO packages
+    #     ["HAJ/BCH/2027/001", ...] → shows exactly those
+    #   max_shown: 0 = no cap (show ALL checked)
+    #              positive N → hard cap at N batches
+    # -----------------------------------------------------------------------------
     "packages": {
         "title": "Our Haj & Umrah Packages",
         "subtitle": (
@@ -98,10 +134,12 @@ DEFAULT_CONFIG = {
         "source": "batches",
         "selected_batch_ids": [],
         "max_shown": 0,
-        "manual": [],
+        "manual": [],               # used only when source == "manual"
     },
 
-    # ---- 1.7 About ----
+    # -----------------------------------------------------------------------------
+    # 1.7 — About section
+    # -----------------------------------------------------------------------------
     "about": {
         "heading": "About Alhudha Haj Travel",
         "paragraph1": (
@@ -124,7 +162,9 @@ DEFAULT_CONFIG = {
         ],
     },
 
-    # ---- 1.8 Footer ----
+    # -----------------------------------------------------------------------------
+    # 1.8 — Footer
+    # -----------------------------------------------------------------------------
     "footer": {
         "about_text": (
             "Your trusted partner for Haj and Umrah since 1998. "
@@ -136,12 +176,23 @@ DEFAULT_CONFIG = {
         ),
     },
 
-    # ---- 1.9 Gallery ----
+    # -----------------------------------------------------------------------------
+    # 1.9 — Gallery (photos + videos)
+    #   Files live at /app/data/gallery/{photos,videos}/ on the volume.
+    #   Each item shape:
+    #     {
+    #       "url":         "/media/gallery/photos/abc123.jpg",
+    #       "caption":     "Pilgrims at Masjid al-Haram",
+    #       "uploaded_at": "2026-10-05T10:31:00",
+    #       "size":        428193,          # bytes
+    #       "original_name": "mecca-2026.jpg"
+    #     }
+    # -----------------------------------------------------------------------------
     "gallery": {
         "enabled": True,
         "title": "Sacred Places & Pilgrim Attractions",
         "subtitle": "Glimpses from our blessed journeys",
-        "layout": "grid",
+        "layout": "grid",                       # "grid" | "carousel"
         "max_photos_shown": 12,
         "max_videos_shown": 6,
         "photos": [],
@@ -154,23 +205,33 @@ DEFAULT_CONFIG = {
 # 2 — PATH RESOLUTION
 # =================================================================================
 def _config_path() -> str:
+    """
+    Where the JSON file lives (inside the Railway Volume, persisted).
+
+    Falls back to <base>/data/ if core.helpers.get_app_base_path()
+    is unavailable for any reason.
+    """
     try:
         from core.helpers import get_app_base_path
         base = get_app_base_path()
     except Exception:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     data_dir = os.path.join(base, "data")
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, "frontpage_config.json")
 
 
 # =================================================================================
-# 3 — DEEP MERGE
+# 3 — DEEP MERGE helper
 # =================================================================================
 def _deep_merge(base: dict, override: dict) -> dict:
     """
-    Merge override onto base; nested dicts merge, lists replace.
-    Empty [] in override is respected (not refilled from defaults).
+    Merge override onto base; nested dicts merge recursively, lists replace.
+
+    Lists are NOT concatenated. This is intentional so an empty
+    `selected_batch_ids: []` in the saved config is respected as
+    "no batches selected", not silently refilled with defaults.
     """
     result = dict(base)
     for k, v in (override or {}).items():
@@ -186,11 +247,24 @@ def _deep_merge(base: dict, override: dict) -> dict:
 # =================================================================================
 # 4 — PUBLIC API
 # =================================================================================
+
+# ---------------------------------------------------------------------------------
+# 4.1 — load_config
+# ---------------------------------------------------------------------------------
 def load_config() -> dict:
+    """
+    Load config from disk, merged with defaults.
+
+    • If the file doesn't exist, one is created with defaults.
+    • If reading fails, defaults are returned so the front page
+      never crashes on a corrupt JSON file.
+    """
     path = _config_path()
+
     if not os.path.exists(path):
         save_config(DEFAULT_CONFIG)
         return dict(DEFAULT_CONFIG)
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -200,7 +274,16 @@ def load_config() -> dict:
         return dict(DEFAULT_CONFIG)
 
 
+# ---------------------------------------------------------------------------------
+# 4.2 — save_config
+# ---------------------------------------------------------------------------------
 def save_config(cfg: dict) -> bool:
+    """
+    Save config to disk (merged with defaults so partial payloads
+    never truncate the schema).
+
+    Returns True on success.
+    """
     path = _config_path()
     try:
         merged = _deep_merge(DEFAULT_CONFIG, cfg or {})
@@ -213,23 +296,38 @@ def save_config(cfg: dict) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------------
+# 4.3 — public_view
+# ---------------------------------------------------------------------------------
 def public_view(cfg: dict = None) -> dict:
+    """
+    Return config as seen by the public front page. Currently identical
+    to the full config. Kept as a seam so admin-only fields can be
+    stripped later without changing call sites.
+    """
     if cfg is None:
         cfg = load_config()
     return cfg
 
 
 # =================================================================================
-# 5 — BATCH SELECTION HELPER (v1.3)
-# ---------------------------------------------------------------------------------
-# STRICT CHECKBOX SEMANTICS:
-#     Checked   → shown on public page
-#     Unchecked → hidden
-#     Nothing   → 0 packages
-# max_shown = 0 or negative → no cap
-# Verbose logs trace exact path.
+# 5 — BATCH SELECTION helper
 # =================================================================================
 def get_selected_batches(cfg: dict, all_batches: list) -> list:
+    """
+    Return batches that should appear on the public front page.
+
+    STRICT CHECKBOX SEMANTICS:
+        • Checked   → batch appears (regardless of Full/Closed status)
+        • Unchecked → batch does NOT appear
+        • Nothing checked → public page shows ZERO packages
+
+    max_shown:
+        0 or negative → no cap (show all checked)
+        positive N    → hard cap at N batches
+
+    Prints verbose [FP-BATCH] lines for tracing.
+    """
     pcfg = (cfg or {}).get("packages", {}) or {}
     source = pcfg.get("source", "batches")
 
@@ -286,23 +384,52 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
 # =================================================================================
 # 6 — GALLERY HELPERS
 # =================================================================================
+
+# ---------------------------------------------------------------------------------
+# 6.1 — gallery_dir
+# ---------------------------------------------------------------------------------
 def gallery_dir() -> str:
+    """
+    Persistent directory for uploaded media (inside the Railway Volume).
+
+    Creates:
+        <base>/data/gallery/
+        <base>/data/gallery/photos/
+        <base>/data/gallery/videos/
+
+    Returns the top-level gallery path.
+    """
     try:
         from core.helpers import get_app_base_path
         base = get_app_base_path()
     except Exception:
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     d = os.path.join(base, "data", "gallery")
     os.makedirs(os.path.join(d, "photos"), exist_ok=True)
     os.makedirs(os.path.join(d, "videos"), exist_ok=True)
     return d
 
 
+# ---------------------------------------------------------------------------------
+# 6.2 — add_gallery_item
+# ---------------------------------------------------------------------------------
 def add_gallery_item(media_type: str, item: dict) -> bool:
+    """
+    Append one item to cfg["gallery"][media_type] and save.
+
+    media_type must be 'photos' or 'videos'.
+    item should contain url/caption/uploaded_at/size.
+    """
     if media_type not in ("photos", "videos"):
+        print(f"[frontpage_config] add_gallery_item: bad media_type "
+              f"{media_type!r}")
         return False
+
     if not isinstance(item, dict) or not item.get("url"):
+        print("[frontpage_config] add_gallery_item: item missing url")
         return False
+
     try:
         cfg = load_config()
         gal = cfg.setdefault("gallery", {})
@@ -314,9 +441,21 @@ def add_gallery_item(media_type: str, item: dict) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------------
+# 6.3 — remove_gallery_item
+# ---------------------------------------------------------------------------------
 def remove_gallery_item(media_type: str, url: str) -> bool:
+    """
+    Remove any item from cfg["gallery"][media_type] whose url matches.
+
+    This removes the config entry only; the file on disk is removed
+    by the caller (main.py §21.5.8b).
+
+    Returns True on success (even if no match was found).
+    """
     if media_type not in ("photos", "videos"):
         return False
+
     try:
         cfg = load_config()
         gal = cfg.setdefault("gallery", {})
@@ -328,22 +467,48 @@ def remove_gallery_item(media_type: str, url: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------------
+# 6.4 — list_gallery_items
+# ---------------------------------------------------------------------------------
 def list_gallery_items(media_type: str = None) -> list:
+    """
+    Return all gallery items, optionally filtered.
+
+    Usage:
+        list_gallery_items()          → all items
+        list_gallery_items("photos")  → photos only
+        list_gallery_items("videos")  → videos only
+    """
     cfg = load_config()
     gal = cfg.get("gallery", {}) or {}
+
     if media_type == "photos":
         return list(gal.get("photos", []) or [])
     if media_type == "videos":
         return list(gal.get("videos", []) or [])
+
     return (list(gal.get("photos", []) or [])
             + list(gal.get("videos", []) or []))
 
 
+# ---------------------------------------------------------------------------------
+# 6.5 — gallery_summary
+# ---------------------------------------------------------------------------------
 def gallery_summary() -> dict:
+    """
+    Small helper for the admin UI:
+        {
+            "photos": 3,
+            "videos": 1,
+            "total_bytes": 4291837,
+            "total_human": "4.1 MB",
+        }
+    """
     cfg = load_config()
     gal = cfg.get("gallery", {}) or {}
     photos = gal.get("photos", []) or []
     videos = gal.get("videos", []) or []
+
     total = sum(int(x.get("size", 0) or 0) for x in photos + videos)
 
     def _human(n):
@@ -368,5 +533,5 @@ def gallery_summary() -> dict:
 
 
 # =================================================================================
-# SECTION END
+# SECTION END — core/frontpage_config.py v1.3
 # =================================================================================
