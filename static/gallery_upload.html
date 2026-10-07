@@ -107,9 +107,7 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
 .toast.success { background: #059669; }
 .toast.error { background: #dc2626; }
 
-.success-screen {
-  text-align: center; padding: 20px 10px;
-}
+.success-screen { text-align: center; padding: 20px 10px; }
 .success-screen .big-check {
   font-size: 72px; color: #059669;
   margin-bottom: 12px; line-height: 1;
@@ -164,7 +162,6 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
 <script>
 var currentType = 'photos';
 var pendingFiles = [];
-var uploadFinished = false;
 
 function $(id) { return document.getElementById(id); }
 
@@ -188,8 +185,6 @@ function setType(type) {
 }
 
 function pickFiles() {
-  // Click input synchronously inside the tap handler — iOS Safari
-  // requires this to be in the same gesture chain.
   $('file-input').click();
 }
 
@@ -242,7 +237,6 @@ function setStatus(index, cls, icon) {
 
 async function startUpload() {
   if (pendingFiles.length === 0) return;
-
   $('upload-btn').disabled = true;
   $('progress').style.display = 'block';
 
@@ -256,18 +250,15 @@ async function startUpload() {
       fd.append('file', f, f.name);
       fd.append('media_type', currentType);
       fd.append('caption', '');
-
       var res = await fetch('/api/admin/gallery/upload', {
         method: 'POST',
         body: fd,
       });
-
       if (res.ok) {
         setStatus(i, 'success', '✅');
         ok++;
       } else {
-        var err = await res.text();
-        console.error('upload failed:', err);
+        console.error('upload failed:', await res.text());
         setStatus(i, 'error', '❌');
         fail++;
       }
@@ -280,15 +271,9 @@ async function startUpload() {
     $('progress-bar').style.width = pct + '%';
   }
 
-  uploadFinished = true;
-
   if (fail === 0) {
-    // Show success screen
     showSuccessScreen(ok);
-    // Auto-close after 2 seconds
-    setTimeout(function () {
-      forceClose();
-    }, 2000);
+    setTimeout(function () { forceClose(); }, 2000);
   } else if (ok > 0) {
     showToast('✅ ' + ok + ' uploaded · ❌ ' + fail + ' failed', 'error');
     $('upload-btn').disabled = false;
@@ -317,13 +302,11 @@ function showSuccessScreen(count) {
 }
 
 function forceClose() {
-  // Try multiple methods — one will work depending on the browser
   try { window.close(); } catch (e) {}
   try { window.open('', '_self'); window.close(); } catch (e) {}
   try { self.close(); } catch (e) {}
   try { top.close(); } catch (e) {}
 
-  // If we're still here after 400ms, show fallback
   setTimeout(function () {
     if (!document.body) return;
     document.body.innerHTML =
