@@ -1,13 +1,17 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.24 — Front page diagnostic endpoint + no-cache headers everywhere
-#   • §21.5.5 /api/frontpage     — no-cache headers
-#   • §21.5.6 /api/batches       — no-cache headers + [API-BATCHES] log
-#   • §21.5.6b /api/admin/frontpage/diagnose — NEW: read-only test
-#   • §21.5.8b /gallery-upload   — no-cache headers
-#   • §21.5.8c /traveler-doc-upload — no-cache headers
-#   • §21.5.11 /                 — no-cache headers
+# v2.25 — Batches side-by-side logging + why-empty diagnostic
+#   • §21.5.6   /api/batches — logs saved vs DB IDs side-by-side
+#   • §21.5.6c  /api/admin/frontpage/why-empty — NEW read-only diagnostic
+#
+# v2.24 preserved:
+#   • §21.5.5  /api/frontpage          — no-cache headers
+#   • §21.5.6  /api/batches            — no-cache headers
+#   • §21.5.6b /api/admin/frontpage/diagnose
+#   • §21.5.8b /gallery-upload         — no-cache headers
+#   • §21.5.8c /traveler-doc-upload    — no-cache headers
+#   • §21.5.11 /                       — no-cache headers
 #
 # v2.23 preserved:
 #   • Flet 1.0 navigation (web_only_window_name="_self")
@@ -41,8 +45,9 @@
 #   21.5.3    Global error handler
 #   21.5.4    /download/{filename}
 #   21.5.5    /api/frontpage           ← no-cache
-#   21.5.6    /api/batches             ← no-cache + log
-#   21.5.6b   /api/admin/frontpage/diagnose  ← NEW
+#   21.5.6    /api/batches             ← no-cache + ID logs (v2.25)
+#   21.5.6b   /api/admin/frontpage/diagnose
+#   21.5.6c   /api/admin/frontpage/why-empty  ← NEW (v2.25)
 #   21.5.7    /api/captcha/*
 #   21.5.8    /traveler + /api/traveler/*
 #   21.5.8b   /gallery-upload + /api/admin/gallery/*
@@ -751,7 +756,7 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — /api/frontpage (v2.24 no-cache)
+    # 21.5.5 — /api/frontpage (no-cache)
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
@@ -771,22 +776,40 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches (v2.24 no-cache + log)
+    # 21.5.6 — /api/batches  (v2.25: logs saved vs DB IDs side-by-side)
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
         try:
             from core.frontpage_config import (
-                load_config, get_selected_batches)
+                load_config, get_selected_batches,
+                get_selected_batch_ids, _normalize_id)
             from core.traveler_portal import _to_list
+
             cfg = load_config()
+            saved_ids = get_selected_batch_ids(cfg)
+
             all_batches = []
             if AppState.db_ready and AppState.db is not None:
                 try:
                     all_batches = _to_list(AppState.db.get_batches())
                 except Exception as e:
                     _boot_log(f"api_batches get_batches failed: {e}")
+
+            db_ids = [_normalize_id(b.get("id")) for b in all_batches]
+
+            print("=" * 66, flush=True)
+            print(f"[API-BATCHES] saved selected_ids : {saved_ids}",
+                  flush=True)
+            print(f"[API-BATCHES] DB batch ids       : {db_ids}",
+                  flush=True)
+
             selected = get_selected_batches(cfg, all_batches)
+            print(f"[API-BATCHES] after filter       : "
+                  f"{[_normalize_id(b.get('id')) for b in selected]}",
+                  flush=True)
+            print("=" * 66, flush=True)
+
             packages = []
             for b in selected:
                 try:
@@ -812,10 +835,12 @@ def _build_app() -> FastAPI:
                     "status": str(b.get("status", "") or ""),
                     "total_seats": seats_val,
                 })
-            payload = _json_safe({"success": True, "batches": packages,
-                                  "count": len(packages)})
-            print(f"[API-BATCHES] returning {len(packages)} package(s) "
-                  f"from {len(all_batches)} DB batch(es)", flush=True)
+
+            payload = _json_safe({
+                "success": True,
+                "batches": packages,
+                "count": len(packages),
+            })
             return JSONResponse(
                 content=payload,
                 headers={
@@ -829,7 +854,7 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
-    # 21.5.6b — /api/admin/frontpage/diagnose (v2.24 NEW)
+    # 21.5.6b — /api/admin/frontpage/diagnose (round-trip tests)
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/diagnose")
     async def frontpage_diagnose():
@@ -879,7 +904,7 @@ def _build_app() -> FastAPI:
                 test_cfg["packages"] = dict(
                     original_cfg.get("packages", {}))
                 test_cfg["packages"]["selected_batch_ids"] = test_ids
-                test_cfg["packages"]["max_shown"] = 0
+                test_cfg["packages"]["max_shown"] = 9
 
                 save_ok = save_config(test_cfg)
                 reloaded = load_config()
@@ -958,6 +983,61 @@ def _build_app() -> FastAPI:
             report["ok"] = False
             report["error"] = str(e)
             return report
+
+    # -----------------------------------------------------------------------------
+    # 21.5.6c — /api/admin/frontpage/why-empty  (v2.25 NEW)
+    # -----------------------------------------------------------------------------
+    @app.get("/api/admin/frontpage/why-empty")
+    async def frontpage_why_empty():
+        from core.frontpage_config import (
+            load_config, get_selected_batch_ids, get_selected_batches,
+            _normalize_id, config_exists, _config_path)
+        from core.traveler_portal import _to_list
+
+        cfg = load_config()
+        saved = get_selected_batch_ids(cfg)
+        max_shown = cfg.get("packages", {}).get("max_shown", 0)
+
+        all_batches = []
+        if AppState.db_ready and AppState.db is not None:
+            try:
+                all_batches = _to_list(AppState.db.get_batches())
+            except Exception as e:
+                return {"ok": False,
+                        "error": f"get_batches failed: {e}"}
+
+        db_ids = [_normalize_id(b.get("id")) for b in all_batches]
+        matched = [sid for sid in saved if sid in db_ids]
+        missing = [sid for sid in saved if sid not in db_ids]
+        selected = get_selected_batches(cfg, all_batches)
+
+        verdict = []
+        if not config_exists():
+            verdict.append("❌ config file does not exist")
+        if not saved:
+            verdict.append("❌ no batch is checked in admin")
+        if missing:
+            verdict.append(f"⚠️ {len(missing)} saved ID(s) not in DB: "
+                           f"{missing}")
+        if matched and not selected:
+            verdict.append("⚠️ matched IDs exist but filter returned 0")
+        if selected:
+            verdict.append(f"✅ would show {len(selected)} package(s)")
+
+        return {
+            "ok": bool(selected),
+            "config_path": _config_path(),
+            "config_exists": config_exists(),
+            "saved_selected_ids": saved,
+            "db_batch_ids": db_ids,
+            "matched_ids": matched,
+            "missing_ids": missing,
+            "max_shown": max_shown,
+            "would_return_count": len(selected),
+            "would_return_ids": [_normalize_id(b.get("id"))
+                                 for b in selected],
+            "verdict": verdict,
+        }
 
     # -----------------------------------------------------------------------------
     # 21.5.7 — Captcha endpoints
