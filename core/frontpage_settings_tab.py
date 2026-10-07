@@ -1,76 +1,46 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.17 — Full tap-reliability fix for batch rows
-#   • §[5.0]  _make_batch_row: on_click attached to EVERY nested element
-#     (container, row, icon, label) so a tap anywhere on the row fires.
-#     Flet 1.0 web doesn't reliably bubble taps from Text/Icon children
-#     up to the parent Container.
-#   • §[5.0b] _toggle_batch_row_by_id: takes ONE argument (batch_id).
-#     Looks everything else up from self.batch_checkboxes. Simpler,
-#     no closure-scope issues.
-#   • §[5.15] All ft.Icon uses `icon=` (not `name=`) — Flet 1.0 API.
-#   • §[5.16] on_click assigned AFTER Container creation (no
-#     "cannot access local variable 'row_container'" error).
+# v3.18 — Per-control .update() for All / Clear and row toggle
+#   • §[5.0b] _toggle_batch_row_by_id — flushes icon, label, container
+#     individually, then page.update() at the end
+#   • §[5.3]  _toggle_batches         — same treatment for All / Clear
+#   • Fixes: "All/Clear buttons don't refresh the visuals"
+#
+# v3.17 preserved:
+#   • §[5.0] on_click attached to every nested element (container, row,
+#     icon, label) so a tap anywhere on the row fires
+#
+# v3.15 preserved:
+#   • ft.Icon(icon=...)  — Flet 1.0 API (not name=)
 #
 # v3.14 preserved:
+#   • Custom clickable rows replace ft.Checkbox — no stale-value bug
 #   • Authoritative self._batch_check_state dict is the source of truth
-#   • §[11.4] _pick_gallery_files opens /gallery-upload in a NEW TAB
 #
 # SECTION INDEX
-#   [0]      Class setup
-#   [0.1]      __init__
-#   [0.2]      build
-#   [0.3]      refresh
-#   [0.4]      _load_batches
-#   [0.5]      _error_ui
+#   [0]      Class setup: __init__ / build / refresh / _load_batches / _error_ui
 #   [ROOT]   _build_root
-#   [H]      Shared helpers
-#   [H.1]      _section_card
-#   [H.2]      _field
-#   [H.3]      _two_col
+#   [H]      Shared helpers: _section_card / _field / _two_col
 #   [1]      Header banner
 #   [2]      Hero
 #   [3]      Alert
-#   [4]      Features
-#   [4.1]      _add_feature_row
-#   [4.2]      _add_feature_empty
-#   [5]      Packages
-#   [5.0]      _make_batch_row
-#   [5.0b]     _toggle_batch_row_by_id
-#   [5.1]      _on_pkg_source_change
-#   [5.2]      _update_source_visibility
-#   [5.3]      _toggle_batches
-#   [6]      About
-#   [6.1]      _add_stat_row
-#   [6.2]      _add_stat_empty
+#   [4]      Features / _add_feature_row / _add_feature_empty
+#   [5]      Packages / _make_batch_row / _toggle_batch_row_by_id
+#            / _on_pkg_source_change / _update_source_visibility
+#            / _toggle_batches
+#   [6]      About / _add_stat_row / _add_stat_empty
 #   [7]      Contact
 #   [8]      Social
 #   [9]      Footer
-#   [11]     Gallery
-#   [11.1]     _rebuild_gallery_lists
-#   [11.2]     _gallery_stats_text
-#   [11.3]     _gallery_item_row
-#   [11.4]     _pick_gallery_files
-#   [11.5]     _upload_files
-#   [11.6]     _remove_gallery_item
-#   [11.7]     _register_pickers
-#   [11.8]     _save_silent
+#   [11]     Gallery / _rebuild_gallery_lists / _gallery_stats_text
+#            / _gallery_item_row / _pick_gallery_files / _upload_files
+#            / _remove_gallery_item / _register_pickers / _save_silent
 #   [10]     Action bar
-#   [A]      Actions
-#   [A.1]      _collect_config
-#   [A.2]      _save
-#   [A.3]      _reset_confirm
-#   [A.4]      _open_preview
-#   [A.5]      _set_status
-#   [A.6]      _snack
-#   [A.7]      _safe_update
+#   [A]      Actions: _collect_config / _save / _reset_confirm
+#            / _open_preview / _set_status / _snack / _safe_update
 # =================================================================================
 
-
-# =================================================================================
-# IMPORTS
-# =================================================================================
 import asyncio
 import json
 import traceback
@@ -83,9 +53,7 @@ from core.frontpage_config import (
     gallery_dir, gallery_summary)
 
 
-# =================================================================================
-# PALETTE
-# =================================================================================
+# ---- Palette ----
 PRIMARY      = "#1e3a8a"
 PRIMARY_LT   = "#2563eb"
 ACCENT       = "#7c3aed"
@@ -98,13 +66,6 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 
-# =================================================================================
-# CROSS-VERSION ALIASES
-# ---------------------------------------------------------------------------------
-# Flet renamed between 0.x and 1.0:
-#   ImageFit.COVER → BoxFit.COVER
-#   Icon(name=...) → Icon(icon=...)
-# =================================================================================
 def _resolve_fit_cover():
     try:
         return ft.BoxFit.COVER
@@ -125,10 +86,7 @@ _FIT_COVER = _resolve_fit_cover()
 class FrontPageSettingsTab:
 
     # -----------------------------------------------------------------------------
-    # [0.1] __init__
-    # PURPOSE
-    #   Constructor. Loads config, prepares empty handles for every form
-    #   field, loads the batch list, builds the UI tree.
+    # [0.1] __init__ — constructor
     # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         self.page_ref = page
@@ -138,24 +96,21 @@ class FrontPageSettingsTab:
         self.all_batches = []
         self.batch_checkboxes = {}
 
-        # ---- Hero ----
+        # ---- Form field handles (all set to None; populated by section builders) ----
         self.hero_heading = None
         self.hero_subheading = None
         self.hero_button = None
         self.hero_whatsapp = None
 
-        # ---- Alert ----
         self.alert_enabled = None
         self.alert_message = None
         self.alert_link = None
         self.alert_color = None
         self.alert_style = None
 
-        # ---- Features ----
         self.feature_rows_container = None
         self.feature_entries = []
 
-        # ---- Packages ----
         self.pkg_source = None
         self.pkg_max_shown = None
         self.pkg_batch_container = None
@@ -163,19 +118,15 @@ class FrontPageSettingsTab:
         self.pkg_subtitle = None
         self._batch_ui = None
 
-        # Authoritative batch selection state.
-        # Written by _toggle_batch_row_by_id on every click.
-        # Read by _collect_config at save time.
+        # Authoritative batch selection (written by _toggle_batch_row_by_id)
         self._batch_check_state = {}
 
-        # ---- About ----
         self.about_heading = None
         self.about_p1 = None
         self.about_p2 = None
         self.stats_rows_container = None
         self.stat_entries = []
 
-        # ---- Contact ----
         self.contact_phone = None
         self.contact_phone2 = None
         self.contact_email = None
@@ -183,16 +134,14 @@ class FrontPageSettingsTab:
         self.contact_addr1 = None
         self.contact_addr2 = None
 
-        # ---- Social ----
         self.social_facebook = None
         self.social_instagram = None
         self.social_twitter = None
 
-        # ---- Footer ----
         self.footer_about = None
         self.footer_copyright = None
 
-        # ---- Gallery ----
+        # Gallery
         self.gallery_enabled = None
         self.gallery_title = None
         self.gallery_subtitle = None
@@ -207,11 +156,11 @@ class FrontPageSettingsTab:
         self.video_picker = ft.FilePicker()
         self._pickers_registered = False
 
-        # ---- Action bar ----
+        # Action bar
         self.status_label = None
         self.root = None
 
-        # ---- Build ----
+        # Build
         try:
             self._load_batches()
             self._build_root()
@@ -221,13 +170,13 @@ class FrontPageSettingsTab:
             self.root = self._error_ui(e)
 
     # -----------------------------------------------------------------------------
-    # [0.2] build
+    # [0.2] build — return the root Container
     # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
     # -----------------------------------------------------------------------------
-    # [0.3] refresh
+    # [0.3] refresh — reload config + batches and rebuild
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
@@ -240,7 +189,7 @@ class FrontPageSettingsTab:
             traceback.print_exc()
 
     # -----------------------------------------------------------------------------
-    # [0.4] _load_batches
+    # [0.4] _load_batches — pull batch list from DB
     # -----------------------------------------------------------------------------
     def _load_batches(self):
         try:
@@ -250,14 +199,13 @@ class FrontPageSettingsTab:
                 except Exception:
                     pass
             self.all_batches = self.db.get_batches() or []
-            print(f"[FRONTPAGE] loaded {len(self.all_batches)} batches "
-                  f"for checkbox list")
+            print(f"[FRONTPAGE] loaded {len(self.all_batches)} batches")
         except Exception as e:
             print(f"[FRONTPAGE] get_batches failed: {e}")
             self.all_batches = []
 
     # -----------------------------------------------------------------------------
-    # [0.5] _error_ui
+    # [0.5] _error_ui — fallback UI if build fails
     # -----------------------------------------------------------------------------
     def _error_ui(self, exc):
         return ft.Container(
@@ -274,7 +222,7 @@ class FrontPageSettingsTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # [ROOT] _build_root
+    # [ROOT] _build_root — assemble full page in order
     # =============================================================================
     def _build_root(self):
         self.feature_entries = []
@@ -314,6 +262,10 @@ class FrontPageSettingsTab:
     # =============================================================================
     # [H] SHARED HELPERS
     # =============================================================================
+
+    # -----------------------------------------------------------------------------
+    # [H.1] _section_card — boxed section wrapper
+    # -----------------------------------------------------------------------------
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
             ft.Container(
@@ -350,6 +302,9 @@ class FrontPageSettingsTab:
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
+    # -----------------------------------------------------------------------------
+    # [H.2] _field — consistent TextField factory
+    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         defaults = dict(
             label=label,
@@ -364,6 +319,9 @@ class FrontPageSettingsTab:
         defaults.update(kwargs)
         return ft.TextField(**defaults)
 
+    # -----------------------------------------------------------------------------
+    # [H.3] _two_col — two controls side by side
+    # -----------------------------------------------------------------------------
     def _two_col(self, left, right):
         return ft.Row([
             ft.Container(content=left, expand=True),
@@ -372,7 +330,7 @@ class FrontPageSettingsTab:
            vertical_alignment=ft.CrossAxisAlignment.START)
 
     # =============================================================================
-    # [1] Header banner
+    # [1] HEADER BANNER
     # =============================================================================
     def _section_1_header(self):
         return ft.Container(
@@ -380,8 +338,7 @@ class FrontPageSettingsTab:
                 ft.Container(
                     content=ft.Text("🌐", size=22),
                     width=46, height=46,
-                    bgcolor=ft.Colors.with_opacity(
-                        0.15, ft.Colors.WHITE),
+                    bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
                     border_radius=12,
                     alignment=ft.Alignment.CENTER),
                 ft.Column([
@@ -412,7 +369,7 @@ class FrontPageSettingsTab:
             border_radius=14)
 
     # =============================================================================
-    # [2] Hero Section
+    # [2] HERO SECTION — heading, subheading, button text, whatsapp text
     # =============================================================================
     def _section_2_hero(self):
         h = self.cfg.get("hero", {})
@@ -435,7 +392,7 @@ class FrontPageSettingsTab:
             ])
 
     # =============================================================================
-    # [3] Alert Banner
+    # [3] ALERT BANNER
     # =============================================================================
     def _section_3_alert(self):
         a = self.cfg.get("alert", {})
@@ -474,7 +431,7 @@ class FrontPageSettingsTab:
             ], accent=WARN)
 
     # =============================================================================
-    # [4] Features
+    # [4] FEATURES SECTION
     # =============================================================================
     def _section_4_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
@@ -505,10 +462,12 @@ class FrontPageSettingsTab:
             [self.feature_rows_container, add_btn],
             accent=SUCCESS)
 
+    # -----------------------------------------------------------------------------
+    # [4.1] _add_feature_row
+    # -----------------------------------------------------------------------------
     def _add_feature_row(self, icon_val, title_val, text_val):
-        icon_field = self._field(
-            "Icon", icon_val,
-            hint_text="e.g. fa-mosque")
+        icon_field = self._field("Icon", icon_val,
+                                 hint_text="e.g. fa-mosque")
         title_field = self._field("Title", title_val)
         text_field = self._field("Description", text_val)
 
@@ -532,10 +491,9 @@ class FrontPageSettingsTab:
                 ], spacing=8),
                 ft.Row([
                     ft.Container(content=text_field, expand=True),
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        icon_color=DANGER,
-                        on_click=remove),
+                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE,
+                                  icon_color=DANGER,
+                                  on_click=remove),
                 ], spacing=6),
             ], spacing=6),
             padding=10, bgcolor="#f8fafc",
@@ -546,29 +504,34 @@ class FrontPageSettingsTab:
         self.feature_entries.append(entry)
         self.feature_rows_container.controls.append(row)
 
+    # -----------------------------------------------------------------------------
+    # [4.2] _add_feature_empty
+    # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
         self._add_feature_row("fa-check-circle", "", "")
         self._safe_update()
 
     # =============================================================================
-    # [5] Packages Section (v3.17)
+    # [5] PACKAGES SECTION
+    # -----------------------------------------------------------------------------
+    # Custom clickable rows replace ft.Checkbox. Each row's on_click is
+    # attached to container, row, icon, and label — so a tap anywhere
+    # fires. State lives in self._batch_check_state, never in a Flet
+    # control property.
     # =============================================================================
     def _section_5_packages(self):
         p = self.cfg.get("packages", {})
 
-        self.pkg_title = self._field(
-            "Section title", p.get("title", ""))
-        self.pkg_subtitle = self._field(
-            "Section subtitle", p.get("subtitle", ""))
+        self.pkg_title = self._field("Section title", p.get("title", ""))
+        self.pkg_subtitle = self._field("Section subtitle",
+                                        p.get("subtitle", ""))
 
         self.pkg_source = ft.Dropdown(
             label="Package source",
             value=p.get("source", "batches"),
             options=[
-                ft.dropdown.Option("batches",
-                                   "Batches (recommended)"),
-                ft.dropdown.Option("manual",
-                                   "Manual list (JSON, advanced)"),
+                ft.dropdown.Option("batches", "Batches (recommended)"),
+                ft.dropdown.Option("manual", "Manual list (JSON, advanced)"),
             ],
             text_size=12,
             border_color=BORDER,
@@ -592,10 +555,9 @@ class FrontPageSettingsTab:
             content=ft.Text("✗ Clear", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
-        # ---- Initial state from saved config ----
+        # Seed state dict from saved config
         selected_ids = set(str(x).strip() for x in
                            (p.get("selected_batch_ids") or []))
-
         self._batch_check_state = {}
         self.batch_checkboxes = {}
 
@@ -652,40 +614,26 @@ class FrontPageSettingsTab:
             ], accent=ACCENT)
 
     # -----------------------------------------------------------------------------
-    # [5.0] _make_batch_row (v3.17)
-    # PURPOSE
-    #   Build a clickable batch row. Replaces ft.Checkbox entirely.
-    #
-    # WHY ON_CLICK ON EVERY ELEMENT:
-    #   Flet 1.0 web doesn't reliably bubble taps from Text/Icon children
-    #   up to the parent Container. Attaching the handler to the container,
-    #   row, icon, AND label ensures any tap anywhere fires the handler.
+    # [5.0] _make_batch_row — build one clickable batch row
     # -----------------------------------------------------------------------------
     def _make_batch_row(self, batch_id, name, status, price_str,
                         is_checked):
-        # ---- Icon ----
         icon = ft.Icon(
             icon=(ft.Icons.CHECK_BOX if is_checked
                   else ft.Icons.CHECK_BOX_OUTLINE_BLANK),
             color=SUCCESS if is_checked else MUTED,
             size=20,
         )
-
-        # ---- Label ----
         label = ft.Text(
             f"{name}  ·  {status}  ·  {price_str}",
             size=11, expand=True,
             color="#0f172a" if is_checked else MUTED,
         )
-
-        # ---- Inner row ----
         inner_row = ft.Row(
             [icon, label],
             spacing=8,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
-
-        # ---- Container ----
         container = ft.Container(
             content=inner_row,
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
@@ -696,7 +644,7 @@ class FrontPageSettingsTab:
             ink=True,
         )
 
-        # ---- Handler attached AFTER the container exists ----
+        # One handler, attached everywhere
         def _clicked(e, _bid=batch_id):
             self._toggle_batch_row_by_id(_bid)
 
@@ -705,7 +653,7 @@ class FrontPageSettingsTab:
         icon.on_click = _clicked
         label.on_click = _clicked
 
-        # ---- Store references for All / Clear ----
+        # Store references
         self.batch_checkboxes[batch_id] = {
             "container": container,
             "icon": icon,
@@ -714,13 +662,7 @@ class FrontPageSettingsTab:
         return container
 
     # -----------------------------------------------------------------------------
-    # [5.0b] _toggle_batch_row_by_id (v3.17)
-    # PURPOSE
-    #   Toggle a batch row on tap. Takes only the batch_id. Looks
-    #   everything else up from self.batch_checkboxes.
-    #
-    #   Writes to self._batch_check_state[batch_id] — the SINGLE SOURCE
-    #   OF TRUTH. _collect_config reads from this dict.
+    # [5.0b] _toggle_batch_row_by_id — flip state + repaint one row
     # -----------------------------------------------------------------------------
     def _toggle_batch_row_by_id(self, batch_id):
         entry = self.batch_checkboxes.get(batch_id)
@@ -732,7 +674,6 @@ class FrontPageSettingsTab:
         new_val = not current
         self._batch_check_state[batch_id] = new_val
 
-        # Update visuals
         try:
             entry["icon"].icon = (
                 ft.Icons.CHECK_BOX if new_val
@@ -743,9 +684,20 @@ class FrontPageSettingsTab:
                 "#ecfdf5" if new_val else "#f8fafc")
             entry["container"].border = ft.Border.all(
                 1, "#a7f3d0" if new_val else "#e2e8f0")
-            entry["container"].update()
+
+            # Per-control flush
+            for k in ("icon", "label", "container"):
+                try:
+                    entry[k].update()
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[FRONTPAGE] batch row visual update failed: {e}")
+
+        try:
+            self.page_ref.update()
+        except Exception:
+            pass
 
         print(f"[FRONTPAGE] toggle batch {batch_id}: "
               f"{current} -> {new_val}")
@@ -762,14 +714,13 @@ class FrontPageSettingsTab:
     # -----------------------------------------------------------------------------
     def _update_source_visibility(self):
         try:
-            is_batches = (self.pkg_source.value or
-                          "batches") == "batches"
+            is_batches = (self.pkg_source.value or "batches") == "batches"
             self._batch_ui.visible = is_batches
         except Exception:
             pass
 
     # -----------------------------------------------------------------------------
-    # [5.3] _toggle_batches
+    # [5.3] _toggle_batches — All / Clear helper
     # -----------------------------------------------------------------------------
     def _toggle_batches(self, value):
         print(f"[FRONTPAGE] _toggle_batches("
@@ -786,17 +737,25 @@ class FrontPageSettingsTab:
                     "#ecfdf5" if value else "#f8fafc")
                 entry["container"].border = ft.Border.all(
                     1, "#a7f3d0" if value else "#e2e8f0")
+                for k in ("icon", "label", "container"):
+                    try:
+                        entry[k].update()
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[FRONTPAGE] _toggle_batches error on {bid}: {e}")
+        try:
+            self.page_ref.update()
+        except Exception:
+            pass
         self._safe_update()
 
     # =============================================================================
-    # [6] About Section
+    # [6] ABOUT SECTION
     # =============================================================================
     def _section_6_about(self):
         a = self.cfg.get("about", {})
-        self.about_heading = self._field(
-            "Heading", a.get("heading", ""))
+        self.about_heading = self._field("Heading", a.get("heading", ""))
         self.about_p1 = self._field(
             "Paragraph 1", a.get("paragraph1", ""),
             multiline=True, min_lines=3, max_lines=5)
@@ -808,8 +767,7 @@ class FrontPageSettingsTab:
         self.stat_entries = []
 
         for st in (a.get("stats") or []):
-            self._add_stat_row(
-                st.get("number", ""), st.get("label", ""))
+            self._add_stat_row(st.get("number", ""), st.get("label", ""))
 
         add_stat_btn = ft.Button(
             content=ft.Row([
@@ -839,21 +797,21 @@ class FrontPageSettingsTab:
                 add_stat_btn,
             ])
 
+    # -----------------------------------------------------------------------------
+    # [6.1] _add_stat_row
+    # -----------------------------------------------------------------------------
     def _add_stat_row(self, number_val, label_val):
-        num_field = self._field(
-            "Number", number_val, hint_text="e.g. 25+")
-        lbl_field = self._field(
-            "Label", label_val,
-            hint_text="e.g. Years Experience")
+        num_field = self._field("Number", number_val,
+                                hint_text="e.g. 25+")
+        lbl_field = self._field("Label", label_val,
+                                hint_text="e.g. Years Experience")
 
-        entry = {"number": num_field, "label": lbl_field,
-                 "row": None}
+        entry = {"number": num_field, "label": lbl_field, "row": None}
 
         def remove(ev, _entry=entry):
             try:
                 self.stat_entries.remove(_entry)
-                self.stats_rows_container.controls.remove(
-                    _entry["row"])
+                self.stats_rows_container.controls.remove(_entry["row"])
                 self._safe_update()
             except Exception:
                 pass
@@ -863,8 +821,7 @@ class FrontPageSettingsTab:
                 ft.Container(content=num_field, width=140),
                 ft.Container(content=lbl_field, expand=True),
                 ft.IconButton(icon=ft.Icons.DELETE_OUTLINE,
-                              icon_color=DANGER,
-                              on_click=remove),
+                              icon_color=DANGER, on_click=remove),
             ], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=8, bgcolor="#f8fafc",
@@ -875,12 +832,15 @@ class FrontPageSettingsTab:
         self.stat_entries.append(entry)
         self.stats_rows_container.controls.append(row)
 
+    # -----------------------------------------------------------------------------
+    # [6.2] _add_stat_empty
+    # -----------------------------------------------------------------------------
     def _add_stat_empty(self, e=None):
         self._add_stat_row("", "")
         self._safe_update()
 
     # =============================================================================
-    # [7] Contact Information
+    # [7] CONTACT INFORMATION
     # =============================================================================
     def _section_7_contact(self):
         c = self.cfg.get("contact", {})
@@ -888,11 +848,9 @@ class FrontPageSettingsTab:
             "Primary phone", c.get("phone", ""))
         self.contact_phone2 = self._field(
             "Secondary phone (optional)", c.get("phone2", ""))
-        self.contact_email = self._field(
-            "Email", c.get("email", ""))
+        self.contact_email = self._field("Email", c.get("email", ""))
         self.contact_whatsapp = self._field(
-            "WhatsApp (country code, no +)",
-            c.get("whatsapp", ""),
+            "WhatsApp (country code, no +)", c.get("whatsapp", ""),
             hint_text="e.g. 919876543210")
         self.contact_addr1 = self._field(
             "Address line 1", c.get("address_line1", ""))
@@ -903,16 +861,13 @@ class FrontPageSettingsTab:
             "📞", "Contact Information",
             "Shown in top bar, contact section, and footer",
             [
-                self._two_col(self.contact_phone,
-                              self.contact_phone2),
-                self._two_col(self.contact_email,
-                              self.contact_whatsapp),
-                self._two_col(self.contact_addr1,
-                              self.contact_addr2),
+                self._two_col(self.contact_phone, self.contact_phone2),
+                self._two_col(self.contact_email, self.contact_whatsapp),
+                self._two_col(self.contact_addr1, self.contact_addr2),
             ])
 
     # =============================================================================
-    # [8] Social Links
+    # [8] SOCIAL LINKS
     # =============================================================================
     def _section_8_social(self):
         s = self.cfg.get("social", {})
@@ -933,7 +888,7 @@ class FrontPageSettingsTab:
             ])
 
     # =============================================================================
-    # [9] Footer
+    # [9] FOOTER
     # =============================================================================
     def _section_9_footer(self):
         f = self.cfg.get("footer", {})
@@ -949,7 +904,7 @@ class FrontPageSettingsTab:
             [self.footer_about, self.footer_copyright])
 
     # =============================================================================
-    # [11] Gallery
+    # [11] GALLERY SECTION
     # =============================================================================
     def _section_11_gallery(self):
         g = self.cfg.get("gallery", {}) or {}
@@ -963,11 +918,9 @@ class FrontPageSettingsTab:
         self.gallery_subtitle = self._field(
             "Section subtitle", g.get("subtitle", ""))
         self.gallery_max_photos = self._field(
-            "Max photos shown",
-            str(g.get("max_photos_shown", 12)))
+            "Max photos shown", str(g.get("max_photos_shown", 12)))
         self.gallery_max_videos = self._field(
-            "Max videos shown",
-            str(g.get("max_videos_shown", 6)))
+            "Max videos shown", str(g.get("max_videos_shown", 6)))
 
         self.photo_list = list(g.get("photos", []) or [])
         self.video_list = list(g.get("videos", []) or [])
@@ -975,8 +928,7 @@ class FrontPageSettingsTab:
         self.photo_list_container = ft.Column(spacing=6)
         self.video_list_container = ft.Column(spacing=6)
         self.gallery_stats_label = ft.Text(
-            self._gallery_stats_text(),
-            size=10, color=MUTED, italic=True)
+            self._gallery_stats_text(), size=10, color=MUTED, italic=True)
 
         self._rebuild_gallery_lists()
 
@@ -1022,8 +974,7 @@ class FrontPageSettingsTab:
 
         return self._section_card(
             "🖼️", "Gallery — Pilgrim Attractions",
-            "Upload photos and videos that appear on the public page. "
-            "Files are stored on the persistent volume.",
+            "Upload photos and videos that appear on the public page.",
             [
                 self.gallery_enabled,
                 self._two_col(self.gallery_title, self.gallery_subtitle),
@@ -1038,6 +989,9 @@ class FrontPageSettingsTab:
                 self.video_list_container,
             ], accent=ACCENT)
 
+    # -----------------------------------------------------------------------------
+    # [11.1] _rebuild_gallery_lists
+    # -----------------------------------------------------------------------------
     def _rebuild_gallery_lists(self):
         if self.photo_list_container is None:
             return
@@ -1068,6 +1022,9 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # [11.2] _gallery_stats_text
+    # -----------------------------------------------------------------------------
     def _gallery_stats_text(self):
         total_bytes = (sum(int(x.get("size", 0) or 0)
                            for x in (self.photo_list or []))
@@ -1091,6 +1048,9 @@ class FrontPageSettingsTab:
                 f"{len(self.video_list)} videos · "
                 f"{_human(total_bytes)} total")
 
+    # -----------------------------------------------------------------------------
+    # [11.3] _gallery_item_row
+    # -----------------------------------------------------------------------------
     def _gallery_item_row(self, item, media_type):
         url = item.get("url", "")
         caption = item.get("caption", "")
@@ -1105,8 +1065,7 @@ class FrontPageSettingsTab:
             thumb = ft.Container(
                 content=ft.Image(**img_kwargs),
                 width=56, height=56,
-                border=ft.Border.all(1, BORDER),
-                border_radius=6)
+                border=ft.Border.all(1, BORDER), border_radius=6)
         else:
             thumb = ft.Container(
                 content=ft.Icon(icon=ft.Icons.PLAY_CIRCLE_FILLED,
@@ -1116,11 +1075,9 @@ class FrontPageSettingsTab:
                 bgcolor="#f1f5f9", border_radius=6,
                 border=ft.Border.all(1, BORDER))
 
-        caption_field = self._field(
-            "Caption (optional)", caption)
+        caption_field = self._field("Caption (optional)", caption)
 
-        def _save_caption(ev, _item=item,
-                          _field=caption_field):
+        def _save_caption(ev, _item=item, _field=caption_field):
             new_cap = (_field.value or "").strip()
             if new_cap != (_item.get("caption") or ""):
                 _item["caption"] = new_cap
@@ -1135,11 +1092,9 @@ class FrontPageSettingsTab:
             content=ft.Row([
                 thumb,
                 ft.Column([
-                    ft.Text(
-                        original or url,
-                        size=10, color=PRIMARY_LT,
-                        selectable=True, max_lines=1,
-                        overflow=ft.TextOverflow.ELLIPSIS),
+                    ft.Text(original or url, size=10, color=PRIMARY_LT,
+                            selectable=True, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS),
                     ft.Text(url, size=9, color=MUTED,
                             selectable=True, max_lines=1,
                             overflow=ft.TextOverflow.ELLIPSIS),
@@ -1147,19 +1102,19 @@ class FrontPageSettingsTab:
                 ], spacing=4, expand=True),
                 ft.Column([
                     ft.Text(f"{size_kb} KB", size=9, color=MUTED),
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        icon_color=DANGER,
-                        tooltip="Delete",
-                        on_click=_remove),
+                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE,
+                                  icon_color=DANGER, tooltip="Delete",
+                                  on_click=_remove),
                 ], spacing=2,
                    horizontal_alignment=ft.CrossAxisAlignment.END),
             ], spacing=8,
                vertical_alignment=ft.CrossAxisAlignment.START),
             padding=8, bgcolor="#f8fafc",
-            border=ft.Border.all(1, BORDER),
-            border_radius=10)
+            border=ft.Border.all(1, BORDER), border_radius=10)
 
+    # -----------------------------------------------------------------------------
+    # [11.4] _pick_gallery_files — open /gallery-upload in NEW tab
+    # -----------------------------------------------------------------------------
     def _pick_gallery_files(self, media_type):
         url = f"/gallery-upload?type={media_type}"
         print(f"[GALLERY] opening upload page in NEW tab: {url}")
@@ -1171,13 +1126,12 @@ class FrontPageSettingsTab:
                                         web_only_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] OK new tab (web_only_window_name)")
+                print("[GALLERY] OK new tab")
                 return
             except TypeError as te:
                 print(f"[GALLERY] 1.0 param rejected: {te}")
             except Exception as e:
                 print(f"[GALLERY] 1.0 param raised: {e}")
-
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url,
@@ -1188,14 +1142,12 @@ class FrontPageSettingsTab:
                 return
             except Exception as e:
                 print(f"[GALLERY] legacy param failed: {e}")
-
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
                 if asyncio.iscoroutine(r):
                     await r
                 print("[GALLERY] OK bare launch")
-                return
             except Exception as e:
                 print(f"[GALLERY] bare failed: {e}")
 
@@ -1209,6 +1161,9 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
+    # -----------------------------------------------------------------------------
+    # [11.5] _upload_files (fallback path if HTML page bypassed)
+    # -----------------------------------------------------------------------------
     async def _upload_files(self, files, media_type):
         import httpx
         ok = 0
@@ -1255,8 +1210,11 @@ class FrontPageSettingsTab:
         if ok and not fail:
             self._snack(f"✅ {ok} file(s) uploaded", SUCCESS)
         elif fail:
-            self._snack(f"❌ Upload failed", DANGER)
+            self._snack("❌ Upload failed", DANGER)
 
+    # -----------------------------------------------------------------------------
+    # [11.6] _remove_gallery_item
+    # -----------------------------------------------------------------------------
     def _remove_gallery_item(self, media_type, item):
         url = item.get("url", "")
         caption = item.get("caption", "") or url
@@ -1324,6 +1282,9 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
+    # -----------------------------------------------------------------------------
+    # [11.7] _register_pickers
+    # -----------------------------------------------------------------------------
     def _register_pickers(self):
         if self._pickers_registered:
             return
@@ -1344,6 +1305,9 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # [11.8] _save_silent
+    # -----------------------------------------------------------------------------
     def _save_silent(self):
         try:
             cfg = self._collect_config()
@@ -1353,19 +1317,17 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] silent save failed: {ex}")
 
     # =============================================================================
-    # [10] Action Bar
+    # [10] ACTION BAR
     # =============================================================================
     def _section_10_action_bar(self):
         save_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(icon=ft.Icons.SAVE, size=16,
                         color=ft.Colors.WHITE),
-                ft.Text("Save", size=12,
-                        color=ft.Colors.WHITE,
+                ft.Text("Save", size=12, color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
             ], spacing=6, tight=True),
-            on_click=self._save,
-            height=44, bgcolor=SUCCESS,
+            on_click=self._save, height=44, bgcolor=SUCCESS,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
@@ -1373,12 +1335,10 @@ class FrontPageSettingsTab:
             content=ft.Row([
                 ft.Icon(icon=ft.Icons.REFRESH, size=16,
                         color=ft.Colors.WHITE),
-                ft.Text("Reload", size=12,
-                        color=ft.Colors.WHITE,
+                ft.Text("Reload", size=12, color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
             ], spacing=6, tight=True),
-            on_click=self.refresh,
-            height=44, bgcolor="#0ea5e9",
+            on_click=self.refresh, height=44, bgcolor="#0ea5e9",
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
@@ -1386,12 +1346,10 @@ class FrontPageSettingsTab:
             content=ft.Row([
                 ft.Icon(icon=ft.Icons.OPEN_IN_NEW, size=16,
                         color=ft.Colors.WHITE),
-                ft.Text("Preview", size=12,
-                        color=ft.Colors.WHITE,
+                ft.Text("Preview", size=12, color=ft.Colors.WHITE,
                         weight=ft.FontWeight.BOLD),
             ], spacing=6, tight=True),
-            on_click=self._open_preview,
-            height=44, bgcolor=ACCENT,
+            on_click=self._open_preview, height=44, bgcolor=ACCENT,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
 
@@ -1411,12 +1369,15 @@ class FrontPageSettingsTab:
                 self.status_label,
             ], spacing=10),
             padding=14, bgcolor=SECTION_BG,
-            border=ft.Border.all(1, BORDER),
-            border_radius=14)
+            border=ft.Border.all(1, BORDER), border_radius=14)
 
     # =============================================================================
     # [A] ACTIONS
     # =============================================================================
+
+    # -----------------------------------------------------------------------------
+    # [A.1] _collect_config — read every field, build save payload
+    # -----------------------------------------------------------------------------
     def _collect_config(self):
         def _v(field):
             try:
@@ -1437,7 +1398,7 @@ class FrontPageSettingsTab:
         if max_shown < 0:
             max_shown = 0
 
-        # Batch selection: from authoritative state dict ONLY
+        # Batch selection: ONLY from authoritative state dict
         selected_ids = []
         try:
             for bid, checked in self._batch_check_state.items():
@@ -1451,8 +1412,7 @@ class FrontPageSettingsTab:
         print(f"[FRONTPAGE]   selected batches : {len(selected_ids)}")
         for sid in selected_ids:
             print(f"[FRONTPAGE]     • {sid!r}")
-        print(f"[FRONTPAGE]   max_shown        : {max_shown} "
-              f"({'no cap' if max_shown == 0 else 'capped'})")
+        print(f"[FRONTPAGE]   max_shown        : {max_shown}")
         print(f"[FRONTPAGE]   check state      : "
               f"{self._batch_check_state}")
         print("=" * 60)
@@ -1466,8 +1426,7 @@ class FrontPageSettingsTab:
             features.append({
                 "icon": (entry["icon"].value or
                          "fa-check-circle").strip(),
-                "title": title,
-                "text": text,
+                "title": title, "text": text,
             })
 
         stats = []
@@ -1543,6 +1502,9 @@ class FrontPageSettingsTab:
             },
         }
 
+    # -----------------------------------------------------------------------------
+    # [A.2] _save
+    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -1556,8 +1518,7 @@ class FrontPageSettingsTab:
                 self._set_status(
                     f"✅ Saved at "
                     f"{datetime.now().strftime('%H:%M:%S')}  ·  "
-                    f"{n_sel} batch(es) selected",
-                    SUCCESS)
+                    f"{n_sel} batch(es) selected", SUCCESS)
                 self._snack(f"✅ Saved — {n_sel} batch(es) will "
                             f"appear on the public page")
                 try:
@@ -1573,6 +1534,9 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
+    # -----------------------------------------------------------------------------
+    # [A.3] _reset_confirm
+    # -----------------------------------------------------------------------------
     def _reset_confirm(self, e=None):
         def do_reset(ev):
             try:
@@ -1604,8 +1568,7 @@ class FrontPageSettingsTab:
                 "and restore the original defaults.\n\n"
                 "⚠️ The gallery will also be cleared (config only — "
                 "the media files on disk are kept).\n\n"
-                "This cannot be undone.",
-                size=11),
+                "This cannot be undone.", size=11),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel", size=11),
                               on_click=cancel),
@@ -1617,6 +1580,9 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
+    # -----------------------------------------------------------------------------
+    # [A.4] _open_preview
+    # -----------------------------------------------------------------------------
     def _open_preview(self, e=None):
         try:
             async def _do():
@@ -1641,6 +1607,9 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
+    # -----------------------------------------------------------------------------
+    # [A.5] _set_status
+    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
@@ -1650,6 +1619,9 @@ class FrontPageSettingsTab:
             pass
         self._safe_update()
 
+    # -----------------------------------------------------------------------------
+    # [A.6] _snack
+    # -----------------------------------------------------------------------------
     def _snack(self, msg, color=ft.Colors.GREEN_700):
         try:
             self.page_ref.show_dialog(
@@ -1657,6 +1629,9 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
+    # -----------------------------------------------------------------------------
+    # [A.7] _safe_update
+    # -----------------------------------------------------------------------------
     def _safe_update(self):
         try:
             if self.root is not None:
@@ -1666,5 +1641,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END
+# SECTION END — core/frontpage_settings_tab.py v3.18
 # =================================================================================
