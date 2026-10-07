@@ -825,6 +825,157 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500, detail=str(e))
 
     # -----------------------------------------------------------------------------
+    # 21.5.6b — GET /api/admin/frontpage/diagnose
+    # PURPOSE
+    #   Read-only diagnostic for the entire Front Page system.
+    #   Reports:
+    #     • What's currently saved (selected_batch_ids, max_shown, source)
+    #     • Every batch in the DB with status
+    #     • What get_selected_batches() returns for current config
+    #     • Round-trip tests: save 0/1/2/3 IDs, reload, verify each
+    #     • Gallery helper round-trip: add a test item, list, remove
+    #     • Restores the original config at the end (nothing changes)
+    #
+    #   Open the URL in a browser to inspect the JSON report.
+    # -----------------------------------------------------------------------------
+    @app.get("/api/admin/frontpage/diagnose")
+    async def frontpage_diagnose():
+        from core.frontpage_config import (
+            load_config, save_config, get_selected_batches,
+            add_gallery_item, list_gallery_items, remove_gallery_item,
+            gallery_summary)
+        from core.traveler_portal import _to_list
+
+        report = {"ok": True}
+
+        try:
+            # ---- Snapshot current config ----
+            original_cfg = load_config()
+            report["saved_config"] = {
+                "selected_batch_ids":
+                    original_cfg["packages"].get("selected_batch_ids", []),
+                "max_shown":
+                    original_cfg["packages"].get("max_shown", 0),
+                "source":
+                    original_cfg["packages"].get("source", "batches"),
+            }
+
+            # ---- DB batches ----
+            all_batches = []
+            if AppState.db_ready and AppState.db is not None:
+                all_batches = _to_list(AppState.db.get_batches())
+            report["db_batches"] = [
+                {"id": str(b.get("id", "")),
+                 "name": str(b.get("batch_name", "")),
+                 "status": str(b.get("status", "")),
+                 "price": b.get("price", 0)}
+                for b in all_batches
+            ]
+
+            # ---- What the current config produces ----
+            current_selected = get_selected_batches(
+                original_cfg, all_batches)
+            report["get_selected_batches_current"] = {
+                "count": len(current_selected),
+                "ids": [str(b.get("id", "")) for b in current_selected],
+            }
+
+            # ---- Round-trip tests: 0, 1, 2, 3 selections ----
+            all_ids = [str(b.get("id", "")).strip()
+                       for b in all_batches if b.get("id")]
+            tests = []
+            for n in sorted(set([0, 1, 2, min(3, len(all_ids))])):
+                test_ids = all_ids[:n]
+                test_cfg = dict(original_cfg)
+                test_cfg["packages"] = dict(
+                    original_cfg.get("packages", {}))
+                test_cfg["packages"]["selected_batch_ids"] = test_ids
+                test_cfg["packages"]["max_shown"] = 0
+
+                save_ok = save_config(test_cfg)
+                reloaded = load_config()
+                reloaded_ids = reloaded["packages"].get(
+                    "selected_batch_ids", [])
+                selected = get_selected_batches(reloaded, all_batches)
+
+                tests.append({
+                    "requested_count": n,
+                    "requested_ids": test_ids,
+                    "save_ok": save_ok,
+                    "reloaded_count": len(reloaded_ids),
+                    "reloaded_ids": reloaded_ids,
+                    "get_selected_returns": len(selected),
+                    "match": (len(reloaded_ids) == n
+                              and len(selected) == n),
+                })
+            report["round_trip_tests"] = tests
+
+            # ---- Gallery helpers test ----
+            try:
+                before = gallery_summary()
+                test_item = {
+                    "url": "/media/gallery/photos/__diagnose_test__.png",
+                    "caption": "diagnose test",
+                    "uploaded_at": "1970-01-01T00:00:00",
+                    "size": 0,
+                    "original_name": "__diagnose_test__",
+                }
+                add_ok = add_gallery_item("photos", test_item)
+                after_add = gallery_summary()
+                found = any(
+                    x.get("url") == test_item["url"]
+                    for x in list_gallery_items("photos"))
+                remove_ok = remove_gallery_item(
+                    "photos", test_item["url"])
+                after_remove = gallery_summary()
+
+                report["gallery_test"] = {
+                    "before_count": before["photos"],
+                    "add_ok": add_ok,
+                    "after_add_count": after_add["photos"],
+                    "item_found": found,
+                    "remove_ok": remove_ok,
+                    "after_remove_count": after_remove["photos"],
+                    "all_ok": (add_ok and found and remove_ok
+                               and after_add["photos"] == before["photos"] + 1
+                               and after_remove["photos"] == before["photos"]),
+                }
+            except Exception as ge:
+                traceback.print_exc()
+                report["gallery_test"] = {"error": str(ge)}
+
+            # ---- Restore original config ----
+            save_config(original_cfg)
+            final = load_config()
+            report["restored_original"] = (
+                final["packages"].get("selected_batch_ids", [])
+                == original_cfg["packages"].get("selected_batch_ids", []))
+
+            # ---- Console log for tail ----
+            print("=" * 60, flush=True)
+            print("[DIAGNOSE] FRONT PAGE DIAGNOSTIC", flush=True)
+            print(f"[DIAGNOSE] saved batches: "
+                  f"{len(report['saved_config']['selected_batch_ids'])}",
+                  flush=True)
+            print(f"[DIAGNOSE] DB batches: {len(all_batches)}", flush=True)
+            for t in tests:
+                print(f"[DIAGNOSE]   requested {t['requested_count']} "
+                      f"-> saved {t['reloaded_count']} "
+                      f"-> api returns {t['get_selected_returns']} "
+                      f"-> {'OK' if t['match'] else 'FAIL'}",
+                      flush=True)
+            print(f"[DIAGNOSE] gallery round-trip: "
+                  f"{report.get('gallery_test', {})}", flush=True)
+            print("=" * 60, flush=True)
+
+            return report
+        except Exception as e:
+            traceback.print_exc()
+            report["ok"] = False
+            report["error"] = str(e)
+            return report
+
+    # -----------------------------------------------------------------------------
     # 21.5.7 — Captcha endpoints
     # -----------------------------------------------------------------------------
     from pydantic import BaseModel
