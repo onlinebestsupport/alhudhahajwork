@@ -160,6 +160,22 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
   color: #64748b; font-size: 14px;
   margin-bottom: 4px;
 }
+
+/* ============================================================================
+   [CSS-9] Auth error banner
+   ============================================================================ */
+.auth-error {
+  display: none;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #dc2626;
+  font-size: 13px;
+  font-weight: 600;
+}
+.auth-error.show { display: block; }
 </style>
 </head>
 <body>
@@ -195,7 +211,10 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
   </div>
   <div class="progress-label" id="progress-label"></div>
 
-  <!-- [HTML-1.5] Upload / Retry -->
+  <!-- [HTML-1.5] Auth error banner (shown if admin key missing) -->
+  <div class="auth-error" id="auth-error"></div>
+
+  <!-- [HTML-1.6] Upload / Retry -->
   <button class="btn btn-primary" id="upload-btn"
           onclick="startUpload()" disabled>
     Upload
@@ -205,7 +224,7 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
     ↻ Retry Failed
   </button>
 
-  <!-- [HTML-1.6] Close tab -->
+  <!-- [HTML-1.7] Close tab -->
   <button class="btn btn-secondary" onclick="forceClose()">
     ✕ Close This Tab
   </button>
@@ -221,11 +240,13 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
    - currentType      : 'photos' | 'videos'
    - pendingFiles     : array of File objects
    - fileStatus       : array of { status, error } parallel to pendingFiles
-   - LIMITS           : max bytes per type (must match backend §21.5.8)
+   - adminKey         : extracted from URL ?key=...  (set on boot)
+   - LIMITS           : max bytes per type
    ============================================================================ */
 var currentType = 'photos';
 var pendingFiles = [];
 var fileStatus = [];
+var adminKey = '';
 
 var LIMITS = {
   photos: 15  * 1024 * 1024,   //  15 MB
@@ -251,17 +272,16 @@ function showToast(msg, type) {
   t.textContent = msg;
   t.className = 'toast show ' + (type || '');
   clearTimeout(t._t);
-  // Longer for errors so the user can read the server message
   var ms = (type === 'error') ? 6000 : 3800;
   t._t = setTimeout(function () { t.className = 'toast'; }, ms);
 }
 
 /* ============================================================================
-   [3] URL PARAM PARSING
+   [3] URL PARAM PARSING + AUTH KEY EXTRACTION
    ----------------------------------------------------------------------------
    Accepts:  ?type=photos | photo | image | images   → photos
              ?type=videos | video                   → videos
-             (missing / unknown)                    → photos
+             ?key=<ADMIN_API_KEY>                   → auth token
    ============================================================================ */
 function readTypeFromUrl() {
   try {
@@ -272,6 +292,26 @@ function readTypeFromUrl() {
         p === 'image'  || p === 'images') return 'photos';
   } catch (e) {}
   return 'photos';
+}
+
+function readAdminKeyFromUrl() {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    return (params.get('key') || '').trim();
+  } catch (e) {}
+  return '';
+}
+
+function showAuthError(msg) {
+  var el = $('auth-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.classList.add('show');
+}
+
+function hideAuthError() {
+  var el = $('auth-error');
+  if (el) el.classList.remove('show');
 }
 
 /* ============================================================================
@@ -297,7 +337,6 @@ function setType(type) {
     ? 'Upload Photos — Alhudha Admin'
     : 'Upload Videos — Alhudha Admin';
 
-  // Reset selection when switching (each upload is single-type)
   resetSelection();
 }
 
@@ -325,7 +364,6 @@ function onFilesPicked(ev) {
   var files = ev.target.files;
   if (!files || files.length === 0) return;
   handleFileList(files);
-  // Allow selecting the same file(s) again later
   ev.target.value = '';
 }
 
@@ -398,7 +436,6 @@ document.addEventListener('paste', function (e) {
     }
   }
   if (files.length === 0) return;
-  // Only accept if the pasted files match the current type
   var filtered = [];
   for (var j = 0; j < files.length; j++) {
     var isVid = files[j].type.indexOf('video/') === 0;
@@ -474,15 +511,25 @@ function setStatus(index, status, errMsg) {
 }
 
 /* ============================================================================
-   [7] UPLOAD FLOW
+   [7] UPLOAD FLOW  (v3.0 — sends Bearer token)
    ----------------------------------------------------------------------------
    Endpoint: POST /api/admin/gallery/upload
+   Headers:  Authorization: Bearer <adminKey>
    FormData: file, media_type, caption
-   On 200:   response = { item: {...} }
-   On error: response = { error: "..." }  OR plain text
+   On 200:   { success: true, item: {...} }
+   On 401:   { detail: "Unauthorized" }
    ============================================================================ */
 async function startUpload() {
   if (pendingFiles.length === 0) return;
+
+  // ---- Auth guard ----
+  if (!adminKey) {
+    showAuthError('⚠️ No admin key found. Open this page from the admin panel, '
+                + 'or add &key=<ADMIN_API_KEY> to the URL.');
+    showToast('❌ Missing admin key — cannot upload', 'error');
+    return;
+  }
+  hideAuthError();
 
   var typeAtStart = currentType;
   $('upload-btn').disabled = true;
@@ -497,7 +544,6 @@ async function startUpload() {
   for (var i = 0; i < pendingFiles.length; i++) {
     var f = pendingFiles[i];
 
-    // Skip already-successful rows (allows resuming after a partial retry)
     if (fileStatus[i] && fileStatus[i].status === 'success') {
       ok++;
       continue;
@@ -515,6 +561,9 @@ async function startUpload() {
       var res = await fetch('/api/admin/gallery/upload', {
         method: 'POST',
         body: fd,
+        headers: {
+          'Authorization': 'Bearer ' + adminKey
+        }
       });
 
       if (res.ok) {
@@ -527,6 +576,10 @@ async function startUpload() {
         var errMsg = await readError(res);
         console.error('[upload] server ' + res.status + ': ' + errMsg);
         setStatus(i, 'error', errMsg);
+        if (res.status === 401) {
+          showAuthError('❌ Authentication failed. Your admin key may be '
+                      + 'expired. Reopen this page from the admin panel.');
+        }
         fail++;
       }
     } catch (e) {
@@ -571,7 +624,6 @@ function updateProgress(done, total) {
 }
 
 async function readError(res) {
-  // Try JSON first, then plain text
   try {
     var txt = await res.text();
     if (!txt) return 'HTTP ' + res.status;
@@ -589,8 +641,6 @@ async function readError(res) {
 
 /* ============================================================================
    [8] RETRY FAILED
-   ----------------------------------------------------------------------------
-   Keeps successful rows, resets error rows to pending, re-runs upload.
    ============================================================================ */
 function retryFailed() {
   if (pendingFiles.length === 0) return;
@@ -630,9 +680,6 @@ function showSuccessScreen(count, type) {
 
 /* ============================================================================
    [10] FORCE CLOSE
-   ----------------------------------------------------------------------------
-   Browsers block window.close() for tabs the script didn't open.
-   Fallback shows a big "Close This Tab" message.
    ============================================================================ */
 function forceClose() {
   try { window.close(); } catch (e) {}
@@ -663,6 +710,12 @@ function forceClose() {
    [11] BOOT
    ============================================================================ */
 (function () {
+  // Extract admin key from URL first
+  adminKey = readAdminKeyFromUrl();
+  if (!adminKey) {
+    showAuthError('⚠️ No admin key in URL. Open this page from the admin '
+                + 'panel to authenticate. Uploads will fail without it.');
+  }
   setType(readTypeFromUrl());
 })();
 </script>

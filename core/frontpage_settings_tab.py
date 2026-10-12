@@ -1,26 +1,21 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.20 — Admin scroll no longer resets; toggles auto-save; max_shown=9
+# v3.21 — Security hardening: admin key passed to gallery upload page
 #
-#   CHANGES vs v3.19:
-#   • §[0.1]  NEW: self._inner_column, self._auto_save_timer
-#   • §[ROOT] _build_root REUSES the SAME inner Column → scroll position
-#             survives every refresh. THIS FIXES the auto-scroll-to-top bug.
-#   • §[5]    Max packages field defaults to 9 (was 0)
-#   • §[5.0b] _toggle_batch_row_by_id → per-control .update(), NO full
-#             rebuild. THIS FIXES the 5-10 s scroll-reset on toggle.
-#   • §[5.3]  _toggle_batches → same per-control approach
-#   • §[5.4]  NEW _auto_save_batch_state() — writes only batch IDs to
-#             disk so the public page reflects changes instantly
+#   CHANGES vs v3.20:
+#   • §0.1  NEW: import os (for ADMIN_API_KEY env lookup)
+#   • §11.4 _pick_gallery_files now appends &key=<ADMIN_API_KEY> to the
+#           upload page URL so the new authenticated endpoint accepts it
 #
-#   PRESERVED from v3.19:
+#   PRESERVED from v3.20:
+#   • Admin scroll no longer resets; toggles auto-save; max_shown=9
+#   • _build_root reuses the SAME inner Column → scroll position survives
+#   • _toggle_batch_row_by_id → per-control .update(), NO full rebuild
+#   • _toggle_batches → same per-control approach
+#   • _auto_save_batch_state() — writes only batch IDs to disk
 #   • Root Container object is NEVER recreated
-#   • Single authoritative state dict (self._batch_check_state)
 #   • _safe_update() falls back to page.update()
-#   • Custom clickable rows (no ft.Checkbox)
-#   • Gallery upload flow (/gallery-upload?type=...)
-#   • Flet 1.0 API (ft.Icon(icon=...), ft.Button, ft.UrlLauncher)
 #
 # SECTION INDEX
 #   §0      Class setup (__init__ / build / refresh / helpers)
@@ -32,6 +27,7 @@
 #   §A      Actions (_collect_config, _save, _reset, etc.)
 # =================================================================================
 
+import os
 import asyncio
 import traceback
 from datetime import datetime
@@ -111,7 +107,7 @@ class FrontPageSettingsTab:
         self.pkg_title = None
         self.pkg_subtitle = None
         self._batch_ui = None
-        self._batch_check_state = {}     # authoritative source of truth
+        self._batch_check_state = {}
 
         # About
         self.about_heading = None
@@ -155,7 +151,7 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # --- v3.20 NEW: inner Column + root Container, created ONCE ---
+        # --- v3.20: inner Column + root Container, created ONCE ---
         self._inner_column = None
         self.root = None
 
@@ -261,7 +257,6 @@ class FrontPageSettingsTab:
         ]
 
         if self._inner_column is None:
-            # First build
             self._inner_column = ft.Column(
                 controls=sections,
                 spacing=10,
@@ -274,7 +269,6 @@ class FrontPageSettingsTab:
                 expand=True,
             )
         else:
-            # Later rebuilds — swap content, keep the SAME Column instance
             self._inner_column.controls = sections
 
         self._register_pickers()
@@ -719,7 +713,7 @@ class FrontPageSettingsTab:
         except Exception as e:
             print(f"[FRONTPAGE] row visual update failed: {e}")
 
-        # ---- Silent auto-save (partial: batch IDs only) ----
+        # ---- Silent auto-save ----
         self._auto_save_batch_state()
 
         print(f"[FRONTPAGE] toggle {batch_id!r}: {current} -> {new_val}")
@@ -769,19 +763,15 @@ class FrontPageSettingsTab:
             except Exception as e:
                 print(f"[FRONTPAGE] _toggle_batches error on {bid!r}: {e}")
 
-        # Silent auto-save
         self._auto_save_batch_state()
 
     # -----------------------------------------------------------------------------
-    # §5.4 — _auto_save_batch_state  (NEW in v3.20)
+    # §5.4 — _auto_save_batch_state
     # -----------------------------------------------------------------------------
     def _auto_save_batch_state(self):
         """
         Silent partial save — writes ONLY packages.selected_batch_ids
         to disk. Called after every toggle / All / Clear.
-
-        Loads the freshest config from disk first, then patches only
-        the batch ID list — so unsaved text edits elsewhere aren't lost.
         """
         try:
             from core.frontpage_config import (
@@ -1166,10 +1156,27 @@ class FrontPageSettingsTab:
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
 
-    # §11.4
+    # §11.4 — _pick_gallery_files  (v3.21: passes admin key)
     def _pick_gallery_files(self, media_type):
-        url = f"/gallery-upload?type={media_type}"
-        print(f"[GALLERY] opening upload page in NEW tab: {url}")
+        """
+        Open the gallery upload page in a new tab.
+
+        SECURITY: appends &key=<ADMIN_API_KEY> so the new authenticated
+        upload endpoint accepts the request. The key is read from the
+        environment variable ADMIN_API_KEY (must be set on Railway).
+        """
+        admin_key = os.getenv("ADMIN_API_KEY", "")
+
+        if admin_key:
+            url = f"/gallery-upload?type={media_type}&key={admin_key}"
+        else:
+            url = f"/gallery-upload?type={media_type}"
+            print("[GALLERY] WARNING: ADMIN_API_KEY not set — "
+                  "uploads will fail with 401. "
+                  "Set it in Railway → Variables.")
+
+        print(f"[GALLERY] opening upload page in NEW tab "
+              f"(type={media_type}, key={'yes' if admin_key else 'NO'})")
 
         async def _go():
             try:
@@ -1213,9 +1220,14 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
-    # §11.5 (fallback path)
+    # §11.5 (fallback path — now includes auth header)
     async def _upload_files(self, files, media_type):
         import httpx
+        admin_key = os.getenv("ADMIN_API_KEY", "")
+        headers = {}
+        if admin_key:
+            headers["Authorization"] = f"Bearer {admin_key}"
+
         ok = 0
         fail = 0
         for f in files:
@@ -1226,8 +1238,7 @@ class FrontPageSettingsTab:
                     src = getattr(f, "path", None)
                     if src:
                         try:
-                            import os as _os
-                            if _os.path.exists(src):
+                            if os.path.exists(src):
                                 with open(src, "rb") as fh:
                                     data = fh.read()
                         except Exception:
@@ -1242,7 +1253,8 @@ class FrontPageSettingsTab:
                         timeout=120.0) as cli:
                     r = await cli.post(
                         "/api/admin/gallery/upload",
-                        files=files_arg, data=form)
+                        files=files_arg, data=form,
+                        headers=headers)
                 if r.status_code == 200:
                     item = r.json().get("item", {})
                     if media_type == "photos":
@@ -1273,6 +1285,10 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
             import httpx
+            admin_key = os.getenv("ADMIN_API_KEY", "")
+            headers = {}
+            if admin_key:
+                headers["Authorization"] = f"Bearer {admin_key}"
 
             async def _del():
                 try:
@@ -1283,7 +1299,8 @@ class FrontPageSettingsTab:
                             "DELETE",
                             "/api/admin/gallery/item",
                             params={"media_type": media_type,
-                                    "url": url})
+                                    "url": url},
+                            headers=headers)
                 except Exception as ex:
                     print(f"[FRONTPAGE] delete error: {ex}")
 
@@ -1441,7 +1458,6 @@ class FrontPageSettingsTab:
         if max_shown <= 0:
             max_shown = MAX_PACKAGES_SHOWN_DEFAULT
 
-        # Batch selection — only from state dict
         selected_ids = []
         try:
             for bid, checked in self._batch_check_state.items():
@@ -1677,5 +1693,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.20
+# SECTION END — core/frontpage_settings_tab.py v3.21
 # =================================================================================
