@@ -160,16 +160,22 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "geolocation=(), microphone=(), camera=()")
         response.headers["Strict-Transport-Security"] = (
             "max-age=31536000; includeSubDomains")
-        response.headers["Content-Security-Policy"] = (
+                response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: blob:; "
-            "media-src 'self' blob:; "
-            "font-src 'self' data:; "
-            "connect-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' "
+                "https://www.gstatic.com https://unpkg.com; "
+            "style-src 'self' 'unsafe-inline' "
+                "https://fonts.googleapis.com; "
+            "img-src 'self' data: blob: https:; "
+            "media-src 'self' blob: https:; "
+            "font-src 'self' data: https://fonts.gstatic.com "
+                "https://fonts.googleapis.com; "
+            "connect-src 'self' https://www.gstatic.com "
+                "https://fonts.gstatic.com https://unpkg.com; "
+            "worker-src 'self' blob:; "
             "frame-ancestors 'none'; "
-            "base-uri 'self';"
+            "base-uri 'self'; "
+            "form-action 'self';"
         )
         return response
 
