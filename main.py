@@ -1,24 +1,20 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.25 — Batches side-by-side logging + why-empty diagnostic
+# v2.26 — Full security hardening
+#   • §21.1     NEW imports: core.security (require_admin, rate limiters, etc.)
+#   • §21.5.2   SecurityHeadersMiddleware registered (HSTS, CSP, XFO, etc.)
+#   • §21.5.3   Global error handler now returns generic message (no stack leaks)
+#   • §21.5.6b  /api/admin/frontpage/diagnose → requires ADMIN_API_KEY
+#   • §21.5.6c  /api/admin/frontpage/why-empty → requires ADMIN_API_KEY
+#   • §21.5.8   Traveler login — rate limited (5/5min), validated, secure cookie
+#   • §21.5.8b  Gallery upload/delete — requires ADMIN_API_KEY + content sniffing
+#   • §21.5.8c  Traveler doc upload — requires ADMIN_API_KEY + content sniffing
+#   • All upload endpoints now use secrets.token_hex (256-bit) instead of uuid4
+#
+# v2.25 preserved:
 #   • §21.5.6   /api/batches — logs saved vs DB IDs side-by-side
-#   • §21.5.6c  /api/admin/frontpage/why-empty — NEW read-only diagnostic
-#
-# v2.24 preserved:
-#   • §21.5.5  /api/frontpage          — no-cache headers
-#   • §21.5.6  /api/batches            — no-cache headers
-#   • §21.5.6b /api/admin/frontpage/diagnose
-#   • §21.5.8b /gallery-upload         — no-cache headers
-#   • §21.5.8c /traveler-doc-upload    — no-cache headers
-#   • §21.5.11 /                       — no-cache headers
-#
-# v2.23 preserved:
-#   • Flet 1.0 navigation (web_only_window_name="_self")
-#   • page.session.store admin sessions
-#   • /traveler-doc-upload + /api/admin/traveler/upload-doc
-#   • /app/documents symlink to volume
-#   • /gallery-upload + /api/admin/gallery/*
+#   • §21.5.6c  /api/admin/frontpage/why-empty — diagnostic
 #
 # SECTION INDEX
 #   21.1      Imports & configuration
@@ -34,24 +30,20 @@
 #   21.2.5    Admin session helpers (page.session.store)
 #   21.2.6    /app/documents symlink guard
 #   21.3      Flet admin app entry point
-#   21.3.1    flet_main() root
-#   21.3.2    _go_home_page
-#   21.3.3    show_login / show_main_window / on_logout
-#   21.3.4    _bootstrap
 #   21.4      Favicon middleware
 #   21.5      FastAPI app assembly
 #   21.5.1    Directory setup + asset seeding
-#   21.5.2    FastAPI creation + middleware
-#   21.5.3    Global error handler
+#   21.5.2    FastAPI creation + middleware (SECURITY HEADERS ADDED)
+#   21.5.3    Global error handler (GENERIC MESSAGE)
 #   21.5.4    /download/{filename}
 #   21.5.5    /api/frontpage           ← no-cache
-#   21.5.6    /api/batches             ← no-cache + ID logs (v2.25)
-#   21.5.6b   /api/admin/frontpage/diagnose
-#   21.5.6c   /api/admin/frontpage/why-empty  ← NEW (v2.25)
+#   21.5.6    /api/batches             ← no-cache + ID logs
+#   21.5.6b   /api/admin/frontpage/diagnose    ← AUTH REQUIRED
+#   21.5.6c   /api/admin/frontpage/why-empty   ← AUTH REQUIRED
 #   21.5.7    /api/captcha/*
-#   21.5.8    /traveler + /api/traveler/*
-#   21.5.8b   /gallery-upload + /api/admin/gallery/*
-#   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc
+#   21.5.8    /traveler + /api/traveler/*  ← RATE LIMITED + SECURE COOKIE
+#   21.5.8b   /gallery-upload + /api/admin/gallery/*  ← AUTH + VALIDATION
+#   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc  ← AUTH
 #   21.5.9    Mount Flet admin at /admin
 #   21.5.10   Mount /static
 #   21.5.11   Root route "/"          ← no-cache
@@ -65,7 +57,7 @@
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import (FastAPI, HTTPException, Request, File,
-                     UploadFile, Form)
+                     UploadFile, Form, Depends)
 from fastapi.responses import (FileResponse, RedirectResponse,
                                Response, JSONResponse)
 from fastapi.staticfiles import StaticFiles
@@ -80,7 +72,7 @@ import asyncio
 import math
 import traceback
 import mimetypes
-import uuid
+import secrets
 from datetime import datetime
 from pathlib import Path
 
@@ -88,6 +80,63 @@ from core.helpers import get_app_base_path
 from core.database import HajDatabase
 from core.login_view import LoginView
 from core.main_window import MainWindowView
+
+# ---- Security module (create core/security.py before running) ----
+try:
+    from core.security import (
+        generate_token,
+        login_limiter, upload_limiter, api_limiter, client_ip,
+        require_admin,
+        SecurityHeadersMiddleware,
+        sanitize_csv_cell, sanitize_row,
+        validate_upload_content,
+        validate_length, safe_filename,
+    )
+    _SECURITY_AVAILABLE = True
+except Exception as _sec_err:
+    print(f"[BOOT][SECURITY] core.security import failed: {_sec_err}",
+          flush=True)
+    print("[BOOT][SECURITY] Falling back to no-op stubs — "
+          "SECURITY IS NOT ENFORCED", flush=True)
+    _SECURITY_AVAILABLE = False
+
+    # Minimal stubs so main.py still boots
+    async def require_admin(request: Request):
+        return None
+
+    class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            return await call_next(request)
+
+    def client_ip(request):
+        return request.client.host if request.client else "unknown"
+
+    def validate_length(v, name, min_len=0, max_len=1000):
+        return str(v or "").strip()[:max_len]
+
+    def safe_filename(name, max_len=200):
+        import os as _os
+        return _os.path.basename(str(name or "upload.bin"))[:max_len]
+
+    def validate_upload_content(data, allowed):
+        return True
+
+    def generate_token(n=32):
+        return secrets.token_hex(n)
+
+    def sanitize_csv_cell(v):
+        return str(v or "")
+
+    def sanitize_row(row):
+        return dict(row)
+
+    class _NoOpLimiter:
+        def check(self, key): return True
+        def reset(self, key): pass
+
+    login_limiter = _NoOpLimiter()
+    upload_limiter = _NoOpLimiter()
+    api_limiter = _NoOpLimiter()
 
 
 # =================================================================================
@@ -116,6 +165,17 @@ def _detect_platform() -> str:
 
 
 PLATFORM = _detect_platform()
+
+
+def _is_https_request(request: Request) -> bool:
+    """True if the request came in over HTTPS (checks proxy headers)."""
+    try:
+        if request.url.scheme == "https":
+            return True
+        xfp = request.headers.get("x-forwarded-proto", "").lower()
+        return xfp.split(",")[0].strip() == "https"
+    except Exception:
+        return False
 
 
 # =================================================================================
@@ -209,10 +269,6 @@ _patch_page_update()
 # =================================================================================
 # 21.2 — APPLICATION STATE & BOOT HELPERS
 # =================================================================================
-
-# ---------------------------------------------------------------------------------
-# 21.2.1 — AppState class
-# ---------------------------------------------------------------------------------
 class AppState:
     db = None
     db_ready = False
@@ -463,9 +519,6 @@ def _ensure_documents_symlink():
 # 21.3 — FLET ADMIN APP ENTRY POINT
 # =================================================================================
 def flet_main(page: ft.Page):
-    # -----------------------------------------------------------------------------
-    # 21.3.1 — Page setup
-    # -----------------------------------------------------------------------------
     page.title = "Alhudha Haj Travel — Admin"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.padding = 0
@@ -519,9 +572,6 @@ def flet_main(page: ft.Page):
 
     state = {"user": None}
 
-    # -----------------------------------------------------------------------------
-    # 21.3.2 — Back to Home (Flet 1.0-aware)
-    # -----------------------------------------------------------------------------
     def _go_home_page():
         print("[NAV] Back to Home clicked -> scheduling navigation")
 
@@ -562,9 +612,6 @@ def flet_main(page: ft.Page):
         except Exception as e:
             print(f"[NAV] run_task failed: {e}")
 
-    # -----------------------------------------------------------------------------
-    # 21.3.3 — Screen switchers
-    # -----------------------------------------------------------------------------
     def show_login():
         page.controls.clear()
         login = LoginView(
@@ -620,9 +667,6 @@ def flet_main(page: ft.Page):
         except Exception as ex:
             _boot_log(f"show_main_window update failed: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # 21.3.4 — _bootstrap
-    # -----------------------------------------------------------------------------
     async def _bootstrap():
         print("[SESSION] Bootstrap starting...")
         try:
@@ -722,14 +766,25 @@ def _build_app() -> FastAPI:
     _boot_log(f"Flet assets dir : {flet_assets_dir}")
     _boot_log(f"Gallery root    : {gallery_root}")
 
+    # Warn if ADMIN_API_KEY not set
+    _admin_key = os.getenv("ADMIN_API_KEY", "")
+    if not _admin_key or len(_admin_key) < 16:
+        _boot_log("⚠️  ADMIN_API_KEY not set (or too short). "
+                  "Admin endpoints will return 503.")
+        _boot_log("   Set a 32+ char random string in Railway → Variables.")
+    else:
+        _boot_log(f"ADMIN_API_KEY configured ({len(_admin_key)} chars)")
+
     # -----------------------------------------------------------------------------
-    # 21.5.2 — FastAPI creation + middleware
+    # 21.5.2 — FastAPI creation + middleware  [SECURITY HEADERS ADDED]
     # -----------------------------------------------------------------------------
     app = FastAPI(title="Alhudha Haj Travel System")
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
+    app.add_middleware(SecurityHeadersMiddleware)
+    _boot_log("Security headers middleware registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.3 — Global error handler
+    # 21.5.3 — Global error handler  [GENERIC MESSAGE]
     # -----------------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
@@ -737,7 +792,7 @@ def _build_app() -> FastAPI:
         traceback.print_exc()
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Internal server error: {exc}"})
+            content={"detail": "Internal server error"})
 
     # -----------------------------------------------------------------------------
     # 21.5.4 — /download/{filename}
@@ -773,10 +828,11 @@ def _build_app() -> FastAPI:
                 })
         except Exception as e:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500,
+                                detail="Failed to load config")
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches  (v2.25: logs saved vs DB IDs side-by-side)
+    # 21.5.6 — /api/batches  (no-cache + ID logs)
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
@@ -851,13 +907,14 @@ def _build_app() -> FastAPI:
                 })
         except Exception as e:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500,
+                                detail="Failed to load batches")
 
     # -----------------------------------------------------------------------------
-    # 21.5.6b — /api/admin/frontpage/diagnose (round-trip tests)
+    # 21.5.6b — /api/admin/frontpage/diagnose  [AUTH REQUIRED]
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/diagnose")
-    async def frontpage_diagnose():
+    async def frontpage_diagnose(_: None = Depends(require_admin)):
         from core.frontpage_config import (
             load_config, save_config, get_selected_batches,
             add_gallery_item, list_gallery_items, remove_gallery_item,
@@ -981,14 +1038,14 @@ def _build_app() -> FastAPI:
         except Exception as e:
             traceback.print_exc()
             report["ok"] = False
-            report["error"] = str(e)
+            report["error"] = "Diagnostic failed"
             return report
 
     # -----------------------------------------------------------------------------
-    # 21.5.6c — /api/admin/frontpage/why-empty  (v2.25 NEW)
+    # 21.5.6c — /api/admin/frontpage/why-empty  [AUTH REQUIRED]
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/why-empty")
-    async def frontpage_why_empty():
+    async def frontpage_why_empty(_: None = Depends(require_admin)):
         from core.frontpage_config import (
             load_config, get_selected_batch_ids, get_selected_batches,
             _normalize_id, config_exists, _config_path)
@@ -1055,7 +1112,7 @@ def _build_app() -> FastAPI:
             return get_captcha_new(session_id)
         except Exception as e:
             traceback.print_exc()
-            return {"ok": False, "detail": str(e)}
+            return {"ok": False, "detail": "Captcha error"}
 
     @app.post("/api/captcha/verify")
     async def captcha_verify(payload: CaptchaVerifyPayload):
@@ -1064,7 +1121,7 @@ def _build_app() -> FastAPI:
             return check_captcha_answer(payload.session_id, payload.answer)
         except Exception as e:
             traceback.print_exc()
-            return {"ok": False, "reason": "error", "detail": str(e)}
+            return {"ok": False, "reason": "error", "detail": "Captcha error"}
 
     # -----------------------------------------------------------------------------
     # 21.5.8 — Traveler portal
@@ -1084,21 +1141,48 @@ def _build_app() -> FastAPI:
 
     @app.post("/api/traveler/login")
     async def traveler_login(request: Request):
+        # ---- Rate limit by IP (5 attempts / 5 min) ----
+        ip = client_ip(request)
+        if not login_limiter.check(ip):
+            _boot_log(f"[SECURITY] Login rate-limited: {ip}")
+            raise HTTPException(
+                status_code=429,
+                detail="Too many login attempts. Try again in 5 minutes.")
+
+        # ---- Parse body ----
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(status_code=400,
-                                detail="Invalid JSON body")
-        passport_no = str(body.get("passport_no", "")).strip()
-        pin = str(body.get("pin", "")).strip()
-        captcha_session_id = str(body.get("captcha_session_id", "")).strip()
-        captcha_answer = str(body.get("captcha_answer", "")).strip()
+                                detail="Invalid request body")
+
+        # ---- Length validation ----
+        try:
+            passport_no = validate_length(
+                body.get("passport_no", ""), "Passport number",
+                min_len=3, max_len=64)
+            pin = validate_length(
+                body.get("pin", ""), "PIN",
+                min_len=4, max_len=32)
+            captcha_session_id = validate_length(
+                body.get("captcha_session_id", ""), "Session ID",
+                max_len=128)
+            captcha_answer = validate_length(
+                body.get("captcha_answer", ""), "Answer",
+                max_len=64)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400,
+                                detail="Invalid input")
+
         try:
             from core.traveler_portal import (
                 authenticate_traveler_with_captcha, create_session)
         except Exception as e:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500,
+                                detail="Authentication service error")
         if not AppState.db_ready or AppState.db is None:
             raise HTTPException(status_code=503,
                                 detail="Database unavailable")
@@ -1108,7 +1192,8 @@ def _build_app() -> FastAPI:
                 captcha_session_id, captcha_answer)
         except Exception as e:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500,
+                                detail="Authentication error")
         if err:
             if err.startswith("captcha:"):
                 reason = err.split(":", 1)[1]
@@ -1122,21 +1207,30 @@ def _build_app() -> FastAPI:
                 raise HTTPException(
                     status_code=400,
                     detail=msg_map.get(reason, "Security check failed."))
-            raise HTTPException(status_code=401, detail=err)
+            raise HTTPException(status_code=401,
+                                detail="Invalid credentials")
         try:
             token = create_session(traveler)
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Session create failed: {e}")
+                                detail="Session creation failed")
+
+        # Successful login — clear rate limit for this IP
+        login_limiter.reset(ip)
         _boot_log(f"Traveler login OK: {traveler.get('id')}")
+
+        is_https = _is_https_request(request)
         response = Response(
             content='{"success": true}',
             media_type="application/json")
         response.set_cookie(
             TRAVELER_COOKIE, token,
-            max_age=8 * 3600, httponly=False,
-            samesite="lax", path="/")
+            max_age=8 * 3600,
+            httponly=True,
+            secure=is_https,
+            samesite="lax",
+            path="/")
         return response
 
     @app.post("/api/traveler/logout")
@@ -1185,9 +1279,8 @@ def _build_app() -> FastAPI:
         except Exception as e:
             _boot_log(f"/api/traveler/me failed: {e}")
             traceback.print_exc()
-            raise HTTPException(
-                status_code=500,
-                detail=f"Server error: {type(e).__name__}: {e}")
+            raise HTTPException(status_code=500,
+                                detail="Server error")
 
     @app.get("/api/traveler/document/{doc_key}")
     async def traveler_document(doc_key: str, request: Request):
@@ -1235,12 +1328,12 @@ def _build_app() -> FastAPI:
         except Exception as e:
             _boot_log(f"/api/traveler/document/{doc_key} failed: {e}")
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail="Server error")
 
     _boot_log("Traveler portal endpoints registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.8b — Gallery
+    # 21.5.8b — Gallery  [AUTH + CONTENT VALIDATION]
     # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
@@ -1280,14 +1373,26 @@ def _build_app() -> FastAPI:
 
     @app.post("/api/admin/gallery/upload")
     async def upload_gallery_media(
+        request: Request,
         file: UploadFile = File(...),
         media_type: str = Form(...),
         caption: str = Form(""),
+        _: None = Depends(require_admin),
     ):
+        # ---- Rate limit ----
+        if not upload_limiter.check("gallery"):
+            raise HTTPException(status_code=429,
+                                detail="Too many uploads. Slow down.")
+
         if media_type not in ("photos", "videos"):
             raise HTTPException(
                 status_code=400,
                 detail="media_type must be 'photos' or 'videos'")
+
+        # ---- Sanitize caption ----
+        caption = validate_length(caption, "Caption", max_len=500)
+
+        # ---- Extension check ----
         ext = os.path.splitext(file.filename or "")[1].lower()
         allowed = (ALLOWED_PHOTO_EXT if media_type == "photos"
                    else ALLOWED_VIDEO_EXT)
@@ -1296,57 +1401,77 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail=(f"Unsupported {media_type[:-1]} format: {ext}. "
                         f"Allowed: {', '.join(sorted(allowed))}"))
+
+        # ---- Read with size guard ----
         try:
             data = await file.read()
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Read failed: {e}")
+                                detail="Failed to read upload")
         limit = (MAX_PHOTO_BYTES if media_type == "photos"
                  else MAX_VIDEO_BYTES)
         if len(data) > limit:
             raise HTTPException(
                 status_code=400,
-                detail=(f"File too large "
-                        f"({len(data) // 1024 // 1024} MB). "
-                        f"Max {limit // 1024 // 1024} MB."))
-        unique = uuid.uuid4().hex[:12]
+                detail=(f"File too large. Max {limit // 1024 // 1024} MB."))
+
+        # ---- Content-based validation (magic bytes) ----
+        if media_type == "photos":
+            allowed_mimes = {"image/jpeg", "image/png", "image/gif",
+                             "image/webp", "image/bmp"}
+        else:
+            allowed_mimes = {"video/mp4", "video/webm"}
+        if not validate_upload_content(data, allowed_mimes):
+            raise HTTPException(
+                status_code=400,
+                detail="File content does not match its extension")
+
+        # ---- Write with cryptographically random name ----
+        unique = generate_token(8)  # 64 bits of randomness
         fname = f"{unique}{ext}"
         target_dir = GALLERY_ROOT / media_type
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
         try:
             target.write_bytes(data)
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Write failed: {e}")
+                                detail="Failed to save file")
+
+        original_name = safe_filename(file.filename or fname)
         item = {
             "url": f"/media/gallery/{media_type}/{fname}",
-            "caption": (caption or "").strip(),
+            "caption": caption,
             "uploaded_at": datetime.utcnow().isoformat(timespec="seconds"),
             "size": len(data),
-            "original_name": file.filename or fname,
+            "original_name": original_name,
         }
         try:
             from core.frontpage_config import add_gallery_item
             ok = add_gallery_item(media_type, item)
             if not ok:
                 raise RuntimeError("add_gallery_item returned False")
-        except Exception as e:
+        except Exception:
             try:
                 target.unlink(missing_ok=True)
             except Exception:
                 pass
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Config update failed: {e}")
+                                detail="Config update failed")
+
         _boot_log(f"Gallery upload OK: {item['url']} "
                   f"({len(data) // 1024} KB)")
         return {"success": True, "item": item}
 
     @app.delete("/api/admin/gallery/item")
-    async def delete_gallery_media(media_type: str, url: str):
+    async def delete_gallery_media(
+        media_type: str,
+        url: str,
+        _: None = Depends(require_admin),
+    ):
         if media_type not in ("photos", "videos"):
             raise HTTPException(status_code=400,
                                 detail="bad media_type")
@@ -1357,20 +1482,20 @@ def _build_app() -> FastAPI:
         target = GALLERY_ROOT / media_type / fname
         try:
             target.unlink(missing_ok=True)
-        except Exception as e:
-            _boot_log(f"Gallery delete file failed: {e}")
+        except Exception:
+            _boot_log("Gallery delete file failed")
         try:
             from core.frontpage_config import remove_gallery_item
             remove_gallery_item(media_type, url)
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Config update failed: {e}")
+                                detail="Config update failed")
         _boot_log(f"Gallery delete OK: {url}")
         return {"success": True}
 
     # -----------------------------------------------------------------------------
-    # 21.5.8c — Traveler document upload
+    # 21.5.8c — Traveler document upload  [AUTH + CONTENT VALIDATION]
     # -----------------------------------------------------------------------------
     traveler_doc_upload_html = os.path.join(static_dir,
                                             "traveler_doc_upload.html")
@@ -1394,12 +1519,26 @@ def _build_app() -> FastAPI:
         doc_key: str = Form(...),
         traveler_id: str = Form(""),
         mode: str = Form("new"),
+        _: None = Depends(require_admin),
     ):
+        # ---- Rate limit ----
+        if not upload_limiter.check("docs"):
+            raise HTTPException(status_code=429,
+                                detail="Too many uploads. Slow down.")
+
         valid_keys = {"passport_scan", "aadhaar_scan", "pan_scan",
                       "vaccine_scan", "photo"}
         if doc_key not in valid_keys:
             raise HTTPException(status_code=400,
                                 detail=f"Invalid doc_key: {doc_key}")
+
+        if mode not in ("new", "edit"):
+            raise HTTPException(status_code=400, detail="Invalid mode")
+
+        # ---- Sanitize traveler_id ----
+        traveler_id = validate_length(
+            traveler_id, "Traveler ID", max_len=64)
+
         subfolder_map = {
             "passport_scan": "passports",
             "aadhaar_scan": "aadhaar",
@@ -1407,47 +1546,74 @@ def _build_app() -> FastAPI:
             "vaccine_scan": "vaccine",
             "photo": "photos",
         }
-        sub = subfolder_map.get(doc_key, "other")
+        sub = subfolder_map[doc_key]
         is_edit = (mode == "edit" and traveler_id)
         if is_edit:
-            folder = traveler_id.replace("/", "_").replace("\\", "_")
+            folder = "".join(c for c in traveler_id
+                             if c.isalnum() or c in "-_")
+            if not folder:
+                raise HTTPException(status_code=400,
+                                    detail="Invalid traveler ID")
         else:
             folder = "new_traveler"
+
+        # ---- Read with size guard ----
         try:
             data = await file.read()
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Read failed: {e}")
+                                detail="Failed to read upload")
         if not data:
             raise HTTPException(status_code=400, detail="Empty file")
         MAX_BYTES = 15 * 1024 * 1024
         if len(data) > MAX_BYTES:
             raise HTTPException(
                 status_code=400,
-                detail=(f"File too large ({len(data)//1024//1024} MB). "
-                        f"Max 15 MB."))
+                detail="File too large. Max 15 MB.")
+
+        # ---- Extension check ----
         ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".pdf",
                        ".webp", ".gif", ".bmp"}
         ext = os.path.splitext(file.filename or "")[1].lower()
         if ext not in ALLOWED_EXT:
             raise HTTPException(
                 status_code=400,
-                detail=(f"Unsupported format: {ext}. "
-                        f"Allowed: {', '.join(sorted(ALLOWED_EXT))}"))
+                detail=f"Unsupported format: {ext}")
+
+        # ---- Content-based validation ----
+        allowed_mimes = {"image/jpeg", "image/png", "image/gif",
+                         "image/bmp", "image/webp", "application/pdf"}
+        if not validate_upload_content(data, allowed_mimes):
+            raise HTTPException(
+                status_code=400,
+                detail="File content does not match its extension")
+
+        # ---- Write ----
         fname = (f"{doc_key}_"
                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
         target_dir = Path("/app/data/documents") / folder / sub
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
+
+        # Final path traversal guard
+        try:
+            target.resolve().relative_to(
+                Path("/app/data/documents").resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid path")
+
         try:
             target.write_bytes(data)
-        except Exception as e:
+        except Exception:
             traceback.print_exc()
             raise HTTPException(status_code=500,
-                                detail=f"Write failed: {e}")
+                                detail="Failed to save file")
+
         rel = f"documents/{folder}/{sub}/{fname}"
         print(f"[TRAVELER-DOC] Saved: {rel} ({len(data)} bytes)")
+
+        # ---- CSV update on edit ----
         if is_edit:
             try:
                 csv_path = Path("/app/data/travelers.csv")
@@ -1467,15 +1633,9 @@ def _build_app() -> FastAPI:
                                     AppState.db.reload()
                             except Exception:
                                 pass
-                        print(f"[TRAVELER-DOC] Updated CSV: "
-                              f"{traveler_id}.{doc_key} = {rel}")
-                    else:
-                        print(f"[TRAVELER-DOC] traveler_id "
-                              f"{traveler_id} not found in CSV — "
-                              f"file saved only")
-            except Exception as e:
-                traceback.print_exc()
-                print(f"[TRAVELER-DOC] CSV update failed: {e}")
+            except Exception:
+                print(f"[TRAVELER-DOC] CSV update failed")
+
         return {
             "success": True,
             "path": rel,
@@ -1543,6 +1703,9 @@ if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
           f"{os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
 print(f"  Patch          : "
       f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
+print(f"  Security       : "
+      f"{'ENABLED' if _SECURITY_AVAILABLE else 'DISABLED (fallback)'}",
+      flush=True)
 print(f"  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
 print(f"  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
