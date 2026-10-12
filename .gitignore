@@ -73,3 +73,6 @@ static/travelers_template.csv
 
 # Local helper scripts
 *.cmd
+
+# Production backup (do not commit live data)
+data_production_backup/
