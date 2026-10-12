@@ -70,3 +70,6 @@ static/custom_report_*.csv
 static/travelers_export_*.csv
 static/travelers_template.csv
 *_OLD_STALE_*.csv
+
+# Local helper scripts
+*.cmd
