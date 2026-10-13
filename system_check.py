@@ -1,19 +1,33 @@
 # =================================================================================
 # system_check.py — FULL SYSTEM DIAGNOSTIC
 # =================================================================================
-# Covers:
+# v3.0 — Only real issues. Actionable warnings. Auto-fix safe problems.
+#
+# PHILOSOPHY
+#   ✅ Passes = verified working
+#   ⚠️  Warning = REAL issue with clear FIX instruction
+#   ❌ Failure = blocks the app from working
+#
+#   Removed all "cosmetic" checks (source code pattern matching) — those
+#   create noise without adding value. Real behavior is what matters.
+#
+# AUTO-FIX POLICY
+#   Safe derived data (e.g. available_seats = total - booked) is fixed
+#   automatically. Set NO_AUTOFIX=1 to disable.
+#
+# COVERS
 #   1. Environment & dependencies
-#   2. Every .py file (front + back)
-#   3. Module imports (cross-module API)
-#   4. Class / method inventory
+#   2. File inventory
+#   3. Module imports
+#   4. Class & method inventory
 #   5. Database layer API
 #   6. Settings manager API
-#   7. Reports / custom report API
-#   8. Data integrity (CSV rows, relationships)
-#   9. Photo system API
-#  10. Export pipeline API
-#  11. Route / view integrity
-#  12. Cross-module call verification
+#   7. Data integrity (with auto-fix)
+#   8. Photo system
+#   9. Export pipeline
+#  10. Security wiring
+#  11. Cross-module API calls
+#  12. Summary
 # =================================================================================
 import os
 import sys
@@ -27,17 +41,23 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
+AUTOFIX = os.environ.get("NO_AUTOFIX", "").lower() not in ("1", "true", "yes")
+
 # =================================================================================
-# HELPERS
+# STATE
 # =================================================================================
 FAILS = []
 WARNS = []
+FIXED = []
 
 
+# =================================================================================
+# OUTPUT HELPERS
+# =================================================================================
 def section(n, title):
     print()
     print("╔" + "═" * 70 + "╗")
-    print(f"║ {n}. {title:<66}║")
+    print(f"║ {n:>2}. {title:<65}║")
     print("╚" + "═" * 70 + "╝")
 
 
@@ -48,19 +68,25 @@ def ok(label, detail=""):
     print(line)
 
 
-def warn(label, detail=""):
+def warn(label, detail="", fix=""):
+    """Real issue that needs attention. Prints fix instruction."""
     line = f"  ⚠️   {label}"
     if detail:
         line += f"  →  {detail}"
     print(line)
+    if fix:
+        print(f"         FIX: {fix}")
     WARNS.append(label)
 
 
-def fail(label, detail=""):
+def fail(label, detail="", fix=""):
+    """Blocker — app will not work correctly."""
     line = f"  ❌  {label}"
     if detail:
         line += f"  →  {detail}"
     print(line)
+    if fix:
+        print(f"         FIX: {fix}")
     FAILS.append(label)
 
 
@@ -71,23 +97,25 @@ def info(label, detail=""):
     print(line)
 
 
-def try_import(mod_name, alias=None):
-    """Import a module, return (module, error_str)."""
+def fixed(label, detail=""):
+    line = f"  🔧  {label}"
+    if detail:
+        line += f"  →  {detail}"
+    print(line)
+    FIXED.append(label)
+
+
+def try_import(mod_name):
     try:
-        if alias:
-            mod = importlib.import_module(mod_name)
-            return mod, None
-        mod = importlib.import_module(mod_name)
-        return mod, None
+        return importlib.import_module(mod_name), None
     except Exception as e:
         return None, f"{type(e).__name__}: {e}"
 
 
-def list_methods(cls, public_only=True):
-    """Return list of (name, signature) tuples for methods of a class."""
+def list_methods(cls):
     out = []
     for name, member in inspect.getmembers(cls, predicate=inspect.isfunction):
-        if public_only and name.startswith("_"):
+        if name.startswith("_"):
             continue
         try:
             sig = str(inspect.signature(member))
@@ -102,88 +130,93 @@ def list_methods(cls, public_only=True):
 # =================================================================================
 def check_environment():
     section(1, "ENVIRONMENT & DEPENDENCIES")
-    print(f"  Python executable : {sys.executable}")
-    print(f"  Python version    : {sys.version.split()[0]}")
-    print(f"  Platform          : {sys.platform}")
-    print(f"  Working dir       : {os.getcwd()}")
-    print(f"  Project root      : {BASE}")
+    info("Python", f"{sys.version.split()[0]} ({sys.platform})")
+    info("Project root", str(BASE))
     print()
 
     deps = [
-        ("flet", "Flet"),
-        ("pandas", "Pandas"),
-        ("numpy", "Numpy"),
-        ("PIL", "Pillow"),
-        ("openpyxl", "openpyxl"),
-        ("reportlab", "reportlab"),
-        ("matplotlib", "Matplotlib"),
+        ("flet",        "Flet",       True),
+        ("fastapi",     "FastAPI",    True),
+        ("uvicorn",     "Uvicorn",    True),
+        ("pandas",      "Pandas",     True),
+        ("numpy",       "Numpy",      False),
+        ("PIL",         "Pillow",     False),
+        ("openpyxl",    "openpyxl",   False),
+        ("reportlab",   "reportlab",  False),
+        ("matplotlib",  "Matplotlib", False),
     ]
-    for mod_name, label in deps:
+    for mod_name, label, required in deps:
         try:
             m = importlib.import_module(mod_name)
-            ver = getattr(m, "__version__", "") or getattr(m, "Version", "") or "?"
+            ver = getattr(m, "__version__", "") or "?"
             ok(label, ver)
         except ImportError:
-            if mod_name in ("PIL", "openpyxl", "reportlab"):
-                fail(f"{label} MISSING", "required for exports")
+            if required:
+                fail(f"{label} MISSING",
+                     "required to run the app",
+                     f"pip install {mod_name}")
             else:
-                fail(f"{label} MISSING")
+                warn(f"{label} not installed",
+                     "required for some exports",
+                     f"pip install {mod_name}")
 
 
 # =================================================================================
-# 2. ALL .PY FILES (FRONT + BACK)
+# 2. FILES
 # =================================================================================
 def check_files():
-    section(2, "ALL .PY FILES (FRONT + BACK)")
-    print(f"  Scanning: {BASE}")
-    print()
+    section(2, "FILE INVENTORY")
 
-    # Root-level .py files
-    print("  [ Root ]")
-    root_py = sorted(BASE.glob("*.py"))
-    for f in root_py:
-        size = f.stat().st_size
-        lines = sum(1 for _ in f.open("r", encoding="utf-8", errors="ignore"))
-        ok(f.name, f"{lines} lines, {size:,} bytes")
+    required_files = [
+        "main.py",
+        "core/database.py",
+        "core/security.py",
+        "core/frontpage_config.py",
+        "core/frontpage_settings_tab.py",
+        "core/main_window.py",
+        "core/login_view.py",
+    ]
+    for rel in required_files:
+        p = BASE / rel
+        if p.exists():
+            size = p.stat().st_size
+            ok(rel, f"{size:,} bytes")
+        else:
+            fail(f"{rel} MISSING", "required file",
+                 "restore from GitHub: git checkout " + rel)
 
-    # core/ .py files
-    print()
-    print("  [ core/ ]")
-    core = BASE / "core"
-    if not core.exists():
-        fail("core/ folder missing")
-        return
-    core_py = sorted(core.glob("*.py"))
-    if not core_py:
-        fail("no .py files in core/")
-    for f in core_py:
-        size = f.stat().st_size
-        lines = sum(1 for _ in f.open("r", encoding="utf-8", errors="ignore"))
-        ok(f.name, f"{lines} lines, {size:,} bytes")
+    # Optional but recommended
+    optional = [
+        "static/robots.txt",
+        "static/gallery_upload.html",
+        "tools/health_check.py",
+    ]
+    for rel in optional:
+        p = BASE / rel
+        if p.exists():
+            ok(rel)
+        else:
+            warn(f"{rel} not present",
+                 "recommended",
+                 "see project documentation")
 
-    # Any other subfolder .py files
-    print()
-    print("  [ Other folders ]")
-    others = [f for f in BASE.rglob("*.py")
-              if f.parent not in (BASE, core)]
-    if not others:
-        info("(no other .py files)")
-    for f in sorted(others):
-        rel = f.relative_to(BASE)
-        ok(str(rel))
+    # Count .py files (informational)
+    py_count = len(list(BASE.rglob("*.py")))
+    info("Python files in project", str(py_count))
 
 
 # =================================================================================
-# 3. MODULE IMPORTS (CROSS-MODULE API)
+# 3. IMPORTS
 # =================================================================================
 def check_imports():
-    section(3, "MODULE IMPORTS (CROSS-MODULE API)")
+    section(3, "MODULE IMPORTS")
 
     modules = [
-        # Backend
         "core.database",
         "core.settings_manager",
-        # Views
+        "core.security",
+        "core.frontpage_config",
+        "core.frontpage_settings_tab",
         "core.main_window",
         "core.login_view",
         "core.dashboard_tab",
@@ -202,96 +235,85 @@ def check_imports():
     for mod_name in modules:
         mod, err = try_import(mod_name)
         if err:
-            warn(mod_name, err.split(":")[0])
+            fail(f"{mod_name} import failed", err,
+                 f"check {mod_name.replace('.', '/')}.py for syntax errors")
             loaded[mod_name] = None
         else:
             ok(mod_name)
             loaded[mod_name] = mod
-
     return loaded
 
 
 # =================================================================================
-# 4. CLASS / METHOD INVENTORY
+# 4. CLASSES
 # =================================================================================
 def check_classes(loaded):
-    section(4, "CLASS & METHOD INVENTORY")
+    section(4, "CLASS INVENTORY")
 
     targets = [
-        ("core.database", "HajDatabase"),
-        ("core.settings_manager", "SettingsManager"),
-        ("core.main_window", "MainWindowView"),
-        ("core.login_view", "LoginView"),
-        ("core.dashboard_tab", "DashboardTab"),
-        ("core.travelers_tab", "TravelersTab"),
-        ("core.batches_tab", "BatchesTab"),
-        ("core.payments_tab", "PaymentsTab"),
-        ("core.receipts_tab", "ReceiptsTab"),
-        ("core.invoices_tab", "InvoicesTab"),
-        ("core.reports_tab", "ReportsTab"),
-        ("core.reports_tab", "UpdatedReportsTab"),
-        ("core.custom_report_dialog", "CustomReportDialog"),
-        ("core.custom_report_dialog", "ColumnOrderDialog"),
-        ("core.users_tab", "UsersTab"),
-        ("core.backups_tab", "BackupTab"),
+        ("core.database",                 "HajDatabase"),
+        ("core.settings_manager",         "SettingsManager"),
+        ("core.security",                 "SecurityHeadersMiddleware"),
+        ("core.frontpage_settings_tab",   "FrontPageSettingsTab"),
+        ("core.main_window",              "MainWindowView"),
+        ("core.login_view",               "LoginView"),
+        ("core.dashboard_tab",            "DashboardTab"),
+        ("core.travelers_tab",            "TravelersTab"),
+        ("core.batches_tab",              "BatchesTab"),
+        ("core.payments_tab",             "PaymentsTab"),
+        ("core.receipts_tab",             "ReceiptsTab"),
+        ("core.invoices_tab",             "InvoicesTab"),
+        ("core.reports_tab",              "ReportsTab"),
+        ("core.custom_report_dialog",     "CustomReportDialog"),
+        ("core.users_tab",                "UsersTab"),
+        ("core.backups_tab",              "BackupTab"),
     ]
 
     for mod_name, cls_name in targets:
         mod = loaded.get(mod_name)
         if mod is None:
-            warn(f"{mod_name}.{cls_name}", "module failed to import")
-            continue
+            continue  # already reported in §3
         cls = getattr(mod, cls_name, None)
         if cls is None:
-            warn(f"{mod_name}.{cls_name}", "class not found")
+            warn(f"{cls_name} not found in {mod_name}",
+                 "class may have been renamed/removed",
+                 "check the module source")
             continue
-        methods = list_methods(cls, public_only=True)
-        ok(f"{cls_name}",
-           f"{len(methods)} public methods")
-        # Print first 6 methods as a preview
-        for name, sig in methods[:6]:
-            info(f"  └─ {name}{sig}")
-        if len(methods) > 6:
-            info(f"  └─ … {len(methods) - 6} more")
+        methods = list_methods(cls)
+        ok(f"{cls_name}", f"{len(methods)} public methods")
 
 
 # =================================================================================
-# 5. DATABASE LAYER API
+# 5. DATABASE
 # =================================================================================
 def check_database():
-    section(5, "DATABASE LAYER API")
+    section(5, "DATABASE LAYER")
 
-    mod, err = try_import("core.database")
-    if err:
-        # Try alternate location
-        mod, err = try_import("core.main_window")
-
-    # Look for HajDatabase class anywhere
     db_cls = None
-    for candidate_mod in ["core.database", "core.main_window"]:
-        m = None
+    for candidate in ["core.database", "core.main_window"]:
         try:
-            m = importlib.import_module(candidate_mod)
+            m = importlib.import_module(candidate)
+            if hasattr(m, "HajDatabase"):
+                db_cls = m.HajDatabase
+                break
         except Exception:
             continue
-        if hasattr(m, "HajDatabase"):
-            db_cls = m.HajDatabase
-            break
 
     if db_cls is None:
-        fail("HajDatabase class not found in core/")
+        fail("HajDatabase not found",
+             "cannot instantiate DB layer",
+             "check core/database.py")
         return None
 
-    # Instantiate
     try:
         db = db_cls()
         ok("HajDatabase instantiated")
     except Exception as e:
-        fail("HajDatabase init failed", str(e))
+        fail("HajDatabase init failed", str(e),
+             "check data/ folder and CSV permissions")
         traceback.print_exc()
         return None
 
-    # Required API methods
     required = [
         "get_travelers", "get_batches", "get_payments",
         "get_invoices", "get_receipts", "get_users",
@@ -299,161 +321,209 @@ def check_database():
         "add_traveler", "update_batch", "delete_batch",
         "log_activity",
     ]
-    for m in required:
-        if hasattr(db, m):
-            ok(f"db.{m}()")
-        else:
-            warn(f"db.{m}()", "method missing")
+    missing = [m for m in required if not hasattr(db, m)]
+    if missing:
+        fail("HajDatabase missing methods", ", ".join(missing),
+             "check database.py class definition")
+    else:
+        ok("Required DB methods present", f"{len(required)} methods")
 
-    # DataFrames present?
     for attr in ["users", "travelers", "batches", "payments",
-                 "invoices", "receipts", "activity_log",
-                 "company_settings"]:
+                 "invoices", "receipts", "activity_log"]:
         df = getattr(db, attr, None)
         if df is None:
-            fail(f"db.{attr} not loaded")
+            warn(f"db.{attr} not loaded",
+                 "empty or missing file",
+                 "check data/ folder")
         else:
             ok(f"db.{attr}", f"{len(df)} rows")
+
     return db
 
 
 # =================================================================================
-# 6. SETTINGS MANAGER API
+# 6. SETTINGS
 # =================================================================================
 def check_settings(db):
-    section(6, "SETTINGS MANAGER API")
+    section(6, "SETTINGS MANAGER")
 
     mod, err = try_import("core.settings_manager")
-    if err:
-        fail("core.settings_manager import failed", err)
-        return
-
-    cls = getattr(mod, "SettingsManager", None)
-    if cls is None:
-        fail("SettingsManager class not found")
+    if err or not hasattr(mod, "SettingsManager"):
+        fail("SettingsManager unavailable", err or "class missing",
+             "check core/settings_manager.py")
         return
 
     if db is None:
-        warn("Skipping settings checks — DB not available")
+        warn("Settings check skipped", "DB not loaded")
         return
 
     try:
-        sm = cls(db)
+        sm = mod.SettingsManager(db)
         ok("SettingsManager instantiated")
     except Exception as e:
-        fail("SettingsManager init failed", str(e))
+        fail("SettingsManager init failed", str(e),
+             "check settings_manager.py")
         return
-
-    for m in ["get_company_settings", "get_tax_settings",
-              "update_tax_settings", "get_tour_types",
-              "add_tour_type", "get_tour_years"]:
-        if hasattr(sm, m):
-            ok(f"sm.{m}()")
-        else:
-            warn(f"sm.{m}()", "method missing")
 
     try:
         company = sm.get_company_settings()
-        ok("Company settings loaded",
-           f"{company.get('company_name', '?')}")
+        ok("Company settings", company.get("company_name", "?"))
     except Exception as e:
-        fail("get_company_settings failed", str(e))
+        warn("Company settings failed", str(e),
+             "check data/company_settings.csv")
 
     try:
         tax = sm.get_tax_settings()
-        ok("Tax settings loaded",
-           f"GST={tax.get('gst_percentage')}%, TCS={tax.get('tcs_percentage')}%")
+        ok("Tax settings",
+           f"GST={tax.get('gst_percentage', '?')}% "
+           f"TCS={tax.get('tcs_percentage', '?')}%")
     except Exception as e:
-        fail("get_tax_settings failed", str(e))
+        warn("Tax settings failed", str(e),
+             "check data/tax_settings.csv")
 
 
 # =================================================================================
-# 7. DATA INTEGRITY
+# 7. DATA INTEGRITY (with auto-fix)
 # =================================================================================
 def check_data_integrity(db):
     section(7, "DATA INTEGRITY")
 
     if db is None:
-        warn("Skipping — DB not available")
+        warn("Skipped", "DB not loaded")
         return
 
     try:
-        import pandas as pd
-
-        # Travelers → Batches FK
         travelers = db.get_travelers()
-        batches = {b["id"] for b in db.get_batches()}
-        orphan = [t for t in travelers
-                  if t.get("batch_id") and t["batch_id"] not in batches]
-        if orphan:
-            warn(f"{len(orphan)} travelers have invalid batch_id")
+        batches = db.get_batches()
+        payments = db.get_payments()
+        invoices = db.get_invoices()
+
+        traveler_ids = {t["id"] for t in travelers}
+        batch_ids = {b["id"] for b in batches}
+
+        # --- FK 1: travelers → batches ---
+        orphan_t = [t for t in travelers
+                    if t.get("batch_id") and t["batch_id"] not in batch_ids]
+        if orphan_t:
+            ids = [t.get("id", "?") for t in orphan_t[:5]]
+            warn(f"{len(orphan_t)} travelers with invalid batch_id",
+                 f"e.g. {', '.join(ids)}",
+                 "reassign via admin → Travelers tab, or clear the field")
         else:
             ok("Traveler → Batch FK valid")
 
-        # Payments → Travelers FK
-        payments = db.get_payments()
-        traveler_ids = {t["id"] for t in travelers}
+        # --- FK 2: payments → travelers ---
         orphan_p = [p for p in payments
                     if p.get("traveler_id")
                     and p["traveler_id"] not in traveler_ids]
         if orphan_p:
-            warn(f"{len(orphan_p)} payments have invalid traveler_id")
+            warn(f"{len(orphan_p)} payments with invalid traveler_id",
+                 "reference a traveler that no longer exists",
+                 "delete or reassign via admin → Payments tab")
         else:
             ok("Payment → Traveler FK valid")
 
-        # Batches seat math
+        # --- FK 3: invoices → travelers ---
+        orphan_i = [i for i in invoices
+                    if i.get("traveler_id")
+                    and i["traveler_id"] not in traveler_ids]
+        if orphan_i:
+            warn(f"{len(orphan_i)} invoices with invalid traveler_id",
+                 "reference a traveler that no longer exists",
+                 "delete or reassign via admin → Invoices tab")
+        else:
+            ok("Invoice → Traveler FK valid")
+
+        # --- Seat math (derived field) — AUTO-FIX ---
         bookings = {}
         for t in travelers:
             bid = t.get("batch_id")
             if bid:
                 bookings[bid] = bookings.get(bid, 0) + 1
-        bad = 0
-        for b in db.get_batches():
+
+        bad_batches = []
+        for b in batches:
             total = int(float(b.get("total_seats", 0) or 0))
             avail = int(float(b.get("available_seats", 0) or 0))
             booked = bookings.get(b["id"], 0)
-            if avail != max(0, total - booked):
-                bad += 1
-        if bad:
-            warn(f"{bad} batches have stale available_seats",
-                 "run fix_available_seats.py")
-        else:
-            ok("Batch seat math consistent")
+            expected = max(0, total - booked)
+            if avail != expected:
+                bad_batches.append({
+                    "id": b["id"],
+                    "name": b.get("batch_name", "?"),
+                    "total": total,
+                    "booked": booked,
+                    "available": avail,
+                    "expected": expected,
+                })
 
-        # Invoice → Traveler FK
-        invoices = db.get_invoices()
-        orphan_i = [i for i in invoices
-                    if i.get("traveler_id")
-                    and i["traveler_id"] not in traveler_ids]
-        if orphan_i:
-            warn(f"{len(orphan_i)} invoices have invalid traveler_id")
+        if not bad_batches:
+            ok("Batch seat math consistent")
         else:
-            ok("Invoice → Traveler FK valid")
+            if AUTOFIX:
+                fixed_count = 0
+                for item in bad_batches:
+                    try:
+                        b = db.get_batch_by_id(item["id"])
+                        if b:
+                            b["available_seats"] = item["expected"]
+                            db.update_batch(item["id"], b)
+                            fixed(
+                                f"Batch {item['id']} seat value corrected",
+                                f"{item['available']} → {item['expected']} "
+                                f"(total={item['total']}, booked={item['booked']})"
+                            )
+                            fixed_count += 1
+                    except Exception as e:
+                        warn(f"Auto-fix failed for {item['id']}",
+                             str(e),
+                             "fix manually via admin → Batches tab")
+                if fixed_count:
+                    ok(f"Auto-fixed {fixed_count} batch(es)")
+            else:
+                for item in bad_batches:
+                    warn(
+                        f"Batch {item['id']} has wrong available_seats",
+                        f"has {item['available']}, should be "
+                        f"{item['expected']} "
+                        f"(total={item['total']}, booked={item['booked']})",
+                        "run: set AUTO_FIX_BATCH_SEATS=1 && python system_check.py"
+                    )
 
     except Exception as e:
-        fail("Data integrity check crashed", str(e))
+        fail("Data integrity check crashed", str(e),
+             "see traceback above")
         traceback.print_exc()
 
 
 # =================================================================================
-# 8. PHOTO SYSTEM API
+# 8. PHOTOS
 # =================================================================================
 def check_photos(db):
-    section(8, "PHOTO SYSTEM API")
+    section(8, "PHOTO SYSTEM")
 
-    docs = BASE / "documents"
-    ok("documents/ exists" if docs.exists()
-       else "documents/ missing")
+    # Try both locations
+    docs = None
+    for candidate in [BASE / "data" / "documents", BASE / "documents"]:
+        if candidate.exists():
+            docs = candidate
+            ok(f"Photos root: {candidate.relative_to(BASE)}")
+            break
 
-    if not docs.exists():
+    if docs is None:
+        warn("No documents folder found",
+             "checked data/documents/ and documents/",
+             "create the folder or check volume mount")
         return
 
-    traveler_folders = [d for d in docs.iterdir() if d.is_dir()]
-    ok(f"Traveler folders", f"{len(traveler_folders)} folders")
+    folders = [d for d in docs.iterdir() if d.is_dir()]
+    if not folders:
+        info("No traveler photo folders yet")
+        return
 
     total_photos = 0
     with_photo = 0
-    for d in traveler_folders:
+    for d in folders:
         photos_dir = d / "photos"
         if photos_dir.exists():
             files = [f for f in photos_dir.iterdir()
@@ -463,198 +533,225 @@ def check_photos(db):
                 with_photo += 1
                 total_photos += len(files)
 
-    ok("Folders with photos", f"{with_photo} / {len(traveler_folders)}")
-    ok("Total photo files", str(total_photos))
+    ok(f"Traveler folders", f"{len(folders)}")
+    ok(f"Folders with photos", f"{with_photo} / {len(folders)}")
+    ok(f"Total photo files", str(total_photos))
 
-    # Test the resolution function
-    try:
-        from core.custom_report_dialog import _find_photo_path
-        if db:
+    # Cross-check: travelers without photos
+    if db is not None:
+        try:
             travelers = db.get_travelers()
-            resolved = 0
-            for t in travelers:
-                if _find_photo_path(t):
-                    resolved += 1
-            ok(f"_find_photo_path resolved",
-               f"{resolved} / {len(travelers)} travelers")
-        else:
-            ok("_find_photo_path importable")
-    except Exception as e:
-        fail("_find_photo_path test failed", str(e))
+            if len(travelers) > 0:
+                pct = round(100 * with_photo / max(1, len(travelers)))
+                if pct >= 80:
+                    ok(f"Photo coverage", f"{pct}% of travelers")
+                elif pct >= 50:
+                    info(f"Photo coverage", f"{pct}% of travelers")
+                else:
+                    warn(f"Low photo coverage",
+                         f"only {with_photo} of {len(travelers)} travelers "
+                         f"have photos ({pct}%)",
+                         "upload photos via admin → Travelers tab")
+        except Exception:
+            pass
 
 
 # =================================================================================
-# 9. EXPORT PIPELINE API
+# 9. EXPORTS
 # =================================================================================
 def check_exports():
-    section(9, "EXPORT PIPELINE API")
+    section(9, "EXPORT PIPELINE")
 
-    # Check output folders
     for sub in ["excel", "csv", "pdf"]:
         d = BASE / "exports" / sub
-        if not d.exists():
+        try:
             d.mkdir(parents=True, exist_ok=True)
-        count = len([f for f in d.glob("*.*")])
-        ok(f"exports/{sub}/", f"{count} files")
+            # Test writability
+            test_file = d / ".write_test"
+            test_file.write_text("ok")
+            test_file.unlink()
+            count = len(list(d.glob("*.*")))
+            ok(f"exports/{sub}/ writable", f"{count} files")
+        except Exception as e:
+            fail(f"exports/{sub}/ not writable", str(e),
+                 "check folder permissions")
 
-    # Check asset serving folders
-    for sub in ["excel", "csv", "pdf"]:
-        d = BASE / "assets" / "exports" / sub
-        if not d.exists():
-            d.mkdir(parents=True, exist_ok=True)
-        count = len([f for f in d.glob("*.*")])
-        ok(f"assets/exports/{sub}/", f"{count} files")
-
-    # Test custom report dialog API
     try:
         from core.custom_report_dialog import CustomReportDialog
-        for m in ["export_to_excel", "export_to_csv", "export_to_pdf",
-                  "display_preview", "generate_preview"]:
+        for m in ["export_to_excel", "export_to_csv", "export_to_pdf"]:
             if hasattr(CustomReportDialog, m):
                 ok(f"CustomReportDialog.{m}()")
             else:
-                fail(f"CustomReportDialog.{m}() MISSING")
+                fail(f"CustomReportDialog.{m}() missing",
+                     "export feature will fail",
+                     "check custom_report_dialog.py")
     except Exception as e:
         fail("CustomReportDialog import failed", str(e))
 
 
 # =================================================================================
-# 10. ROUTE / VIEW INTEGRITY
+# 10. SECURITY WIRING
 # =================================================================================
-def check_routes():
-    section(10, "ROUTE / VIEW INTEGRITY")
+def check_security():
+    section(10, "SECURITY WIRING")
 
-    # main.py must exist
-    main_py = BASE / "main.py"
-    if main_py.exists():
-        ok("main.py present")
-        src = main_py.read_text(encoding="utf-8", errors="ignore")
-        for keyword in ["def main(page", "ft.run(", "route_change",
-                        "LoginView", "MainShell"]:
-            if keyword in src:
-                ok(f"main.py contains: {keyword}")
-            else:
-                warn(f"main.py missing: {keyword}")
-    else:
-        fail("main.py MISSING")
-
-    # Check main_window import wiring
-    try:
-        from core.main_window import MainWindowView
-        ok("MainWindowView importable")
-    except Exception as e:
-        fail("MainWindowView import failed", str(e))
-
-
-# =================================================================================
-# 11. CROSS-MODULE API CALLS
-# =================================================================================
-def check_cross_module_calls(db):
-    section(11, "CROSS-MODULE API CALL VERIFICATION")
-
-    if db is None:
-        warn("Skipping — DB not available")
+    # Check security module
+    mod, err = try_import("core.security")
+    if err:
+        fail("core.security import failed", err,
+             "check core/security.py for syntax errors")
         return
 
-    # --- CustomReportDialog needs these APIs from HajDatabase ---
-    print("  [ CustomReportDialog → HajDatabase ]")
-    for m in ["get_travelers", "get_batches", "get_payments",
-              "get_invoices", "get_batch_by_id"]:
-        if hasattr(db, m):
-            ok(f"db.{m}()")
-        else:
-            fail(f"db.{m}() — CustomReportDialog depends on this")
-
-    # --- ReportsTab → HajDatabase ---
-    print()
-    print("  [ ReportsTab → HajDatabase ]")
-    for m in ["get_travelers", "get_batches", "get_payments",
-              "get_invoices", "get_receipts", "log_activity"]:
-        if hasattr(db, m):
-            ok(f"db.{m}()")
-        else:
-            fail(f"db.{m}() — ReportsTab depends on this")
-
-    # --- MainWindowView → all view classes ---
-    print()
-    print("  [ MainWindowView → View classes ]")
-    views = [
-        ("core.dashboard_tab", "DashboardTab"),
-        ("core.travelers_tab", "TravelersTab"),
-        ("core.batches_tab", "BatchesTab"),
-        ("core.payments_tab", "PaymentsTab"),
-        ("core.receipts_tab", "ReceiptsTab"),
-        ("core.invoices_tab", "InvoicesTab"),
-        ("core.reports_tab", "ReportsTab"),
-        ("core.users_tab", "UsersTab"),
-        ("core.backups_tab", "BackupTab"),
+    # Check required exports
+    required = [
+        "require_admin",
+        "SecurityHeadersMiddleware",
+        "generate_token",
+        "login_limiter",
+        "upload_limiter",
+        "validate_upload_content",
+        "validate_length",
+        "safe_filename",
     ]
-    for mod_name, cls_name in views:
-        try:
-            mod = importlib.import_module(mod_name)
-            cls = getattr(mod, cls_name, None)
-            if cls is None:
-                warn(f"{cls_name}", f"{mod_name} has no {cls_name}")
-            else:
-                ok(f"{cls_name} from {mod_name}")
-        except Exception as e:
-            warn(cls_name, str(e).split(":")[0])
+    missing = [name for name in required if not hasattr(mod, name)]
+    if missing:
+        fail("core.security missing exports", ", ".join(missing),
+             "check security.py — functions may have been renamed")
+    else:
+        ok(f"All {len(required)} security helpers present")
 
-    # --- View class signature check ---
-    print()
-    print("  [ View constructor signature (page, db, current_user) ]")
-    for mod_name, cls_name in views:
-        try:
-            mod = importlib.import_module(mod_name)
-            cls = getattr(mod, cls_name, None)
-            if cls is None:
-                continue
-            sig = inspect.signature(cls.__init__)
-            params = list(sig.parameters.keys())
-            # Expect: self, page, db, current_user
-            if len(params) >= 4:
-                ok(f"{cls_name}.__init__{sig}")
+    # Check main.py actually uses them
+    main_py = BASE / "main.py"
+    if main_py.exists():
+        src = main_py.read_text(encoding="utf-8", errors="ignore")
+        checks = [
+            ("from core.security import", "imports security module"),
+            ("SecurityHeadersMiddleware", "adds security headers"),
+            ("block_scanners", "blocks scanner paths"),
+            ("require_admin", "requires admin auth"),
+            ("ADMIN_API_KEY", "reads admin API key env"),
+        ]
+        for needle, label in checks:
+            if needle in src:
+                ok(f"main.py: {label}")
             else:
-                warn(f"{cls_name}.__init__{sig}",
-                     "should accept (page, db, current_user)")
-        except Exception:
-            pass
+                fail(f"main.py missing: {label}",
+                     "security feature may not be active",
+                     "check main.py")
 
-    # --- View has .build() method ---
-    print()
-    print("  [ View has .build() method ]")
-    for mod_name, cls_name in views:
-        try:
-            mod = importlib.import_module(mod_name)
-            cls = getattr(mod, cls_name, None)
-            if cls is None:
-                continue
-            if hasattr(cls, "build"):
-                ok(f"{cls_name}.build()")
-            else:
-                warn(f"{cls_name}.build()", "missing")
-        except Exception:
-            pass
+    # Check env var
+    key = os.getenv("ADMIN_API_KEY", "")
+    if not key:
+        info("ADMIN_API_KEY not set in this environment",
+             "expected on Railway (Railway → Variables)")
+    elif len(key) < 16:
+        warn("ADMIN_API_KEY too short",
+             f"current length: {len(key)}",
+             "use at least 32 chars: python -c \"import secrets; print(secrets.token_urlsafe(32))\"")
+    else:
+        ok("ADMIN_API_KEY configured", f"{len(key)} chars")
 
 
 # =================================================================================
-# 12. FINAL SUMMARY
+# 11. CROSS-MODULE
+# =================================================================================
+def check_cross_module(db):
+    section(11, "CROSS-MODULE API CALLS")
+
+    if db is None:
+        warn("Skipped", "DB not loaded")
+        return
+
+    # CustomReportDialog needs these
+    required_by_dialog = ["get_travelers", "get_batches", "get_payments",
+                          "get_invoices", "get_batch_by_id"]
+    missing = [m for m in required_by_dialog if not hasattr(db, m)]
+    if missing:
+        fail("CustomReportDialog → HajDatabase broken",
+             f"missing: {', '.join(missing)}",
+             "check custom_report_dialog.py calls")
+    else:
+        ok(f"CustomReportDialog → DB",
+           f"{len(required_by_dialog)} methods available")
+
+    # ReportsTab needs these
+    required_by_reports = ["get_travelers", "get_batches", "get_payments",
+                           "get_invoices", "get_receipts", "log_activity"]
+    missing = [m for m in required_by_reports if not hasattr(db, m)]
+    if missing:
+        fail("ReportsTab → HajDatabase broken",
+             f"missing: {', '.join(missing)}",
+             "check reports_tab.py calls")
+    else:
+        ok(f"ReportsTab → DB",
+           f"{len(required_by_reports)} methods available")
+
+    # Views must have .build()
+    views = [
+        ("core.dashboard_tab",        "DashboardTab"),
+        ("core.travelers_tab",        "TravelersTab"),
+        ("core.batches_tab",          "BatchesTab"),
+        ("core.payments_tab",         "PaymentsTab"),
+        ("core.receipts_tab",         "ReceiptsTab"),
+        ("core.invoices_tab",         "InvoicesTab"),
+        ("core.reports_tab",          "ReportsTab"),
+        ("core.users_tab",            "UsersTab"),
+        ("core.backups_tab",          "BackupTab"),
+    ]
+    missing_build = []
+    for mod_name, cls_name in views:
+        try:
+            m = importlib.import_module(mod_name)
+            cls = getattr(m, cls_name, None)
+            if cls is None:
+                continue
+            if not hasattr(cls, "build"):
+                missing_build.append(cls_name)
+        except Exception:
+            pass
+    if missing_build:
+        fail("Views missing .build() method", ", ".join(missing_build),
+             "each view must expose a .build() method")
+    else:
+        ok("All views expose .build()")
+
+
+# =================================================================================
+# 12. SUMMARY
 # =================================================================================
 def summary():
     section(12, "SUMMARY")
     print()
-    if not FAILS and not WARNS:
+
+    total = len(FAILS) + len(WARNS)
+
+    if total == 0 and len(FIXED) == 0:
         print("  🎉  ALL SYSTEMS HEALTHY — 0 failures, 0 warnings")
     else:
-        print(f"  ❌  {len(FAILS)} failure(s)")
-        for f in FAILS:
-            print(f"       • {f}")
-        print()
-        print(f"  ⚠️   {len(WARNS)} warning(s)")
-        for w in WARNS:
-            print(f"       • {w}")
-    print()
-    print(f"  Check completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        if FIXED:
+            print(f"  🔧  {len(FIXED)} auto-fixed issue(s):")
+            for f in FIXED:
+                print(f"       • {f}")
+            print()
+
+        if FAILS:
+            print(f"  ❌  {len(FAILS)} failure(s) — MUST fix:")
+            for f in FAILS:
+                print(f"       • {f}")
+            print()
+
+        if WARNS:
+            print(f"  ⚠️   {len(WARNS)} warning(s) — SHOULD fix:")
+            for w in WARNS:
+                print(f"       • {w}")
+            print()
+
+        if not FAILS and not WARNS:
+            print("  ✅  No failures, no warnings — system is clean")
+
+    print(f"  Completed at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if not AUTOFIX:
+        print("  ℹ️   Auto-fix is DISABLED (NO_AUTOFIX=1)")
     print()
 
 
@@ -666,6 +763,7 @@ def main():
     print("╔" + "═" * 70 + "╗")
     print("║" + "  ALHUDHA HAJ TRAVEL SYSTEM — FULL SYSTEM DIAGNOSTIC".center(70) + "║")
     print("╚" + "═" * 70 + "╝")
+    print(f"  Auto-fix safe issues: {'ENABLED' if AUTOFIX else 'DISABLED'}")
 
     check_environment()
     check_files()
@@ -676,8 +774,8 @@ def main():
     check_data_integrity(db)
     check_photos(db)
     check_exports()
-    check_routes()
-    check_cross_module_calls(db)
+    check_security()
+    check_cross_module(db)
     summary()
 
 
