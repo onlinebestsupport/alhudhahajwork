@@ -1,0 +1,27 @@
+# robots.txt for alhudhahaj.work
+# Alhudha Haj Travel System
+
+User-agent: *
+# Block sensitive/admin paths
+Disallow: /admin
+Disallow: /api/admin
+Disallow: /traveler
+Disallow: /traveler-doc-upload
+Disallow: /gallery-upload
+Disallow: /download
+
+# Allow public pages
+Allow: /
+Allow: /static/
+Allow: /media/gallery/
+
+# Sitemap location (add yours if you create one)
+# Sitemap: https://alhudhahaj.work/sitemap.xml
+
+# Block aggressive SEO crawlers (optional — uncomment if they cause noise)
+# User-agent: AhrefsBot
+# Disallow: /
+# User-agent: SemrushBot
+# Disallow: /
+# User-agent: MJ12bot
+# Disallow: /

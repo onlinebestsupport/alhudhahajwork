@@ -1,33 +1,15 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.27 — Scanner blocker middleware
-#   • §21.5.2b  NEW: ScannerBlockerMiddleware
-#               Returns 410 Gone for ~60 common scanner paths
-#               (wp-login.php, .env, .git, xmlrpc.php, phpmyadmin, etc.)
-#               Skips app logic entirely → faster, quieter logs
+# v2.28 — robots.txt endpoint + scanner blocker + full security
+#   • §21.5.12  NEW: /robots.txt — serves static file or fallback
 #
-# v2.26 preserved:
-#   • Security headers middleware
-#   • Auth on all admin endpoints (ADMIN_API_KEY)
-#   • Rate-limited travelar login
+# v2.27 preserved:
+#   • Scanner blocker middleware (410 Gone for ~60 bot paths)
+#   • Security headers middleware (CSP, HSTS, XFO, XCTO, etc.)
+#   • Admin auth on all admin endpoints
+#   • Rate-limited traveler login
 #   • Content validation on uploads
-#
-# SECTION INDEX
-#   21.1      Imports & configuration
-#   21.1.1    Platform detection
-#   21.1.2    Boot logger
-#   21.1.4    JSON sanitizer
-#   21.1.5    Page.update() monkey patch
-#   21.2      Application state & boot helpers
-#   21.3      Flet admin app entry point
-#   21.4      Favicon middleware
-#   21.5      FastAPI app assembly
-#   21.5.1    Directory setup + asset seeding
-#   21.5.2    FastAPI creation + middleware
-#   21.5.2b   Scanner blocker middleware  ← NEW
-#   21.5.3    Global error handler
-#   ... (rest preserved)
 # =================================================================================
 
 
@@ -256,9 +238,6 @@ class AppState:
     gallery_root = ""
 
 
-# ---------------------------------------------------------------------------------
-# 21.2.2 — Volume seeder
-# ---------------------------------------------------------------------------------
 def _seed_volume_if_empty(base_path: str):
     try:
         data_dir = os.path.join(base_path, "data")
@@ -286,9 +265,6 @@ def _seed_volume_if_empty(base_path: str):
         print(f"[SEED] Failed: {e}", flush=True)
 
 
-# ---------------------------------------------------------------------------------
-# 21.2.3 — DB initializer with retries
-# ---------------------------------------------------------------------------------
 def _init_db():
     import time
     max_retries = 3
@@ -315,9 +291,6 @@ def _init_db():
     _boot_log(f"Database init failed after {max_retries} attempts")
 
 
-# ---------------------------------------------------------------------------------
-# 21.2.4 — Signal handlers
-# ---------------------------------------------------------------------------------
 def _install_signal_handlers():
     def _handler(signum, frame):
         _boot_log(f"Received signal {signum} — flushing DB…")
@@ -709,9 +682,6 @@ def _build_app() -> FastAPI:
     logo_path = os.path.join(static_dir, "logo.png")
     flet_assets_dir = os.path.join(base_path, "flet_assets")
 
-    # -----------------------------------------------------------------------------
-    # 21.5.1 — Directory setup + asset seeding
-    # -----------------------------------------------------------------------------
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
@@ -759,52 +729,33 @@ def _build_app() -> FastAPI:
     _boot_log("Security headers middleware registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.2b — SCANNER BLOCKER MIDDLEWARE  (NEW in v2.27)
+    # 21.5.2b — SCANNER BLOCKER MIDDLEWARE
     # -----------------------------------------------------------------------------
-    # Returns 410 Gone instantly for common scanner/bot paths.
-    # No app logic runs, no DB access, no logs. Saves CPU + keeps logs clean.
-    # Does NOT prevent Railway wake-up — bots still hit the edge.
-    # -----------------------------------------------------------------------------
-
     _SCANNER_EXACT_PATHS = {
-        # Environment / secrets
         "/.env", "/.env.local", "/.env.production", "/.env.backup",
         "/.env.dev", "/.env.staging", "/env", "/environment",
-        # Git / SVN / Mercurial
         "/.git", "/.git/head", "/.git/config", "/.gitignore",
         "/.svn", "/.hg", "/.bzr",
-        # WordPress
         "/wp-login.php", "/wp-admin", "/wp-content", "/wp-includes",
         "/xmlrpc.php", "/wp-config.php", "/wp-cron.php",
         "/wp-json", "/wp-comments-post.php",
-        # PHP admin tools
         "/phpmyadmin", "/pma", "/mysql", "/mysqladmin",
         "/admin.php", "/admin.html", "/admin.login.html",
         "/administrator", "/cpanel", "/webmail",
-        # Config files
         "/config.php", "/config.json", "/config.xml", "/config.yml",
         "/configuration.php", "/settings.php", "/setup.php",
-        # Backups / dumps
         "/backup.zip", "/backup.tar.gz", "/backup.sql",
         "/dump.sql", "/database.sql", "/db.sql", "/site.zip",
-        # SSH / AWS
         "/.aws/credentials", "/.ssh/id_rsa", "/.ssh/authorized_keys",
-        # Mac / Windows junk
         "/.DS_Store", "/thumbs.db", "/desktop.ini",
-        # Apache / nginx configs
         "/.htaccess", "/.htpasswd", "/.htgroups",
-        # CGI scripts
         "/cgi-bin", "/cgi-bin/", "/shell.php", "/webshell.php",
-        # PHPUnit vuln
         "/vendor/phpunit", "/phpunit", "/eval-stdin.php",
         "/vendor/phpunit/phpunit/src/util/php/eval-stdin.php",
-        # Common admin probes
         "/manage", "/manager/html", "/server-status",
         "/actuator", "/actuator/health", "/actuator/env",
-        # API probes
         "/api/.env", "/api/config", "/api/v1/users",
         "/api/v1/admin", "/api/v1/config",
-        # Generic exploit paths
         "/shell", "/cmd", "/exec", "/system",
     }
 
@@ -820,12 +771,10 @@ def _build_app() -> FastAPI:
 
     @app.middleware("http")
     async def block_scanners(request: Request, call_next):
-        # Normalize path: lowercase + strip trailing slash (except root)
         path = request.url.path.lower()
         if len(path) > 1 and path.endswith("/"):
             path = path.rstrip("/")
 
-        # Exact match
         if path in _SCANNER_EXACT_PATHS:
             return Response(
                 status_code=410,
@@ -833,7 +782,6 @@ def _build_app() -> FastAPI:
                 media_type="text/plain",
                 headers={"Cache-Control": "no-store"})
 
-        # Prefix match
         for prefix in _SCANNER_PREFIXES:
             if path.startswith(prefix):
                 return Response(
@@ -1719,6 +1667,39 @@ def _build_app() -> FastAPI:
                 })
         return RedirectResponse(url="/admin")
 
+    # -----------------------------------------------------------------------------
+    # 21.5.12 — /robots.txt  (BONUS - helps search engines, deters bots)
+    # -----------------------------------------------------------------------------
+    @app.get("/robots.txt")
+    async def robots_txt():
+        """
+        Serves static/robots.txt if it exists.
+        Falls back to a safe default that disallows sensitive paths.
+        """
+        robots_path = os.path.join(static_dir, "robots.txt")
+        if os.path.exists(robots_path):
+            return FileResponse(
+                robots_path,
+                media_type="text/plain",
+                headers={"Cache-Control": "public, max-age=86400"})
+
+        default_robots = (
+            "User-agent: *\n"
+            "Disallow: /admin\n"
+            "Disallow: /api/admin\n"
+            "Disallow: /traveler\n"
+            "Disallow: /traveler-doc-upload\n"
+            "Disallow: /gallery-upload\n"
+            "Disallow: /download\n"
+            "Allow: /\n"
+        )
+        return Response(
+            content=default_robots,
+            media_type="text/plain",
+            headers={"Cache-Control": "public, max-age=86400"})
+
+    _boot_log("robots.txt route registered")
+
     return app
 
 
@@ -1754,6 +1735,7 @@ print(f"  Security       : "
       f"{'ENABLED' if _SECURITY_AVAILABLE else 'DISABLED (fallback)'}",
       flush=True)
 print(f"  Scanner block  : ACTIVE", flush=True)
+print(f"  robots.txt     : ACTIVE", flush=True)
 print(f"  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
 print(f"  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
