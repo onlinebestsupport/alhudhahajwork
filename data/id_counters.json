@@ -1,7 +1,11 @@
 {
   "LOG_ACT_2026": 141,
   "HAJ_INV_2027": 8,
-  "BAK_BUP_2026": 6,
-  "ADMIN_USR_2026": 1,
-  "HAJ_BCH_2026": 1
+  "BAK_BUP_2026": 10,
+  "ADMIN_USR_2026": 5,
+  "HAJ_BCH_2026": 1,
+  "HAJ_BCH_2027": 11,
+  "HAJ_TRV_2027": 40,
+  "HAJ_PAY_2026": 4,
+  "HAJ_REC_2026": 4
 }
