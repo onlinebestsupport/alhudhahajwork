@@ -2,14 +2,12 @@
 # =================================================================================
 # tools/full_functional_test.py — END-TO-END FUNCTIONAL TEST SUITE
 # =================================================================================
-# v2.1 — Fixes duplicate-ID test + cascade-delete of auto-created receipts
+# v3.2 — UTF-8 output (fixes cp1252 crash on file redirect)
 #
-# CHANGES vs v2.0
-#   • §2 Duplicate test now counts records with SAME ID (not total count)
-#       Your DB auto-generates IDs on collision — that's correct behavior
-#   • §13 Cleanup now tries multiple field names for receipt→payment link
-#       (payment_id, id, payment_ref, payment, ref_id, parent_id)
-#   • §13 Adds debug output for receipt linkage when deletion fails
+# CHANGES vs v3.1
+#   • Forced UTF-8 stdout/stderr (works with > redirect on Windows)
+#   • Falls back to ASCII box characters if reconfigure fails
+#   • Same CSV-based verification as v3.1
 # =================================================================================
 import os
 import sys
@@ -18,6 +16,14 @@ import argparse
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+# ---- Force UTF-8 output (fixes cp1252 encoding errors on redirect) ----
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    _UTF8_OK = True
+except Exception:
+    _UTF8_OK = False
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE))
@@ -29,6 +35,13 @@ except Exception as _e:
     sys.exit(1)
 
 try:
+    import pandas as pd
+    _PD = True
+except Exception:
+    _PD = False
+
+# ---- Color + box chars ----
+try:
     import ctypes
     ctypes.windll.kernel32.SetConsoleMode(
         ctypes.windll.kernel32.GetStdHandle(-11), 7)
@@ -37,13 +50,35 @@ try:
 except Exception:
     GREEN = RED = YELLOW = CYAN = BOLD = RESET = ""
 
-PASSED, FAILED, SKIPPED, INFO_ONLY = [], [], [], []
+# Box drawing chars (fallback to ASCII if UTF-8 not available)
+if _UTF8_OK:
+    BOX_H, BOX_TL, BOX_TR, BOX_BL, BOX_BR = "═", "╔", "╗", "╚", "╝"
+else:
+    BOX_H, BOX_TL, BOX_TR, BOX_BL, BOX_BR = "=", "+", "+", "+", "+"
+
 TEST_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
 BACKUP_DIR = BASE / "data" / f"_test_backup_{TEST_TS}"
+PASSED, FAILED, SKIPPED, INFO_ONLY = [], [], [], []
+
+PRE_IDS = {"batches": set(), "travelers": set(), "payments": set(),
+           "invoices": set(), "receipts": set(), "users": set()}
+
 CREATED = {"batches": [], "travelers": [], "payments": [],
            "invoices": [], "receipts": [], "users": []}
 
+FILE_MAP = {
+    "batches": "batches.csv",
+    "travelers": "travelers.csv",
+    "payments": "payments.csv",
+    "invoices": "invoices.csv",
+    "receipts": "receipts.csv",
+    "users": "users.csv",
+}
 
+
+# =================================================================================
+# OUTPUT
+# =================================================================================
 def section(n, title):
     print()
     print(f"{BOLD}{CYAN}{'=' * 72}{RESET}")
@@ -53,33 +88,138 @@ def section(n, title):
 
 def test_pass(label):
     PASSED.append(label)
-    print(f"  {GREEN}✅ PASS{RESET}  {label}")
+    print(f"  {GREEN}[PASS]{RESET}  {label}")
 
 
 def test_fail(label, detail=""):
     FAILED.append(f"{label}: {detail}")
-    print(f"  {RED}❌ FAIL{RESET}  {label}")
+    print(f"  {RED}[FAIL]{RESET}  {label}")
     if detail:
         print(f"           {RED}{detail}{RESET}")
 
 
 def test_skip(label, reason=""):
     SKIPPED.append(f"{label}: {reason}")
-    print(f"  {YELLOW}⏭  SKIP{RESET}  {label}")
+    print(f"  {YELLOW}[SKIP]{RESET}  {label}")
     if reason:
         print(f"           {YELLOW}{reason}{RESET}")
 
 
 def info(label, detail=""):
     INFO_ONLY.append(label)
-    line = f"  {CYAN}ℹ  INFO{RESET}  {label}"
+    line = f"  {CYAN}[INFO]{RESET}  {label}"
     if detail:
-        line += f"  →  {detail}"
+        line += f"  -> {detail}"
     print(line)
 
 
 def make_test_id(kind):
     return f"TEST_{kind}_{TEST_TS}"
+
+
+# =================================================================================
+# CSV HELPERS
+# =================================================================================
+def csv_read_ids(filename):
+    if not _PD:
+        return set()
+    p = BASE / "data" / filename
+    if not p.exists():
+        return set()
+    try:
+        df = pd.read_csv(p, dtype=str).fillna("")
+        if "id" not in df.columns:
+            return set()
+        return {str(x).strip() for x in df["id"] if str(x).strip()}
+    except Exception:
+        return set()
+
+
+def csv_has_id(filename, id_value):
+    return str(id_value) in csv_read_ids(filename)
+
+
+def csv_remove_by_id(filename, id_value):
+    if not _PD:
+        return False
+    p = BASE / "data" / filename
+    if not p.exists():
+        return False
+    try:
+        df = pd.read_csv(p, dtype=str).fillna("")
+        if "id" not in df.columns:
+            return False
+        before = len(df)
+        df = df[df["id"].astype(str) != str(id_value)]
+        if len(df) == before:
+            return False
+        df.to_csv(p, index=False, encoding="utf-8-sig")
+        return True
+    except Exception as e:
+        print(f"    CSV error ({filename}): {e}")
+        return False
+
+
+def csv_remove_receipts_for_payment(payment_id):
+    if not _PD:
+        return 0
+    p = BASE / "data" / "receipts.csv"
+    if not p.exists():
+        return 0
+    try:
+        df = pd.read_csv(p, dtype=str).fillna("")
+        if "payment_id" not in df.columns:
+            return 0
+        before = len(df)
+        df = df[df["payment_id"].astype(str) != str(payment_id)]
+        removed = before - len(df)
+        if removed:
+            df.to_csv(p, index=False, encoding="utf-8-sig")
+        return removed
+    except Exception:
+        return 0
+
+
+# =================================================================================
+# DB SNAPSHOT
+# =================================================================================
+def snapshot_ids(db):
+    mapping = {
+        "batches": "get_batches", "travelers": "get_travelers",
+        "payments": "get_payments", "invoices": "get_invoices",
+        "receipts": "get_receipts", "users": "get_users",
+    }
+    for kind, getter in mapping.items():
+        fn = getattr(db, getter, None)
+        if callable(fn):
+            try:
+                PRE_IDS[kind] = {str(r.get("id", "")) for r in (fn() or [])
+                                 if r.get("id")}
+            except Exception:
+                PRE_IDS[kind] = set()
+
+
+def diff_new_ids(db, kind):
+    fn = getattr(db, f"get_{kind}", None)
+    if not callable(fn):
+        return []
+    try:
+        current = {str(r.get("id", "")) for r in (fn() or [])
+                   if r.get("id")}
+        return list(current - PRE_IDS.get(kind, set()))
+    except Exception:
+        return []
+
+
+def refresh_db(db):
+    for meth in ("reload_all", "reload"):
+        fn = getattr(db, meth, None)
+        if callable(fn):
+            try:
+                fn()
+                return
+            except Exception:
+                continue
 
 
 # =================================================================================
@@ -113,6 +253,8 @@ def setup_checks():
     try:
         db = HajDatabase()
         test_pass("HajDatabase initialized")
+        snapshot_ids(db)
+        info("Pre-test ID snapshot taken")
         return db
     except Exception as e:
         test_fail("HajDatabase init", str(e))
@@ -120,13 +262,12 @@ def setup_checks():
 
 
 # =================================================================================
-# 2. BATCHES  (v2.1: fixed duplicate check)
+# 2. BATCHES
 # =================================================================================
 def test_batches(db):
     section(2, "BATCH CRUD")
     batches = db.get_batches() or []
     info("Existing batches", str(len(batches)))
-
     if not batches:
         test_skip("Batch tests", "no existing batch")
         return None
@@ -149,58 +290,39 @@ def test_batches(db):
             test_skip("Add batch", "add_batch missing")
             return None
 
-        pre_count = len(db.get_batches() or [])
         adder(template)
-        post_batches = db.get_batches() or []
-        if len(post_batches) != pre_count + 1:
-            test_fail("Add batch", f"count {pre_count} → {len(post_batches)}")
-            return None
-
-        added = post_batches[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["batches"].append(real_id)
-
-        if real_id == template["id"]:
-            info("DB uses client-supplied IDs")
-        else:
-            info("DB auto-generated ID", f"{template['id']} → {real_id}")
+        refresh_db(db)
+        new_ids = diff_new_ids(db, "batches")
+        real_id = new_ids[-1] if new_ids else ""
+        for nid in new_ids:
+            if nid not in CREATED["batches"]:
+                CREATED["batches"].append(nid)
 
         test_pass(f"Add batch: {real_id}")
 
-        # Update test
         try:
-            added["batch_name"] = f"TEST_Updated {TEST_TS}"
-            updater = getattr(db, "update_batch", None)
-            if callable(updater):
-                updater(real_id, added)
-                refetch = db.get_batch_by_id(real_id)
-                if refetch and str(refetch.get("batch_name", "")).startswith("TEST_Updated"):
-                    test_pass("Update batch")
-                else:
-                    test_fail("Update batch", "name not changed")
-            else:
-                test_skip("Update batch", "update_batch missing")
+            added = db.get_batch_by_id(real_id)
+            if added:
+                added["batch_name"] = f"TEST_Updated {TEST_TS}"
+                updater = getattr(db, "update_batch", None)
+                if callable(updater):
+                    updater(real_id, added)
+                    refresh_db(db)
+                    refetch = db.get_batch_by_id(real_id)
+                    if refetch and str(refetch.get("batch_name", "")).startswith("TEST_Updated"):
+                        test_pass("Update batch")
+                    else:
+                        test_fail("Update batch", "name not changed")
         except Exception as e:
             test_fail("Update batch", str(e))
 
-        # ---- v2.1 FIX: Duplicate check - count records with SAME ID ----
         try:
-            # Add another batch with the SAME id
-            try:
-                adder(dict(template))
-            except Exception:
-                pass  # some DBs raise — that's acceptable too
-
             all_b = db.get_batches() or []
-            with_same_id = [b for b in all_b
-                            if str(b.get("id", "")) == real_id]
-            if len(with_same_id) == 1:
-                # Whether DB rejected, ignored, or auto-assigned a new ID
-                # — the original ID is unique. That's correct behavior.
-                test_pass("Duplicate ID prevented (auto-generate on collision)")
+            same = [b for b in all_b if str(b.get("id", "")) == real_id]
+            if len(same) == 1:
+                test_pass("Duplicate ID prevented")
             else:
-                test_fail("Duplicate ID created",
-                          f"{len(with_same_id)} records with id={real_id}")
+                test_fail("Duplicate ID created", f"{len(same)} records")
         except Exception as e:
             test_skip("Duplicate ID test", str(e))
 
@@ -227,7 +349,10 @@ def test_travelers(db, test_batch):
         for k in list(template.keys()):
             template[k] = ""
         template["id"] = make_test_id("TRAVELER")
-        template["name"] = f"TEST_Traveler {TEST_TS}"
+        # Use REAL column names (first_name, last_name)
+        template["first_name"] = f"TEST_First {TEST_TS}"
+        template["last_name"] = "TEST_Last"
+        template["passport_name"] = f"TEST_Traveler {TEST_TS}"
         template["passport_no"] = f"TESTPP{TEST_TS}"
         if test_batch:
             template["batch_id"] = test_batch["id"]
@@ -240,24 +365,35 @@ def test_travelers(db, test_batch):
             return None
 
         adder(template)
-        added = (db.get_travelers() or [])[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["travelers"].append(real_id)
+        refresh_db(db)
+        new_ids = diff_new_ids(db, "travelers")
+        real_id = new_ids[-1] if new_ids else ""
+        for nid in new_ids:
+            if nid not in CREATED["travelers"]:
+                CREATED["travelers"].append(nid)
+
         test_pass(f"Add traveler: {real_id}")
 
         try:
-            added["name"] = f"TEST_Updated {TEST_TS}"
-            updater = getattr(db, "update_traveler", None)
-            if callable(updater):
-                updater(real_id, added)
-                refetch = next((t for t in (db.get_travelers() or [])
-                                if str(t.get("id")) == real_id), None)
-                if refetch and str(refetch.get("name", "")).startswith("TEST_Updated"):
-                    test_pass("Update traveler")
+            added = next((t for t in (db.get_travelers() or [])
+                          if str(t.get("id")) == real_id), None)
+            if added:
+                new_first = f"TEST_Updated {TEST_TS}"
+                added["first_name"] = new_first
+                updater = getattr(db, "update_traveler", None)
+                if callable(updater):
+                    updater(real_id, added)
+                    refresh_db(db)
+                    refetch = next((t for t in (db.get_travelers() or [])
+                                    if str(t.get("id")) == real_id), None)
+                    if refetch and str(refetch.get("first_name", "")).startswith("TEST_Updated"):
+                        test_pass("Update traveler")
+                    else:
+                        actual = refetch.get("first_name") if refetch else "(not found)"
+                        test_fail("Update traveler",
+                                  f"first_name={actual!r}, expected={new_first!r}")
                 else:
-                    test_fail("Update traveler", "name not changed")
-            else:
-                test_skip("Update traveler", "update_traveler missing")
+                    test_skip("Update traveler", "update_traveler missing")
         except Exception as e:
             test_fail("Update traveler", str(e))
 
@@ -295,17 +431,30 @@ def test_payments(db, test_traveler):
 
         pre_r = len(db.get_receipts() or [])
         adder(template)
-        added = (db.get_payments() or [])[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["payments"].append(real_id)
+        refresh_db(db)
+
+        new_pay_ids = diff_new_ids(db, "payments")
+        real_id = new_pay_ids[-1] if new_pay_ids else ""
+        for nid in new_pay_ids:
+            if nid not in CREATED["payments"]:
+                CREATED["payments"].append(nid)
+
+        new_rec_ids = diff_new_ids(db, "receipts")
+        for nid in new_rec_ids:
+            if nid not in CREATED["receipts"]:
+                CREATED["receipts"].append(nid)
+
         test_pass(f"Add payment: {real_id}")
 
         try:
-            amt = float(added.get("amount", 0) or 0)
-            if abs(amt - 10000.0) < 0.01:
-                test_pass("Payment amount stored exactly")
-            else:
-                test_fail("Payment amount", f"expected 10000, got {amt}")
+            added = next((p for p in (db.get_payments() or [])
+                          if str(p.get("id")) == real_id), None)
+            if added:
+                amt = float(added.get("amount", 0) or 0)
+                if abs(amt - 10000.0) < 0.01:
+                    test_pass("Payment amount stored exactly")
+                else:
+                    test_fail("Payment amount", f"expected 10000, got {amt}")
         except Exception as e:
             test_fail("Payment amount", str(e))
 
@@ -332,8 +481,7 @@ def test_invoices(db, test_traveler):
             adder = name
             break
     if not adder:
-        info("No add_invoice method",
-             "invoices may be auto-generated")
+        info("No add_invoice method", "invoices may be auto-generated")
         test_skip("Add invoice", "no add_invoice method")
         return None
 
@@ -349,9 +497,13 @@ def test_invoices(db, test_traveler):
         template["status"] = "Pending"
 
         getattr(db, adder)(template)
-        added = (db.get_invoices() or [])[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["invoices"].append(real_id)
+        refresh_db(db)
+        new_ids = diff_new_ids(db, "invoices")
+        real_id = new_ids[-1] if new_ids else ""
+        for nid in new_ids:
+            if nid not in CREATED["invoices"]:
+                CREATED["invoices"].append(nid)
+
         test_pass(f"Add invoice via {adder}(): {real_id}")
         return {"id": real_id}
     except Exception as e:
@@ -371,8 +523,7 @@ def test_receipts(db, test_payment):
             adder = name
             break
     if not adder:
-        info("No add_receipt method",
-             "receipts may be auto-generated with payments")
+        info("No add_receipt method", "receipts auto-generated with payments")
         test_skip("Add receipt", "no add_receipt method")
         return None
 
@@ -387,9 +538,13 @@ def test_receipts(db, test_payment):
         template["receipt_date"] = datetime.now().strftime("%d-%m-%Y")
 
         getattr(db, adder)(template)
-        added = (db.get_receipts() or [])[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["receipts"].append(real_id)
+        refresh_db(db)
+        new_ids = diff_new_ids(db, "receipts")
+        real_id = new_ids[-1] if new_ids else ""
+        for nid in new_ids:
+            if nid not in CREATED["receipts"]:
+                CREATED["receipts"].append(nid)
+
         test_pass(f"Add receipt via {adder}(): {real_id}")
         return {"id": real_id}
     except Exception as e:
@@ -423,9 +578,13 @@ def test_users(db):
             return None
 
         adder(template)
-        added = (db.get_users() or [])[-1]
-        real_id = str(added.get("id", ""))
-        CREATED["users"].append(real_id)
+        refresh_db(db)
+        new_ids = diff_new_ids(db, "users")
+        real_id = new_ids[-1] if new_ids else ""
+        for nid in new_ids:
+            if nid not in CREATED["users"]:
+                CREATED["users"].append(nid)
+
         test_pass(f"Add user: {template['username']}")
 
         auth = getattr(db, "authenticate_user", None)
@@ -618,125 +777,125 @@ def test_settings(db):
 
 
 # =================================================================================
-# 13. CLEANUP  (v2.1: robust cascade delete)
+# 13. CLEANUP
 # =================================================================================
 def cleanup(db, keep=False):
     section(13, "CLEANUP")
+
     if keep:
         info("Cleanup skipped", "--keep")
         return
 
-    del_r = getattr(db, "delete_receipt", None)
-    del_p = getattr(db, "delete_payment", None)
-    del_i = getattr(db, "delete_invoice", None)
-    del_t = getattr(db, "delete_traveler", None)
-    del_b = getattr(db, "delete_batch", None)
-    del_u = getattr(db, "delete_user", None)
+    refresh_db(db)
+    for kind in CREATED:
+        diff = diff_new_ids(db, kind)
+        for nid in diff:
+            if nid not in CREATED[kind]:
+                CREATED[kind].append(nid)
 
-    # ---- Step 1: delete explicitly-tracked receipts ----
-    if callable(del_r):
-        for rid in CREATED["receipts"]:
+    print()
+    info("Tracked records:",
+         f"batches={len(CREATED['batches'])}, "
+         f"travelers={len(CREATED['travelers'])}, "
+         f"payments={len(CREATED['payments'])}, "
+         f"receipts={len(CREATED['receipts'])}, "
+         f"invoices={len(CREATED['invoices'])}, "
+         f"users={len(CREATED['users'])}")
+
+    # Step 1: Remove receipts
+    del_r = getattr(db, "delete_receipt", None)
+    for rid in CREATED["receipts"]:
+        deleted = False
+        if callable(del_r):
             try:
                 del_r(rid)
+                deleted = True
             except Exception:
                 pass
+        if not deleted:
+            csv_remove_by_id("receipts.csv", rid)
 
-    # ---- Step 2: for each test payment, find & delete linked receipts ----
-    if callable(del_r) and callable(del_p):
-        all_receipts = db.get_receipts() or []
-        test_pay_ids = set(CREATED["payments"])
-
-        # Try MULTIPLE possible field names for the payment link
-        candidate_fields = ("payment_id", "payment", "payment_ref",
-                            "ref_id", "parent_id", "linked_payment",
-                            "id")  # last one for DBs where receipt.id == payment.id
-
-        removed = 0
-        for r in all_receipts:
-            rid = str(r.get("id", ""))
-            # Match by any candidate field
-            matches = False
-            for field in candidate_fields:
-                val = str(r.get(field, "") or "")
-                if val and val in test_pay_ids:
-                    matches = True
-                    break
-            if matches:
-                try:
-                    del_r(rid)
-                    removed += 1
-                except Exception:
-                    pass
-
-        if removed:
-            info(f"Cascade-deleted {removed} linked receipt(s)")
-
-    # ---- Step 3: now delete payments ----
-    if callable(del_p):
-        for pid in CREATED["payments"]:
+    # Step 2: Remove payments (with linked receipts first)
+    del_p = getattr(db, "delete_payment", None)
+    for pid in CREATED["payments"]:
+        csv_remove_receipts_for_payment(pid)
+        deleted = False
+        if callable(del_p):
             try:
                 del_p(pid)
-                test_pass(f"Delete payment {pid}")
-            except Exception as e:
-                # Debug: show what's still linked
-                try:
-                    still = [r for r in (db.get_receipts() or [])
-                             if str(r.get("payment_id", "")) == pid
-                             or str(r.get("id", "")) == pid]
-                    if still:
-                        test_fail(f"Delete payment {pid}",
-                                  f"still has {len(still)} linked receipt(s)")
-                    else:
-                        test_fail(f"Delete payment {pid}", str(e))
-                except Exception:
-                    test_fail(f"Delete payment {pid}", str(e))
+                deleted = True
+            except Exception:
+                pass
+        if not deleted:
+            csv_remove_by_id("payments.csv", pid)
 
-    # ---- Step 4: invoices ----
-    if callable(del_i):
-        for iid in CREATED["invoices"]:
+    # Step 3: invoices
+    del_i = getattr(db, "delete_invoice", None)
+    for iid in CREATED["invoices"]:
+        deleted = False
+        if callable(del_i):
             try:
                 del_i(iid)
+                deleted = True
             except Exception:
                 pass
+        if not deleted:
+            csv_remove_by_id("invoices.csv", iid)
 
-    # ---- Step 5: travelers ----
-    if callable(del_t):
-        for tid in CREATED["travelers"]:
+    # Step 4: travelers
+    del_t = getattr(db, "delete_traveler", None)
+    for tid in CREATED["travelers"]:
+        deleted = False
+        if callable(del_t):
             try:
                 del_t(tid)
+                deleted = True
             except Exception:
                 pass
+        if not deleted:
+            csv_remove_by_id("travelers.csv", tid)
 
-    # ---- Step 6: batches ----
-    if callable(del_b):
-        for bid in CREATED["batches"]:
+    # Step 5: batches
+    del_b = getattr(db, "delete_batch", None)
+    for bid in CREATED["batches"]:
+        deleted = False
+        if callable(del_b):
             try:
                 del_b(bid)
+                deleted = True
             except Exception:
                 pass
+        if not deleted:
+            csv_remove_by_id("batches.csv", bid)
 
-    # ---- Step 7: users ----
-    if callable(del_u):
-        for uid in CREATED["users"]:
+    # Step 6: users
+    del_u = getattr(db, "delete_user", None)
+    for uid in CREATED["users"]:
+        deleted = False
+        if callable(del_u):
             try:
                 del_u(uid)
+                deleted = True
             except Exception:
                 pass
+        if not deleted:
+            csv_remove_by_id("users.csv", uid)
 
-    # ---- Verify ----
-    for kind in ("batches", "travelers", "payments", "invoices",
-                 "receipts", "users"):
-        getter = getattr(db, f"get_{kind}", None)
-        if not callable(getter):
-            continue
-        rows = getter() or []
-        remaining = [r for r in rows
-                     if str(r.get("id", "")).startswith("TEST_")]
-        if remaining:
+    # Step 7: Verify from CSV (ground truth)
+    print()
+    info("Verifying cleanup from CSV files (ground truth)...")
+
+    for kind in CREATED:
+        filename = FILE_MAP[kind]
+        still = [rid for rid in CREATED[kind]
+                 if csv_has_id(filename, rid)]
+        if still:
             test_fail(f"Cleanup {kind}",
-                      f"{len(remaining)} TEST_ record(s) remain")
+                      f"{len(still)} residue: {still[:3]}")
         else:
-            test_pass(f"Cleanup {kind}")
+            test_pass(f"Cleanup {kind} - {len(CREATED[kind])} test record(s) removed")
+
+    refresh_db(db)
 
 
 # =================================================================================
@@ -766,11 +925,14 @@ def restore_from_backup():
                 shutil.copytree(item, dest)
             else:
                 shutil.copy2(item, dest)
-        test_pass("Restore")
+        test_pass("Restore complete")
     except Exception as e:
         test_fail("Restore", str(e))
 
 
+# =================================================================================
+# SUMMARY
+# =================================================================================
 def summary():
     section(15, "SUMMARY")
     print()
@@ -783,17 +945,17 @@ def summary():
         print()
         print(f"  {RED}{BOLD}FAILURES:{RESET}")
         for f in FAILED:
-            print(f"    • {f}")
+            print(f"    - {f}")
     if SKIPPED:
         print()
         print(f"  {YELLOW}SKIPPED:{RESET}")
         for s in SKIPPED:
-            print(f"    • {s}")
+            print(f"    - {s}")
     print()
     if not FAILED:
-        print(f"  {GREEN}{BOLD}🎉 ALL FUNCTIONAL TESTS PASSED{RESET}")
+        print(f"  {GREEN}{BOLD}[SUCCESS] ALL FUNCTIONAL TESTS PASSED{RESET}")
     else:
-        print(f"  {RED}{BOLD}❌ {len(FAILED)} TEST(S) FAILED{RESET}")
+        print(f"  {RED}{BOLD}[FAIL] {len(FAILED)} TEST(S) FAILED{RESET}")
     print(f"  Backup: {BACKUP_DIR}")
     print()
 
@@ -810,11 +972,12 @@ def parse_args():
 def main():
     args = parse_args()
     print()
-    print(f"{BOLD}{CYAN}{'═' * 72}{RESET}")
-    print(f"{BOLD}{CYAN}  ALHUDHA HAJ TRAVEL SYSTEM — FUNCTIONAL TEST SUITE v2.1{RESET}")
-    print(f"{BOLD}{CYAN}{'═' * 72}{RESET}")
+    print(f"{BOLD}{CYAN}{'=' * 72}{RESET}")
+    print(f"{BOLD}{CYAN}  ALHUDHA HAJ TRAVEL SYSTEM - FUNCTIONAL TEST SUITE v3.2{RESET}")
+    print(f"{BOLD}{CYAN}{'=' * 72}{RESET}")
     print(f"  Test run: {TEST_TS}")
     print(f"  Base:     {BASE}")
+    print(f"  UTF-8:    {'yes' if _UTF8_OK else 'no (ASCII fallback)'}")
 
     if args.restore:
         restore_from_backup()

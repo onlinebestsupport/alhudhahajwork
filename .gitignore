@@ -123,3 +123,23 @@ data/backups/backup_*_test_*.zip
 /p
 /print*
 /df.to_csv*
+
+# Test output captures
+*.txt
+!requirements.txt
+!static/robots.txt
+!LAYOUT_PLAN.txt
+
+# Test diagnostic scripts (one-off)
+cleanup_*.py
+diagnose_*.py
+find_orphan.py
+fix_orphan.py
+
+# Test backup zips
+data/backups/backup_*.zip
+
+# Stray files from typos
+tools/type
+tools/cd
+tools/curl
