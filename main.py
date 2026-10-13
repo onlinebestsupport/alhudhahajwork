@@ -1,20 +1,17 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.26 — Full security hardening
-#   • §21.1     NEW imports: core.security (require_admin, rate limiters, etc.)
-#   • §21.5.2   SecurityHeadersMiddleware registered (HSTS, CSP, XFO, etc.)
-#   • §21.5.3   Global error handler now returns generic message (no stack leaks)
-#   • §21.5.6b  /api/admin/frontpage/diagnose → requires ADMIN_API_KEY
-#   • §21.5.6c  /api/admin/frontpage/why-empty → requires ADMIN_API_KEY
-#   • §21.5.8   Traveler login — rate limited (5/5min), validated, secure cookie
-#   • §21.5.8b  Gallery upload/delete — requires ADMIN_API_KEY + content sniffing
-#   • §21.5.8c  Traveler doc upload — requires ADMIN_API_KEY + content sniffing
-#   • All upload endpoints now use secrets.token_hex (256-bit) instead of uuid4
+# v2.27 — Scanner blocker middleware
+#   • §21.5.2b  NEW: ScannerBlockerMiddleware
+#               Returns 410 Gone for ~60 common scanner paths
+#               (wp-login.php, .env, .git, xmlrpc.php, phpmyadmin, etc.)
+#               Skips app logic entirely → faster, quieter logs
 #
-# v2.25 preserved:
-#   • §21.5.6   /api/batches — logs saved vs DB IDs side-by-side
-#   • §21.5.6c  /api/admin/frontpage/why-empty — diagnostic
+# v2.26 preserved:
+#   • Security headers middleware
+#   • Auth on all admin endpoints (ADMIN_API_KEY)
+#   • Rate-limited travelar login
+#   • Content validation on uploads
 #
 # SECTION INDEX
 #   21.1      Imports & configuration
@@ -23,31 +20,14 @@
 #   21.1.4    JSON sanitizer
 #   21.1.5    Page.update() monkey patch
 #   21.2      Application state & boot helpers
-#   21.2.1    AppState class
-#   21.2.2    Volume seeder
-#   21.2.3    DB initializer with retries
-#   21.2.4    Signal handlers
-#   21.2.5    Admin session helpers (page.session.store)
-#   21.2.6    /app/documents symlink guard
 #   21.3      Flet admin app entry point
 #   21.4      Favicon middleware
 #   21.5      FastAPI app assembly
 #   21.5.1    Directory setup + asset seeding
-#   21.5.2    FastAPI creation + middleware (SECURITY HEADERS ADDED)
-#   21.5.3    Global error handler (GENERIC MESSAGE)
-#   21.5.4    /download/{filename}
-#   21.5.5    /api/frontpage           ← no-cache
-#   21.5.6    /api/batches             ← no-cache + ID logs
-#   21.5.6b   /api/admin/frontpage/diagnose    ← AUTH REQUIRED
-#   21.5.6c   /api/admin/frontpage/why-empty   ← AUTH REQUIRED
-#   21.5.7    /api/captcha/*
-#   21.5.8    /traveler + /api/traveler/*  ← RATE LIMITED + SECURE COOKIE
-#   21.5.8b   /gallery-upload + /api/admin/gallery/*  ← AUTH + VALIDATION
-#   21.5.8c   /traveler-doc-upload + /api/admin/traveler/upload-doc  ← AUTH
-#   21.5.9    Mount Flet admin at /admin
-#   21.5.10   Mount /static
-#   21.5.11   Root route "/"          ← no-cache
-#   21.6      Entry point (uvicorn.run)
+#   21.5.2    FastAPI creation + middleware
+#   21.5.2b   Scanner blocker middleware  ← NEW
+#   21.5.3    Global error handler
+#   ... (rest preserved)
 # =================================================================================
 
 
@@ -81,7 +61,7 @@ from core.database import HajDatabase
 from core.login_view import LoginView
 from core.main_window import MainWindowView
 
-# ---- Security module (create core/security.py before running) ----
+# ---- Security module ----
 try:
     from core.security import (
         generate_token,
@@ -100,7 +80,6 @@ except Exception as _sec_err:
           "SECURITY IS NOT ENFORCED", flush=True)
     _SECURITY_AVAILABLE = False
 
-    # Minimal stubs so main.py still boots
     async def require_admin(request: Request):
         return None
 
@@ -115,8 +94,7 @@ except Exception as _sec_err:
         return str(v or "").strip()[:max_len]
 
     def safe_filename(name, max_len=200):
-        import os as _os
-        return _os.path.basename(str(name or "upload.bin"))[:max_len]
+        return os.path.basename(str(name or "upload.bin"))[:max_len]
 
     def validate_upload_content(data, allowed):
         return True
@@ -168,7 +146,6 @@ PLATFORM = _detect_platform()
 
 
 def _is_https_request(request: Request) -> bool:
-    """True if the request came in over HTTPS (checks proxy headers)."""
     try:
         if request.url.scheme == "https":
             return True
@@ -766,17 +743,15 @@ def _build_app() -> FastAPI:
     _boot_log(f"Flet assets dir : {flet_assets_dir}")
     _boot_log(f"Gallery root    : {gallery_root}")
 
-    # Warn if ADMIN_API_KEY not set
     _admin_key = os.getenv("ADMIN_API_KEY", "")
     if not _admin_key or len(_admin_key) < 16:
-        _boot_log("⚠️  ADMIN_API_KEY not set (or too short). "
+        _boot_log("WARNING: ADMIN_API_KEY not set (or too short). "
                   "Admin endpoints will return 503.")
-        _boot_log("   Set a 32+ char random string in Railway → Variables.")
     else:
         _boot_log(f"ADMIN_API_KEY configured ({len(_admin_key)} chars)")
 
     # -----------------------------------------------------------------------------
-    # 21.5.2 — FastAPI creation + middleware  [SECURITY HEADERS ADDED]
+    # 21.5.2 — FastAPI creation + middleware
     # -----------------------------------------------------------------------------
     app = FastAPI(title="Alhudha Haj Travel System")
     app.add_middleware(FaviconOverrideMiddleware, logo_path=logo_path)
@@ -784,7 +759,97 @@ def _build_app() -> FastAPI:
     _boot_log("Security headers middleware registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.3 — Global error handler  [GENERIC MESSAGE]
+    # 21.5.2b — SCANNER BLOCKER MIDDLEWARE  (NEW in v2.27)
+    # -----------------------------------------------------------------------------
+    # Returns 410 Gone instantly for common scanner/bot paths.
+    # No app logic runs, no DB access, no logs. Saves CPU + keeps logs clean.
+    # Does NOT prevent Railway wake-up — bots still hit the edge.
+    # -----------------------------------------------------------------------------
+
+    _SCANNER_EXACT_PATHS = {
+        # Environment / secrets
+        "/.env", "/.env.local", "/.env.production", "/.env.backup",
+        "/.env.dev", "/.env.staging", "/env", "/environment",
+        # Git / SVN / Mercurial
+        "/.git", "/.git/head", "/.git/config", "/.gitignore",
+        "/.svn", "/.hg", "/.bzr",
+        # WordPress
+        "/wp-login.php", "/wp-admin", "/wp-content", "/wp-includes",
+        "/xmlrpc.php", "/wp-config.php", "/wp-cron.php",
+        "/wp-json", "/wp-comments-post.php",
+        # PHP admin tools
+        "/phpmyadmin", "/pma", "/mysql", "/mysqladmin",
+        "/admin.php", "/admin.html", "/admin.login.html",
+        "/administrator", "/cpanel", "/webmail",
+        # Config files
+        "/config.php", "/config.json", "/config.xml", "/config.yml",
+        "/configuration.php", "/settings.php", "/setup.php",
+        # Backups / dumps
+        "/backup.zip", "/backup.tar.gz", "/backup.sql",
+        "/dump.sql", "/database.sql", "/db.sql", "/site.zip",
+        # SSH / AWS
+        "/.aws/credentials", "/.ssh/id_rsa", "/.ssh/authorized_keys",
+        # Mac / Windows junk
+        "/.DS_Store", "/thumbs.db", "/desktop.ini",
+        # Apache / nginx configs
+        "/.htaccess", "/.htpasswd", "/.htgroups",
+        # CGI scripts
+        "/cgi-bin", "/cgi-bin/", "/shell.php", "/webshell.php",
+        # PHPUnit vuln
+        "/vendor/phpunit", "/phpunit", "/eval-stdin.php",
+        "/vendor/phpunit/phpunit/src/util/php/eval-stdin.php",
+        # Common admin probes
+        "/manage", "/manager/html", "/server-status",
+        "/actuator", "/actuator/health", "/actuator/env",
+        # API probes
+        "/api/.env", "/api/config", "/api/v1/users",
+        "/api/v1/admin", "/api/v1/config",
+        # Generic exploit paths
+        "/shell", "/cmd", "/exec", "/system",
+    }
+
+    _SCANNER_PREFIXES = (
+        "/.git/", "/.svn/", "/.hg/", "/.bzr/",
+        "/.aws/", "/.ssh/", "/.gnupg/", "/.docker/",
+        "/wp-admin/", "/wp-content/", "/wp-includes/",
+        "/phpmyadmin/", "/pma/", "/mysql/",
+        "/cgi-bin/", "/vendor/", "/node_modules/",
+        "/actuator/", "/telescope/", "/_ignition/",
+        "/admin/phpmyadmin/", "/admin/console",
+    )
+
+    @app.middleware("http")
+    async def block_scanners(request: Request, call_next):
+        # Normalize path: lowercase + strip trailing slash (except root)
+        path = request.url.path.lower()
+        if len(path) > 1 and path.endswith("/"):
+            path = path.rstrip("/")
+
+        # Exact match
+        if path in _SCANNER_EXACT_PATHS:
+            return Response(
+                status_code=410,
+                content="Gone",
+                media_type="text/plain",
+                headers={"Cache-Control": "no-store"})
+
+        # Prefix match
+        for prefix in _SCANNER_PREFIXES:
+            if path.startswith(prefix):
+                return Response(
+                    status_code=410,
+                    content="Gone",
+                    media_type="text/plain",
+                    headers={"Cache-Control": "no-store"})
+
+        return await call_next(request)
+
+    _boot_log(f"Scanner blocker active "
+              f"({len(_SCANNER_EXACT_PATHS)} paths, "
+              f"{len(_SCANNER_PREFIXES)} prefixes)")
+
+    # -----------------------------------------------------------------------------
+    # 21.5.3 — Global error handler
     # -----------------------------------------------------------------------------
     @app.exception_handler(Exception)
     async def _global_error_handler(request: Request, exc: Exception):
@@ -811,7 +876,7 @@ def _build_app() -> FastAPI:
             })
 
     # -----------------------------------------------------------------------------
-    # 21.5.5 — /api/frontpage (no-cache)
+    # 21.5.5 — /api/frontpage
     # -----------------------------------------------------------------------------
     @app.get("/api/frontpage")
     async def api_frontpage():
@@ -832,7 +897,7 @@ def _build_app() -> FastAPI:
                                 detail="Failed to load config")
 
     # -----------------------------------------------------------------------------
-    # 21.5.6 — /api/batches  (no-cache + ID logs)
+    # 21.5.6 — /api/batches
     # -----------------------------------------------------------------------------
     @app.get("/api/batches")
     async def api_batches():
@@ -911,7 +976,7 @@ def _build_app() -> FastAPI:
                                 detail="Failed to load batches")
 
     # -----------------------------------------------------------------------------
-    # 21.5.6b — /api/admin/frontpage/diagnose  [AUTH REQUIRED]
+    # 21.5.6b — /api/admin/frontpage/diagnose  (AUTH REQUIRED)
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/diagnose")
     async def frontpage_diagnose(_: None = Depends(require_admin)):
@@ -1042,7 +1107,7 @@ def _build_app() -> FastAPI:
             return report
 
     # -----------------------------------------------------------------------------
-    # 21.5.6c — /api/admin/frontpage/why-empty  [AUTH REQUIRED]
+    # 21.5.6c — /api/admin/frontpage/why-empty  (AUTH REQUIRED)
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/why-empty")
     async def frontpage_why_empty(_: None = Depends(require_admin)):
@@ -1070,16 +1135,16 @@ def _build_app() -> FastAPI:
 
         verdict = []
         if not config_exists():
-            verdict.append("❌ config file does not exist")
+            verdict.append("config file does not exist")
         if not saved:
-            verdict.append("❌ no batch is checked in admin")
+            verdict.append("no batch is checked in admin")
         if missing:
-            verdict.append(f"⚠️ {len(missing)} saved ID(s) not in DB: "
+            verdict.append(f"{len(missing)} saved ID(s) not in DB: "
                            f"{missing}")
         if matched and not selected:
-            verdict.append("⚠️ matched IDs exist but filter returned 0")
+            verdict.append("matched IDs exist but filter returned 0")
         if selected:
-            verdict.append(f"✅ would show {len(selected)} package(s)")
+            verdict.append(f"would show {len(selected)} package(s)")
 
         return {
             "ok": bool(selected),
@@ -1141,7 +1206,6 @@ def _build_app() -> FastAPI:
 
     @app.post("/api/traveler/login")
     async def traveler_login(request: Request):
-        # ---- Rate limit by IP (5 attempts / 5 min) ----
         ip = client_ip(request)
         if not login_limiter.check(ip):
             _boot_log(f"[SECURITY] Login rate-limited: {ip}")
@@ -1149,14 +1213,12 @@ def _build_app() -> FastAPI:
                 status_code=429,
                 detail="Too many login attempts. Try again in 5 minutes.")
 
-        # ---- Parse body ----
         try:
             body = await request.json()
         except Exception:
             raise HTTPException(status_code=400,
                                 detail="Invalid request body")
 
-        # ---- Length validation ----
         try:
             passport_no = validate_length(
                 body.get("passport_no", ""), "Passport number",
@@ -1216,7 +1278,6 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500,
                                 detail="Session creation failed")
 
-        # Successful login — clear rate limit for this IP
         login_limiter.reset(ip)
         _boot_log(f"Traveler login OK: {traveler.get('id')}")
 
@@ -1333,7 +1394,7 @@ def _build_app() -> FastAPI:
     _boot_log("Traveler portal endpoints registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.8b — Gallery  [AUTH + CONTENT VALIDATION]
+    # 21.5.8b — Gallery
     # -----------------------------------------------------------------------------
     gallery_upload_html = os.path.join(static_dir, "gallery_upload.html")
 
@@ -1379,7 +1440,6 @@ def _build_app() -> FastAPI:
         caption: str = Form(""),
         _: None = Depends(require_admin),
     ):
-        # ---- Rate limit ----
         if not upload_limiter.check("gallery"):
             raise HTTPException(status_code=429,
                                 detail="Too many uploads. Slow down.")
@@ -1389,10 +1449,8 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail="media_type must be 'photos' or 'videos'")
 
-        # ---- Sanitize caption ----
         caption = validate_length(caption, "Caption", max_len=500)
 
-        # ---- Extension check ----
         ext = os.path.splitext(file.filename or "")[1].lower()
         allowed = (ALLOWED_PHOTO_EXT if media_type == "photos"
                    else ALLOWED_VIDEO_EXT)
@@ -1402,7 +1460,6 @@ def _build_app() -> FastAPI:
                 detail=(f"Unsupported {media_type[:-1]} format: {ext}. "
                         f"Allowed: {', '.join(sorted(allowed))}"))
 
-        # ---- Read with size guard ----
         try:
             data = await file.read()
         except Exception:
@@ -1416,7 +1473,6 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail=(f"File too large. Max {limit // 1024 // 1024} MB."))
 
-        # ---- Content-based validation (magic bytes) ----
         if media_type == "photos":
             allowed_mimes = {"image/jpeg", "image/png", "image/gif",
                              "image/webp", "image/bmp"}
@@ -1427,8 +1483,7 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail="File content does not match its extension")
 
-        # ---- Write with cryptographically random name ----
-        unique = generate_token(8)  # 64 bits of randomness
+        unique = generate_token(8)
         fname = f"{unique}{ext}"
         target_dir = GALLERY_ROOT / media_type
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1495,7 +1550,7 @@ def _build_app() -> FastAPI:
         return {"success": True}
 
     # -----------------------------------------------------------------------------
-    # 21.5.8c — Traveler document upload  [AUTH + CONTENT VALIDATION]
+    # 21.5.8c — Traveler document upload
     # -----------------------------------------------------------------------------
     traveler_doc_upload_html = os.path.join(static_dir,
                                             "traveler_doc_upload.html")
@@ -1521,7 +1576,6 @@ def _build_app() -> FastAPI:
         mode: str = Form("new"),
         _: None = Depends(require_admin),
     ):
-        # ---- Rate limit ----
         if not upload_limiter.check("docs"):
             raise HTTPException(status_code=429,
                                 detail="Too many uploads. Slow down.")
@@ -1535,7 +1589,6 @@ def _build_app() -> FastAPI:
         if mode not in ("new", "edit"):
             raise HTTPException(status_code=400, detail="Invalid mode")
 
-        # ---- Sanitize traveler_id ----
         traveler_id = validate_length(
             traveler_id, "Traveler ID", max_len=64)
 
@@ -1557,7 +1610,6 @@ def _build_app() -> FastAPI:
         else:
             folder = "new_traveler"
 
-        # ---- Read with size guard ----
         try:
             data = await file.read()
         except Exception:
@@ -1572,7 +1624,6 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail="File too large. Max 15 MB.")
 
-        # ---- Extension check ----
         ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".pdf",
                        ".webp", ".gif", ".bmp"}
         ext = os.path.splitext(file.filename or "")[1].lower()
@@ -1581,7 +1632,6 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail=f"Unsupported format: {ext}")
 
-        # ---- Content-based validation ----
         allowed_mimes = {"image/jpeg", "image/png", "image/gif",
                          "image/bmp", "image/webp", "application/pdf"}
         if not validate_upload_content(data, allowed_mimes):
@@ -1589,14 +1639,12 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail="File content does not match its extension")
 
-        # ---- Write ----
         fname = (f"{doc_key}_"
                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
         target_dir = Path("/app/data/documents") / folder / sub
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
 
-        # Final path traversal guard
         try:
             target.resolve().relative_to(
                 Path("/app/data/documents").resolve())
@@ -1613,7 +1661,6 @@ def _build_app() -> FastAPI:
         rel = f"documents/{folder}/{sub}/{fname}"
         print(f"[TRAVELER-DOC] Saved: {rel} ({len(data)} bytes)")
 
-        # ---- CSV update on edit ----
         if is_edit:
             try:
                 csv_path = Path("/app/data/travelers.csv")
@@ -1706,6 +1753,7 @@ print(f"  Patch          : "
 print(f"  Security       : "
       f"{'ENABLED' if _SECURITY_AVAILABLE else 'DISABLED (fallback)'}",
       flush=True)
+print(f"  Scanner block  : ACTIVE", flush=True)
 print(f"  Front page     : http://{APP_HOST}:{APP_PORT}/", flush=True)
 print(f"  Admin app      : http://{APP_HOST}:{APP_PORT}/admin", flush=True)
 print(f"  Traveler app   : http://{APP_HOST}:{APP_PORT}/traveler", flush=True)
