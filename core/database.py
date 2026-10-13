@@ -1,21 +1,14 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# UPDATED — 2026-09-30 (Cloud-ready)
-#   • Added permissions column to users.csv schema
-#   • Role-based default permission sets
-#   • add_user / update_user accept password OR password_hash
-#   • Default admin gets all permissions
-#   • Auto-migration for old users.csv (adds permissions column)
-#   • New helper: get_user_permissions()
-#   • 2.2.1 (UPDATED): __init__ now logs data folder + writable check
-#   • 2.4.3 (UPDATED): _save_df has error handling
-#   • 2.12.3 (UPDATED): create_backup notes cloud ephemeral storage
-#   • 2.15 (NEW):      reload_* methods (fixes stale-cache bug)
-#   • 2.16 (NEW):      file-change detection
+# UPDATED — 2026-10-13 (v3) — UTF-8 safe + ASCII-only output
+#   • Added sys.stdout.reconfigure for file redirection safety
+#   • Replaced all Unicode symbols with ASCII tags
+#   • Preserved ghost-column fix + NaN-safe update_traveler
 # =================================================================================
 
 import os
+import sys
 import json
 import hashlib
 import zipfile
@@ -25,11 +18,36 @@ from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
 
+# ---- Force UTF-8 output (fixes cp1252 crash on file redirect) ----
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 try:
     from core.helpers import get_app_base_path
 except ImportError:
     def get_app_base_path():
         return os.path.dirname(os.path.abspath(__file__))
+
+
+# =================================================================================
+# CANONICAL TRAVELER COLUMNS (rejects ghost columns everywhere)
+# =================================================================================
+TRAVELER_COLUMNS = [
+    'id', 'first_name', 'last_name', 'passport_name', 'batch_id',
+    'passport_no', 'passport_issue_date', 'passport_expiry_date',
+    'passport_status', 'gender', 'dob', 'mobile', 'email',
+    'aadhaar', 'pan', 'aadhaar_pan_linked', 'vaccine_status',
+    'wheelchair', 'place_of_birth', 'place_of_issue',
+    'passport_address', 'mailing_address', 'father_name',
+    'mother_name', 'spouse_name', 'passport_scan', 'aadhaar_scan',
+    'pan_scan', 'vaccine_scan', 'photo', 'pin',
+    'emergency_contact', 'emergency_phone', 'medical_notes',
+    'expected_return_date', 'file_reference', 'registration_date',
+    'status',
+]
 
 
 # =================================================================================
@@ -65,21 +83,19 @@ ROLE_DEFAULT_PERMISSIONS = {
 class HajDatabase:
 
     # =============================================================================
-    # 2.2.1 — METHOD: __init__   (UPDATED for web + logging + writable check)
+    # 2.2.1 — METHOD: __init__
     # =============================================================================
     def __init__(self, data_dir="data", current_user_id="system"):
         base_path = get_app_base_path()
         self.data_dir = Path(base_path) / data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # ---- Cloud-friendly diagnostic logs ----
         print(f"[DB] Base path      : {base_path}")
         print(f"[DB] Data directory : {self.data_dir}")
         print(f"[DB] Data exists    : {self.data_dir.exists()}")
         print(f"[DB] Data writable  : "
               f"{os.access(str(self.data_dir), os.W_OK)}")
 
-        # ---- Fail fast if the folder is not writable ----
         self._verify_writable()
 
         self._current_user_id = current_user_id
@@ -99,11 +115,8 @@ class HajDatabase:
         self.company_settings = self._load_df("company_settings.csv")
 
         self._initialize_defaults()
-
-        # Auto-migrate any user missing a permissions value
         self._ensure_permissions_column()
 
-        # ---- Log row counts so you can verify in Railway logs ----
         print(f"[DB] Loaded: "
               f"{len(self.users)} users, "
               f"{len(self.travelers)} travelers, "
@@ -113,18 +126,17 @@ class HajDatabase:
               f"{len(self.receipts)} receipts")
 
     # =============================================================================
-    # 2.2.2 — METHOD: _verify_writable  (NEW)
+    # 2.2.2 — METHOD: _verify_writable
     # =============================================================================
     def _verify_writable(self):
-        """Ensure the data folder is writable. Fails fast with clear error."""
         test_file = self.data_dir / ".write_test"
         try:
             with open(test_file, "w") as f:
                 f.write("ok")
             test_file.unlink()
-            print("[DB] ✓ Write test passed")
+            print("[DB] [OK] Write test passed")
         except Exception as e:
-            print(f"[DB] ✗ Write test FAILED: {e}")
+            print(f"[DB] [FAIL] Write test FAILED: {e}")
             raise RuntimeError(
                 f"Data folder is not writable: {self.data_dir}\n"
                 f"Error: {e}\n"
@@ -133,7 +145,7 @@ class HajDatabase:
             )
 
     # =============================================================================
-    # 2.2.3 — METHOD: _ensure_dirs   (UNCHANGED)
+    # 2.2.3 — METHOD: _ensure_dirs
     # =============================================================================
     def _ensure_dirs(self):
         base = (self.data_dir.parent
@@ -145,7 +157,7 @@ class HajDatabase:
 
 
     # =================================================================================
-    # 2.3 — ID COUNTERS   (UNCHANGED)
+    # 2.3 — ID COUNTERS
     # =================================================================================
     def _load_id_counters(self):
         if self.id_counter_file.exists():
@@ -257,25 +269,16 @@ class HajDatabase:
                         df['permissions'] = ''
 
                 elif filename == "travelers.csv":
-                    string_cols = [
-                        'id', 'first_name', 'last_name', 'passport_name',
-                        'batch_id', 'passport_no', 'passport_issue_date',
-                        'passport_expiry_date', 'passport_status', 'gender',
-                        'dob', 'mobile', 'email', 'aadhaar', 'pan',
-                        'aadhaar_pan_linked', 'vaccine_status', 'wheelchair',
-                        'place_of_birth', 'place_of_issue',
-                        'passport_address', 'mailing_address',
-                        'father_name', 'mother_name', 'spouse_name',
-                        'passport_scan', 'aadhaar_scan', 'pan_scan',
-                        'vaccine_scan', 'photo', 'pin',
-                        'emergency_contact', 'emergency_phone',
-                        'medical_notes', 'expected_return_date',
-                        'file_reference', 'registration_date', 'status']
-                    for col in string_cols:
-                        if col in df.columns:
-                            df[col] = (df[col].astype(str)
-                                       .fillna('')
-                                       .replace('nan', ''))
+                    # Drop ghost columns; keep only canonical
+                    keep = [c for c in TRAVELER_COLUMNS if c in df.columns]
+                    df = df[keep]
+                    for col in TRAVELER_COLUMNS:
+                        if col not in df.columns:
+                            df[col] = ''
+                    for col in TRAVELER_COLUMNS:
+                        df[col] = (df[col].astype(str)
+                                   .fillna('')
+                                   .replace('nan', ''))
 
                 elif filename == "batches.csv":
                     numeric_cols = ['total_seats', 'available_seats', 'price']
@@ -384,7 +387,7 @@ class HajDatabase:
                 print(f"Error loading {filename}: {e}")
                 return self._create_empty_df(filename)
         else:
-            print(f"[DB] {filename} not found — creating empty")
+            print(f"[DB] {filename} not found - creating empty")
             return self._create_empty_df(filename)
 
     def _create_empty_df(self, filename):
@@ -392,19 +395,7 @@ class HajDatabase:
             "users.csv": [
                 'id', 'username', 'password_hash', 'full_name', 'email',
                 'role', 'permissions', 'created_at', 'last_login'],
-            "travelers.csv": [
-                'id', 'first_name', 'last_name', 'passport_name',
-                'batch_id', 'passport_no', 'passport_issue_date',
-                'passport_expiry_date', 'passport_status', 'gender',
-                'dob', 'mobile', 'email', 'aadhaar', 'pan',
-                'aadhaar_pan_linked', 'vaccine_status', 'wheelchair',
-                'place_of_birth', 'place_of_issue', 'passport_address',
-                'mailing_address', 'father_name', 'mother_name',
-                'spouse_name', 'passport_scan', 'aadhaar_scan',
-                'pan_scan', 'vaccine_scan', 'photo', 'pin',
-                'emergency_contact', 'emergency_phone', 'medical_notes',
-                'expected_return_date', 'file_reference',
-                'registration_date', 'status'],
+            "travelers.csv": list(TRAVELER_COLUMNS),
             "batches.csv": [
                 'id', 'batch_name', 'tour_type_id', 'tour_type_name',
                 'year', 'departure_date', 'return_date', 'total_seats',
@@ -434,24 +425,22 @@ class HajDatabase:
         return pd.DataFrame(columns=columns.get(filename, []))
 
     # -----------------------------------------------------------------------------
-    # 2.4.3 — METHOD: _save_df   (UPDATED — error handling)
+    # 2.4.3 — METHOD: _save_df
     # -----------------------------------------------------------------------------
     def _save_df(self, df, filename):
-        """Save DataFrame to CSV with clear error logging."""
         try:
             path = self.data_dir / filename
             df.to_csv(path, index=False)
             return True
         except Exception as e:
-            print(f"[DB] ❌ Failed to save {filename}: {e}")
+            print(f"[DB] [ERROR] Failed to save {filename}: {e}")
             print(f"[DB]     Path: {self.data_dir / filename}")
             raise
 
     # =============================================================================
-    # 2.4.4 — METHOD: _ensure_permissions_column  (UNCHANGED)
+    # 2.4.4 — METHOD: _ensure_permissions_column
     # =============================================================================
     def _ensure_permissions_column(self):
-        """Backfill any user missing permissions with role defaults."""
         try:
             if 'permissions' not in self.users.columns:
                 self.users['permissions'] = ''
@@ -473,7 +462,7 @@ class HajDatabase:
             print(f"[DB] _ensure_permissions_column failed: {e}")
 
     # =============================================================================
-    # 2.4.5 — METHOD: _initialize_defaults  (UNCHANGED)
+    # 2.4.5 — METHOD: _initialize_defaults
     # =============================================================================
     def _initialize_defaults(self):
         if self.users.empty:
@@ -495,10 +484,10 @@ class HajDatabase:
                 [self.users, admin_user], ignore_index=True)
             self._save_df(self.users, "users.csv")
             print("=" * 70)
-            print("⚠️  DEFAULT ADMIN USER CREATED")
+            print("[WARN]  DEFAULT ADMIN USER CREATED")
             print("    Username: admin")
             print("    Password: admin123")
-            print("    → CHANGE THIS PASSWORD IMMEDIATELY after first login!")
+            print("    -> CHANGE THIS PASSWORD IMMEDIATELY after first login!")
             print("=" * 70)
 
         if self.company_settings.empty:
@@ -527,7 +516,7 @@ class HajDatabase:
                 self.company_settings, "company_settings.csv")
 
     # =============================================================================
-    # 2.5 — AUTHENTICATION & USER MANAGEMENT   (UNCHANGED)
+    # 2.5 — AUTHENTICATION & USER MANAGEMENT
     # =============================================================================
     def authenticate_user(self, username, password):
         password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -639,7 +628,7 @@ class HajDatabase:
                 ROLE_DEFAULT_PERMISSIONS["viewer"]))
 
     # =================================================================================
-    # 2.6 — TRAVELERS   (UNCHANGED)
+    # 2.6 — TRAVELERS (ghost-column-safe)
     # =================================================================================
     def get_travelers(self, batch_id=None):
         if batch_id:
@@ -672,43 +661,96 @@ class HajDatabase:
                     year = batch_year
                 tour_type_name = batch.get('tour_type_name', 'HAJ')
                 prefix = self._get_prefix_from_name(tour_type_name)
+
         traveler_data['id'] = self._generate_id(
             prefix, 'TRV', str(year))
         traveler_data['registration_date'] = datetime.now().isoformat()
         if 'status' not in traveler_data:
             traveler_data['status'] = 'Active'
-        for key, value in traveler_data.items():
-            if value is not None:
-                traveler_data[key] = str(value)
+
+        # Keep only canonical columns, stringify everything
+        clean = {}
+        for key in TRAVELER_COLUMNS:
+            value = traveler_data.get(key, '')
+            if value is None:
+                clean[key] = ''
+            elif isinstance(value, float) and pd.isna(value):
+                clean[key] = ''
             else:
-                traveler_data[key] = ''
-        new_traveler = pd.DataFrame([traveler_data])
+                clean[key] = str(value)
+
+        new_traveler = pd.DataFrame([clean])
         self.travelers = pd.concat(
             [self.travelers, new_traveler], ignore_index=True)
         self._save_df(self.travelers, "travelers.csv")
-        if traveler_data.get('batch_id'):
-            self._update_batch_seats(traveler_data['batch_id'], -1)
-        return traveler_data['id']
+
+        if clean.get('batch_id'):
+            self._update_batch_seats(clean['batch_id'], -1)
+        return clean['id']
 
     def update_traveler(self, traveler_id, traveler_data):
-        old_batch = self.travelers[
-            self.travelers['id'] == traveler_id
-        ].iloc[0]['batch_id']
-        for key, value in traveler_data.items():
-            if value is not None:
-                traveler_data[key] = str(value)
-            else:
-                traveler_data[key] = ''
-        for key, value in traveler_data.items():
-            self.travelers.loc[
-                self.travelers['id'] == traveler_id, key] = value
-        self._save_df(self.travelers, "travelers.csv")
-        new_batch = traveler_data.get('batch_id')
-        if old_batch != new_batch:
-            if old_batch and pd.notna(old_batch):
-                self._update_batch_seats(old_batch, 1)
-            if new_batch and pd.notna(new_batch):
-                self._update_batch_seats(new_batch, -1)
+        """Update a traveler. Safe against ghost columns and NaN values."""
+        try:
+            mask = self.travelers['id'].astype(str) == str(traveler_id)
+            if not mask.any():
+                print(f"[DB] update_traveler: {traveler_id} not found")
+                return False
+
+            old_batch = str(
+                self.travelers.loc[mask, 'batch_id'].iloc[0] or "")
+
+            valid_cols = set(self.travelers.columns)
+            updated = 0
+
+            for key, value in traveler_data.items():
+                if key not in valid_cols:
+                    continue  # skip ghost columns entirely
+
+                try:
+                    col_dtype = self.travelers[key].dtype
+
+                    if pd.api.types.is_numeric_dtype(col_dtype):
+                        if (value is None
+                                or value == ""
+                                or (isinstance(value, float)
+                                    and pd.isna(value))
+                                or (isinstance(value, str)
+                                    and value.strip().lower()
+                                    in ("nan", "none", ""))):
+                            value = 0
+                        else:
+                            try:
+                                value = float(value)
+                            except (ValueError, TypeError):
+                                value = 0
+                    else:
+                        if value is None:
+                            value = ""
+                        elif isinstance(value, float) and pd.isna(value):
+                            value = ""
+                        else:
+                            value = str(value)
+
+                    self.travelers.loc[mask, key] = value
+                    updated += 1
+                except (ValueError, TypeError) as e:
+                    print(f"[DB] update_traveler: skip {key} -> {e}")
+                    continue
+
+            self._save_df(self.travelers, "travelers.csv")
+
+            new_batch = str(traveler_data.get('batch_id', old_batch) or "")
+            if old_batch != new_batch:
+                if old_batch:
+                    self._update_batch_seats(old_batch, 1)
+                if new_batch:
+                    self._update_batch_seats(new_batch, -1)
+
+            print(f"[DB] update_traveler: {traveler_id} ({updated} fields)")
+            return True
+        except Exception as e:
+            print(f"[DB] update_traveler failed: {e}")
+            return False
 
     def delete_traveler(self, traveler_id):
         traveler = self.travelers[
@@ -720,7 +762,7 @@ class HajDatabase:
         self._save_df(self.travelers, "travelers.csv")
 
     # =================================================================================
-    # 2.7 — BATCHES   (UNCHANGED)
+    # 2.7 — BATCHES
     # =================================================================================
     def get_batches(self, status=None):
         if status:
@@ -810,7 +852,7 @@ class HajDatabase:
             print(f"Error updating batch seats: {e}")
 
     # =================================================================================
-    # 2.8 — PAYMENTS   (UNCHANGED)
+    # 2.8 — PAYMENTS
     # =================================================================================
     def get_payments(self, traveler_id=None):
         if traveler_id:
@@ -859,7 +901,7 @@ class HajDatabase:
         try:
             mask = self.payments['id'] == payment_id
             if not mask.any():
-                print(f"⚠️ Payment {payment_id} not found")
+                print(f"[WARN] Payment {payment_id} not found")
                 return False
             current = self.payments.loc[mask].iloc[0].to_dict()
             updates = {}
@@ -894,25 +936,25 @@ class HajDatabase:
                         self._save_df(self.invoices, "invoices.csv")
                     except Exception as e:
                         print(
-                            f"⚠️ Could not update invoice {inv_id}: {e}")
+                            f"[WARN] Could not update invoice {inv_id}: {e}")
             try:
                 self.log_activity(
                     self._current_user_id,
                     "update_payment",
                     f"Updated payment {payment_id} - "
-                    f"Amount: ₹{updates.get('amount', 0):,.2f}"
+                    f"Amount: {updates.get('amount', 0):,.2f}"
                 )
             except Exception:
                 pass
             return True
         except Exception as e:
-            print(f"❌ Error updating payment {payment_id}: {e}")
+            print(f"[ERROR] Error updating payment {payment_id}: {e}")
             import traceback
             traceback.print_exc()
             return False
 
     # =================================================================================
-    # 2.9 — PAYMENT HELPERS   (UNCHANGED)
+    # 2.9 — PAYMENT HELPERS
     # =================================================================================
     def _convert_to_float(self, value):
         if value is None:
@@ -967,7 +1009,7 @@ class HajDatabase:
         self._save_df(self.payments, "payments.csv")
 
     # =================================================================================
-    # 2.10 — INVOICES   (UNCHANGED)
+    # 2.10 — INVOICES
     # =================================================================================
     def get_invoices(self, traveler_id=None):
         if traveler_id:
@@ -1056,7 +1098,7 @@ class HajDatabase:
         return amount
 
     # =================================================================================
-    # 2.11 — RECEIPTS   (UNCHANGED)
+    # 2.11 — RECEIPTS
     # =================================================================================
     def _generate_receipt(self, payment_data):
         batch_id = payment_data.get('batch_id')
@@ -1147,17 +1189,7 @@ class HajDatabase:
                                 if not payments.empty else 0)
         }
 
-    # -----------------------------------------------------------------------------
-    # 2.12.3 — METHOD: create_backup   (UPDATED — cloud note)
-    # -----------------------------------------------------------------------------
     def create_backup(self):
-        """
-        Creates a ZIP of all CSVs in data/backups/.
-
-        ⚠️ CLOUD NOTE: On Railway's free tier, files under data/ are
-        ephemeral — they reset when the container restarts. Attach a
-        Railway Volume to /app/data if you need backups to survive.
-        """
         backup_id = self._generate_id('BAK', 'BUP', None)
         backup_date = datetime.now()
         backup_filename = (f"backup_"
@@ -1209,7 +1241,7 @@ class HajDatabase:
                 .head(limit).to_dict('records'))
 
     # =================================================================================
-    # 2.13 — CURRENT USER MANAGEMENT   (UNCHANGED)
+    # 2.13 — CURRENT USER MANAGEMENT
     # =================================================================================
     def set_current_user(self, user_id):
         self._current_user_id = user_id
@@ -1218,29 +1250,16 @@ class HajDatabase:
         return self._current_user_id
 
     # =================================================================================
-    # 2.14 — DATA MIGRATION   (UNCHANGED)
+    # 2.14 — DATA MIGRATION
     # =================================================================================
     def migrate_batch_tour_types(self):
         pass
 
     # =================================================================================
-    # 2.15 — RELOAD METHODS  (NEW — fixes stale cache)
+    # 2.15 — RELOAD METHODS
     # =================================================================================
-    # Why this matters:
-    #   The DB caches all CSVs in memory at __init__. If a CSV is
-    #   modified externally (e.g. via the CSV editor, or a different
-    #   process), the cache goes stale and the app shows old data.
-    #
-    #   These methods force a fresh read of the CSVs.
-    #
-    # Recommended: call reload_payments() inside the Custom Report
-    # dialog before generating a report, and reload_travelers() inside
-    # the Travelers tab before rendering.
-    # =================================================================================
-
     def reload_all(self):
-        """Reload every CSV from disk (discards all caches)."""
-        print("[DB] 🔄 Reloading all data from disk...")
+        print("[DB] Reloading all data from disk...")
         self.users = self._load_df("users.csv")
         self.travelers = self._load_df("travelers.csv")
         self.batches = self._load_df("batches.csv")
@@ -1252,7 +1271,7 @@ class HajDatabase:
         self.company_settings = self._load_df("company_settings.csv")
         self.id_counters = self._load_id_counters()
         self._ensure_permissions_column()
-        print(f"[DB] ✓ Reloaded: "
+        print(f"[DB] [OK] Reloaded: "
               f"{len(self.users)} users, "
               f"{len(self.travelers)} travelers, "
               f"{len(self.batches)} batches, "
@@ -1261,67 +1280,52 @@ class HajDatabase:
               f"{len(self.receipts)} receipts")
 
     def reload_payments(self):
-        """Force reload of payments.csv only."""
         self.payments = self._load_df("payments.csv")
-        print(f"[DB] ✓ Reloaded {len(self.payments)} payments")
+        print(f"[DB] [OK] Reloaded {len(self.payments)} payments")
         return self.payments
 
     def reload_travelers(self):
-        """Force reload of travelers.csv only."""
         self.travelers = self._load_df("travelers.csv")
-        print(f"[DB] ✓ Reloaded {len(self.travelers)} travelers")
+        print(f"[DB] [OK] Reloaded {len(self.travelers)} travelers")
         return self.travelers
 
     def reload_batches(self):
-        """Force reload of batches.csv only."""
         self.batches = self._load_df("batches.csv")
-        print(f"[DB] ✓ Reloaded {len(self.batches)} batches")
+        print(f"[DB] [OK] Reloaded {len(self.batches)} batches")
         return self.batches
 
     def reload_invoices(self):
-        """Force reload of invoices.csv only."""
         self.invoices = self._load_df("invoices.csv")
-        print(f"[DB] ✓ Reloaded {len(self.invoices)} invoices")
+        print(f"[DB] [OK] Reloaded {len(self.invoices)} invoices")
         return self.invoices
 
     def reload_receipts(self):
-        """Force reload of receipts.csv only."""
         self.receipts = self._load_df("receipts.csv")
-        print(f"[DB] ✓ Reloaded {len(self.receipts)} receipts")
+        print(f"[DB] [OK] Reloaded {len(self.receipts)} receipts")
         return self.receipts
 
     def reload_users(self):
-        """Force reload of users.csv only."""
         self.users = self._load_df("users.csv")
         self._ensure_permissions_column()
-        print(f"[DB] ✓ Reloaded {len(self.users)} users")
+        print(f"[DB] [OK] Reloaded {len(self.users)} users")
         return self.users
 
     def reload_company_settings(self):
-        """Force reload of company_settings.csv only."""
         self.company_settings = self._load_df("company_settings.csv")
         return self.company_settings
 
     def reload_backup_history(self):
-        """Force reload of backup_history.csv only."""
         self.backup_history = self._load_df("backup_history.csv")
         return self.backup_history
 
     def reload_activity_log(self):
-        """Force reload of activity_log.csv only."""
         self.activity_log = self._load_df("activity_log.csv")
         return self.activity_log
 
     # =================================================================================
-    # 2.16 — FILE CHANGE DETECTION  (NEW)
+    # 2.16 — FILE CHANGE DETECTION
     # =================================================================================
-    # These helpers let you check whether a CSV has changed on disk
-    # since the DB was loaded. Useful for showing a "data changed —
-    # refresh?" banner in the UI.
-    # =================================================================================
-
     def _csv_mtime(self, filename):
-        """Return the modification time of a CSV, or 0 if missing."""
         path = self.data_dir / filename
         if not path.exists():
             return 0
@@ -1331,14 +1335,6 @@ class HajDatabase:
             return 0
 
     def has_csv_changed(self, filename):
-        """
-        Return True if the CSV on disk was modified AFTER the last
-        reload. Tracked by comparing file mtime to a snapshot taken
-        at load time.
-
-        Note: the first call will always return True because the
-        snapshot is empty. After reloading, the snapshot updates.
-        """
         if not hasattr(self, "_csv_snapshots"):
             self._csv_snapshots = {}
         current_mtime = self._csv_mtime(filename)
@@ -1348,13 +1344,11 @@ class HajDatabase:
         return False
 
     def mark_csv_as_read(self, filename):
-        """Update the snapshot for a CSV file."""
         if not hasattr(self, "_csv_snapshots"):
             self._csv_snapshots = {}
         self._csv_snapshots[filename] = self._csv_mtime(filename)
 
     def get_data_folder_info(self):
-        """Return diagnostic info about the data folder."""
         info = {
             "base_path": str(self.data_dir.parent),
             "data_path": str(self.data_dir),
