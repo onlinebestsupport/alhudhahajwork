@@ -1,37 +1,29 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.24 — BULLETPROOF: text stays while typing + gallery auto-refreshes
+# v3.25 — FIXED: text no longer disappears while typing
 #
-#   ROOT CAUSES FIXED (why v3.22/v3.23 still failed):
+#   WHY v3.24 STILL FAILED:
+#     • on_focus / on_blur are UNRELIABLE in Flet. When on_blur doesn't
+#       fire, self._focused_fields never empties, so _safe_update()
+#       either ALWAYS skipped (updates lost) or ALWAYS ran (typing
+#       wiped) — depending on which event was flaky.
+#     • The gallery auto-poll called container.update() every 5s. In
+#       deeply nested trees this cascades to the parent, re-sending
+#       the WHOLE settings page — including the field you're typing in
+#       with its last-synced server value.
 #
-#   1. TEXT DISAPPEARS WHILE TYPING
-#      • on_change=lambda e: None — Flet sometimes drops lambdas for
-#        value sync. Server never got the typed value → next update
-#        pushed the STALE server value back → text vanished.
-#      • FIX: real bound methods (self._on_field_change etc.)
-#
-#   2. SAVE STORED OLD VALUES
-#      • Same root cause — server-side .value stayed at construction
-#        value because on_change wasn't delivering events.
-#      • FIX: same — real on_change handlers.
-#
-#   3. UPDATES FIRING WHILE TYPING
-#      • Even with on_change, if a container/page update runs
-#        mid-keystroke, Flet can race and overwrite.
-#      • FIX: _safe_update() now SKIPS while any field has focus.
-#        Focus tracked via on_focus / on_blur.
-#
-#   4. GALLERY NOT SHOWING AFTER UPLOAD
-#      • Upload happens in a SEPARATE tab (/gallery-upload).
-#        When you return, self.photo_list is stale.
-#      • FIX: background poll (every 5s) reloads config, and a
-#        manual "Refresh Gallery" button is added.
-#
-#   PRESERVED:
-#     • Gallery upload passes ADMIN_API_KEY
-#     • Admin scroll preserved; toggles auto-save; max_shown=9
-#     • Root Container object NEVER recreated
+#   v3.25 FIXES:
+#     1. Removed on_focus / on_blur entirely.
+#     2. Added a TIME-BASED typing guard: any keystroke sets
+#        self._typing_until = now + 2.5s. All updates skip while
+#        the guard is active. No reliance on focus events.
+#     3. Gallery poll now ONLY updates containers when photo/video
+#        COUNT changes (i.e. after a real upload). No more no-op
+#        updates every 5 seconds.
+#     4. Explicit value sync in on_change as belt-and-braces.
+#     5. All other v3.24 fixes preserved (deduped snacks, scoped
+#        updates, save guard, manual refresh button, admin key, etc.)
 # =================================================================================
 
 import os
@@ -60,7 +52,8 @@ MUTED        = "#64748b"
 SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
-GALLERY_POLL_SECONDS = 5
+GALLERY_POLL_SECONDS = 6
+TYPING_GUARD_SECONDS = 2.5
 
 
 def _resolve_fit_cover():
@@ -161,15 +154,15 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # Focus tracking (v3.24)
-        self._focused_fields = set()
+        # Typing guard (v3.25)
+        self._typing_until = 0.0
 
-        # Save / snack state (v3.24)
+        # Save / snack state
         self._saving = False
         self._last_snack_msg = None
         self._last_snack_time = 0.0
 
-        # Gallery auto-poll (v3.24)
+        # Gallery auto-poll
         self._gallery_poll_started = False
 
         # Inner column + root container (created ONCE)
@@ -284,7 +277,7 @@ class FrontPageSettingsTab:
             self._inner_column.controls = sections
 
         self._register_pickers()
-        self._start_gallery_poll()  # v3.24
+        self._start_gallery_poll()
 
 
 # =================================================================================
@@ -327,19 +320,18 @@ class FrontPageSettingsTab:
                 offset=ft.Offset(0, 2)))
 
     # -----------------------------------------------------------------------------
-    # §H.2 — _field  (v3.24 — the critical fix)
+    # §H.2 — _field  (v3.25 — TIME-BASED typing guard)
     # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         """
-        Build a TextField with REAL handlers.
+        Build a TextField.
 
-        Why this matters:
-          • on_change must be a real bound method, not a lambda.
-            Flet sometimes drops lambda handlers, which means the
-            server-side .value never updates → any later refresh
-            pushes the STALE value back → user's typing vanishes.
-          • on_focus / on_blur let us SKIP updates while typing,
-            eliminating the last race condition.
+        v3.25 approach:
+          • on_change fires on EVERY keystroke → sets a 2.5-second
+            typing guard. All updates skip while it's active.
+          • Also explicitly syncs field.value from the event as
+            belt-and-braces.
+          • No on_focus / on_blur — those were the culprit.
         """
         defaults = dict(
             label=label,
@@ -354,28 +346,23 @@ class FrontPageSettingsTab:
         defaults.update(kwargs)
         field = ft.TextField(**defaults)
 
-        # Bind the field to a unique id for focus tracking
-        _fid = id(field)
-
-        def _on_focus(e, _id=_fid):
+        def _on_change(e, _f=field):
+            # 1. Set the typing guard
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            # 2. Belt-and-braces: pull the value out of the event
+            #    in case the framework's auto-sync misfires.
             try:
-                self._focused_fields.add(_id)
+                new_val = None
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None:
+                    new_val = getattr(ctrl, "value", None)
+                if new_val is None:
+                    new_val = getattr(e, "data", None)
+                if new_val is not None:
+                    _f.value = new_val
             except Exception:
                 pass
 
-        def _on_blur(e, _id=_fid):
-            try:
-                self._focused_fields.discard(_id)
-            except Exception:
-                pass
-
-        def _on_change(e):
-            # Flet auto-syncs .value when on_change exists.
-            # This handler's only job is to BE HERE.
-            pass
-
-        field.on_focus = _on_focus
-        field.on_blur = _on_blur
         field.on_change = _on_change
         return field
 
@@ -523,9 +510,6 @@ class FrontPageSettingsTab:
             [self.feature_rows_container, add_btn],
             accent=SUCCESS)
 
-    # -----------------------------------------------------------------------------
-    # §4.1 — _add_feature_row
-    # -----------------------------------------------------------------------------
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field("Icon", icon_val,
                                  hint_text="e.g. fa-mosque")
@@ -572,9 +556,6 @@ class FrontPageSettingsTab:
         self.feature_rows_container.controls.append(row)
         return entry
 
-    # -----------------------------------------------------------------------------
-    # §4.2 — _add_feature_empty  (v3.24)
-    # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
         print("[FRONTPAGE] _add_feature_empty called")
 
@@ -590,7 +571,6 @@ class FrontPageSettingsTab:
             self._add_feature_row("fa-check-circle", "", "")
             print(f"[FRONTPAGE] feature added. "
                   f"Total: {len(self.feature_entries)}")
-            # v3.24: only update the affected container, never the page.
             try:
                 self.feature_rows_container.update()
             except Exception as ue:
@@ -1033,7 +1013,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §11 — GALLERY  (v3.24 — added Refresh button)
+# §11 — GALLERY
 # =================================================================================
     def _section_11_gallery(self):
         g = self.cfg.get("gallery", {}) or {}
@@ -1244,11 +1224,11 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER), border_radius=10)
 
     # -----------------------------------------------------------------------------
-    # §11.5 — Gallery auto-refresh (v3.24)
+    # §11.5 — Gallery refresh (v3.25)
     # -----------------------------------------------------------------------------
     def _refresh_gallery_click(self, e=None):
         try:
-            self._reload_gallery_from_disk(show_toast=True)
+            self._reload_gallery_from_disk(show_toast=True, force=True)
         except Exception as ex:
             print(f"[FRONTPAGE] refresh gallery failed: {ex}")
             try:
@@ -1256,8 +1236,9 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
-    def _reload_gallery_from_disk(self, show_toast=False):
-        """Reload photos/videos from config and rebuild the lists."""
+    def _reload_gallery_from_disk(self, show_toast=False, force=False):
+        """Reload photos/videos from config and rebuild ONLY if changed
+        (unless force=True)."""
         try:
             cfg = load_config()
         except Exception:
@@ -1269,9 +1250,11 @@ class FrontPageSettingsTab:
         changed = (len(new_photos) != len(self.photo_list)
                    or len(new_videos) != len(self.video_list))
 
+        if not changed and not force:
+            return False
+
         self.photo_list = new_photos
         self.video_list = new_videos
-        # Keep self.cfg in sync too
         try:
             self.cfg.setdefault("gallery", {})
             self.cfg["gallery"]["photos"] = new_photos
@@ -1293,39 +1276,40 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-        if show_toast and changed:
-            self._snack(
-                f"🔄 Gallery refreshed — "
-                f"{len(new_photos)} photos, "
-                f"{len(new_videos)} videos", SUCCESS)
-        elif show_toast:
-            self._snack(
-                f"✓ Gallery up to date — "
-                f"{len(new_photos)} photos, "
-                f"{len(new_videos)} videos", PRIMARY_LT)
+        if show_toast:
+            if changed:
+                self._snack(
+                    f"🔄 Gallery refreshed — "
+                    f"{len(new_photos)} photos, "
+                    f"{len(new_videos)} videos", SUCCESS)
+            else:
+                self._snack(
+                    f"✓ Gallery up to date — "
+                    f"{len(new_photos)} photos, "
+                    f"{len(new_videos)} videos", PRIMARY_LT)
 
         return changed
 
     def _start_gallery_poll(self):
         """
-        Background loop — reloads the gallery list from disk every
-        GALLERY_POLL_SECONDS. This catches photos uploaded in the
-        separate /gallery-upload tab.
+        Background loop — reloads the gallery ONLY if counts changed.
+        Skips entirely while user is typing (typing guard).
         """
         if self._gallery_poll_started:
             return
         self._gallery_poll_started = True
 
         async def _loop():
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             while True:
                 try:
                     await asyncio.sleep(GALLERY_POLL_SECONDS)
                     if not self.photo_list_container:
                         continue
-                    if self._focused_fields:
-                        # Someone is typing — don't touch the UI
+                    # Skip while typing
+                    if time.time() < self._typing_until:
                         continue
+                    # Only reload if counts actually changed
                     self._reload_gallery_from_disk(show_toast=False)
                 except asyncio.CancelledError:
                     break
@@ -1831,7 +1815,7 @@ class FrontPageSettingsTab:
             self._snack(f"⚠️ {ex}")
 
     def _set_status(self, message, color=PRIMARY_LT):
-        """Update ONLY the status label — never the whole page."""
+        """Update ONLY the status label."""
         try:
             if self.status_label is not None:
                 self.status_label.value = message
@@ -1860,20 +1844,25 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] _snack failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # §A.7 — _safe_update  (v3.24 — skips while any field has focus)
+    # §A.7 — _safe_update  (v3.25 — TIME-BASED guard)
     # -----------------------------------------------------------------------------
     def _safe_update(self, force=False):
         """
         Update the inner column.
 
-        If `force=True`, ignore focus state.
-        Otherwise, skip if any TextField has focus — this is what
-        prevents typing from being wiped mid-keystroke.
+        v3.25: checks self._typing_until — a timestamp set on every
+        keystroke. If the user typed within the last 2.5 seconds,
+        skip the update entirely. No reliance on focus events.
         """
-        if not force and self._focused_fields:
-            print("[FRONTPAGE] _safe_update: skipping (field focused)")
-            return
+        if not force:
+            remaining = self._typing_until - time.time()
+            if remaining > 0:
+                print(f"[FRONTPAGE] _safe_update SKIPPED "
+                      f"(typing, {remaining:.1f}s left)")
+                return
 
+        print("[FRONTPAGE] _safe_update RUNNING "
+              f"(force={force})")
         try:
             if self._inner_column is not None:
                 self._inner_column.update()
@@ -1889,5 +1878,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.24
+# SECTION END — core/frontpage_settings_tab.py v3.25
 # =================================================================================
