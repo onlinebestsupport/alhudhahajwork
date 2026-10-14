@@ -1,11 +1,25 @@
 # =================================================================================
 # core/dashboard_tab.py — DashboardTab (Flet 1.0, mobile-responsive)
 # =================================================================================
-# v1.3 — Mobile-friendly layout:
-#   • Header stacks cleanly on narrow screens
-#   • Stat cards use ResponsiveRow (2 per row mobile, 4 per row desktop)
-#   • Quick action buttons stack full-width on mobile
-#   • Removed problematic gradients that broke on some mobile browsers
+# v1.4 — CRITICAL FIX: clock loop no longer calls page.update()
+#
+#   ROOT CAUSE:
+#     The clock loop ran `self.page.update()` every 1 second. Because
+#     the dashboard tab keeps running even when the user is on a
+#     different tab, this GLOBAL page update was firing while users
+#     typed in other tabs — wiping their input mid-keystroke. This is
+#     likely the underlying cause of the "text disappears while typing"
+#     bug that appeared across the entire admin panel.
+#
+#   FIX:
+#     • Clock loop updates ONLY time_label and date_label (leaf-only)
+#     • Threading fallback — same fix
+#     • refresh() uses self.root.update() instead of page.update()
+#
+#   Preserved from v1.3:
+#     • Mobile-friendly layout
+#     • ResponsiveRow stat cards
+#     • Stacking quick actions
 # =================================================================================
 
 import asyncio
@@ -74,6 +88,8 @@ class DashboardTab:
         self.root = None
         self._clock_task_running = False
         self._clock_thread = None
+        # v1.4 — flag to stop clock cleanly
+        self._clock_stop = False
 
         try:
             self.setup_ui()
@@ -222,7 +238,6 @@ class DashboardTab:
             card = self._create_card(icon, title, color, key)
             (cards_row1 if i < 4 else cards_row2).append(card)
 
-        # ---- Mobile-friendly: 2 per row on xs, 4 per row on md+ ----
         cards_section = ft.Column(
             controls=[
                 ft.ResponsiveRow(
@@ -406,12 +421,7 @@ class DashboardTab:
 
         self._start_clock()
 
-    # -----------------------------------------------------------------------------
-    # Helper — wrap a stat card for ResponsiveRow
-    # -----------------------------------------------------------------------------
     def _wrap_card(self, card):
-        """Wrap a stat card for ResponsiveRow — 2 per row mobile,
-        4 per row desktop."""
         try:
             card.expand = False
         except Exception:
@@ -422,7 +432,7 @@ class DashboardTab:
         )
 
     # -----------------------------------------------------------------------------
-    # Clock
+    # Clock  (v1.4 — LEAF-ONLY updates)
     # -----------------------------------------------------------------------------
     def _start_clock(self):
         try:
@@ -444,10 +454,14 @@ class DashboardTab:
             return
         self._clock_task_running = True
         try:
-            while True:
+            while not self._clock_stop:
                 self.update_time()
+                # v1.4 — leaf-only update (was: self.page.update())
                 try:
-                    self.page.update()
+                    if self.time_label is not None:
+                        self.time_label.update()
+                    if self.date_label is not None:
+                        self.date_label.update()
                 except Exception:
                     break
                 await asyncio.sleep(1)
@@ -458,10 +472,14 @@ class DashboardTab:
 
     def _clock_thread_loop(self):
         try:
-            while True:
+            while not self._clock_stop:
                 self.update_time()
+                # v1.4 — leaf-only update (was: self.page.update())
                 try:
-                    self.page.update()
+                    if self.time_label is not None:
+                        self.time_label.update()
+                    if self.date_label is not None:
+                        self.date_label.update()
                 except Exception:
                     break
                 time.sleep(1)
@@ -578,7 +596,7 @@ class DashboardTab:
         )
 
     # -----------------------------------------------------------------------------
-    # Refresh
+    # Refresh  (v1.4 — scoped to self.root, not page)
     # -----------------------------------------------------------------------------
     def refresh(self):
         try:
@@ -672,8 +690,10 @@ class DashboardTab:
             except Exception as e:
                 print(f"[DASHBOARD chart update] {e}")
 
+            # v1.4 — scoped update (was: self.page.update())
             try:
-                self.page.update()
+                if self.root is not None:
+                    self.root.update()
             except Exception:
                 pass
         except Exception as ex:
@@ -983,5 +1003,5 @@ class DashboardTab:
 
 
 # =================================================================================
-# END — core/dashboard_tab.py
+# END — core/dashboard_tab.py v1.4
 # =================================================================================
