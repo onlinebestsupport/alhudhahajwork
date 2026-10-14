@@ -1,17 +1,28 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.7 — Flet 1.0.0 compatible + Row Selection (not Edit-on-tap)
-#   • Row tap now SELECTS the row (highlights it)
-#   • Toolbar 📄 PDF / 🖨️ Print act on the selected row
-#   • Edit still available via ✏️ icon in Actions column (unchanged)
-#   • FIXED: refresh() no longer wipes payment cache
-#   • FIXED: DataRow uses on_select_change (correct for Flet 1.0.0)
-#   • Action icons 18px for easier tapping on mobile
+# v1.8 — Typing wipe fix + filter preservation
+#
+#   FIXES (matching users_tab v3.2 / batches_tab v1.5):
+#     • Added _typing_until guard to all 3 classes
+#     • Added _safe_update() helper
+#     • Every TextField has explicit on_change with value sync
+#     • on_amount_changed() → leaf-only update (remaining_label + save_btn)
+#     • update_traveler_info() → leaf-only update (info labels)
+#     • filter_payments() → leaf-only update (table only)
+#     • _snack() no longer calls page.update()
+#     • refresh() preserves filters + scroll
+#     • ft.dropdown.Option(key=..., text=...) form
+#
+#   Preserved from v1.7:
+#     • Row tap selects, doesn't edit
+#     • Toolbar PDF/Print act on selected row
+#     • Flet 1.0.0 compatible
 # =================================================================================
 
 import flet as ft
 import os
+import time
 import uuid
 from pathlib import Path
 from datetime import datetime
@@ -26,8 +37,11 @@ from core.helpers import (
 from core.settings_manager import SettingsManager
 
 
+TYPING_GUARD_SECONDS = 3.0
+
+
 # =================================================================================
-# 12.2 — CLASS: PaymentEditDialog
+# 12.2 — CLASS: PaymentEditDialog  (v1.8 — typing guard + on_change)
 # =================================================================================
 class PaymentEditDialog:
 
@@ -47,7 +61,30 @@ class PaymentEditDialog:
         self.notes_field = None
         self.dialog = None
 
+        # v1.8 — typing guard
+        self._typing_until = 0.0
+
         self.setup_ui()
+
+    # v1.8 — field helper with explicit sync
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
 
     def setup_ui(self):
         traveler_id = self.payment_data.get('traveler_id', '')
@@ -78,41 +115,41 @@ class PaymentEditDialog:
             except Exception:
                 invoice_text = f"ID: {invoice_id}"
 
-        self.amount_field = ft.TextField(
+        self.amount_field = self._field(
             label="Amount (₹) *",
             value=str(self.payment_data.get('amount', 0)),
             height=48, text_size=12)
-        self.date_field = ft.TextField(
+        self.date_field = self._field(
             label="Payment Date (YYYY-MM-DD)",
             value=str(self.payment_data.get('payment_date', ''))[:10],
             height=48, text_size=12)
         self.method_dropdown = ft.Dropdown(
             label="Payment Method",
             options=[
-                ft.dropdown.Option("Cash"),
-                ft.dropdown.Option("Bank Transfer"),
-                ft.dropdown.Option("Credit Card"),
-                ft.dropdown.Option("Cheque"),
-                ft.dropdown.Option("Online"),
-                ft.dropdown.Option("UPI"),
+                ft.dropdown.Option(key="Cash", text="Cash"),
+                ft.dropdown.Option(key="Bank Transfer", text="Bank Transfer"),
+                ft.dropdown.Option(key="Credit Card", text="Credit Card"),
+                ft.dropdown.Option(key="Cheque", text="Cheque"),
+                ft.dropdown.Option(key="Online", text="Online"),
+                ft.dropdown.Option(key="UPI", text="UPI"),
             ],
             value=str(self.payment_data.get('payment_method', 'Cash')),
             height=48, text_size=12)
-        self.trans_field = ft.TextField(
+        self.trans_field = self._field(
             label="Transaction ID",
             value=str(self.payment_data.get('transaction_id', '')),
             height=48, text_size=12)
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
-                ft.dropdown.Option("completed"),
-                ft.dropdown.Option("pending"),
-                ft.dropdown.Option("failed"),
-                ft.dropdown.Option("refunded"),
+                ft.dropdown.Option(key="completed", text="completed"),
+                ft.dropdown.Option(key="pending", text="pending"),
+                ft.dropdown.Option(key="failed", text="failed"),
+                ft.dropdown.Option(key="refunded", text="refunded"),
             ],
             value=str(self.payment_data.get('status', 'pending')),
             height=48, text_size=12)
-        self.notes_field = ft.TextField(
+        self.notes_field = self._field(
             label="Notes",
             value=str(self.payment_data.get('notes', '')),
             multiline=True, min_lines=2, max_lines=3,
@@ -151,7 +188,7 @@ class PaymentEditDialog:
                                  width=520, height=560, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
-                              on_click=lambda e: self.page.pop_dialog()),
+                              on_click=lambda e: self._close()),
                 ft.Button(content=ft.Text("💾 Save Changes"),
                           on_click=self.save,
                           bgcolor=ft.Colors.GREEN_600,
@@ -196,6 +233,7 @@ class PaymentEditDialog:
                 except Exception:
                     pass
 
+                self._typing_until = 0.0
                 self.page.pop_dialog()
                 self._snack("✅ Payment updated successfully!")
                 if self.on_save:
@@ -207,22 +245,26 @@ class PaymentEditDialog:
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
+    def _close(self):
+        self._typing_until = 0.0
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+
     def show(self):
         self.page.show_dialog(self.dialog)
 
+    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-EDIT] snack failed: {ex}")
 
 
 # =================================================================================
-# 12.3 — CLASS: PaymentsTab
+# 12.3 — CLASS: PaymentsTab  (v1.8)
 # =================================================================================
 class PaymentsTab:
 
@@ -246,14 +288,39 @@ class PaymentsTab:
         self.root = None
         self.selection_label = None
 
-        # Currently selected payment row (for toolbar PDF/Print)
         self._selected_payment_id = None
+        # v1.8 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         self.refresh()
 
     def build(self):
         return self.root
+
+    # v1.8 — safe leaf-only update
+    def _safe_update(self):
+        if time.time() < self._typing_until:
+            print("[PAYMENTS] _safe_update SKIPPED (typing)")
+            return
+        try:
+            if self.root is not None:
+                self.root.update()
+        except Exception as e:
+            print(f"[PAYMENTS] _safe_update failed: {e}")
+
+    def _update_table_only(self):
+        """Leaf-only update — does NOT touch the search field's ancestors."""
+        try:
+            if self.table is not None:
+                self.table.update()
+        except Exception:
+            pass
+        try:
+            if self.selection_label is not None:
+                self.selection_label.update()
+        except Exception:
+            pass
 
     def setup_ui(self):
         stat_configs = [
@@ -338,11 +405,25 @@ class PaymentsTab:
             value="All", height=48, text_size=11)
         self.method_filter.on_change = self.filter_payments
 
+        # v1.8 — search field with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search traveler or txn ID...",
             height=48, text_size=12,
-            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
-        self.search_input.on_change = self.filter_payments
+            content_padding=ft.Padding.symmetric(
+                horizontal=10, vertical=8))
+
+        def _search_on_change(e, _f=self.search_input):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.filter_payments(e)
+
+        self.search_input.on_change = _search_on_change
 
         toolbar = ft.ResponsiveRow(
             controls=[
@@ -431,7 +512,7 @@ class PaymentsTab:
         )
 
     # -----------------------------------------------------------------------------
-    # refresh — NO destructive reloads
+    # refresh — v1.8 preserves filters, uses _safe_update
     # -----------------------------------------------------------------------------
     def refresh(self):
         try:
@@ -468,16 +549,40 @@ class PaymentsTab:
                   f"{len(self.receipts)} receipts, "
                   f"{len(self.invoices)} invoices")
 
-            self.display_payments()
+            # v1.8 — re-apply filters so auto-refresh doesn't wipe them
+            self._apply_filters_internal()
             self.update_summary_stats()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._safe_update()
         except Exception as ex:
             print(f"Payments refresh error: {ex}")
             import traceback
             traceback.print_exc()
+
+    # v1.8 — filter logic without UI
+    def _apply_filters_internal(self):
+        search = (self.search_input.value or "").strip().lower() \
+            if self.search_input else ""
+        status = (self.status_filter.value or "All") \
+            if self.status_filter else "All"
+        method = (self.method_filter.value or "All") \
+            if self.method_filter else "All"
+
+        filtered = self.payments
+        if status != "All":
+            filtered = [p for p in filtered
+                        if str(p.get('status', '')) == status]
+        if method != "All":
+            filtered = [p for p in filtered
+                        if str(p.get('payment_method', '')) == method]
+        if search:
+            def match(p):
+                tname = self.travelers.get(
+                    p.get('traveler_id', ''), '').lower()
+                txn = str(p.get('transaction_id', '') or '').lower()
+                return search in tname or search in txn
+            filtered = [p for p in filtered if match(p)]
+
+        self.display_payments(filtered)
 
     def display_payments(self, payments=None):
         if payments is None:
@@ -577,7 +682,6 @@ class PaymentsTab:
                 ], spacing=0,
             )
 
-            # -------- ROW TAP → SELECT (not edit) --------
             def _on_row_tap(e, pp=p, pid=pid):
                 try:
                     self._select_payment(pid)
@@ -589,7 +693,6 @@ class PaymentsTab:
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator cell
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -622,16 +725,13 @@ class PaymentsTab:
                         ft.DataCell(actions),
                     ]))
 
-    # -----------------------------------------------------------------------------
-    # _select_payment — toggle row selection, re-render highlight
-    # -----------------------------------------------------------------------------
+    # v1.8 — leaf-only updates
     def _select_payment(self, payment_id):
         if self._selected_payment_id == payment_id:
             self._selected_payment_id = None
         else:
             self._selected_payment_id = payment_id
 
-        # Update selection label
         if self.selection_label:
             if self._selected_payment_id:
                 p = next((x for x in self.payments
@@ -647,16 +747,9 @@ class PaymentsTab:
             else:
                 self.selection_label.value = ""
 
-        # Re-render table to update the ✓ marker
         self.display_payments()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        self._update_table_only()  # v1.8
 
-    # -----------------------------------------------------------------------------
-    # _get_selected_payment — for toolbar PDF/Print
-    # -----------------------------------------------------------------------------
     def _get_selected_payment(self):
         if not self._selected_payment_id:
             return None
@@ -669,31 +762,10 @@ class PaymentsTab:
             on_save=self.refresh)
         dlg.show()
 
+    # v1.8 — leaf-only update (search box safe)
     def filter_payments(self, e=None):
-        search = (self.search_input.value or "").strip().lower()
-        status = self.status_filter.value or "All"
-        method = self.method_filter.value or "All"
-        filtered = self.payments
-
-        if status != "All":
-            filtered = [p for p in filtered
-                        if str(p.get('status', '')) == status]
-        if method != "All":
-            filtered = [p for p in filtered
-                        if str(p.get('payment_method', '')) == method]
-        if search:
-            def match(p):
-                tname = self.travelers.get(
-                    p.get('traveler_id', ''), '').lower()
-                txn = str(p.get('transaction_id', '') or '').lower()
-                return search in tname or search in txn
-            filtered = [p for p in filtered if match(p)]
-
-        self.display_payments(filtered)
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        self._apply_filters_internal()
+        self._update_table_only()
 
     def add_payment(self, e):
         dlg = PaymentDialog(self.page, self.db, self.current_user,
@@ -776,9 +848,6 @@ class PaymentsTab:
         )
         self.page.show_dialog(dialog)
 
-    # -----------------------------------------------------------------------------
-    # Toolbar PDF — act on selected row
-    # -----------------------------------------------------------------------------
     def export_pdf_selected(self, e):
         p = self._get_selected_payment()
         if not p:
@@ -937,9 +1006,6 @@ class PaymentsTab:
             traceback.print_exc()
             self._snack(f"❌ PDF error: {ex}")
 
-    # -----------------------------------------------------------------------------
-    # Toolbar Print — act on selected row
-    # -----------------------------------------------------------------------------
     def print_receipt_selected(self, e):
         p = self._get_selected_payment()
         if not p:
@@ -1023,19 +1089,16 @@ class PaymentsTab:
         self.stat_labels['invoice_pending'].value = _short(
             total_invoice_pending)
 
+    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAYMENTS] snack failed: {ex}")
 
 
 # =================================================================================
-# 13.1 — CLASS: PaymentDialog (Record new payment)
+# 13.1 — CLASS: PaymentDialog  (v1.8 — typing guard + leaf-only updates)
 # =================================================================================
 class PaymentDialog:
 
@@ -1066,10 +1129,42 @@ class PaymentDialog:
         self._current_traveler_id = None
         self._batch_price = 0.0
         self._total_paid = 0.0
+        # v1.8 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         if traveler:
             self.select_traveler(traveler.get('id'))
+
+    # v1.8 — field helper
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    # v1.8 — leaf-only update for traveler info row
+    def _update_traveler_labels(self):
+        for c in (self.batch_label, self.total_amount_label,
+                  self.total_paid_label, self.pending_amount_label):
+            try:
+                if c is not None:
+                    c.update()
+            except Exception:
+                pass
 
     def setup_ui(self):
         traveler_options = []
@@ -1110,10 +1205,23 @@ class PaymentDialog:
                 control,
             ], spacing=8)
 
-        self.amount_field = ft.TextField(
+        # v1.8 — amount_field with explicit on_change + guard
+        self.amount_field = self._field(
             label="💵 Payment Amount (₹) *",
             value="0", height=48, text_size=13)
-        self.amount_field.on_change = self.on_amount_changed
+
+        def _amount_on_change(e, _f=self.amount_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.on_amount_changed(e)
+
+        self.amount_field.on_change = _amount_on_change
 
         self.remaining_label = ft.Text("₹0", size=12,
                                        weight=ft.FontWeight.BOLD,
@@ -1122,16 +1230,16 @@ class PaymentDialog:
         self.method_dropdown = ft.Dropdown(
             label="Payment Method",
             options=[
-                ft.dropdown.Option("Cash"),
-                ft.dropdown.Option("Bank Transfer"),
-                ft.dropdown.Option("Credit Card"),
-                ft.dropdown.Option("Cheque"),
-                ft.dropdown.Option("Online"),
-                ft.dropdown.Option("UPI"),
+                ft.dropdown.Option(key="Cash", text="Cash"),
+                ft.dropdown.Option(key="Bank Transfer", text="Bank Transfer"),
+                ft.dropdown.Option(key="Credit Card", text="Credit Card"),
+                ft.dropdown.Option(key="Cheque", text="Cheque"),
+                ft.dropdown.Option(key="Online", text="Online"),
+                ft.dropdown.Option(key="UPI", text="UPI"),
             ],
             value="Cash", height=48, text_size=12)
 
-        self.trans_field = ft.TextField(
+        self.trans_field = self._field(
             label="Transaction ID (optional)",
             hint_text="Leave blank to auto-generate",
             height=48, text_size=12)
@@ -1140,7 +1248,7 @@ class PaymentDialog:
             label="Generate Invoice (GST/TCS applied)",
             value=False)
 
-        self.notes_field = ft.TextField(
+        self.notes_field = self._field(
             label="Notes", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
 
@@ -1177,7 +1285,7 @@ class PaymentDialog:
                                  width=540, height=640, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
-                              on_click=lambda e: self.page.pop_dialog()),
+                              on_click=lambda e: self._close()),
                 self.save_btn,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
@@ -1191,8 +1299,10 @@ class PaymentDialog:
         self.update_traveler_info()
 
     def on_traveler_change(self, e):
+        self._typing_until = time.time() + TYPING_GUARD_SECONDS
         self.update_traveler_info()
 
+    # v1.8 — leaf-only updates
     def update_traveler_info(self):
         tid = self.traveler_dropdown.value
         if not tid:
@@ -1203,10 +1313,7 @@ class PaymentDialog:
             self._batch_price = 0
             self._total_paid = 0
             self._current_traveler_id = None
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._update_traveler_labels()  # v1.8
             return
 
         try:
@@ -1216,6 +1323,7 @@ class PaymentDialog:
 
         if not traveler:
             self.batch_label.value = "Traveler not found"
+            self._update_traveler_labels()
             return
 
         self._current_traveler_id = tid
@@ -1228,10 +1336,7 @@ class PaymentDialog:
             self.pending_amount_label.value = "₹0"
             self._batch_price = 0
             self._total_paid = 0
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._update_traveler_labels()
             return
 
         batch = None
@@ -1245,6 +1350,7 @@ class PaymentDialog:
 
         if not batch:
             self.batch_label.value = "Batch not found"
+            self._update_traveler_labels()
             return
 
         batch_price = float(batch.get('price', 0) or 0)
@@ -1280,12 +1386,9 @@ class PaymentDialog:
             self.amount_field.value = f"{pending:.2f}"
 
         self.on_amount_changed(None)
+        self._update_traveler_labels()  # v1.8
 
-        try:
-            self.page.update()
-        except Exception:
-            pass
-
+    # v1.8 — leaf-only update for amount change
     def on_amount_changed(self, e):
         pending = self._batch_price - self._total_paid
         if pending < 0:
@@ -1306,8 +1409,13 @@ class PaymentDialog:
         else:
             self.remaining_label.color = "#3498db"
 
+        # v1.8 — leaf-only updates
         try:
-            self.page.update()
+            self.remaining_label.update()
+        except Exception:
+            pass
+        try:
+            self.save_btn.update()
         except Exception:
             pass
 
@@ -1399,6 +1507,7 @@ class PaymentDialog:
             print(f"[PAYMENT] Recorded: ₹{amount:,.2f}, "
                   f"Total: ₹{new_total:,.2f}, Pending: ₹{new_pending:,.2f}")
 
+            self._typing_until = 0.0
             self.page.pop_dialog()
             self._snack("✅ Payment recorded successfully!")
 
@@ -1409,20 +1518,24 @@ class PaymentDialog:
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
+    def _close(self):
+        self._typing_until = 0.0
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+
     def show(self):
         self.page.show_dialog(self.dialog)
 
+    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-DIALOG] snack failed: {ex}")
 
 
 # =================================================================================
-# SECTION 12 + 13 END (FLET 1.0.0 VERSION)
+# SECTION 12 + 13 END (FLET 1.0.0 VERSION) — v1.8
 # =================================================================================
