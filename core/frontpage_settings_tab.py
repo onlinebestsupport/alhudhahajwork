@@ -1,40 +1,36 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.22 — Fix: Add Feature / Add Statistic buttons now work reliably
+# v3.23 — FIX: Text disappears while typing + duplicate save messages
 #
-#   ROOT CAUSE:
-#     • Flet's container.update() silently fails when the container is
-#       nested deeply inside a scrollable Column. The row IS added to the
-#       list, but the browser doesn't repaint.
+#   ROOT CAUSES FIXED:
+#     • TextField value was never synced to the server during typing
+#       → any later page.update() wiped uncommitted input.
+#       FIX: every _field() now sets on_change so value streams in live.
 #
-#   FIXES:
-#     • _add_feature_empty   → uses page_ref.update() (full refresh)
-#     • _add_stat_empty      → uses page_ref.update()
-#     • _safe_update()       → tries page_ref.update() FIRST, then root
-#     • Feature/stat remove  → uses page_ref.update()
-#     • Added print() logs so we can debug if anything else breaks
+#     • _safe_update() called page_ref.update() (full re-render).
+#       FIX: now updates only self._inner_column (settings content).
 #
-#   PRESERVED from v3.21:
+#     • _set_status() triggered a full page update.
+#       FIX: only updates self.status_label.
+#
+#     • Feature/stat Add/Remove called page_ref.update().
+#       FIX: updates only the affected container.
+#
+#     • _save() could fire multiple times → stacked SnackBars.
+#       FIX: added self._saving guard.
+#
+#     • _snack() showed duplicates.
+#       FIX: de-duplicates identical messages within 3 seconds.
+#
+#   PRESERVED from v3.22:
 #     • Gallery upload passes ADMIN_API_KEY
-#     • Admin scroll no longer resets; toggles auto-save; max_shown=9
-#     • _build_root reuses the SAME inner Column → scroll preserved
-#     • _toggle_batch_row_by_id → per-control .update()
-#     • _toggle_batches → same per-control approach
-#     • _auto_save_batch_state() — writes only batch IDs to disk
-#     • Root Container object is NEVER recreated
-#
-# SECTION INDEX
-#   §0      Class setup
-#   §ROOT   _build_root
-#   §H      Shared helpers
-#   §1-§9   Section builders (hero → footer)
-#   §10     Action bar
-#   §11     Gallery
-#   §A      Actions
+#     • Admin scroll preserved; toggles auto-save; max_shown=9
+#     • Root Container object NEVER recreated
 # =================================================================================
 
 import os
+import time
 import asyncio
 import traceback
 from datetime import datetime
@@ -157,6 +153,11 @@ class FrontPageSettingsTab:
 
         # Action bar
         self.status_label = None
+
+        # Save / snack state (v3.23)
+        self._saving = False
+        self._last_snack_msg = None
+        self._last_snack_time = 0.0
 
         # Inner column + root container (created ONCE)
         self._inner_column = None
@@ -314,6 +315,19 @@ class FrontPageSettingsTab:
                 offset=ft.Offset(0, 2)))
 
     def _field(self, label, value, **kwargs):
+        """
+        Build a TextField.
+
+        v3.23 FIX: We attach an on_change handler to every TextField.
+        Flet only streams the field's value to the server when
+        on_change is set. Without it, the server's copy of `value`
+        stays stale while the user types, so ANY subsequent
+        page/container update pushes the old value back to the
+        browser and wipes what the user typed.
+
+        The handler itself is a no-op — Flet updates field.value
+        automatically before calling it.
+        """
         defaults = dict(
             label=label,
             value=value or "",
@@ -325,7 +339,9 @@ class FrontPageSettingsTab:
                 horizontal=10, vertical=10),
         )
         defaults.update(kwargs)
-        return ft.TextField(**defaults)
+        field = ft.TextField(**defaults)
+        field.on_change = lambda e: None
+        return field
 
     def _two_col(self, left, right):
         return ft.Row([
@@ -488,8 +504,12 @@ class FrontPageSettingsTab:
                 self.feature_entries.remove(_entry)
                 self.feature_rows_container.controls.remove(
                     _entry["row"])
-                # Force a full page update so removal is visible
-                self.page_ref.update()
+                # v3.23: only update the affected container —
+                # NOT the whole page.
+                try:
+                    self.feature_rows_container.update()
+                except Exception as ue:
+                    print(f"[FRONTPAGE] container.update() failed: {ue}")
                 print(f"[FRONTPAGE] feature removed. "
                       f"Total: {len(self.feature_entries)}")
             except Exception as ex:
@@ -519,19 +539,18 @@ class FrontPageSettingsTab:
         return entry
 
     # -----------------------------------------------------------------------------
-    # §4.2 — _add_feature_empty  (v3.22 FIX — uses page_ref.update)
+    # §4.2 — _add_feature_empty  (v3.23 FIX)
     # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
         """
-        Add an empty feature row and force a full page refresh.
+        Add an empty feature row and refresh ONLY its container.
 
-        v3.22 FIX: We call page_ref.update() instead of _safe_update()
-        because container.update() doesn't reliably propagate inside
-        deeply-nested scrollable Columns.
+        v3.23: We no longer call page_ref.update(). Updating only
+        the container avoids wiping text the user has typed into
+        other fields.
         """
         print("[FRONTPAGE] _add_feature_empty called")
 
-        # Guard: container must exist
         if self.feature_rows_container is None:
             print("[FRONTPAGE] ERROR: feature_rows_container is None")
             try:
@@ -545,8 +564,10 @@ class FrontPageSettingsTab:
             self._add_feature_row("fa-check-circle", "", "")
             print(f"[FRONTPAGE] feature added. "
                   f"Total: {len(self.feature_entries)}")
-            # Full page refresh — guaranteed to propagate
-            self.page_ref.update()
+            try:
+                self.feature_rows_container.update()
+            except Exception as ue:
+                print(f"[FRONTPAGE] container.update() failed: {ue}")
         except Exception as ex:
             print(f"[FRONTPAGE] add feature failed: {ex}")
             traceback.print_exc()
@@ -868,8 +889,12 @@ class FrontPageSettingsTab:
             try:
                 self.stat_entries.remove(_entry)
                 self.stats_rows_container.controls.remove(_entry["row"])
-                # Force full page update so removal is visible
-                self.page_ref.update()
+                # v3.23: only update the affected container.
+                try:
+                    self.stats_rows_container.update()
+                except Exception as ue:
+                    print(f"[FRONTPAGE] stats container.update() "
+                          f"failed: {ue}")
                 print(f"[FRONTPAGE] stat removed. "
                       f"Total: {len(self.stat_entries)}")
             except Exception as ex:
@@ -894,14 +919,13 @@ class FrontPageSettingsTab:
         return entry
 
     # -----------------------------------------------------------------------------
-    # §6.2 — _add_stat_empty  (v3.22 FIX — uses page_ref.update)
+    # §6.2 — _add_stat_empty  (v3.23 FIX)
     # -----------------------------------------------------------------------------
     def _add_stat_empty(self, e=None):
         """
-        Add an empty statistic row and force a full page refresh.
+        Add an empty statistic row and refresh ONLY its container.
 
-        v3.22 FIX: Same reason as _add_feature_empty — container.update()
-        is unreliable when deeply nested.
+        v3.23: No more page_ref.update() — keeps typed input safe.
         """
         print("[FRONTPAGE] _add_stat_empty called")
 
@@ -918,7 +942,10 @@ class FrontPageSettingsTab:
             self._add_stat_row("", "")
             print(f"[FRONTPAGE] stat added. "
                   f"Total: {len(self.stat_entries)}")
-            self.page_ref.update()
+            try:
+                self.stats_rows_container.update()
+            except Exception as ue:
+                print(f"[FRONTPAGE] stats container.update() failed: {ue}")
         except Exception as ex:
             print(f"[FRONTPAGE] add stat failed: {ex}")
             traceback.print_exc()
@@ -1586,6 +1613,11 @@ class FrontPageSettingsTab:
         }
 
     def _save(self, e=None):
+        # v3.23: prevent double-submits (Enter key + click, etc.)
+        if self._saving:
+            print("[FRONTPAGE] _save: already saving, ignoring")
+            return
+        self._saving = True
         try:
             cfg = self._collect_config()
             n_sel = len(cfg.get("packages", {})
@@ -1613,6 +1645,8 @@ class FrontPageSettingsTab:
         except Exception as ex:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
+        finally:
+            self._saving = False
 
     def _reset_confirm(self, e=None):
         def do_reset(ev):
@@ -1682,40 +1716,65 @@ class FrontPageSettingsTab:
             self._snack(f"⚠️ {ex}")
 
     def _set_status(self, message, color=PRIMARY_LT):
+        """
+        v3.23 FIX: only update the status label — never the whole
+        page. This prevents wiping text the user is still typing
+        in other fields.
+        """
         try:
             if self.status_label is not None:
                 self.status_label.value = message
                 self.status_label.color = color
-        except Exception:
-            pass
-        self._safe_update()
+                self.status_label.update()
+        except Exception as e:
+            print(f"[FRONTPAGE] _set_status failed: {e}")
 
     def _snack(self, msg, color=ft.Colors.GREEN_700):
+        """
+        v3.23 FIX: dedupe identical messages within 3 seconds and
+        guard against stacked SnackBars (they cause page updates on
+        dismiss, which was wiping uncommitted TextField input).
+        """
+        try:
+            now = time.time()
+            if (self._last_snack_msg == msg and
+                    (now - self._last_snack_time) < 3.0):
+                print(f"[FRONTPAGE] _snack: skipping duplicate: {msg!r}")
+                return
+            self._last_snack_msg = msg
+            self._last_snack_time = now
+        except Exception:
+            pass
+
         try:
             self.page_ref.show_dialog(
                 ft.SnackBar(content=ft.Text(msg), bgcolor=color))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[FRONTPAGE] _snack failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # §A.7 — _safe_update  (v3.22 FIX — tries page first)
+    # §A.7 — _safe_update  (v3.23 FIX — targets inner column, not page)
     # -----------------------------------------------------------------------------
     def _safe_update(self):
         """
         Update the UI.
 
-        v3.22 FIX: Try page_ref.update() FIRST. It's more reliable than
-        root.update() for deeply-nested scrollable containers. If page
-        fails, fall back to root.
-        """
-        # Try page first (most reliable)
-        try:
-            self.page_ref.update()
-            return
-        except Exception as e:
-            print(f"[FRONTPAGE] page.update() failed: {e}")
+        v3.23 FIX: We update self._inner_column instead of the whole
+        page. Updating the whole page while the user is typing was
+        the main cause of disappearing text, because Flet pushed
+        stale TextField values back to the client.
 
-        # Fallback to root
+        The on_change handler on every TextField now keeps values
+        synced, but we still minimize the update scope as belt-and-
+        braces.
+        """
+        try:
+            if self._inner_column is not None:
+                self._inner_column.update()
+                return
+        except Exception as e:
+            print(f"[FRONTPAGE] inner_column.update() failed: {e}")
+
         try:
             if self.root is not None:
                 self.root.update()
@@ -1724,5 +1783,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.22
+# SECTION END — core/frontpage_settings_tab.py v3.23
 # =================================================================================
