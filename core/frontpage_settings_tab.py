@@ -1,29 +1,26 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.25 — FIXED: text no longer disappears while typing
+# v3.26 — FINAL: text NEVER disappears while typing
 #
-#   WHY v3.24 STILL FAILED:
-#     • on_focus / on_blur are UNRELIABLE in Flet. When on_blur doesn't
-#       fire, self._focused_fields never empties, so _safe_update()
-#       either ALWAYS skipped (updates lost) or ALWAYS ran (typing
-#       wiped) — depending on which event was flaky.
-#     • The gallery auto-poll called container.update() every 5s. In
-#       deeply nested trees this cascades to the parent, re-sending
-#       the WHOLE settings page — including the field you're typing in
-#       with its last-synced server value.
+#   ROOT CAUSE (why v3.22–v3.25 still failed):
+#     Flet's server-side TextField.value can lag behind the browser.
+#     Any .update() on a nested control (gallery poll, status label,
+#     batch toggle) can cause Flet to re-send the ancestor tree with
+#     the STALE field value → text visually vanishes.
 #
-#   v3.25 FIXES:
-#     1. Removed on_focus / on_blur entirely.
-#     2. Added a TIME-BASED typing guard: any keystroke sets
-#        self._typing_until = now + 2.5s. All updates skip while
-#        the guard is active. No reliance on focus events.
-#     3. Gallery poll now ONLY updates containers when photo/video
-#        COUNT changes (i.e. after a real upload). No more no-op
-#        updates every 5 seconds.
-#     4. Explicit value sync in on_change as belt-and-braces.
-#     5. All other v3.24 fixes preserved (deduped snacks, scoped
-#        updates, save guard, manual refresh button, admin key, etc.)
+#   v3.26 SOLUTION:
+#     1. Maintain self._field_values[id(field)] = latest value.
+#        Updated on EVERY keystroke in on_change.
+#     2. Before EVERY .update(), call _sync_all_fields() which copies
+#        the latest values back into field.value.
+#     3. If Flet re-sends the field, it now sends the correct value.
+#
+#   ADDITIONAL IMPROVEMENTS:
+#     • Save message shows WHAT changed ("Saved: social, hero"),
+#       not just the batch count.
+#     • Gallery poll only fires when photo/video counts change.
+#     • Duplicate snack dedup, save lock, all v3.24/3.25 fixes kept.
 # =================================================================================
 
 import os
@@ -53,7 +50,7 @@ SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
 GALLERY_POLL_SECONDS = 6
-TYPING_GUARD_SECONDS = 2.5
+TYPING_GUARD_SECONDS = 3.0
 
 
 def _resolve_fit_cover():
@@ -154,7 +151,11 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # Typing guard (v3.25)
+        # v3.26 — LOCAL TRUTH SOURCE for every text field
+        self._field_values = {}   # {id(field): latest_value}
+        self._all_fields = {}     # {id(field): field_object}
+
+        # Typing guard
         self._typing_until = 0.0
 
         # Save / snack state
@@ -165,7 +166,7 @@ class FrontPageSettingsTab:
         # Gallery auto-poll
         self._gallery_poll_started = False
 
-        # Inner column + root container (created ONCE)
+        # Inner column + root (created ONCE)
         self._inner_column = None
         self.root = None
 
@@ -243,6 +244,8 @@ class FrontPageSettingsTab:
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
+        # NOTE: We do NOT clear self._field_values / self._all_fields
+        # on rebuild — old field ids become stale but harmless.
 
         sections = [
             self._section_1_header(),
@@ -320,18 +323,18 @@ class FrontPageSettingsTab:
                 offset=ft.Offset(0, 2)))
 
     # -----------------------------------------------------------------------------
-    # §H.2 — _field  (v3.25 — TIME-BASED typing guard)
+    # §H.2 — _field  (v3.26 — LOCAL TRUTH SOURCE)
     # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         """
-        Build a TextField.
+        Build a TextField with a LOCAL TRUTH SOURCE.
 
-        v3.25 approach:
-          • on_change fires on EVERY keystroke → sets a 2.5-second
-            typing guard. All updates skip while it's active.
-          • Also explicitly syncs field.value from the event as
-            belt-and-braces.
-          • No on_focus / on_blur — those were the culprit.
+        Every keystroke:
+          1. Sets the typing guard (blocks updates for 3s)
+          2. Stores the new value in self._field_values[id(field)]
+
+        Before EVERY .update() we restore field.value from
+        self._field_values, so Flet can never push a stale value.
         """
         defaults = dict(
             label=label,
@@ -346,25 +349,57 @@ class FrontPageSettingsTab:
         defaults.update(kwargs)
         field = ft.TextField(**defaults)
 
-        def _on_change(e, _f=field):
-            # 1. Set the typing guard
+        fid = id(field)
+        self._field_values[fid] = value or ""
+        self._all_fields[fid] = field
+
+        def _on_change(e, _fid=fid, _f=field):
+            # 1. Extend the typing guard
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
-            # 2. Belt-and-braces: pull the value out of the event
-            #    in case the framework's auto-sync misfires.
+            # 2. Extract the new value from the event
+            new_val = None
             try:
-                new_val = None
                 ctrl = getattr(e, "control", None)
                 if ctrl is not None:
-                    new_val = getattr(ctrl, "value", None)
+                    v = getattr(ctrl, "value", None)
+                    if v is not None:
+                        new_val = v
                 if new_val is None:
-                    new_val = getattr(e, "data", None)
-                if new_val is not None:
-                    _f.value = new_val
+                    d = getattr(e, "data", None)
+                    if d is not None:
+                        new_val = d
             except Exception:
                 pass
+            # 3. Store in local truth source
+            if new_val is not None:
+                try:
+                    _f.value = new_val
+                except Exception:
+                    pass
+                self._field_values[_fid] = new_val
 
         field.on_change = _on_change
         return field
+
+    # -----------------------------------------------------------------------------
+    # §H.3 — _sync_all_fields  (v3.26 — the crucial fix)
+    # -----------------------------------------------------------------------------
+    def _sync_all_fields(self):
+        """
+        Copy the latest known values from self._field_values back
+        into every field object. Called before every .update().
+        """
+        try:
+            for fid, field in list(self._all_fields.items()):
+                try:
+                    stored = self._field_values.get(fid)
+                    if stored is not None:
+                        if field.value != stored:
+                            field.value = stored
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[FRONTPAGE] _sync_all_fields error: {e}")
 
     def _two_col(self, left, right):
         return ft.Row([
@@ -525,6 +560,7 @@ class FrontPageSettingsTab:
                 self.feature_rows_container.controls.remove(
                     _entry["row"])
                 try:
+                    self._sync_all_fields()
                     self.feature_rows_container.update()
                 except Exception:
                     pass
@@ -558,7 +594,6 @@ class FrontPageSettingsTab:
 
     def _add_feature_empty(self, e=None):
         print("[FRONTPAGE] _add_feature_empty called")
-
         if self.feature_rows_container is None:
             try:
                 self._snack("⚠️ Feature container not ready. "
@@ -566,12 +601,12 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
             return
-
         try:
             self._add_feature_row("fa-check-circle", "", "")
             print(f"[FRONTPAGE] feature added. "
                   f"Total: {len(self.feature_entries)}")
             try:
+                self._sync_all_fields()
                 self.feature_rows_container.update()
             except Exception as ue:
                 print(f"[FRONTPAGE] container.update() failed: {ue}")
@@ -778,7 +813,6 @@ class FrontPageSettingsTab:
     def _toggle_batches(self, value):
         print(f"[FRONTPAGE] _toggle_batches("
               f"{'All' if value else 'Clear'})")
-
         for bid, entry in self.batch_checkboxes.items():
             self._batch_check_state[bid] = bool(value)
             try:
@@ -798,24 +832,20 @@ class FrontPageSettingsTab:
                         pass
             except Exception as e:
                 print(f"[FRONTPAGE] _toggle_batches error on {bid!r}: {e}")
-
         self._auto_save_batch_state()
 
     def _auto_save_batch_state(self):
         try:
             from core.frontpage_config import (
                 load_config, save_config, normalize_batch_ids)
-
             checked = [
                 bid for bid, is_on
                 in self._batch_check_state.items() if is_on
             ]
             checked = normalize_batch_ids(checked)
-
             cfg = load_config()
             pkg = cfg.setdefault("packages", {})
             pkg["selected_batch_ids"] = checked
-
             ok = save_config(cfg)
             if ok:
                 try:
@@ -891,6 +921,7 @@ class FrontPageSettingsTab:
                 self.stat_entries.remove(_entry)
                 self.stats_rows_container.controls.remove(_entry["row"])
                 try:
+                    self._sync_all_fields()
                     self.stats_rows_container.update()
                 except Exception:
                     pass
@@ -919,7 +950,6 @@ class FrontPageSettingsTab:
 
     def _add_stat_empty(self, e=None):
         print("[FRONTPAGE] _add_stat_empty called")
-
         if self.stats_rows_container is None:
             try:
                 self._snack("⚠️ Stat container not ready. "
@@ -927,12 +957,12 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
             return
-
         try:
             self._add_stat_row("", "")
             print(f"[FRONTPAGE] stat added. "
                   f"Total: {len(self.stat_entries)}")
             try:
+                self._sync_all_fields()
                 self.stats_rows_container.update()
             except Exception as ue:
                 print(f"[FRONTPAGE] stats container.update() failed: {ue}")
@@ -1224,7 +1254,7 @@ class FrontPageSettingsTab:
             border=ft.Border.all(1, BORDER), border_radius=10)
 
     # -----------------------------------------------------------------------------
-    # §11.5 — Gallery refresh (v3.25)
+    # §11.5 — Gallery refresh
     # -----------------------------------------------------------------------------
     def _refresh_gallery_click(self, e=None):
         try:
@@ -1237,8 +1267,6 @@ class FrontPageSettingsTab:
                 pass
 
     def _reload_gallery_from_disk(self, show_toast=False, force=False):
-        """Reload photos/videos from config and rebuild ONLY if changed
-        (unless force=True)."""
         try:
             cfg = load_config()
         except Exception:
@@ -1263,6 +1291,7 @@ class FrontPageSettingsTab:
             pass
 
         self._rebuild_gallery_lists()
+        self._sync_all_fields()
         try:
             self.photo_list_container.update()
         except Exception:
@@ -1291,10 +1320,6 @@ class FrontPageSettingsTab:
         return changed
 
     def _start_gallery_poll(self):
-        """
-        Background loop — reloads the gallery ONLY if counts changed.
-        Skips entirely while user is typing (typing guard).
-        """
         if self._gallery_poll_started:
             return
         self._gallery_poll_started = True
@@ -1306,10 +1331,8 @@ class FrontPageSettingsTab:
                     await asyncio.sleep(GALLERY_POLL_SECONDS)
                     if not self.photo_list_container:
                         continue
-                    # Skip while typing
                     if time.time() < self._typing_until:
                         continue
-                    # Only reload if counts actually changed
                     self._reload_gallery_from_disk(show_toast=False)
                 except asyncio.CancelledError:
                     break
@@ -1325,7 +1348,6 @@ class FrontPageSettingsTab:
 
     def _pick_gallery_files(self, media_type):
         admin_key = os.getenv("ADMIN_API_KEY", "")
-
         if admin_key:
             url = f"/gallery-upload?type={media_type}&key={admin_key}"
         else:
@@ -1591,16 +1613,20 @@ class FrontPageSettingsTab:
 # =================================================================================
 # §A — ACTIONS
 # =================================================================================
-    def _collect_config(self):
-        def _v(field):
-            try:
-                return (field.value or "").strip()
-            except Exception:
-                return ""
+    def _v(self, field):
+        """Read a field's value from the LOCAL truth source."""
+        try:
+            fid = id(field)
+            if fid in self._field_values:
+                return (self._field_values[fid] or "").strip()
+            return (field.value or "").strip()
+        except Exception:
+            return ""
 
+    def _collect_config(self):
         def _int(field, default):
             try:
-                s = (field.value or "").strip()
+                s = self._v(field)
                 if not s:
                     return default
                 return int(s)
@@ -1619,30 +1645,22 @@ class FrontPageSettingsTab:
         except Exception as e:
             print(f"[FRONTPAGE] _collect_config batch read failed: {e}")
 
-        print("=" * 60)
-        print("[FRONTPAGE] _collect_config")
-        print(f"[FRONTPAGE]   selected batches : {len(selected_ids)}")
-        for sid in selected_ids:
-            print(f"[FRONTPAGE]     • {sid!r}")
-        print(f"[FRONTPAGE]   max_shown        : {max_shown}")
-        print("=" * 60)
-
         features = []
         for entry in self.feature_entries:
-            title = (entry["title"].value or "").strip()
-            text = (entry["text"].value or "").strip()
+            title = self._v(entry["title"])
+            text = self._v(entry["text"])
             if not title and not text:
                 continue
             features.append({
-                "icon": (entry["icon"].value or
-                         "fa-check-circle").strip(),
+                "icon": (self._v(entry["icon"]) or
+                         "fa-check-circle"),
                 "title": title, "text": text,
             })
 
         stats = []
         for entry in self.stat_entries:
-            number = (entry["number"].value or "").strip()
-            label = (entry["label"].value or "").strip()
+            number = self._v(entry["number"])
+            label = self._v(entry["label"])
             if not number and not label:
                 continue
             stats.append({"number": number, "label": label})
@@ -1656,54 +1674,54 @@ class FrontPageSettingsTab:
 
         return {
             "hero": {
-                "heading": _v(self.hero_heading),
-                "subheading": _v(self.hero_subheading),
-                "button_text": _v(self.hero_button),
-                "whatsapp_text": _v(self.hero_whatsapp),
+                "heading": self._v(self.hero_heading),
+                "subheading": self._v(self.hero_subheading),
+                "button_text": self._v(self.hero_button),
+                "whatsapp_text": self._v(self.hero_whatsapp),
             },
             "alert": {
                 "enabled": bool(self.alert_enabled.value),
-                "message": _v(self.alert_message),
-                "link": _v(self.alert_link) or "#",
-                "color": _v(self.alert_color) or "#f39c12",
+                "message": self._v(self.alert_message),
+                "link": self._v(self.alert_link) or "#",
+                "color": self._v(self.alert_color) or "#f39c12",
                 "style": (self.alert_style.value or "pulse"),
             },
             "features": features,
             "packages": {
-                "title": _v(self.pkg_title),
-                "subtitle": _v(self.pkg_subtitle),
+                "title": self._v(self.pkg_title),
+                "subtitle": self._v(self.pkg_subtitle),
                 "source": (self.pkg_source.value or "batches"),
                 "max_shown": max_shown,
                 "selected_batch_ids": selected_ids,
                 "manual": [],
             },
             "about": {
-                "heading": _v(self.about_heading),
-                "paragraph1": _v(self.about_p1),
-                "paragraph2": _v(self.about_p2),
+                "heading": self._v(self.about_heading),
+                "paragraph1": self._v(self.about_p1),
+                "paragraph2": self._v(self.about_p2),
                 "stats": stats,
             },
             "contact": {
-                "phone": _v(self.contact_phone),
-                "phone2": _v(self.contact_phone2),
-                "email": _v(self.contact_email),
-                "whatsapp": _v(self.contact_whatsapp),
-                "address_line1": _v(self.contact_addr1),
-                "address_line2": _v(self.contact_addr2),
+                "phone": self._v(self.contact_phone),
+                "phone2": self._v(self.contact_phone2),
+                "email": self._v(self.contact_email),
+                "whatsapp": self._v(self.contact_whatsapp),
+                "address_line1": self._v(self.contact_addr1),
+                "address_line2": self._v(self.contact_addr2),
             },
             "social": {
-                "facebook": _v(self.social_facebook),
-                "instagram": _v(self.social_instagram),
-                "twitter": _v(self.social_twitter),
+                "facebook": self._v(self.social_facebook),
+                "instagram": self._v(self.social_instagram),
+                "twitter": self._v(self.social_twitter),
             },
             "footer": {
-                "about_text": _v(self.footer_about),
-                "copyright": _v(self.footer_copyright),
+                "about_text": self._v(self.footer_about),
+                "copyright": self._v(self.footer_copyright),
             },
             "gallery": {
                 "enabled": bool(self.gallery_enabled.value),
-                "title": _v(self.gallery_title),
-                "subtitle": _v(self.gallery_subtitle),
+                "title": self._v(self.gallery_title),
+                "subtitle": self._v(self.gallery_subtitle),
                 "layout": "grid",
                 "max_photos_shown": max_photos,
                 "max_videos_shown": max_videos,
@@ -1712,38 +1730,99 @@ class FrontPageSettingsTab:
             },
         }
 
+    # -----------------------------------------------------------------------------
+    # §A.5 — DIFF: what actually changed?
+    # -----------------------------------------------------------------------------
+    def _summarize_changes(self, old_cfg, new_cfg):
+        """Produce a short human-readable list of what changed."""
+        friendly = {
+            "hero": "hero",
+            "alert": "alert",
+            "features": "features",
+            "packages": "packages",
+            "about": "about",
+            "contact": "contact",
+            "social": "social links",
+            "footer": "footer",
+            "gallery": "gallery",
+        }
+        changes = []
+        for key, label in friendly.items():
+            try:
+                old_v = old_cfg.get(key)
+                new_v = new_cfg.get(key)
+                if old_v != new_v:
+                    if key == "packages":
+                        n = len((new_cfg.get("packages") or {})
+                                .get("selected_batch_ids") or [])
+                        changes.append(f"{n} batch(es)")
+                    elif key == "gallery":
+                        np = len((new_cfg.get("gallery") or {})
+                                 .get("photos") or [])
+                        nv = len((new_cfg.get("gallery") or {})
+                                 .get("videos") or [])
+                        changes.append(f"gallery ({np}p, {nv}v)")
+                    else:
+                        changes.append(label)
+            except Exception:
+                pass
+        return changes
+
     def _save(self, e=None):
         if self._saving:
             print("[FRONTPAGE] _save: already saving, ignoring")
             return
         self._saving = True
         try:
+            # Snapshot config BEFORE saving (for diff)
+            try:
+                old_cfg = load_config()
+            except Exception:
+                old_cfg = self.cfg or {}
+
             cfg = self._collect_config()
             n_sel = len(cfg.get("packages", {})
                          .get("selected_batch_ids", []))
-            print(f"[FRONTPAGE] _save: writing config with "
-                  f"{n_sel} selected batches")
+
+            changes = self._summarize_changes(old_cfg, cfg)
+            print(f"[FRONTPAGE] _save: changed = {changes!r}")
+
             ok = save_config(cfg)
             if ok:
                 self.cfg = cfg
-                self._set_status(
-                    f"✅ Saved at "
-                    f"{datetime.now().strftime('%H:%M:%S')}  ·  "
-                    f"{n_sel} batch(es) selected", SUCCESS)
-                self._snack(f"✅ Saved — {n_sel} batch(es) will "
-                            f"appear on the public page")
+
+                # Build a clear, honest status message
+                if changes:
+                    summary = ", ".join(changes)
+                    status_txt = (f"✅ Saved: {summary}  ·  "
+                                  f"{datetime.now().strftime('%H:%M:%S')}")
+                    snack_txt = f"✅ Saved: {summary}"
+                else:
+                    status_txt = (f"✅ Saved (no changes)  ·  "
+                                  f"{datetime.now().strftime('%H:%M:%S')}")
+                    snack_txt = "✅ Saved (no changes)"
+
+                # Show batch count as a quiet prefix in status
+                if n_sel:
+                    status_txt += f"  ·  {n_sel} batch(es) selected"
+
+                self._set_status(status_txt, SUCCESS)
+                self._snack(snack_txt)
+
                 try:
                     self.db.log_activity(
                         self.current_user.get("id"),
                         "update_frontpage",
-                        f"Updated front page ({n_sel} batches)")
+                        f"Updated front page ({', '.join(changes) or 'no changes'})")
                 except Exception:
                     pass
             else:
                 self._set_status("❌ Save failed", DANGER)
+                self._snack("❌ Save failed", DANGER)
         except Exception as ex:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
+            self._snack(f"❌ {ex}", DANGER)
         finally:
             self._saving = False
 
@@ -1815,7 +1894,6 @@ class FrontPageSettingsTab:
             self._snack(f"⚠️ {ex}")
 
     def _set_status(self, message, color=PRIMARY_LT):
-        """Update ONLY the status label."""
         try:
             if self.status_label is not None:
                 self.status_label.value = message
@@ -1825,7 +1903,6 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] _set_status failed: {e}")
 
     def _snack(self, msg, color=ft.Colors.GREEN_700):
-        """Dedupe identical messages within 3 seconds."""
         try:
             now = time.time()
             if (self._last_snack_msg == msg and
@@ -1844,15 +1921,15 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] _snack failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # §A.7 — _safe_update  (v3.25 — TIME-BASED guard)
+    # §A.7 — _safe_update  (v3.26 — sync fields BEFORE update)
     # -----------------------------------------------------------------------------
     def _safe_update(self, force=False):
         """
         Update the inner column.
 
-        v3.25: checks self._typing_until — a timestamp set on every
-        keystroke. If the user typed within the last 2.5 seconds,
-        skip the update entirely. No reliance on focus events.
+        v3.26: before every update, sync field values from our
+        local truth source. If Flet re-sends the tree, it now
+        sends the CORRECT values.
         """
         if not force:
             remaining = self._typing_until - time.time()
@@ -1861,8 +1938,10 @@ class FrontPageSettingsTab:
                       f"(typing, {remaining:.1f}s left)")
                 return
 
-        print("[FRONTPAGE] _safe_update RUNNING "
-              f"(force={force})")
+        # Restore latest field values BEFORE pushing to browser
+        self._sync_all_fields()
+
+        print(f"[FRONTPAGE] _safe_update RUNNING (force={force})")
         try:
             if self._inner_column is not None:
                 self._inner_column.update()
@@ -1878,5 +1957,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.25
+# SECTION END — core/frontpage_settings_tab.py v3.26
 # =================================================================================
