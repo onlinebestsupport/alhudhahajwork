@@ -1,15 +1,36 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.28 — robots.txt endpoint + scanner blocker + full security
-#   • §21.5.12  NEW: /robots.txt — serves static file or fallback
+# v2.29 — Disabled Page.update() monkey patch (FIX for disappearing text)
 #
-# v2.27 preserved:
-#   • Scanner blocker middleware (410 Gone for ~60 bot paths)
-#   • Security headers middleware (CSP, HSTS, XFO, XCTO, etc.)
-#   • Admin auth on all admin endpoints
-#   • Rate-limited traveler login
-#   • Content validation on uploads
+#   ROOT CAUSE:
+#     The v2.28 patch wrapped Page.update() to swallow "destroyed session"
+#     RuntimeErrors. In Flet 1.0.4 the framework handles this natively.
+#     The patch forced extra serialization on every update, which pushed
+#     STALE TextField values back to the browser and wiped in-progress
+#     typing (the "text disappears while typing" bug).
+#
+#   FIX:
+#     • §21.1.5 — Page.update() patch is now DISABLED.
+#     • Flet runs unpatched. If "destroyed session" errors reappear,
+#       we'll add a narrow guard at the call site — not globally.
+#
+#   Everything else from v2.28 is preserved unchanged:
+#     • §21.1.4  JSON sanitizer
+#     • §21.5.2  FastAPI + security headers
+#     • §21.5.2b Scanner blocker
+#     • §21.5.5  /api/frontpage
+#     • §21.5.6  /api/batches
+#     • §21.5.6b /api/admin/frontpage/diagnose
+#     • §21.5.6c /api/admin/frontpage/why-empty
+#     • §21.5.7  Captcha endpoints
+#     • §21.5.8  Traveler portal
+#     • §21.5.8b Gallery upload / media / delete
+#     • §21.5.8c Traveler document upload
+#     • §21.5.9  Mount Flet admin
+#     • §21.5.10 Mount /static
+#     • §21.5.11 Root route
+#     • §21.5.12 robots.txt
 # =================================================================================
 
 
@@ -182,47 +203,19 @@ def _json_safe(obj):
 
 
 # =================================================================================
-# 21.1.5 — PAGE.UPDATE() MONKEY PATCH
+# 21.1.5 — PAGE.UPDATE() MONKEY PATCH  (DISABLED in v2.29)
 # =================================================================================
+# The v2.28 patch wrapped Page.update() to swallow "destroyed session"
+# RuntimeErrors. In Flet 1.0.4 the framework handles this natively — and
+# keeping the patch was forcing extra serialization on every update, which
+# pushed STALE TextField values back to the browser and wiped in-progress
+# typing.
+#
+# We now run Flet unpatched. If "destroyed session" errors reappear in the
+# log, we'll add a narrow guard at the call site where it's actually
+# needed (not globally).
 _PATCH_INSTALLED = False
-
-
-def _patch_page_update():
-    global _PATCH_INSTALLED
-    if _PATCH_INSTALLED:
-        return
-    Page = None
-    for path in ("flet.controls.page", "flet.page", "flet"):
-        try:
-            mod = __import__(path, fromlist=["Page"])
-            Page = getattr(mod, "Page", None)
-            if Page is not None:
-                _boot_log(f"Page class resolved from '{path}'")
-                break
-        except Exception:
-            continue
-    if Page is None:
-        _boot_log("Could not locate Page class")
-        return
-    try:
-        _original_update = Page.update
-
-        def _safe_update(self, *args, **kwargs):
-            try:
-                return _original_update(self, *args, **kwargs)
-            except RuntimeError as ex:
-                if "destroyed session" in str(ex).lower():
-                    return None
-                raise
-
-        Page.update = _safe_update
-        _PATCH_INSTALLED = True
-        _boot_log("Patched Page.update() (narrow)")
-    except Exception as e:
-        _boot_log(f"Patch failed: {e}")
-
-
-_patch_page_update()
+_boot_log("Page.update() patch DISABLED (Flet 1.0.4 native)")
 
 
 # =================================================================================
@@ -1730,7 +1723,8 @@ if os.getenv("RAILWAY_VOLUME_MOUNT_PATH"):
     print(f"  Volume         : "
           f"{os.getenv('RAILWAY_VOLUME_MOUNT_PATH')}", flush=True)
 print(f"  Patch          : "
-      f"{'installed' if _PATCH_INSTALLED else 'NOT INSTALLED'}", flush=True)
+      f"{'installed' if _PATCH_INSTALLED else 'DISABLED (Flet 1.0.4 native)'}",
+      flush=True)
 print(f"  Security       : "
       f"{'ENABLED' if _SECURITY_AVAILABLE else 'DISABLED (fallback)'}",
       flush=True)
