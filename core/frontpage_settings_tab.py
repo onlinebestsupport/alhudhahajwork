@@ -1,26 +1,23 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.26 — FINAL: text NEVER disappears while typing
+# v3.27 — THE REAL FIX: removed SnackBars (they trigger page.update() on auto-dismiss,
+#         which was wiping in-progress typing)
 #
-#   ROOT CAUSE (why v3.22–v3.25 still failed):
-#     Flet's server-side TextField.value can lag behind the browser.
-#     Any .update() on a nested control (gallery poll, status label,
-#     batch toggle) can cause Flet to re-send the ancestor tree with
-#     the STALE field value → text visually vanishes.
+#   ROOT CAUSE:
+#     Flet's SnackBar auto-dismisses after ~4s and that dismissal fires a
+#     page-level update. That update re-sends ALL controls' server-side state,
+#     including TextField.value — which lags behind the browser during fast
+#     typing. Result: text typed after the last on_change round-trip gets
+#     visually replaced by the stale server value.
 #
-#   v3.26 SOLUTION:
-#     1. Maintain self._field_values[id(field)] = latest value.
-#        Updated on EVERY keystroke in on_change.
-#     2. Before EVERY .update(), call _sync_all_fields() which copies
-#        the latest values back into field.value.
-#     3. If Flet re-sends the field, it now sends the correct value.
-#
-#   ADDITIONAL IMPROVEMENTS:
-#     • Save message shows WHAT changed ("Saved: social, hero"),
-#       not just the batch count.
-#     • Gallery poll only fires when photo/video counts change.
-#     • Duplicate snack dedup, save lock, all v3.24/3.25 fixes kept.
+#   v3.27 CHANGES:
+#     1. NO MORE SnackBars anywhere in this file.
+#     2. All notifications go to status_label (a leaf node → safe to update).
+#     3. Gallery auto-poll REMOVED. Use the 🔄 Refresh Gallery button.
+#     4. Kept: _field_values local truth source, _typing_until guard,
+#        _sync_all_fields before updates, dedupe, save lock, admin key.
+#     5. Save status now lists WHAT changed, in the label under Save/Reload.
 # =================================================================================
 
 import os
@@ -49,7 +46,6 @@ MUTED        = "#64748b"
 SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
 
-GALLERY_POLL_SECONDS = 6
 TYPING_GUARD_SECONDS = 3.0
 
 
@@ -72,9 +68,6 @@ _FIT_COVER = _resolve_fit_cover()
 # =================================================================================
 class FrontPageSettingsTab:
 
-    # -----------------------------------------------------------------------------
-    # §0.1 — __init__
-    # -----------------------------------------------------------------------------
     def __init__(self, page, db, current_user):
         self.page_ref = page
         self.db = db
@@ -151,26 +144,20 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # v3.26 — LOCAL TRUTH SOURCE for every text field
-        self._field_values = {}   # {id(field): latest_value}
-        self._all_fields = {}     # {id(field): field_object}
+        # Local truth source for field values
+        self._field_values = {}
+        self._all_fields = {}
 
         # Typing guard
         self._typing_until = 0.0
 
-        # Save / snack state
+        # Save lock
         self._saving = False
-        self._last_snack_msg = None
-        self._last_snack_time = 0.0
 
-        # Gallery auto-poll
-        self._gallery_poll_started = False
-
-        # Inner column + root (created ONCE)
+        # Inner column + root
         self._inner_column = None
         self.root = None
 
-        # Build
         try:
             self._load_batches()
             self._build_root()
@@ -179,15 +166,9 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self.root = self._error_ui(e)
 
-    # -----------------------------------------------------------------------------
-    # §0.2 — build
-    # -----------------------------------------------------------------------------
     def build(self):
         return self.root
 
-    # -----------------------------------------------------------------------------
-    # §0.3 — refresh
-    # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
             self.cfg = load_config()
@@ -199,13 +180,10 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] refresh failed: {ex}")
             traceback.print_exc()
             try:
-                self._snack(f"⚠️ Refresh failed: {ex}", DANGER)
+                self._set_status(f"⚠️ Refresh failed: {ex}", DANGER)
             except Exception:
                 pass
 
-    # -----------------------------------------------------------------------------
-    # §0.4 — _load_batches
-    # -----------------------------------------------------------------------------
     def _load_batches(self):
         try:
             if hasattr(self.db, "reload"):
@@ -219,9 +197,6 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] get_batches failed: {e}")
             self.all_batches = []
 
-    # -----------------------------------------------------------------------------
-    # §0.5 — _error_ui
-    # -----------------------------------------------------------------------------
     def _error_ui(self, exc):
         return ft.Container(
             content=ft.Column([
@@ -238,14 +213,12 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §ROOT — _build_root
+# §ROOT
 # =================================================================================
     def _build_root(self):
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
-        # NOTE: We do NOT clear self._field_values / self._all_fields
-        # on rebuild — old field ids become stale but harmless.
 
         sections = [
             self._section_1_header(),
@@ -280,11 +253,10 @@ class FrontPageSettingsTab:
             self._inner_column.controls = sections
 
         self._register_pickers()
-        self._start_gallery_poll()
 
 
 # =================================================================================
-# §H — SHARED HELPERS
+# §H — HELPERS
 # =================================================================================
     def _section_card(self, icon, title, subtitle, controls, accent=PRIMARY):
         header = ft.Row([
@@ -322,20 +294,7 @@ class FrontPageSettingsTab:
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
-    # -----------------------------------------------------------------------------
-    # §H.2 — _field  (v3.26 — LOCAL TRUTH SOURCE)
-    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
-        """
-        Build a TextField with a LOCAL TRUTH SOURCE.
-
-        Every keystroke:
-          1. Sets the typing guard (blocks updates for 3s)
-          2. Stores the new value in self._field_values[id(field)]
-
-        Before EVERY .update() we restore field.value from
-        self._field_values, so Flet can never push a stale value.
-        """
         defaults = dict(
             label=label,
             value=value or "",
@@ -354,9 +313,7 @@ class FrontPageSettingsTab:
         self._all_fields[fid] = field
 
         def _on_change(e, _fid=fid, _f=field):
-            # 1. Extend the typing guard
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
-            # 2. Extract the new value from the event
             new_val = None
             try:
                 ctrl = getattr(e, "control", None)
@@ -370,7 +327,6 @@ class FrontPageSettingsTab:
                         new_val = d
             except Exception:
                 pass
-            # 3. Store in local truth source
             if new_val is not None:
                 try:
                     _f.value = new_val
@@ -381,25 +337,14 @@ class FrontPageSettingsTab:
         field.on_change = _on_change
         return field
 
-    # -----------------------------------------------------------------------------
-    # §H.3 — _sync_all_fields  (v3.26 — the crucial fix)
-    # -----------------------------------------------------------------------------
     def _sync_all_fields(self):
-        """
-        Copy the latest known values from self._field_values back
-        into every field object. Called before every .update().
-        """
-        try:
-            for fid, field in list(self._all_fields.items()):
-                try:
-                    stored = self._field_values.get(fid)
-                    if stored is not None:
-                        if field.value != stored:
-                            field.value = stored
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[FRONTPAGE] _sync_all_fields error: {e}")
+        for fid, field in list(self._all_fields.items()):
+            try:
+                stored = self._field_values.get(fid)
+                if stored is not None and field.value != stored:
+                    field.value = stored
+            except Exception:
+                pass
 
     def _two_col(self, left, right):
         return ft.Row([
@@ -462,7 +407,6 @@ class FrontPageSettingsTab:
             "Primary button text", h.get("button_text", ""))
         self.hero_whatsapp = self._field(
             "WhatsApp button text", h.get("whatsapp_text", ""))
-
         return self._section_card(
             "🎯", "Hero Section",
             "The big banner at the top of the page",
@@ -501,7 +445,6 @@ class FrontPageSettingsTab:
             border_color=BORDER,
             focused_border_color=PRIMARY_LT,
             border_radius=8)
-
         return self._section_card(
             "⚠️", "Alert Banner",
             "Optional top-of-page announcement for visitors",
@@ -595,11 +538,8 @@ class FrontPageSettingsTab:
     def _add_feature_empty(self, e=None):
         print("[FRONTPAGE] _add_feature_empty called")
         if self.feature_rows_container is None:
-            try:
-                self._snack("⚠️ Feature container not ready. "
-                            "Click Reload, then try again.", DANGER)
-            except Exception:
-                pass
+            self._set_status("⚠️ Feature container not ready. "
+                             "Click Reload, then try again.", DANGER)
             return
         try:
             self._add_feature_row("fa-check-circle", "", "")
@@ -613,10 +553,7 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[FRONTPAGE] add feature failed: {ex}")
             traceback.print_exc()
-            try:
-                self._snack(f"❌ Failed to add feature: {ex}", DANGER)
-            except Exception:
-                pass
+            self._set_status(f"❌ Failed to add feature: {ex}", DANGER)
 
 
 # =================================================================================
@@ -703,24 +640,20 @@ class FrontPageSettingsTab:
                 self._batch_ui,
             ], accent=ACCENT)
 
-    def _make_batch_row(self, batch_id, name, status, price_str,
-                        is_checked):
+    def _make_batch_row(self, batch_id, name, status, price_str, is_checked):
         icon = ft.Icon(
             icon=(ft.Icons.CHECK_BOX if is_checked
                   else ft.Icons.CHECK_BOX_OUTLINE_BLANK),
             color=SUCCESS if is_checked else MUTED,
-            size=20,
-        )
+            size=20)
         label = ft.Text(
             f"{name}  ·  {status}  ·  {price_str}",
             size=11, expand=True,
-            color="#0f172a" if is_checked else MUTED,
-        )
+            color="#0f172a" if is_checked else MUTED)
         inner_row = ft.Row(
             [icon, label],
             spacing=8,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        )
+            vertical_alignment=ft.CrossAxisAlignment.CENTER)
         container = ft.Container(
             content=inner_row,
             padding=ft.Padding.symmetric(horizontal=10, vertical=8),
@@ -730,19 +663,16 @@ class FrontPageSettingsTab:
             border_radius=8,
             ink=True,
             on_click=lambda e, _bid=batch_id:
-                self._toggle_batch_row_by_id(_bid),
-        )
+                self._toggle_batch_row_by_id(_bid))
         self.batch_checkboxes[batch_id] = {
             "container": container,
             "icon": icon,
-            "label": label,
-        }
+            "label": label}
         return container
 
     def _rebuild_batch_rows(self):
         if self.pkg_batch_container is None:
             return
-
         self.pkg_batch_container.controls.clear()
         self.batch_checkboxes = {}
 
@@ -769,13 +699,10 @@ class FrontPageSettingsTab:
     def _toggle_batch_row_by_id(self, batch_id):
         entry = self.batch_checkboxes.get(batch_id)
         if not entry:
-            print(f"[FRONTPAGE] toggle: no entry for {batch_id!r}")
             return
-
         current = bool(self._batch_check_state.get(batch_id, False))
         new_val = not current
         self._batch_check_state[batch_id] = new_val
-
         try:
             entry["icon"].icon = (
                 ft.Icons.CHECK_BOX if new_val
@@ -786,17 +713,18 @@ class FrontPageSettingsTab:
                 "#ecfdf5" if new_val else "#f8fafc")
             entry["container"].border = ft.Border.all(
                 1, "#a7f3d0" if new_val else "#e2e8f0")
-
             for k in ("icon", "label", "container"):
                 try:
                     entry[k].update()
-                except Exception as e:
-                    print(f"[FRONTPAGE] {k}.update() failed: {e}")
-        except Exception as e:
-            print(f"[FRONTPAGE] row visual update failed: {e}")
-
+                except Exception:
+                    pass
+        except Exception:
+            pass
         self._auto_save_batch_state()
-        print(f"[FRONTPAGE] toggle {batch_id!r}: {current} -> {new_val}")
+        # Show a quiet status update instead of a snack
+        n = sum(1 for v in self._batch_check_state.values() if v)
+        self._set_status(
+            f"✓ Batch toggled — {n} selected (auto-saved)", PRIMARY_LT)
 
     def _on_pkg_source_change(self, e=None):
         self._update_source_visibility()
@@ -811,8 +739,6 @@ class FrontPageSettingsTab:
             pass
 
     def _toggle_batches(self, value):
-        print(f"[FRONTPAGE] _toggle_batches("
-              f"{'All' if value else 'Clear'})")
         for bid, entry in self.batch_checkboxes.items():
             self._batch_check_state[bid] = bool(value)
             try:
@@ -830,9 +756,13 @@ class FrontPageSettingsTab:
                         entry[k].update()
                     except Exception:
                         pass
-            except Exception as e:
-                print(f"[FRONTPAGE] _toggle_batches error on {bid!r}: {e}")
+            except Exception:
+                pass
         self._auto_save_batch_state()
+        n = sum(1 for v in self._batch_check_state.values() if v)
+        self._set_status(
+            f"✓ {'All' if value else 'None'} selected — "
+            f"{n} batch(es) (auto-saved)", PRIMARY_LT)
 
     def _auto_save_batch_state(self):
         try:
@@ -840,8 +770,7 @@ class FrontPageSettingsTab:
                 load_config, save_config, normalize_batch_ids)
             checked = [
                 bid for bid, is_on
-                in self._batch_check_state.items() if is_on
-            ]
+                in self._batch_check_state.items() if is_on]
             checked = normalize_batch_ids(checked)
             cfg = load_config()
             pkg = cfg.setdefault("packages", {})
@@ -854,11 +783,8 @@ class FrontPageSettingsTab:
                 except Exception:
                     pass
                 print(f"[FRONTPAGE] auto-saved {len(checked)} batch id(s)")
-            else:
-                print("[FRONTPAGE] auto-save FAILED")
         except Exception as e:
             print(f"[FRONTPAGE] auto-save error: {e}")
-            traceback.print_exc()
 
 
 # =================================================================================
@@ -913,7 +839,6 @@ class FrontPageSettingsTab:
                                 hint_text="e.g. 25+")
         lbl_field = self._field("Label", label_val,
                                 hint_text="e.g. Years Experience")
-
         entry = {"number": num_field, "label": lbl_field, "row": None}
 
         def remove(ev, _entry=entry):
@@ -925,11 +850,8 @@ class FrontPageSettingsTab:
                     self.stats_rows_container.update()
                 except Exception:
                     pass
-                print(f"[FRONTPAGE] stat removed. "
-                      f"Total: {len(self.stat_entries)}")
-            except Exception as ex:
-                print(f"[FRONTPAGE] remove stat failed: {ex}")
-                traceback.print_exc()
+            except Exception:
+                pass
 
         row = ft.Container(
             content=ft.Row([
@@ -949,30 +871,18 @@ class FrontPageSettingsTab:
         return entry
 
     def _add_stat_empty(self, e=None):
-        print("[FRONTPAGE] _add_stat_empty called")
         if self.stats_rows_container is None:
-            try:
-                self._snack("⚠️ Stat container not ready. "
-                            "Click Reload, then try again.", DANGER)
-            except Exception:
-                pass
+            self._set_status("⚠️ Stat container not ready.", DANGER)
             return
         try:
             self._add_stat_row("", "")
-            print(f"[FRONTPAGE] stat added. "
-                  f"Total: {len(self.stat_entries)}")
             try:
                 self._sync_all_fields()
                 self.stats_rows_container.update()
-            except Exception as ue:
-                print(f"[FRONTPAGE] stats container.update() failed: {ue}")
-        except Exception as ex:
-            print(f"[FRONTPAGE] add stat failed: {ex}")
-            traceback.print_exc()
-            try:
-                self._snack(f"❌ Failed to add statistic: {ex}", DANGER)
             except Exception:
                 pass
+        except Exception as ex:
+            self._set_status(f"❌ Failed to add statistic: {ex}", DANGER)
 
 
 # =================================================================================
@@ -980,8 +890,7 @@ class FrontPageSettingsTab:
 # =================================================================================
     def _section_7_contact(self):
         c = self.cfg.get("contact", {})
-        self.contact_phone = self._field(
-            "Primary phone", c.get("phone", ""))
+        self.contact_phone = self._field("Primary phone", c.get("phone", ""))
         self.contact_phone2 = self._field(
             "Secondary phone (optional)", c.get("phone2", ""))
         self.contact_email = self._field("Email", c.get("email", ""))
@@ -992,7 +901,6 @@ class FrontPageSettingsTab:
             "Address line 1", c.get("address_line1", ""))
         self.contact_addr2 = self._field(
             "Address line 2", c.get("address_line2", ""))
-
         return self._section_card(
             "📞", "Contact Information",
             "Shown in top bar, contact section, and footer",
@@ -1014,7 +922,6 @@ class FrontPageSettingsTab:
             "Instagram URL", s.get("instagram", ""))
         self.social_twitter = self._field(
             "Twitter / X URL", s.get("twitter", ""))
-
         return self._section_card(
             "🔗", "Social Links",
             "Leave empty to hide a network",
@@ -1035,7 +942,6 @@ class FrontPageSettingsTab:
             multiline=True, min_lines=2, max_lines=3)
         self.footer_copyright = self._field(
             "Copyright text", f.get("copyright", ""))
-
         return self._section_card(
             "📝", "Footer",
             "Bottom-of-page content",
@@ -1218,8 +1124,8 @@ class FrontPageSettingsTab:
 
         caption_field = self._field("Caption (optional)", caption)
 
-        def _save_caption(ev, _item=item, _field=caption_field):
-            new_cap = (_field.value or "").strip()
+        def _save_caption(ev, _item=item, _fid=id(caption_field)):
+            new_cap = (self._field_values.get(_fid) or "").strip()
             if new_cap != (_item.get("caption") or ""):
                 _item["caption"] = new_cap
                 self._save_silent()
@@ -1253,18 +1159,11 @@ class FrontPageSettingsTab:
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
 
-    # -----------------------------------------------------------------------------
-    # §11.5 — Gallery refresh
-    # -----------------------------------------------------------------------------
     def _refresh_gallery_click(self, e=None):
         try:
             self._reload_gallery_from_disk(show_toast=True, force=True)
         except Exception as ex:
-            print(f"[FRONTPAGE] refresh gallery failed: {ex}")
-            try:
-                self._snack(f"⚠️ {ex}", DANGER)
-            except Exception:
-                pass
+            self._set_status(f"⚠️ Refresh failed: {ex}", DANGER)
 
     def _reload_gallery_from_disk(self, show_toast=False, force=False):
         try:
@@ -1307,44 +1206,16 @@ class FrontPageSettingsTab:
 
         if show_toast:
             if changed:
-                self._snack(
+                self._set_status(
                     f"🔄 Gallery refreshed — "
                     f"{len(new_photos)} photos, "
                     f"{len(new_videos)} videos", SUCCESS)
             else:
-                self._snack(
+                self._set_status(
                     f"✓ Gallery up to date — "
                     f"{len(new_photos)} photos, "
                     f"{len(new_videos)} videos", PRIMARY_LT)
-
         return changed
-
-    def _start_gallery_poll(self):
-        if self._gallery_poll_started:
-            return
-        self._gallery_poll_started = True
-
-        async def _loop():
-            await asyncio.sleep(3)
-            while True:
-                try:
-                    await asyncio.sleep(GALLERY_POLL_SECONDS)
-                    if not self.photo_list_container:
-                        continue
-                    if time.time() < self._typing_until:
-                        continue
-                    self._reload_gallery_from_disk(show_toast=False)
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    print(f"[FRONTPAGE] gallery poll error: {e}")
-
-        try:
-            self.page_ref.run_task(_loop)
-            print("[FRONTPAGE] gallery auto-poll started")
-        except Exception as e:
-            print(f"[FRONTPAGE] could not start gallery poll: {e}")
-            self._gallery_poll_started = False
 
     def _pick_gallery_files(self, media_type):
         admin_key = os.getenv("ADMIN_API_KEY", "")
@@ -1352,11 +1223,6 @@ class FrontPageSettingsTab:
             url = f"/gallery-upload?type={media_type}&key={admin_key}"
         else:
             url = f"/gallery-upload?type={media_type}"
-            print("[GALLERY] WARNING: ADMIN_API_KEY not set — "
-                  "uploads will fail with 401.")
-
-        print(f"[GALLERY] opening upload page "
-              f"(type={media_type}, key={'yes' if admin_key else 'NO'})")
 
         async def _go():
             try:
@@ -1365,40 +1231,33 @@ class FrontPageSettingsTab:
                                         web_only_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] OK new tab")
                 return
-            except TypeError as te:
-                print(f"[GALLERY] 1.0 param rejected: {te}")
-            except Exception as e:
-                print(f"[GALLERY] 1.0 param raised: {e}")
+            except TypeError:
+                pass
+            except Exception:
+                pass
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url,
                                         web_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] OK new tab (legacy)")
                 return
-            except Exception as e:
-                print(f"[GALLERY] legacy param failed: {e}")
+            except Exception:
+                pass
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
                 if asyncio.iscoroutine(r):
                     await r
-                print("[GALLERY] OK bare launch")
-            except Exception as e:
-                print(f"[GALLERY] bare failed: {e}")
+            except Exception:
+                pass
 
         try:
             self.page_ref.run_task(_go)
         except Exception as ex:
-            print(f"[GALLERY] run_task failed: {ex}")
-            try:
-                self._snack(f"⚠️ Could not open upload page: {ex}",
-                            DANGER)
-            except Exception:
-                pass
+            self._set_status(f"⚠️ Could not open upload page: {ex}",
+                             DANGER)
 
     async def _upload_files(self, files, media_type):
         import httpx
@@ -1432,8 +1291,7 @@ class FrontPageSettingsTab:
                         timeout=120.0) as cli:
                     r = await cli.post(
                         "/api/admin/gallery/upload",
-                        files=files_arg, data=form,
-                        headers=headers)
+                        files=files_arg, data=form, headers=headers)
                 if r.status_code == 200:
                     item = r.json().get("item", {})
                     if media_type == "photos":
@@ -1448,10 +1306,10 @@ class FrontPageSettingsTab:
                 fail += 1
         self._rebuild_gallery_lists()
         self._safe_update(force=True)
-        if ok and not fail:
-            self._snack(f"✅ {ok} file(s) uploaded", SUCCESS)
-        elif fail:
-            self._snack("❌ Upload failed", DANGER)
+        self._set_status(
+            f"✅ {ok} file(s) uploaded" if ok and not fail
+            else "❌ Upload failed",
+            SUCCESS if ok and not fail else DANGER)
 
     def _remove_gallery_item(self, media_type, item):
         url = item.get("url", "")
@@ -1474,13 +1332,11 @@ class FrontPageSettingsTab:
                             base_url="http://127.0.0.1:8080",
                             timeout=30.0) as cli:
                         await cli.request(
-                            "DELETE",
-                            "/api/admin/gallery/item",
-                            params={"media_type": media_type,
-                                    "url": url},
+                            "DELETE", "/api/admin/gallery/item",
+                            params={"media_type": media_type, "url": url},
                             headers=headers)
-                except Exception as ex:
-                    print(f"[FRONTPAGE] delete error: {ex}")
+                except Exception:
+                    pass
 
             try:
                 self.page_ref.run_task(_del)
@@ -1495,7 +1351,7 @@ class FrontPageSettingsTab:
                                    if x.get("url") != url]
             self._rebuild_gallery_lists()
             self._safe_update(force=True)
-            self._snack("🗑️ Deleted", WARN)
+            self._set_status("🗑️ Deleted", WARN)
 
         def cancel(ev):
             try:
@@ -1512,8 +1368,7 @@ class FrontPageSettingsTab:
             ], spacing=8),
             content=ft.Text(
                 f"This will remove the file from the volume and "
-                f"from the gallery config.\n\n{caption}",
-                size=11),
+                f"from the gallery config.\n\n{caption}", size=11),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel", size=11),
                               on_click=cancel),
@@ -1537,11 +1392,6 @@ class FrontPageSettingsTab:
                     if p not in self.page_ref.overlay:
                         self.page_ref.overlay.append(p)
             self._pickers_registered = True
-            try:
-                self.page_ref.update()
-            except Exception:
-                pass
-            print("[FRONTPAGE] gallery pickers registered ✅")
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
 
@@ -1614,7 +1464,6 @@ class FrontPageSettingsTab:
 # §A — ACTIONS
 # =================================================================================
     def _v(self, field):
-        """Read a field's value from the LOCAL truth source."""
         try:
             fid = id(field)
             if fid in self._field_values:
@@ -1642,8 +1491,8 @@ class FrontPageSettingsTab:
             for bid, checked in self._batch_check_state.items():
                 if checked:
                     selected_ids.append(str(bid).strip())
-        except Exception as e:
-            print(f"[FRONTPAGE] _collect_config batch read failed: {e}")
+        except Exception:
+            pass
 
         features = []
         for entry in self.feature_entries:
@@ -1654,8 +1503,7 @@ class FrontPageSettingsTab:
             features.append({
                 "icon": (self._v(entry["icon"]) or
                          "fa-check-circle"),
-                "title": title, "text": text,
-            })
+                "title": title, "text": text})
 
         stats = []
         for entry in self.stat_entries:
@@ -1677,15 +1525,13 @@ class FrontPageSettingsTab:
                 "heading": self._v(self.hero_heading),
                 "subheading": self._v(self.hero_subheading),
                 "button_text": self._v(self.hero_button),
-                "whatsapp_text": self._v(self.hero_whatsapp),
-            },
+                "whatsapp_text": self._v(self.hero_whatsapp)},
             "alert": {
                 "enabled": bool(self.alert_enabled.value),
                 "message": self._v(self.alert_message),
                 "link": self._v(self.alert_link) or "#",
                 "color": self._v(self.alert_color) or "#f39c12",
-                "style": (self.alert_style.value or "pulse"),
-            },
+                "style": (self.alert_style.value or "pulse")},
             "features": features,
             "packages": {
                 "title": self._v(self.pkg_title),
@@ -1693,31 +1539,26 @@ class FrontPageSettingsTab:
                 "source": (self.pkg_source.value or "batches"),
                 "max_shown": max_shown,
                 "selected_batch_ids": selected_ids,
-                "manual": [],
-            },
+                "manual": []},
             "about": {
                 "heading": self._v(self.about_heading),
                 "paragraph1": self._v(self.about_p1),
                 "paragraph2": self._v(self.about_p2),
-                "stats": stats,
-            },
+                "stats": stats},
             "contact": {
                 "phone": self._v(self.contact_phone),
                 "phone2": self._v(self.contact_phone2),
                 "email": self._v(self.contact_email),
                 "whatsapp": self._v(self.contact_whatsapp),
                 "address_line1": self._v(self.contact_addr1),
-                "address_line2": self._v(self.contact_addr2),
-            },
+                "address_line2": self._v(self.contact_addr2)},
             "social": {
                 "facebook": self._v(self.social_facebook),
                 "instagram": self._v(self.social_instagram),
-                "twitter": self._v(self.social_twitter),
-            },
+                "twitter": self._v(self.social_twitter)},
             "footer": {
                 "about_text": self._v(self.footer_about),
-                "copyright": self._v(self.footer_copyright),
-            },
+                "copyright": self._v(self.footer_copyright)},
             "gallery": {
                 "enabled": bool(self.gallery_enabled.value),
                 "title": self._v(self.gallery_title),
@@ -1726,32 +1567,20 @@ class FrontPageSettingsTab:
                 "max_photos_shown": max_photos,
                 "max_videos_shown": max_videos,
                 "photos": list(self.photo_list),
-                "videos": list(self.video_list),
-            },
+                "videos": list(self.video_list)},
         }
 
-    # -----------------------------------------------------------------------------
-    # §A.5 — DIFF: what actually changed?
-    # -----------------------------------------------------------------------------
     def _summarize_changes(self, old_cfg, new_cfg):
-        """Produce a short human-readable list of what changed."""
         friendly = {
-            "hero": "hero",
-            "alert": "alert",
-            "features": "features",
-            "packages": "packages",
-            "about": "about",
-            "contact": "contact",
-            "social": "social links",
-            "footer": "footer",
-            "gallery": "gallery",
-        }
+            "hero": "hero", "alert": "alert",
+            "features": "features", "packages": "packages",
+            "about": "about", "contact": "contact",
+            "social": "social links", "footer": "footer",
+            "gallery": "gallery"}
         changes = []
         for key, label in friendly.items():
             try:
-                old_v = old_cfg.get(key)
-                new_v = new_cfg.get(key)
-                if old_v != new_v:
+                if old_cfg.get(key) != new_cfg.get(key):
                     if key == "packages":
                         n = len((new_cfg.get("packages") or {})
                                 .get("selected_batch_ids") or [])
@@ -1770,11 +1599,9 @@ class FrontPageSettingsTab:
 
     def _save(self, e=None):
         if self._saving:
-            print("[FRONTPAGE] _save: already saving, ignoring")
             return
         self._saving = True
         try:
-            # Snapshot config BEFORE saving (for diff)
             try:
                 old_cfg = load_config()
             except Exception:
@@ -1783,32 +1610,22 @@ class FrontPageSettingsTab:
             cfg = self._collect_config()
             n_sel = len(cfg.get("packages", {})
                          .get("selected_batch_ids", []))
-
             changes = self._summarize_changes(old_cfg, cfg)
             print(f"[FRONTPAGE] _save: changed = {changes!r}")
 
             ok = save_config(cfg)
             if ok:
                 self.cfg = cfg
-
-                # Build a clear, honest status message
                 if changes:
                     summary = ", ".join(changes)
-                    status_txt = (f"✅ Saved: {summary}  ·  "
-                                  f"{datetime.now().strftime('%H:%M:%S')}")
-                    snack_txt = f"✅ Saved: {summary}"
+                    txt = (f"✅ Saved: {summary}  ·  "
+                           f"{datetime.now().strftime('%H:%M:%S')}")
                 else:
-                    status_txt = (f"✅ Saved (no changes)  ·  "
-                                  f"{datetime.now().strftime('%H:%M:%S')}")
-                    snack_txt = "✅ Saved (no changes)"
-
-                # Show batch count as a quiet prefix in status
+                    txt = (f"✅ Saved (no changes)  ·  "
+                           f"{datetime.now().strftime('%H:%M:%S')}")
                 if n_sel:
-                    status_txt += f"  ·  {n_sel} batch(es) selected"
-
-                self._set_status(status_txt, SUCCESS)
-                self._snack(snack_txt)
-
+                    txt += f"  ·  {n_sel} batch(es) selected"
+                self._set_status(txt, SUCCESS)
                 try:
                     self.db.log_activity(
                         self.current_user.get("id"),
@@ -1818,11 +1635,9 @@ class FrontPageSettingsTab:
                     pass
             else:
                 self._set_status("❌ Save failed", DANGER)
-                self._snack("❌ Save failed", DANGER)
         except Exception as ex:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
-            self._snack(f"❌ {ex}", DANGER)
         finally:
             self._saving = False
 
@@ -1834,10 +1649,10 @@ class FrontPageSettingsTab:
                 pass
             ok = save_config(DEFAULT_CONFIG)
             if ok:
-                self._snack("↺ Reset to defaults")
+                self._set_status("↺ Reset to defaults", SUCCESS)
                 self.refresh()
             else:
-                self._snack("❌ Reset failed", DANGER)
+                self._set_status("❌ Reset failed", DANGER)
 
         def cancel(ev):
             try:
@@ -1875,25 +1690,27 @@ class FrontPageSettingsTab:
                 try:
                     launcher = ft.UrlLauncher()
                     await launcher.launch_url("/")
-                except Exception as ex:
-                    print(f"[preview] launch failed: {ex}")
+                except Exception:
+                    pass
             try:
                 self.page_ref.run_task(_do)
                 self._set_status("🔗 Opening front page…", PRIMARY_LT)
                 return
-            except Exception as ex:
-                print(f"[preview] run_task failed: {ex}")
+            except Exception:
+                pass
             try:
                 self.page_ref.url = "/"
                 self._set_status("🔗 Opened front page", PRIMARY_LT)
                 return
-            except Exception as ex:
-                print(f"[preview] page.url failed: {ex}")
-            self._snack("⚠️ Could not open preview — visit / manually")
+            except Exception:
+                pass
+            self._set_status("⚠️ Could not open preview", WARN)
         except Exception as ex:
-            self._snack(f"⚠️ {ex}")
+            self._set_status(f"⚠️ {ex}", WARN)
 
     def _set_status(self, message, color=PRIMARY_LT):
+        """Update ONLY the status label — never the whole page.
+        This is a LEAF node so it's safe."""
         try:
             if self.status_label is not None:
                 self.status_label.value = message
@@ -1902,45 +1719,14 @@ class FrontPageSettingsTab:
         except Exception as e:
             print(f"[FRONTPAGE] _set_status failed: {e}")
 
-    def _snack(self, msg, color=ft.Colors.GREEN_700):
-        try:
-            now = time.time()
-            if (self._last_snack_msg == msg and
-                    (now - self._last_snack_time) < 3.0):
-                print(f"[FRONTPAGE] _snack: skipping duplicate: {msg!r}")
-                return
-            self._last_snack_msg = msg
-            self._last_snack_time = now
-        except Exception:
-            pass
-
-        try:
-            self.page_ref.show_dialog(
-                ft.SnackBar(content=ft.Text(msg), bgcolor=color))
-        except Exception as e:
-            print(f"[FRONTPAGE] _snack failed: {e}")
-
-    # -----------------------------------------------------------------------------
-    # §A.7 — _safe_update  (v3.26 — sync fields BEFORE update)
-    # -----------------------------------------------------------------------------
     def _safe_update(self, force=False):
-        """
-        Update the inner column.
-
-        v3.26: before every update, sync field values from our
-        local truth source. If Flet re-sends the tree, it now
-        sends the CORRECT values.
-        """
         if not force:
             remaining = self._typing_until - time.time()
             if remaining > 0:
                 print(f"[FRONTPAGE] _safe_update SKIPPED "
                       f"(typing, {remaining:.1f}s left)")
                 return
-
-        # Restore latest field values BEFORE pushing to browser
         self._sync_all_fields()
-
         print(f"[FRONTPAGE] _safe_update RUNNING (force={force})")
         try:
             if self._inner_column is not None:
@@ -1948,7 +1734,6 @@ class FrontPageSettingsTab:
                 return
         except Exception as e:
             print(f"[FRONTPAGE] inner_column.update() failed: {e}")
-
         try:
             if self.root is not None:
                 self.root.update()
@@ -1957,5 +1742,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.26
+# SECTION END — core/frontpage_settings_tab.py v3.27
 # =================================================================================
