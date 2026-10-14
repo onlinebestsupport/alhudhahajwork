@@ -1,23 +1,27 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.27 — THE REAL FIX: removed SnackBars (they trigger page.update() on auto-dismiss,
-#         which was wiping in-progress typing)
+# v3.28 — THE ACTUAL FIX: _sync_all_fields() was writing stale values back
 #
-#   ROOT CAUSE:
-#     Flet's SnackBar auto-dismisses after ~4s and that dismissal fires a
-#     page-level update. That update re-sends ALL controls' server-side state,
-#     including TextField.value — which lags behind the browser during fast
-#     typing. Result: text typed after the last on_change round-trip gets
-#     visually replaced by the stale server value.
+#   THE BUG (finally found it):
+#     v3.26/v3.27 introduced self._field_values + _sync_all_fields().
+#     _sync_all_fields() copied values FROM the dict BACK INTO fields
+#     before every update. But if the dict ever held an older value than
+#     the field (which happens on fast typing because events lag), it
+#     OVERWROTE the field with the stale value → text vanished.
 #
-#   v3.27 CHANGES:
-#     1. NO MORE SnackBars anywhere in this file.
-#     2. All notifications go to status_label (a leaf node → safe to update).
-#     3. Gallery auto-poll REMOVED. Use the 🔄 Refresh Gallery button.
-#     4. Kept: _field_values local truth source, _typing_until guard,
-#        _sync_all_fields before updates, dedupe, save lock, admin key.
-#     5. Save status now lists WHAT changed, in the label under Save/Reload.
+#   THE FIX:
+#     • _sync_all_fields() is now a NO-OP.
+#     • The dict is only ever updated FROM the field (never the other way).
+#     • _collect_config() reads straight from field.value — the true source.
+#
+#   EVERYTHING ELSE KEPT:
+#     • Time-based typing guard
+#     • No SnackBars (they triggered page-level updates on auto-dismiss)
+#     • No gallery auto-poll
+#     • Manual 🔄 Refresh Gallery button
+#     • Save message shows WHAT changed
+#     • Admin key passed to gallery upload
 # =================================================================================
 
 import os
@@ -143,10 +147,6 @@ class FrontPageSettingsTab:
 
         # Action bar
         self.status_label = None
-
-        # Local truth source for field values
-        self._field_values = {}
-        self._all_fields = {}
 
         # Typing guard
         self._typing_until = 0.0
@@ -294,7 +294,18 @@ class FrontPageSettingsTab:
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
+    # -----------------------------------------------------------------------------
+    # §H.2 — _field  (v3.28 — SIMPLE: field.value IS the source of truth)
+    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
+        """
+        v3.28: no more dict shadow state. The field IS the truth.
+
+        on_change:
+          • Extends the typing guard (blocks _safe_update for 3s)
+          • Explicitly sets field.value from the event (belt-and-braces)
+          • Logs the value length so we can debug in the terminal
+        """
         defaults = dict(
             label=label,
             value=value or "",
@@ -308,43 +319,30 @@ class FrontPageSettingsTab:
         defaults.update(kwargs)
         field = ft.TextField(**defaults)
 
-        fid = id(field)
-        self._field_values[fid] = value or ""
-        self._all_fields[fid] = field
-
-        def _on_change(e, _fid=fid, _f=field):
+        def _on_change(e, _f=field, _lbl=label):
+            # Extend the typing guard
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
-            new_val = None
+            # Grab the value from the event and assign it to the field
             try:
+                new_val = None
                 ctrl = getattr(e, "control", None)
                 if ctrl is not None:
-                    v = getattr(ctrl, "value", None)
-                    if v is not None:
-                        new_val = v
+                    new_val = getattr(ctrl, "value", None)
                 if new_val is None:
-                    d = getattr(e, "data", None)
-                    if d is not None:
-                        new_val = d
-            except Exception:
-                pass
-            if new_val is not None:
-                try:
+                    new_val = getattr(e, "data", None)
+                if new_val is not None:
                     _f.value = new_val
-                except Exception:
-                    pass
-                self._field_values[_fid] = new_val
+                    print(f"[FRONTPAGE] on_change "
+                          f"'{_lbl}': len={len(new_val)}")
+            except Exception as ex:
+                print(f"[FRONTPAGE] on_change error: {ex}")
 
         field.on_change = _on_change
         return field
 
     def _sync_all_fields(self):
-        for fid, field in list(self._all_fields.items()):
-            try:
-                stored = self._field_values.get(fid)
-                if stored is not None and field.value != stored:
-                    field.value = stored
-            except Exception:
-                pass
+        """v3.28: NO-OP. We don't write back into fields anymore."""
+        pass
 
     def _two_col(self, left, right):
         return ft.Row([
@@ -503,7 +501,6 @@ class FrontPageSettingsTab:
                 self.feature_rows_container.controls.remove(
                     _entry["row"])
                 try:
-                    self._sync_all_fields()
                     self.feature_rows_container.update()
                 except Exception:
                     pass
@@ -546,7 +543,6 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] feature added. "
                   f"Total: {len(self.feature_entries)}")
             try:
-                self._sync_all_fields()
                 self.feature_rows_container.update()
             except Exception as ue:
                 print(f"[FRONTPAGE] container.update() failed: {ue}")
@@ -721,7 +717,6 @@ class FrontPageSettingsTab:
         except Exception:
             pass
         self._auto_save_batch_state()
-        # Show a quiet status update instead of a snack
         n = sum(1 for v in self._batch_check_state.values() if v)
         self._set_status(
             f"✓ Batch toggled — {n} selected (auto-saved)", PRIMARY_LT)
@@ -846,7 +841,6 @@ class FrontPageSettingsTab:
                 self.stat_entries.remove(_entry)
                 self.stats_rows_container.controls.remove(_entry["row"])
                 try:
-                    self._sync_all_fields()
                     self.stats_rows_container.update()
                 except Exception:
                     pass
@@ -877,7 +871,6 @@ class FrontPageSettingsTab:
         try:
             self._add_stat_row("", "")
             try:
-                self._sync_all_fields()
                 self.stats_rows_container.update()
             except Exception:
                 pass
@@ -1124,8 +1117,8 @@ class FrontPageSettingsTab:
 
         caption_field = self._field("Caption (optional)", caption)
 
-        def _save_caption(ev, _item=item, _fid=id(caption_field)):
-            new_cap = (self._field_values.get(_fid) or "").strip()
+        def _save_caption(ev, _item=item, _f=caption_field):
+            new_cap = (_f.value or "").strip()
             if new_cap != (_item.get("caption") or ""):
                 _item["caption"] = new_cap
                 self._save_silent()
@@ -1190,7 +1183,6 @@ class FrontPageSettingsTab:
             pass
 
         self._rebuild_gallery_lists()
-        self._sync_all_fields()
         try:
             self.photo_list_container.update()
         except Exception:
@@ -1258,58 +1250,6 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._set_status(f"⚠️ Could not open upload page: {ex}",
                              DANGER)
-
-    async def _upload_files(self, files, media_type):
-        import httpx
-        admin_key = os.getenv("ADMIN_API_KEY", "")
-        headers = {}
-        if admin_key:
-            headers["Authorization"] = f"Bearer {admin_key}"
-
-        ok = 0
-        fail = 0
-        for f in files:
-            try:
-                data = getattr(f, "bytes", None)
-                name = getattr(f, "name", "upload.bin")
-                if not data:
-                    src = getattr(f, "path", None)
-                    if src:
-                        try:
-                            if os.path.exists(src):
-                                with open(src, "rb") as fh:
-                                    data = fh.read()
-                        except Exception:
-                            pass
-                if not data:
-                    fail += 1
-                    continue
-                files_arg = {"file": (name, data)}
-                form = {"media_type": media_type, "caption": ""}
-                async with httpx.AsyncClient(
-                        base_url="http://127.0.0.1:8080",
-                        timeout=120.0) as cli:
-                    r = await cli.post(
-                        "/api/admin/gallery/upload",
-                        files=files_arg, data=form, headers=headers)
-                if r.status_code == 200:
-                    item = r.json().get("item", {})
-                    if media_type == "photos":
-                        self.photo_list.append(item)
-                    else:
-                        self.video_list.append(item)
-                    ok += 1
-                else:
-                    fail += 1
-            except Exception as ex:
-                print(f"[GALLERY] upload error {name}: {ex}")
-                fail += 1
-        self._rebuild_gallery_lists()
-        self._safe_update(force=True)
-        self._set_status(
-            f"✅ {ok} file(s) uploaded" if ok and not fail
-            else "❌ Upload failed",
-            SUCCESS if ok and not fail else DANGER)
 
     def _remove_gallery_item(self, media_type, item):
         url = item.get("url", "")
@@ -1464,10 +1404,8 @@ class FrontPageSettingsTab:
 # §A — ACTIONS
 # =================================================================================
     def _v(self, field):
+        """Read the field's value. Field is the source of truth."""
         try:
-            fid = id(field)
-            if fid in self._field_values:
-                return (self._field_values[fid] or "").strip()
             return (field.value or "").strip()
         except Exception:
             return ""
@@ -1709,8 +1647,6 @@ class FrontPageSettingsTab:
             self._set_status(f"⚠️ {ex}", WARN)
 
     def _set_status(self, message, color=PRIMARY_LT):
-        """Update ONLY the status label — never the whole page.
-        This is a LEAF node so it's safe."""
         try:
             if self.status_label is not None:
                 self.status_label.value = message
@@ -1726,7 +1662,6 @@ class FrontPageSettingsTab:
                 print(f"[FRONTPAGE] _safe_update SKIPPED "
                       f"(typing, {remaining:.1f}s left)")
                 return
-        self._sync_all_fields()
         print(f"[FRONTPAGE] _safe_update RUNNING (force={force})")
         try:
             if self._inner_column is not None:
@@ -1742,5 +1677,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.27
+# SECTION END — core/frontpage_settings_tab.py v3.28
 # =================================================================================
