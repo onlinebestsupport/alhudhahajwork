@@ -1,16 +1,30 @@
 # =================================================================================
 # SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
 # =================================================================================
-# v1.4 — Date format DD-MM-YYYY
-#   • All batch dates now display/input/store as DD-MM-YYYY
-#   • Backward compatible: legacy YYYY-MM-DD data auto-converts on load
-#   • v1.3 features preserved (row selection, data-loading safety, etc.)
+# v1.5 — Typing wipe fix + pagination persistence + filters preserved
+#
+#   FIXES:
+#     • Added _typing_until guard to BatchesTab and BatchFormDialog
+#     • Added _safe_update() — skips while typing (3s window)
+#     • Every TextField now has on_change with explicit value sync
+#     • _snack() no longer calls page.update()
+#     • refresh() CLAMPS page instead of resetting to 1
+#     • refresh() re-applies active filters instead of wiping them
+#     • current_page persisted to page.session.store
+#     • prev_page/next_page save page
+#     • apply_filters() uses leaf-only updates (table + pagination)
+#     • ft.dropdown.Option(key=..., text=...) form
+#
+#   Preserved from v1.4:
+#     • DD-MM-YYYY date format everywhere
+#     • Legacy ISO dates auto-convert on load
+#     • Row selection, data-loading safety
 #
 # SECTION INDEX
 #   [H]     Module-level helpers (prefix, date conversion, db adapters)
 #   [11.1]  BatchesTab class
 #   [11.2]  setup_ui
-#   [11.3]  Helpers (safe_str, _fmt_date)
+#   [11.3]  Helpers (safe_str, _fmt_date, _field, _safe_update)
 #   [11.4]  load_tour_types_and_years
 #   [11.5]  refresh
 #   [11.6]  display_batches
@@ -28,6 +42,7 @@
 
 import flet as ft
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
@@ -36,6 +51,9 @@ try:
     from core.settings_manager import SettingsManager
 except ImportError:
     SettingsManager = None
+
+
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -50,7 +68,7 @@ def get_app_base_path():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-# ---- [H.1] _get_prefix — derive batch ID prefix from tour name ----
+# ---- [H.1] _get_prefix ----
 def _get_prefix(name):
     if not name:
         return "HAJ"
@@ -81,20 +99,11 @@ _DATE_SEP = "-"
 
 
 def _to_display_date(value) -> str:
-    """
-    Convert a stored date (any of the formats below) → DD-MM-YYYY:
-        • 2026-10-05              (legacy ISO)
-        • 2026-10-05T10:00:00     (ISO timestamp)
-        • 05-10-2026              (current DD-MM-YYYY)
-        • 05/10/2026              (slash variant)
-    Returns the original string unchanged if it can't be parsed.
-    """
     if value is None:
         return ""
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-
     head = s[:10]
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
         try:
@@ -102,61 +111,42 @@ def _to_display_date(value) -> str:
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
     try:
         dt = datetime.fromisoformat(s.replace("Z", ""))
         return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
     except Exception:
         pass
-
     return s
 
 
 def _to_storage_date(value) -> str:
-    """
-    Normalise a user-entered date → DD-MM-YYYY for storage.
-    Accepts DD-MM-YYYY, DD/MM/YYYY, YYYY-MM-DD, and ISO timestamps.
-    Returns the raw input if nothing matches.
-    """
     if value is None:
         return ""
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-
     head = s[:10]
-
-    # Prefer user-facing formats
     for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y"):
         try:
             dt = datetime.strptime(head, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
-    # Fall back to ISO
     for fmt in ("%Y-%m-%d",):
         try:
             dt = datetime.strptime(head, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
         except ValueError:
             continue
-
     try:
         dt = datetime.fromisoformat(s.replace("Z", ""))
         return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y")
     except Exception:
         pass
-
     return s
 
 
 def _to_storage_datetime(value) -> str:
-    """
-    Like _to_storage_date but also validates the parse.
-    Used in the form's save() to convert user input → storage format.
-    Raises ValueError on invalid input — caller catches and shows snackbar.
-    """
     s = str(value or "").strip()
     if not s:
         raise ValueError("empty date")
@@ -233,7 +223,8 @@ class BatchesTab:
         self.filtered_batches = []
         self.tour_types = []
         self.available_years = []
-        self.current_page = 1
+        # v1.5 — restore page from session
+        self.current_page = self._load_saved_page()
         self.items_per_page = 10
 
         self.stats_labels = {}
@@ -248,6 +239,8 @@ class BatchesTab:
         self.root = None
 
         self._selected_batch_id = None
+        # v1.5 — typing guard
+        self._typing_until = 0.0
 
         try:
             self.setup_ui()
@@ -270,6 +263,26 @@ class BatchesTab:
 
     def build(self):
         return self.root
+
+    # =============================================================================
+    # [11.1b] Page-state persistence (v1.5)
+    # =============================================================================
+    def _load_saved_page(self) -> int:
+        try:
+            v = self.page.session.store.get("batches_page")
+            if v:
+                n = int(v)
+                return n if n >= 1 else 1
+        except Exception:
+            pass
+        return 1
+
+    def _save_page(self):
+        try:
+            self.page.session.store.set(
+                "batches_page", str(self.current_page))
+        except Exception:
+            pass
 
     # =============================================================================
     # [11.2] setup_ui
@@ -337,6 +350,7 @@ class BatchesTab:
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
+        # v1.5 — dropdowns with proper key=/text= form
         self.year_filter = ft.Dropdown(
             label="Year",
             options=[ft.dropdown.Option(key="", text="All")],
@@ -351,12 +365,26 @@ class BatchesTab:
         )
         self.tour_filter.on_change = self.apply_filters
 
+        # v1.5 — search input with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search...",
             height=48, text_size=12,
             content_padding=ft.Padding.symmetric(horizontal=10, vertical=8),
         )
-        self.search_input.on_change = self.apply_filters
+
+        def _search_on_change(e, _f=self.search_input):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            # Defer the filter so we don't update while typing
+            self.apply_filters(e)
+
+        self.search_input.on_change = _search_on_change
 
         toolbar = ft.ResponsiveRow(
             controls=[
@@ -485,14 +513,59 @@ class BatchesTab:
         return str(value)
 
     def _fmt_date(self, value):
-        """Display a batch date in DD-MM-YYYY."""
         if not value:
             return "-"
         out = _to_display_date(value)
         return out or "-"
 
+    # v1.5 — leaf-safe update helpers
+    def _safe_update(self):
+        """
+        Update the root column.
+        v1.5 — skips while typing (prevents wipe).
+        """
+        if time.time() < self._typing_until:
+            print("[BATCHES] _safe_update SKIPPED (typing)")
+            return
+        try:
+            if self.root is not None:
+                self.root.update()
+        except Exception as e:
+            print(f"[BATCHES] _safe_update failed: {e}")
+
+    def _update_table_and_pagination(self):
+        """
+        Leaf-only updates — safe even while typing because they don't
+        touch ancestors of the search field.
+        """
+        try:
+            if self.table is not None:
+                self.table.update()
+        except Exception:
+            pass
+        try:
+            if self.pagination_label is not None:
+                self.pagination_label.update()
+        except Exception:
+            pass
+        try:
+            if self.prev_btn is not None:
+                self.prev_btn.update()
+        except Exception:
+            pass
+        try:
+            if self.next_btn is not None:
+                self.next_btn.update()
+        except Exception:
+            pass
+        try:
+            if self.selection_label is not None:
+                self.selection_label.update()
+        except Exception:
+            pass
+
     # =============================================================================
-    # [11.4] load_tour_types_and_years
+    # [11.4] load_tour_types_and_years  (v1.5 — no page.update)
     # =============================================================================
     def load_tour_types_and_years(self):
         try:
@@ -507,7 +580,8 @@ class BatchesTab:
 
             year_opts = [ft.dropdown.Option(key="", text="All")]
             for y in self.available_years:
-                year_opts.append(ft.dropdown.Option(key=str(y), text=str(y)))
+                year_opts.append(
+                    ft.dropdown.Option(key=str(y), text=str(y)))
             self.year_filter.options = year_opts
 
             tour_opts = [ft.dropdown.Option(key="", text="All")]
@@ -518,15 +592,12 @@ class BatchesTab:
                         text=str(t.get("tour_name", "")),
                     ))
             self.tour_filter.options = tour_opts
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            # v1.5 — no page.update() here
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
     # =============================================================================
-    # [11.5] refresh (no destructive reloads)
+    # [11.5] refresh  (v1.5 — CLAMP page, PRESERVE filters)
     # =============================================================================
     def refresh(self):
         try:
@@ -548,14 +619,32 @@ class BatchesTab:
             print(f"[BATCHES] loaded {len(self.batches)} batches, "
                   f"{len(self.travelers)} travelers")
 
-            self.filtered_batches = self.batches[:]
-            self.current_page = 1
+            # v1.5 — re-apply existing filters instead of wiping them
+            self._apply_filters_internal()
+
+            # v1.5 — CLAMP page instead of resetting
+            total_pages = max(
+                1,
+                (len(self.filtered_batches) + self.items_per_page - 1)
+                // self.items_per_page)
+            if self.current_page > total_pages:
+                self.current_page = total_pages
+            if self.current_page < 1:
+                self.current_page = 1
+            self._save_page()
+
+            print(f"[BATCHES] refreshed — page "
+                  f"{self.current_page}/{total_pages}, "
+                  f"{len(self.filtered_batches)} filtered")
+
             self.display_batches()
             self.update_statistics()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+
+            # v1.5 — leaf-only updates (safe)
+            self._update_table_and_pagination()
+
+            # v1.5 — safe update for stats if not typing
+            self._safe_update()
         except Exception as ex:
             print(f"Batches refresh error: {ex}")
             import traceback
@@ -719,10 +808,8 @@ class BatchesTab:
                 self.selection_label.value = ""
 
         self.display_batches()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.5 — leaf-only updates
+        self._update_table_and_pagination()
 
     def _get_selected_batch(self):
         if not self._selected_batch_id:
@@ -731,7 +818,7 @@ class BatchesTab:
                      if b.get("id") == self._selected_batch_id), None)
 
     # =============================================================================
-    # [11.8] Pagination
+    # [11.8] Pagination  (v1.5 — SAVES page)
     # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_batches)
@@ -745,29 +832,27 @@ class BatchesTab:
     def prev_page(self, e):
         if self.current_page > 1:
             self.current_page -= 1
+            self._save_page()  # v1.5
             self.display_batches()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._update_table_and_pagination()  # v1.5
 
     def next_page(self, e):
         if (self.current_page * self.items_per_page
                 < len(self.filtered_batches)):
             self.current_page += 1
+            self._save_page()  # v1.5
             self.display_batches()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._update_table_and_pagination()  # v1.5
 
     # =============================================================================
-    # [11.9] Filters
+    # [11.9] Filters  (v1.5 — split internal + public)
     # =============================================================================
-    def apply_filters(self, e=None):
-        year = self.year_filter.value or ""
-        tour_id = self.tour_filter.value or ""
-        text = (self.search_input.value or "").strip().lower()
+    def _apply_filters_internal(self):
+        """Compute filtered_batches without touching UI."""
+        year = (self.year_filter.value or "") if self.year_filter else ""
+        tour_id = (self.tour_filter.value or "") if self.tour_filter else ""
+        text = (self.search_input.value or "").strip().lower() \
+            if self.search_input else ""
 
         result = self.batches[:]
 
@@ -790,12 +875,14 @@ class BatchesTab:
             ]
 
         self.filtered_batches = result
+
+    def apply_filters(self, e=None):
+        self._apply_filters_internal()
         self.current_page = 1
+        self._save_page()  # v1.5
         self.display_batches()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.5 — leaf-only updates (search field is not an ancestor of these)
+        self._update_table_and_pagination()
 
     # =============================================================================
     # [11.10] Statistics
@@ -962,7 +1049,6 @@ class BatchesTab:
                 data.append([
                     bid, b.get("batch_name", ""),
                     b.get("tour_type_name", ""), b.get("year", ""),
-                    # ---- dates in DD-MM-YYYY ----
                     _to_display_date(b.get("departure_date", "")),
                     _to_display_date(b.get("return_date", "")),
                     b.get("price", 0), total, booked, avail,
@@ -1005,19 +1091,18 @@ class BatchesTab:
             self._snack("⚠️ Tap a row to select, then tap 🖨️ Print. "
                         "Or use Ctrl+P for the full page.")
 
+    # =============================================================================
+    # [11.15] _snack  (v1.5 — NO page.update)
+    # =============================================================================
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[BATCHES] snack failed: {ex}")
 
 
 # =================================================================================
-# [12.1] CLASS: BatchFormDialog (Add/Edit)
+# [12.1] CLASS: BatchFormDialog (v1.5 — typing guard + on_change)
 # =================================================================================
 class BatchFormDialog:
 
@@ -1047,9 +1132,42 @@ class BatchFormDialog:
         self.description_field = None
         self.dialog = None
 
+        # v1.5 — typing guard
+        self._typing_until = 0.0
+
         self.setup_ui()
         if self.is_edit:
             self.load_batch()
+
+    # v1.5 — field helper with on_change guard
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    def _safe_update(self):
+        """v1.5 — skip update while typing."""
+        if time.time() < self._typing_until:
+            print("[BATCH-FORM] _safe_update SKIPPED (typing)")
+            return
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     def setup_ui(self):
         year_opts = []
@@ -1067,11 +1185,13 @@ class BatchFormDialog:
                     text=str(t.get("tour_name", "")),
                 ))
 
-        self.name_field = ft.TextField(
+        # v1.5 — use _field helper
+        self.name_field = self._field(
             label="Batch Name *",
             hint_text="e.g., Haj Silver 2026",
             height=48, text_size=12,
         )
+
         self.year_dropdown = ft.Dropdown(
             label="Year *",
             options=year_opts,
@@ -1093,24 +1213,24 @@ class BatchFormDialog:
             size=11, weight=ft.FontWeight.BOLD,
             color=ft.Colors.RED_600,
         )
-        self.seats_field = ft.TextField(
+
+        self.seats_field = self._field(
             label="Seats", value="150", width=120,
             height=48, text_size=12,
         )
-        self.price_field = ft.TextField(
+        self.price_field = self._field(
             label="Price (₹)", hint_text="350000",
             width=180, height=48, text_size=12,
         )
 
-        # ---- Date fields: labels now DD-MM-YYYY, defaults today in DD-MM-YYYY ----
         today_dmy = datetime.now().strftime("%d-%m-%Y")
-        self.departure_field = ft.TextField(
+        self.departure_field = self._field(
             label="Departure (DD-MM-YYYY)",
             value=today_dmy,
             hint_text="e.g. 05-10-2026",
             height=48, text_size=12,
         )
-        self.return_field = ft.TextField(
+        self.return_field = self._field(
             label="Return (DD-MM-YYYY)",
             value=today_dmy,
             hint_text="e.g. 20-10-2026",
@@ -1122,15 +1242,15 @@ class BatchFormDialog:
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
-                ft.dropdown.Option("Open"),
-                ft.dropdown.Option("Closing Soon"),
-                ft.dropdown.Option("Full"),
-                ft.dropdown.Option("Closed"),
+                ft.dropdown.Option(key="Open", text="Open"),
+                ft.dropdown.Option(key="Closing Soon", text="Closing Soon"),
+                ft.dropdown.Option(key="Full", text="Full"),
+                ft.dropdown.Option(key="Closed", text="Closed"),
             ],
             value="Open",
             width=180, height=48, text_size=12,
         )
-        self.description_field = ft.TextField(
+        self.description_field = self._field(
             label="Description",
             hint_text="Package details...",
             multiline=True, min_lines=2, max_lines=3,
@@ -1165,7 +1285,7 @@ class BatchFormDialog:
             actions=[
                 ft.TextButton(
                     content=ft.Text("Cancel"),
-                    on_click=lambda e: self.page.pop_dialog()),
+                    on_click=lambda e: self._close()),
                 ft.Button(
                     content=ft.Text("💾 Save"),
                     on_click=self.save,
@@ -1192,9 +1312,11 @@ class BatchFormDialog:
         return max_num + 1
 
     def on_year_change(self, e):
+        self._typing_until = time.time() + TYPING_GUARD_SECONDS
         self.update_id_preview()
 
     def on_tour_change(self, e):
+        self._typing_until = time.time() + TYPING_GUARD_SECONDS
         self.update_id_preview()
 
     def update_id_preview(self):
@@ -1205,7 +1327,7 @@ class BatchFormDialog:
                 "📋 Batch ID: Select Year and Tour Type")
             self.id_preview.color = ft.Colors.RED_600
             try:
-                self.page.update()
+                self.id_preview.update()
             except Exception:
                 pass
             return
@@ -1221,7 +1343,7 @@ class BatchFormDialog:
         self.id_preview.value = f"📋 Batch ID: {bid}"
         self.id_preview.color = ft.Colors.GREEN_700
         try:
-            self.page.update()
+            self.id_preview.update()
         except Exception:
             pass
 
@@ -1235,7 +1357,6 @@ class BatchFormDialog:
         self.seats_field.value = str(int(b.get("total_seats", 150) or 150))
         self.price_field.value = str(int(b.get("price", 0) or 0))
 
-        # ---- Convert stored dates → DD-MM-YYYY for the fields ----
         if b.get("departure_date"):
             self.departure_field.value = _to_display_date(
                 b.get("departure_date"))
@@ -1275,7 +1396,6 @@ class BatchFormDialog:
             except Exception:
                 seats = 150
 
-            # ---- Validate + normalise dates to DD-MM-YYYY ----
             dep_raw = (self.departure_field.value or "").strip()
             ret_raw = (self.return_field.value or "").strip()
             if not dep_raw or not ret_raw:
@@ -1312,12 +1432,24 @@ class BatchFormDialog:
                 "description": (self.description_field.value or "").strip(),
             }
 
+            # v1.5 — diff detection
+            changes = []
+            if self.is_edit:
+                old = self.batch or {}
+                for k in ("batch_name", "tour_type_id", "year",
+                          "total_seats", "price", "departure_date",
+                          "return_date", "status", "description"):
+                    if str(old.get(k, "")) != str(data.get(k, "")):
+                        changes.append(k.replace("_", " "))
+
             if self.is_edit:
                 self.db.update_batch(self.batch.get("id"), data)
                 self.db.log_activity(
                     self.current_user["id"], "edit_batch",
                     f"Updated batch: {name}")
                 msg = "✅ Batch updated"
+                if changes:
+                    msg += f": {', '.join(changes)}"
             else:
                 bid = _db_add_batch(self.db, data)
                 self.db.log_activity(
@@ -1325,6 +1457,8 @@ class BatchFormDialog:
                     f"Added batch: {name}")
                 msg = f"✅ Batch created: {bid}"
 
+            # v1.5 — clear typing guard before close
+            self._typing_until = 0.0
             self.page.pop_dialog()
             self._snack(msg)
             if self.on_save:
@@ -1334,18 +1468,21 @@ class BatchFormDialog:
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
+    def _close(self):
+        self._typing_until = 0.0
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+
     def show(self):
         self.page.show_dialog(self.dialog)
 
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[BATCH-FORM] snack failed: {ex}")
 
 
 # =================================================================================
@@ -1378,7 +1515,6 @@ class BatchViewDialog:
                   f"{t.get('last_name', '')}").strip() or "N/A"
                  for t in assigned]
 
-        # ---- Dates shown in DD-MM-YYYY ----
         dep_disp = _to_display_date(b.get("departure_date")) or "-"
         ret_disp = _to_display_date(b.get("return_date")) or "-"
 
@@ -1426,5 +1562,5 @@ class BatchViewDialog:
 
 
 # =================================================================================
-# END — core/batches_tab.py
+# END — core/batches_tab.py v1.5
 # =================================================================================
