@@ -1,19 +1,28 @@
 # =================================================================================
 # SECTION 15 (FLET 1.0.0 VERSION) — RECEIPTS TAB
 # =================================================================================
-# v1.3 — Row Selection + Data-Loading Safety
-#   • ADDED: Tap any row → SELECTS (does not open Edit)
-#   • ADDED: Toolbar 📄 PDF / 🖨️ Print act on selected row
-#   • ADDED: "Sel" column with ✓ marker
-#   • FIXED: on_select_change (correct Flet 1.0.0 param)
-#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
-#   • Action icons 16 → 18 for easier mobile tapping
-#   • Preserved: 15.1.A (fresh reload), 15.1.B (lifetime Pkg-Pending),
-#                15.1.C (action handlers re-fetch), 15.1.D (delete warns)
+# v1.4 — Typing wipe fix (matching users v3.2 / batches v1.5 / payments v1.8)
+#
+#   FIXES:
+#     • Added _typing_until guard
+#     • Added _safe_update() + leaf-only update helpers
+#     • Every TextField now has explicit on_change with value sync
+#     • apply_filters() uses leaf-only updates (search box safe)
+#     • _select_receipt() uses leaf-only updates
+#     • _snack() no longer calls page.update()
+#     • refresh() uses scoped update
+#     • ft.dropdown.Option(key=..., text=...) form
+#
+#   Preserved from v1.3:
+#     • Row Selection (tap → select, not edit)
+#     • 15.1.B: lifetime Pkg-Pending totals
+#     • 15.1.C: action handlers re-fetch fresh data
+#     • 15.1.D: delete warns about linked payment
 # =================================================================================
 
 import flet as ft
 import os
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
@@ -24,6 +33,9 @@ from core.helpers import (
     format_currency_indian,
     send_file_to_user,
 )
+
+
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -52,14 +64,56 @@ class ReceiptsTab:
         self.selection_label = None
         self.root = None
 
-        # Currently selected receipt (for toolbar PDF/Print)
         self._selected_receipt_id = None
+        # v1.4 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         self.refresh()
 
     def build(self):
         return self.root
+
+    # v1.4 — field helper with explicit sync
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=8)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    # v1.4 — safe leaf-only updates
+    def _safe_update(self):
+        if time.time() < self._typing_until:
+            print("[RECEIPTS] _safe_update SKIPPED (typing)")
+            return
+        try:
+            if self.root is not None:
+                self.root.update()
+        except Exception as e:
+            print(f"[RECEIPTS] _safe_update failed: {e}")
+
+    def _update_table_only(self):
+        """Leaf-only updates — search field is NOT an ancestor of these."""
+        for c in (self.table, self.filtered_count_label,
+                  self.selection_label):
+            try:
+                if c is not None:
+                    c.update()
+            except Exception:
+                pass
 
     # =============================================================================
     # 15.1.1 — setup_ui
@@ -90,30 +144,53 @@ class ReceiptsTab:
             spacing=8, wrap=True,
         )
 
-        # ---- FILTER BAR ----
+        # ---- FILTER BAR (v1.4 — every field uses _field with on_change guard) ----
         self.traveler_filter = ft.Dropdown(
             label="Traveler",
             options=[ft.dropdown.Option(key="", text="All Travelers")],
             value="", height=48, text_size=11)
         self.traveler_filter.on_change = self.apply_filters
 
-        self.search_input = ft.TextField(
+        self.search_input = self._field(
             hint_text="🔍 Search receipt no, amount, or invoice...",
-            height=48, text_size=12,
-            content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
-        self.search_input.on_change = self.apply_filters
+            height=48, text_size=12)
 
-        self.date_from = ft.TextField(
+        # search_input's on_change needs to ALSO call apply_filters
+        _orig_search_on_change = self.search_input.on_change
+
+        def _search_change(e, _f=self.search_input, _orig=_orig_search_on_change):
+            if _orig:
+                try:
+                    _orig(e)
+                except Exception:
+                    pass
+            self.apply_filters(e)
+
+        self.search_input.on_change = _search_change
+
+        self.date_from = self._field(
             label="From",
             value=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d"),
             height=48, text_size=11)
-        self.date_from.on_change = self.apply_filters
 
-        self.date_to = ft.TextField(
+        self.date_to = self._field(
             label="To",
             value=datetime.now().strftime("%Y-%m-%d"),
             height=48, text_size=11)
-        self.date_to.on_change = self.apply_filters
+
+        # Wire date fields to apply_filters (in addition to guard)
+        for _df in (self.date_from, self.date_to):
+            _orig = _df.on_change
+
+            def _date_change(e, _f=_df, _o=_orig):
+                if _o:
+                    try:
+                        _o(e)
+                    except Exception:
+                        pass
+                self.apply_filters(e)
+
+            _df.on_change = _date_change
 
         filter_bar = ft.ResponsiveRow(
             controls=[
@@ -267,15 +344,9 @@ class ReceiptsTab:
             return d
 
     # =============================================================================
-    # 15.1.2 — refresh (reload removed to protect cache)
+    # 15.1.2 — refresh (v1.4 — preserves filters, scoped update)
     # =============================================================================
     def refresh(self, e=None):
-        """
-        Load receipts + related data from the DB's in-memory cache.
-
-        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
-        can differ from the volume mount path, which wipes the cache.
-        """
         try:
             self.receipts = self.db.get_receipts()
 
@@ -293,27 +364,83 @@ class ReceiptsTab:
             self.invoices = {i['id']: i for i in self.db.get_invoices()}
             self.batches = {b['id']: b for b in self.db.get_batches()}
 
+            # Rebuild traveler dropdown preserving current selection
+            current_tid = ""
+            try:
+                current_tid = self.traveler_filter.value or ""
+            except Exception:
+                pass
+
             opts = [ft.dropdown.Option(key="", text="All Travelers")]
             for tid, info in self.travelers.items():
                 label = (f"{info['name']} ({info['passport']})"
                          if info['passport'] else info['name'])
                 opts.append(ft.dropdown.Option(key=tid, text=label[:60]))
             self.traveler_filter.options = opts
+            try:
+                if current_tid:
+                    self.traveler_filter.value = current_tid
+            except Exception:
+                pass
 
             print(f"[RECEIPTS] loaded {len(self.receipts)} receipts, "
                   f"{len(self.payments)} payments, "
                   f"{len(self.invoices)} invoices")
 
-            self.display_receipts()
+            # v1.4 — re-apply existing filters instead of wiping them
+            self._apply_filters_internal()
             self.update_summary_stats()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._safe_update()
         except Exception as ex:
             print(f"Receipts refresh error: {ex}")
             import traceback
             traceback.print_exc()
+
+    # v1.4 — filter computation without UI
+    def _apply_filters_internal(self):
+        tid_filter = (self.traveler_filter.value or "") \
+            if self.traveler_filter else ""
+        search = (self.search_input.value or "").lower().strip() \
+            if self.search_input else ""
+        date_from = (self.date_from.value or "").strip() \
+            if self.date_from else ""
+        date_to = (self.date_to.value or "").strip() \
+            if self.date_to else ""
+
+        filtered = []
+        for r in self.receipts:
+            p = self.payments.get(r.get('payment_id', ''), {})
+            p_tid = p.get('traveler_id', '')
+
+            if tid_filter and str(p_tid) != str(tid_filter):
+                continue
+
+            info = self.travelers.get(p_tid,
+                                      {'name': '', 'passport': ''})
+            receipt_no = str(r.get('receipt_no', '')).lower()
+            amount_str = f"{self._f(r.get('amount', 0)):.2f}"
+            inv_id = r.get('invoice_id', '')
+            inv_no = ''
+            if inv_id and inv_id in self.invoices:
+                inv_no = str(self.invoices[inv_id].get(
+                    'invoice_no', '')).lower()
+
+            if search:
+                haystack = ' '.join([
+                    receipt_no, info['name'].lower(),
+                    info['passport'].lower(), amount_str, inv_no])
+                if search not in haystack:
+                    continue
+
+            rdate = str(r.get('receipt_date', ''))[:10]
+            if date_from and rdate and rdate < date_from:
+                continue
+            if date_to and rdate and rdate > date_to:
+                continue
+
+            filtered.append(r)
+
+        self.display_receipts(filtered)
 
     # =============================================================================
     # 15.1.3 — display_receipts
@@ -390,7 +517,6 @@ class ReceiptsTab:
                 inv_txt = "N/A"
                 inv_color = "#95a5a6"
 
-            # PATCH 15.1.C — capture receipt ID, re-fetch on click
             r_id = r.get('id')
 
             def _make_actions(_rid=r_id):
@@ -437,7 +563,6 @@ class ReceiptsTab:
 
             is_selected = (self._selected_receipt_id == r_id)
 
-            # -------- ROW TAP → SELECT (not edit) --------
             def _on_row_tap(e, _rid=r_id):
                 try:
                     self._select_receipt(_rid)
@@ -449,7 +574,6 @@ class ReceiptsTab:
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -515,10 +639,8 @@ class ReceiptsTab:
                 self.selection_label.value = ""
 
         self.display_receipts()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.4 — leaf-only updates
+        self._update_table_only()
 
     def _get_selected_receipt(self):
         if not self._selected_receipt_id:
@@ -590,52 +712,11 @@ class ReceiptsTab:
                 inv_pending_total)
 
     # =============================================================================
-    # 15.1.5 — Filter
+    # 15.1.5 — Filter (v1.4 — leaf-only updates)
     # =============================================================================
     def apply_filters(self, e=None):
-        tid_filter = self.traveler_filter.value or ""
-        search = (self.search_input.value or "").lower().strip()
-        date_from = (self.date_from.value or "").strip()
-        date_to = (self.date_to.value or "").strip()
-
-        filtered = []
-        for r in self.receipts:
-            p = self.payments.get(r.get('payment_id', ''), {})
-            p_tid = p.get('traveler_id', '')
-
-            if tid_filter and str(p_tid) != str(tid_filter):
-                continue
-
-            info = self.travelers.get(p_tid,
-                                      {'name': '', 'passport': ''})
-            receipt_no = str(r.get('receipt_no', '')).lower()
-            amount_str = f"{self._f(r.get('amount', 0)):.2f}"
-            inv_id = r.get('invoice_id', '')
-            inv_no = ''
-            if inv_id and inv_id in self.invoices:
-                inv_no = str(self.invoices[inv_id].get(
-                    'invoice_no', '')).lower()
-
-            if search:
-                haystack = ' '.join([
-                    receipt_no, info['name'].lower(),
-                    info['passport'].lower(), amount_str, inv_no])
-                if search not in haystack:
-                    continue
-
-            rdate = str(r.get('receipt_date', ''))[:10]
-            if date_from and rdate and rdate < date_from:
-                continue
-            if date_to and rdate and rdate > date_to:
-                continue
-
-            filtered.append(r)
-
-        self.display_receipts(filtered)
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        self._apply_filters_internal()
+        self._update_table_only()
 
     # =============================================================================
     # 15.1.6 — View details
@@ -730,7 +811,7 @@ class ReceiptsTab:
         self.page.show_dialog(dialog)
 
     # =============================================================================
-    # 15.1.7 — PDF export (also used by toolbar + row icon)
+    # 15.1.7 — PDF export
     # =============================================================================
     def export_pdf_selected(self, e):
         r = self._get_selected_receipt()
@@ -851,7 +932,7 @@ class ReceiptsTab:
             self._snack(f"❌ PDF error: {ex}")
 
     # =============================================================================
-    # 15.1.8 — Print (also used by toolbar + row icon)
+    # 15.1.8 — Print
     # =============================================================================
     def print_receipt_selected(self, e):
         r = self._get_selected_receipt()
@@ -865,7 +946,7 @@ class ReceiptsTab:
         self.export_single_receipt_pdf(receipt)
 
     # =============================================================================
-    # 15.1.9 — Delete (PATCH 15.1.D preserved)
+    # 15.1.9 — Delete
     # =============================================================================
     def delete_receipt(self, receipt):
         payment_id = receipt.get('payment_id', '')
@@ -917,17 +998,14 @@ class ReceiptsTab:
         )
         self.page.show_dialog(dialog)
 
+    # v1.4 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[RECEIPTS] snack failed: {ex}")
 
 
 # =================================================================================
-# SECTION 15 END (FLET 1.0.0 VERSION)
+# SECTION 15 END (FLET 1.0.0 VERSION) — v1.4
 # =================================================================================
