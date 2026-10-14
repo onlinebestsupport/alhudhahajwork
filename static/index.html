@@ -5,14 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <title>Alhudha Haj Travel - Your Journey to the Holy Land</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
     <style>
         /* =========================================================================
            [CSS.0] RESET & VARIABLES
            ========================================================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
         :root {
             --primary-color: #1e3c72;
             --primary-dark: #0f2b4f;
@@ -29,11 +27,23 @@
             --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
             --hover-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
         }
-
         body {
             font-family: 'Inter', sans-serif;
             overflow-x: hidden;
             background: #ffffff;
+        }
+
+        /* =========================================================================
+           [CSS.0b] EMOJI FALLBACK
+           Browsers render emoji natively — no font files needed.
+           ========================================================================= */
+        .emoji {
+            font-family: "Apple Color Emoji", "Segoe UI Emoji",
+                         "Noto Color Emoji", "Android Emoji", sans-serif;
+            font-style: normal;
+            font-weight: normal;
+            line-height: 1;
+            display: inline-block;
         }
 
         /* =========================================================================
@@ -50,72 +60,35 @@
         .alert-banner.active { display: block; }
         .alert-banner.pulse { animation: alertPulse 2s infinite; }
         .alert-banner.blink { animation: alertBlink 1s infinite; }
-
-        @keyframes alertPulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.9; }
-        }
-        @keyframes alertBlink {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.75; }
-        }
-
+        @keyframes alertPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.9; } }
+        @keyframes alertBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.75; } }
         .alert-content {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 15px;
+            max-width: 1200px; margin: 0 auto; padding: 0 20px;
+            display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 15px;
         }
-        .alert-message {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            flex: 1;
-        }
-        .alert-message i {
+        .alert-message { display: flex; align-items: center; gap: 15px; flex: 1; }
+        .alert-message .emoji {
             font-size: 1.8rem;
             filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
         }
         .alert-text { font-size: 1rem; font-weight: 500; }
         .alert-link {
-            background: rgba(255, 255, 255, 0.2);
-            color: white;
-            padding: 8px 22px;
-            border-radius: 50px;
-            text-decoration: none;
-            font-weight: 600;
+            background: rgba(255, 255, 255, 0.2); color: white;
+            padding: 8px 22px; border-radius: 50px;
+            text-decoration: none; font-weight: 600;
             transition: all 0.3s ease;
-            border: 2px solid transparent;
-            font-size: 0.9rem;
+            border: 2px solid transparent; font-size: 0.9rem;
         }
-        .alert-link:hover {
-            background: white;
-            color: #333;
-            transform: translateY(-2px);
-        }
+        .alert-link:hover { background: white; color: #333; transform: translateY(-2px); }
         .alert-close {
-            background: none;
-            border: none;
-            color: white;
-            font-size: 1.5rem;
-            cursor: pointer;
-            opacity: 0.8;
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 50%;
-            transition: all 0.3s ease;
+            background: none; border: none; color: white;
+            font-size: 1.5rem; cursor: pointer; opacity: 0.8;
+            width: 40px; height: 40px; display: flex;
+            align-items: center; justify-content: center;
+            border-radius: 50%; transition: all 0.3s ease;
         }
-        .alert-close:hover {
-            opacity: 1;
-            background: rgba(255, 255, 255, 0.15);
-        }
+        .alert-close:hover { opacity: 1; background: rgba(255, 255, 255, 0.15); }
 
         /* =========================================================================
            [CSS.2] TOP BAR
@@ -127,21 +100,22 @@
             font-size: 0.9rem;
         }
         .top-bar-content {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 0 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
+            max-width: 1200px; margin: 0 auto; padding: 0 20px;
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 15px;
         }
         .contact-info { display: flex; gap: 20px; flex-wrap: wrap; }
         .contact-info span { display: flex; align-items: center; gap: 8px; }
         .contact-info a { color: white; text-decoration: none; }
         .contact-info a:hover { text-decoration: underline; }
         .social-links { display: flex; gap: 15px; }
-        .social-links a { color: white; font-size: 1.1rem; text-decoration: none; }
+        .social-links a {
+            color: white;
+            font-size: 1.2rem;
+            text-decoration: none;
+            line-height: 1;
+            transition: transform 0.2s ease;
+        }
         .social-links a:hover { transform: translateY(-2px); }
 
         /* =========================================================================
@@ -155,73 +129,46 @@
             z-index: 999;
         }
         .nav-container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 15px 20px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            max-width: 1200px; margin: 0 auto; padding: 15px 20px;
+            display: flex; justify-content: space-between; align-items: center;
             gap: 16px;
         }
         .nav-brand {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            text-decoration: none;
-            flex-shrink: 0;
+            display: flex; align-items: center; gap: 12px;
+            text-decoration: none; flex-shrink: 0;
         }
         .nav-brand img { height: 55px; width: auto; }
         .brand-text {
-            font-size: 1.4rem;
-            font-weight: 700;
-            color: var(--primary-color);
-            line-height: 1.2;
+            font-size: 1.4rem; font-weight: 700;
+            color: var(--primary-color); line-height: 1.2;
         }
         .brand-text small {
-            font-size: 0.75rem;
-            display: block;
-            font-weight: 400;
-            color: var(--gray-color);
+            font-size: 0.75rem; display: block;
+            font-weight: 400; color: var(--gray-color);
         }
-
         .nav-menu {
-            display: flex;
-            align-items: center;
-            gap: 30px;
-            flex: 1;
-            justify-content: center;
+            display: flex; align-items: center; gap: 30px;
+            flex: 1; justify-content: center;
         }
         .nav-links { display: flex; gap: 25px; }
         .nav-links a {
-            color: var(--dark-color);
-            text-decoration: none;
-            font-weight: 500;
-            padding: 5px 0;
+            color: var(--dark-color); text-decoration: none;
+            font-weight: 500; padding: 5px 0;
             border-bottom: 2px solid transparent;
             transition: border-color 0.3s ease;
         }
         .nav-links a:hover { border-color: var(--primary-color); }
-
         .nav-buttons {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-shrink: 0;
+            display: flex; gap: 10px;
+            align-items: center; flex-shrink: 0;
         }
-
         .btn {
-            padding: 10px 20px;
-            border-radius: 50px;
-            text-decoration: none;
-            font-weight: 600;
+            padding: 10px 20px; border-radius: 50px;
+            text-decoration: none; font-weight: 600;
             transition: all 0.3s ease;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            border: none;
-            cursor: pointer;
-            font-size: 0.88rem;
-            white-space: nowrap;
+            display: inline-flex; align-items: center; gap: 8px;
+            border: none; cursor: pointer;
+            font-size: 0.88rem; white-space: nowrap;
         }
         .btn-primary { background: var(--primary-color); color: white; }
         .btn-primary:hover {
@@ -236,46 +183,27 @@
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(124, 58, 237, 0.35);
         }
-        .btn-outline {
-            background: transparent;
-            color: var(--primary-color);
-            border: 2px solid var(--primary-color);
-        }
-        .btn-outline:hover { background: var(--primary-color); color: white; }
         .btn-whatsapp { background: #25D366; color: white; }
         .btn-whatsapp:hover { background: #128C7E; }
-
         .mobile-toggle {
             display: none;
-            align-items: center;
-            justify-content: center;
-            width: 42px;
-            height: 42px;
-            border-radius: 10px;
-            background: #f1f5f9;
-            cursor: pointer;
+            align-items: center; justify-content: center;
+            width: 42px; height: 42px; border-radius: 10px;
+            background: #f1f5f9; cursor: pointer;
             color: var(--primary-color);
             font-size: 1.2rem;
             transition: background 0.2s ease;
             flex-shrink: 0;
         }
         .mobile-toggle:hover { background: #e2e8f0; }
-
         .nav-menu-close {
             display: none;
-            position: absolute;
-            top: 15px;
-            right: 15px;
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: #f1f5f9;
-            border: none;
+            position: absolute; top: 15px; right: 15px;
+            width: 40px; height: 40px; border-radius: 50%;
+            background: #f1f5f9; border: none;
             color: var(--primary-color);
-            font-size: 1.2rem;
-            cursor: pointer;
-            align-items: center;
-            justify-content: center;
+            font-size: 1.2rem; cursor: pointer;
+            align-items: center; justify-content: center;
             transition: background 0.2s ease;
         }
         .nav-menu-close:hover { background: #e2e8f0; }
@@ -286,18 +214,13 @@
         .hero {
             background: linear-gradient(135deg, rgba(30, 60, 114, 0.95), rgba(20, 40, 80, 0.95)),
                         url('https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=1950&q=80');
-            background-size: cover;
-            background-position: center;
-            color: white;
-            padding: 110px 0;
-            text-align: center;
+            background-size: cover; background-position: center;
+            color: white; padding: 110px 0; text-align: center;
         }
         .hero-content { max-width: 800px; margin: 0 auto; padding: 0 20px; }
         .hero h1 {
-            font-size: 3rem;
-            font-weight: 800;
-            margin-bottom: 20px;
-            line-height: 1.2;
+            font-size: 3rem; font-weight: 800;
+            margin-bottom: 20px; line-height: 1.2;
             text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
             font-family: 'Amiri', serif;
         }
@@ -312,10 +235,8 @@
         .container { max-width: 1200px; margin: 0 auto; padding: 0 20px; }
         .section-header { text-align: center; margin-bottom: 50px; }
         .section-header h2 {
-            font-size: 2.3rem;
-            font-weight: 700;
-            margin-bottom: 12px;
-            font-family: 'Amiri', serif;
+            font-size: 2.3rem; font-weight: 700;
+            margin-bottom: 12px; font-family: 'Amiri', serif;
             color: var(--dark-color);
         }
         .section-header p { font-size: 1.05rem; color: var(--gray-color); }
@@ -330,9 +251,7 @@
             gap: 25px;
         }
         .feature-card {
-            background: white;
-            padding: 35px 25px;
-            text-align: center;
+            background: white; padding: 35px 25px; text-align: center;
             border-radius: var(--border-radius);
             box-shadow: var(--card-shadow);
             transition: transform 0.3s ease;
@@ -345,16 +264,17 @@
             margin: 0 auto 20px;
             background: var(--primary-color);
             color: white;
-            font-size: 1.7rem;
+            font-size: 2rem;
+            font-family: "Apple Color Emoji", "Segoe UI Emoji",
+                         "Noto Color Emoji", "Android Emoji", sans-serif;
+            line-height: 1;
         }
         .feature-card h3 {
-            font-size: 1.2rem;
-            margin-bottom: 10px;
+            font-size: 1.2rem; margin-bottom: 10px;
             color: var(--dark-color);
         }
         .feature-card p {
-            color: var(--gray-color);
-            line-height: 1.5;
+            color: var(--gray-color); line-height: 1.5;
             font-size: 0.95rem;
         }
 
@@ -368,104 +288,70 @@
             gap: 25px;
         }
         .package-card {
-            background: white;
-            border-radius: var(--border-radius);
-            overflow: hidden;
-            box-shadow: var(--card-shadow);
+            background: white; border-radius: var(--border-radius);
+            overflow: hidden; box-shadow: var(--card-shadow);
             transition: transform 0.3s ease;
-            display: flex;
-            flex-direction: column;
+            display: flex; flex-direction: column;
         }
         .package-card:hover { transform: translateY(-8px); }
         .package-header {
             background: linear-gradient(135deg, var(--primary-color), var(--primary-color-light));
-            color: white;
-            padding: 28px 25px;
-            text-align: center;
+            color: white; padding: 28px 25px; text-align: center;
         }
         .package-header h3 {
-            font-size: 1.35rem;
-            margin-bottom: 8px;
+            font-size: 1.35rem; margin-bottom: 8px;
             font-family: 'Amiri', serif;
         }
         .package-price { font-size: 1.7rem; font-weight: 700; }
         .package-body { padding: 25px; flex: 1; display: flex; flex-direction: column; }
-        .package-features {
-            list-style: none;
-            margin-bottom: 20px;
-            flex: 1;
-        }
+        .package-features { list-style: none; margin-bottom: 20px; flex: 1; }
         .package-features li {
-            padding: 8px 0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            color: var(--dark-color);
-            font-size: 0.95rem;
+            padding: 8px 0; display: flex; align-items: center; gap: 10px;
+            color: var(--dark-color); font-size: 0.95rem;
         }
-        .package-features li i { color: var(--success-color); width: 18px; }
+        .package-features li .emoji { color: var(--success-color); width: 18px; }
         .package-actions { display: flex; gap: 8px; }
         .package-actions .btn {
-            flex: 1;
-            justify-content: center;
-            padding: 10px 12px;
-            font-size: 0.85rem;
+            flex: 1; justify-content: center;
+            padding: 10px 12px; font-size: 0.85rem;
         }
         .packages-empty {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--gray-color);
-            font-size: 1.05rem;
+            text-align: center; padding: 60px 20px;
+            color: var(--gray-color); font-size: 1.05rem;
             grid-column: 1 / -1;
         }
         .loading-spinner {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--gray-color);
-            grid-column: 1 / -1;
+            text-align: center; padding: 60px 20px;
+            color: var(--gray-color); grid-column: 1 / -1;
         }
-        .loading-spinner i {
-            font-size: 2rem;
-            animation: spin 1s linear infinite;
-        }
-        @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-        }
+        .loading-spinner .emoji { font-size: 2rem; animation: spin 1s linear infinite; display: inline-block; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
         /* =========================================================================
            [CSS.8] ABOUT
            ========================================================================= */
         .about-section { padding: 70px 0; }
         .about-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 50px;
-            align-items: center;
+            display: grid; grid-template-columns: 1fr 1fr;
+            gap: 50px; align-items: center;
         }
         .about-text h2 {
-            font-size: 2.2rem;
-            margin-bottom: 18px;
-            font-family: 'Amiri', serif;
-            color: var(--dark-color);
+            font-size: 2.2rem; margin-bottom: 18px;
+            font-family: 'Amiri', serif; color: var(--dark-color);
         }
         .about-text p { line-height: 1.7; margin-bottom: 15px; color: #555; }
         .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
-            gap: 20px;
-            margin-top: 30px;
+            display: grid; grid-template-columns: repeat(2, 1fr);
+            gap: 20px; margin-top: 30px;
         }
         .stat-item { text-align: center; }
         .stat-number {
-            font-size: 2.2rem;
-            font-weight: 700;
+            font-size: 2.2rem; font-weight: 700;
             color: var(--primary-color);
         }
         .stat-label { font-size: 0.9rem; color: var(--gray-color); }
         .about-image img {
-            width: 100%;
-            border-radius: var(--border-radius);
+            width: 100%; border-radius: var(--border-radius);
             box-shadow: var(--card-shadow);
         }
 
@@ -473,43 +359,30 @@
            [CSS.11] GALLERY
            ========================================================================= */
         .gallery-section { padding: 70px 0; background: var(--lighter-color); }
-
         .gallery-tabs {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-            margin-bottom: 30px;
-            flex-wrap: wrap;
+            display: flex; justify-content: center;
+            gap: 10px; margin-bottom: 30px; flex-wrap: wrap;
         }
         .gallery-tab {
             padding: 10px 22px;
             border: 2px solid var(--primary-color);
-            background: transparent;
-            color: var(--primary-color);
-            border-radius: 50px;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.3s ease;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
+            background: transparent; color: var(--primary-color);
+            border-radius: 50px; font-weight: 600; cursor: pointer;
+            font-size: 0.9rem; transition: all 0.3s ease;
+            display: inline-flex; align-items: center; gap: 8px;
         }
         .gallery-tab:hover { background: rgba(30, 60, 114, 0.06); }
         .gallery-tab.active { background: var(--primary-color); color: white; }
-
         .gallery-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
             gap: 15px;
         }
         .gallery-item {
-            position: relative;
-            overflow: hidden;
+            position: relative; overflow: hidden;
             border-radius: var(--border-radius);
             box-shadow: var(--card-shadow);
-            cursor: pointer;
-            background: #000;
+            cursor: pointer; background: #000;
             aspect-ratio: 4 / 3;
             transition: transform 0.3s ease;
         }
@@ -527,90 +400,58 @@
         .gallery-item:hover img,
         .gallery-item:hover video { transform: scale(1.06); }
         .gallery-item .caption {
-            position: absolute;
-            left: 0; right: 0; bottom: 0;
-            padding: 12px 14px;
-            color: white;
+            position: absolute; left: 0; right: 0; bottom: 0;
+            padding: 12px 14px; color: white;
             background: linear-gradient(transparent, rgba(0, 0, 0, 0.78));
-            font-size: 0.85rem;
-            font-weight: 500;
+            font-size: 0.85rem; font-weight: 500;
             pointer-events: none;
         }
         .gallery-item .play-badge {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 3rem;
+            position: absolute; inset: 0;
+            display: flex; align-items: center; justify-content: center;
+            color: white; font-size: 3rem;
             background: rgba(0, 0, 0, 0.18);
-            pointer-events: none;
-            opacity: 0.9;
+            pointer-events: none; opacity: 0.9;
+            font-family: "Apple Color Emoji", "Segoe UI Emoji",
+                         "Noto Color Emoji", "Android Emoji", sans-serif;
         }
         .gallery-empty {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--gray-color);
-            font-size: 1rem;
+            grid-column: 1 / -1; text-align: center;
+            padding: 60px 20px; color: var(--gray-color); font-size: 1rem;
         }
-        .gallery-empty i {
-            font-size: 2rem;
-            display: block;
+        .gallery-empty .emoji {
+            font-size: 2rem; display: block;
             margin-bottom: 12px;
-            color: var(--primary-color);
         }
-
         .lightbox {
-            position: fixed;
-            inset: 0;
-            z-index: 2000;
+            position: fixed; inset: 0; z-index: 2000;
             background: rgba(0, 0, 0, 0.93);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            padding: 30px;
-            animation: fadeIn 0.2s ease;
+            display: none; align-items: center; justify-content: center;
+            padding: 30px; animation: fadeIn 0.2s ease;
         }
         .lightbox.active { display: flex; }
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         .lightbox img,
         .lightbox video {
-            max-width: 92vw;
-            max-height: 85vh;
+            max-width: 92vw; max-height: 85vh;
             border-radius: 12px;
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
         }
         .lightbox-close {
-            position: absolute;
-            top: 20px; right: 30px;
-            color: white;
-            font-size: 2.4rem;
-            background: none;
-            border: none;
-            cursor: pointer;
-            line-height: 1;
+            position: absolute; top: 20px; right: 30px;
+            color: white; font-size: 2.4rem;
+            background: none; border: none;
+            cursor: pointer; line-height: 1;
             width: 48px; height: 48px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 50%;
-            transition: background 0.2s ease;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; transition: background 0.2s ease;
         }
         .lightbox-close:hover { background: rgba(255, 255, 255, 0.15); }
         .lightbox-caption {
-            position: absolute;
-            bottom: 25px;
-            left: 0; right: 0;
-            text-align: center;
-            color: white;
-            font-size: 0.95rem;
-            padding: 0 20px;
-            font-weight: 500;
+            position: absolute; bottom: 25px;
+            left: 0; right: 0; text-align: center;
+            color: white; font-size: 0.95rem;
+            padding: 0 20px; font-weight: 500;
         }
 
         /* =========================================================================
@@ -623,8 +464,7 @@
             gap: 25px;
         }
         .contact-card {
-            background: white;
-            padding: 35px 25px;
+            background: white; padding: 35px 25px;
             text-align: center;
             border-radius: var(--border-radius);
             box-shadow: var(--card-shadow);
@@ -638,17 +478,18 @@
             margin: 0 auto 20px;
             background: var(--primary-color);
             color: white;
-            font-size: 1.5rem;
+            font-size: 1.7rem;
+            font-family: "Apple Color Emoji", "Segoe UI Emoji",
+                         "Noto Color Emoji", "Android Emoji", sans-serif;
+            line-height: 1;
         }
         .contact-card h3 {
-            font-size: 1.1rem;
-            margin-bottom: 12px;
+            font-size: 1.1rem; margin-bottom: 12px;
             color: var(--dark-color);
         }
         .contact-card p { color: var(--gray-color); margin-bottom: 5px; }
         .contact-card a {
-            color: var(--primary-color);
-            text-decoration: none;
+            color: var(--primary-color); text-decoration: none;
             font-weight: 600;
         }
         .contact-card a:hover { text-decoration: underline; }
@@ -656,157 +497,112 @@
         /* =========================================================================
            [CSS.10] FOOTER
            ========================================================================= */
-        .footer { background: var(--dark-color); color: white; padding: 50px 0 25px; }
+        .footer {
+            background: var(--dark-color); color: white;
+            padding: 50px 0 25px;
+        }
         .footer-content {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 35px;
-            margin-bottom: 30px;
+            gap: 35px; margin-bottom: 30px;
         }
         .footer-section h3 { margin-bottom: 15px; font-size: 1.05rem; }
-        .footer-section p { opacity: 0.8; line-height: 1.6; font-size: 0.9rem; }
+        .footer-section p {
+            opacity: 0.8; line-height: 1.6; font-size: 0.9rem;
+        }
         .footer-links { list-style: none; }
         .footer-links li { margin-bottom: 8px; }
         .footer-links a {
-            color: white;
-            text-decoration: none;
-            opacity: 0.8;
-            font-size: 0.9rem;
+            color: white; text-decoration: none;
+            opacity: 0.8; font-size: 0.9rem;
             transition: opacity 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
         }
         .footer-links a:hover { opacity: 1; }
-        .footer-links i { width: 18px; margin-right: 5px; }
+        .footer-links .emoji { width: 20px; }
         .footer-bottom {
-            text-align: center;
-            padding-top: 25px;
+            text-align: center; padding-top: 25px;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
-            font-size: 0.85rem;
-            opacity: 0.7;
+            font-size: 0.85rem; opacity: 0.7;
         }
 
         /* =========================================================================
            [CSS.12] FLOATING WHATSAPP
            ========================================================================= */
         .floating-whatsapp {
-            position: fixed;
-            bottom: 25px; right: 25px;
-            background: #25D366;
-            color: white;
-            width: 55px; height: 55px;
-            border-radius: 50%;
+            position: fixed; bottom: 25px; right: 25px;
+            background: #25D366; color: white;
+            width: 55px; height: 55px; border-radius: 50%;
             display: flex; align-items: center; justify-content: center;
-            font-size: 1.7rem;
+            font-size: 1.8rem;
             box-shadow: 0 5px 20px rgba(37, 211, 102, 0.4);
-            text-decoration: none;
-            z-index: 999;
+            text-decoration: none; z-index: 999;
             transition: transform 0.3s ease;
+            font-family: "Apple Color Emoji", "Segoe UI Emoji",
+                         "Noto Color Emoji", "Android Emoji", sans-serif;
+            line-height: 1;
         }
         .floating-whatsapp:hover { transform: scale(1.1); }
 
         /* =========================================================================
-           [CSS.13] RESPONSIVE — MOBILE
+           [CSS.13] RESPONSIVE
            ========================================================================= */
         @media (max-width: 900px) {
             .nav-links { gap: 15px; }
             .nav-links a { font-size: 0.9rem; }
-            .nav-buttons .btn {
-                padding: 8px 14px;
-                font-size: 0.78rem;
-            }
+            .nav-buttons .btn { padding: 8px 14px; font-size: 0.78rem; }
             .brand-text { font-size: 1.2rem; }
             .nav-brand img { height: 48px; }
         }
-
         @media (max-width: 768px) {
-            .nav-container {
-                padding: 12px 15px;
-                gap: 10px;
-            }
+            .nav-container { padding: 12px 15px; gap: 10px; }
             .brand-text { font-size: 1.05rem; }
             .brand-text small { font-size: 0.68rem; }
             .nav-brand img { height: 42px; }
             .nav-brand { gap: 8px; }
-
             .nav-menu {
-                position: fixed;
-                top: 0;
-                right: -100%;
-                width: 82%;
-                max-width: 320px;
-                height: 100vh;
-                background: white;
-                flex-direction: column;
-                align-items: stretch;
-                justify-content: flex-start;
+                position: fixed; top: 0; right: -100%;
+                width: 82%; max-width: 320px; height: 100vh;
+                background: white; flex-direction: column;
+                align-items: stretch; justify-content: flex-start;
                 padding: 70px 24px 30px;
                 box-shadow: -5px 0 30px rgba(0, 0, 0, 0.15);
                 transition: right 0.3s ease;
-                z-index: 1001;
-                gap: 0;
-                flex: none;
+                z-index: 1001; gap: 0; flex: none;
             }
             .nav-menu.active { right: 0; }
-
             .nav-links {
-                flex-direction: column;
-                align-items: stretch;
-                gap: 0;
-                margin-bottom: 0;
+                flex-direction: column; align-items: stretch;
+                gap: 0; margin-bottom: 0;
             }
             .nav-links a {
-                padding: 14px 0;
-                border-bottom: 1px solid #eef2f6;
-                font-size: 1rem;
-                border-radius: 0;
+                padding: 14px 0; border-bottom: 1px solid #eef2f6;
+                font-size: 1rem; border-radius: 0;
             }
             .nav-links a:last-child { border-bottom: none; }
-
             .mobile-toggle { display: flex; }
             .nav-menu-close { display: flex; }
-
-            .nav-buttons {
-                display: flex;
-                gap: 6px;
-                align-items: center;
-            }
+            .nav-buttons { display: flex; gap: 6px; align-items: center; }
             .nav-buttons .btn {
-                padding: 8px 12px;
-                font-size: 0.75rem;
-                gap: 5px;
+                padding: 8px 12px; font-size: 0.75rem; gap: 5px;
             }
-            .nav-buttons .btn i { font-size: 0.9rem; }
-
             .hero { padding: 70px 0; }
             .hero h1 { font-size: 2rem; }
             .hero p { font-size: 1rem; }
             .hero-buttons { gap: 12px; }
-
             .section-header h2 { font-size: 1.7rem; }
             .section-header { margin-bottom: 35px; }
-
-            .about-content {
-                grid-template-columns: 1fr;
-                gap: 30px;
-            }
+            .about-content { grid-template-columns: 1fr; gap: 30px; }
             .about-text h2 { font-size: 1.7rem; }
-
             .top-bar-content {
-                flex-direction: column;
-                text-align: center;
-                gap: 8px;
+                flex-direction: column; text-align: center; gap: 8px;
             }
             .contact-info { flex-direction: column; align-items: center; gap: 6px; }
-
-            .alert-content {
-                flex-direction: column;
-                text-align: center;
-            }
-            .alert-message {
-                flex-direction: column;
-                text-align: center;
-            }
-            .alert-message i { font-size: 2rem; }
-
+            .alert-content { flex-direction: column; text-align: center; }
+            .alert-message { flex-direction: column; text-align: center; }
+            .alert-message .emoji { font-size: 2rem; }
             .gallery-grid {
                 grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
                 gap: 10px;
@@ -815,33 +611,20 @@
             .lightbox { padding: 12px; }
             .lightbox-close { top: 10px; right: 10px; font-size: 2rem; }
         }
-
         @media (max-width: 480px) {
             .nav-container { padding: 10px 12px; gap: 8px; }
             .nav-brand { gap: 6px; }
             .nav-brand img { height: 36px; }
             .brand-text { font-size: 0.92rem; line-height: 1.1; }
             .brand-text small { font-size: 0.6rem; }
-
             .nav-buttons .btn-label { display: none; }
-            .nav-buttons .btn {
-                padding: 9px 11px;
-                gap: 0;
-            }
-            .nav-buttons .btn i { font-size: 1rem; }
-
-            .mobile-toggle {
-                width: 38px;
-                height: 38px;
-                font-size: 1.1rem;
-            }
-
+            .nav-buttons .btn { padding: 9px 11px; gap: 0; }
+            .mobile-toggle { width: 38px; height: 38px; font-size: 1.1rem; }
             .hero h1 { font-size: 1.6rem; }
             .section-header h2 { font-size: 1.5rem; }
             .floating-whatsapp {
                 width: 48px; height: 48px;
-                font-size: 1.5rem;
-                bottom: 18px; right: 18px;
+                font-size: 1.5rem; bottom: 18px; right: 18px;
             }
         }
     </style>
@@ -854,7 +637,7 @@
     <div id="alertBanner" class="alert-banner">
         <div class="alert-content">
             <div class="alert-message">
-                <i class="fas fa-exclamation-circle"></i>
+                <span class="emoji">⚠️</span>
                 <div class="alert-text" id="alertMessage"></div>
             </div>
             <a href="#" id="alertLink" class="alert-link">Learn More</a>
@@ -862,9 +645,7 @@
         </div>
     </div>
 
-    <!-- =========================================================================
-         [HTML.2] TOP BAR
-         ========================================================================= -->
+    <!-- [HTML.2] TOP BAR -->
     <div class="top-bar">
         <div class="top-bar-content">
             <div class="contact-info" id="topBarContact"></div>
@@ -872,9 +653,7 @@
         </div>
     </div>
 
-    <!-- =========================================================================
-         [HTML.3] NAVIGATION
-         ========================================================================= -->
+    <!-- [HTML.3] NAVIGATION -->
     <nav class="navbar">
         <div class="nav-container">
             <a href="/" class="nav-brand">
@@ -882,11 +661,10 @@
                      onerror="this.style.display='none'">
                 <span class="brand-text">Alhudha Haj<small>Travel</small></span>
             </a>
-
             <div class="nav-menu" id="navMenu">
                 <button class="nav-menu-close" onclick="toggleMobileMenu()"
                         aria-label="Close menu">
-                    <i class="fas fa-times"></i>
+                    <span class="emoji">✕</span>
                 </button>
                 <div class="nav-links">
                     <a href="/">Home</a>
@@ -896,29 +674,26 @@
                     <a href="#contact">Contact</a>
                 </div>
             </div>
-
             <div class="nav-buttons">
                 <a href="/traveler" class="btn btn-traveler"
                    title="Traveler Login" aria-label="Traveler Login">
-                    <i class="fas fa-user"></i>
+                    <span class="emoji">👤</span>
                     <span class="btn-label">Traveler Login</span>
                 </a>
                 <a href="/admin" class="btn btn-primary"
                    title="Admin Login" aria-label="Admin Login">
-                    <i class="fas fa-lock"></i>
+                    <span class="emoji">🔒</span>
                     <span class="btn-label">Admin</span>
                 </a>
                 <div class="mobile-toggle" onclick="toggleMobileMenu()"
                      aria-label="Open menu">
-                    <i class="fas fa-bars"></i>
+                    <span class="emoji">☰</span>
                 </div>
             </div>
         </div>
     </nav>
 
-    <!-- =========================================================================
-         [HTML.4] HERO
-         ========================================================================= -->
+    <!-- [HTML.4] HERO -->
     <section class="hero">
         <div class="hero-content">
             <h1 id="heroHeading">Your Journey to the Holy Land</h1>
@@ -926,15 +701,13 @@
             <div class="hero-buttons">
                 <a href="#packages" class="btn btn-primary" id="heroButton">View Packages</a>
                 <a href="#" id="heroWhatsapp" target="_blank" class="btn btn-whatsapp">
-                    <i class="fab fa-whatsapp"></i> <span id="heroWhatsappText">Chat on WhatsApp</span>
+                    <span class="emoji">💬</span> <span id="heroWhatsappText">Chat on WhatsApp</span>
                 </a>
             </div>
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.5] FEATURES
-         ========================================================================= -->
+    <!-- [HTML.5] FEATURES -->
     <section class="features-section" id="features">
         <div class="container">
             <div class="section-header">
@@ -942,14 +715,12 @@
                 <p id="featuresSubtitle">We provide the best services to make your spiritual journey comfortable and memorable</p>
             </div>
             <div class="features-grid" id="featuresGrid">
-                <div class="loading-spinner"><i class="fas fa-circle-notch"></i></div>
+                <div class="loading-spinner"><span class="emoji">⏳</span></div>
             </div>
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.6] PACKAGES
-         ========================================================================= -->
+    <!-- [HTML.6] PACKAGES -->
     <section class="packages-section" id="packages">
         <div class="container">
             <div class="section-header">
@@ -957,14 +728,12 @@
                 <p id="packagesSubtitle">Choose from our carefully designed packages for a blessed journey</p>
             </div>
             <div class="packages-grid" id="packagesGrid">
-                <div class="loading-spinner"><i class="fas fa-circle-notch"></i></div>
+                <div class="loading-spinner"><span class="emoji">⏳</span></div>
             </div>
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.7] ABOUT
-         ========================================================================= -->
+    <!-- [HTML.7] ABOUT -->
     <section class="about-section" id="about">
         <div class="container">
             <div class="about-content">
@@ -981,9 +750,7 @@
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.11] GALLERY
-         ========================================================================= -->
+    <!-- [HTML.11] GALLERY -->
     <section class="gallery-section" id="gallery" style="display:none;">
         <div class="container">
             <div class="section-header">
@@ -992,21 +759,18 @@
             </div>
             <div class="gallery-tabs" id="galleryTabs">
                 <button class="gallery-tab active" data-tab="photos">
-                    <i class="fas fa-camera"></i> Photos
+                    <span class="emoji">📷</span> Photos
                 </button>
                 <button class="gallery-tab" data-tab="videos">
-                    <i class="fas fa-video"></i> Videos
+                    <span class="emoji">🎥</span> Videos
                 </button>
             </div>
             <div class="gallery-grid" id="galleryPhotos"></div>
-            <div class="gallery-grid gallery-videos" id="galleryVideos"
-                 style="display:none"></div>
+            <div class="gallery-grid gallery-videos" id="galleryVideos" style="display:none"></div>
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.8] CONTACT
-         ========================================================================= -->
+    <!-- [HTML.8] CONTACT -->
     <section class="contact-section" id="contact">
         <div class="container">
             <div class="section-header">
@@ -1017,9 +781,7 @@
         </div>
     </section>
 
-    <!-- =========================================================================
-         [HTML.9] FOOTER
-         ========================================================================= -->
+    <!-- [HTML.9] FOOTER -->
     <footer class="footer">
         <div class="container">
             <div class="footer-content">
@@ -1030,12 +792,12 @@
                 <div class="footer-section">
                     <h3>Quick Links</h3>
                     <ul class="footer-links">
-                        <li><a href="/"><i class="fas fa-chevron-right"></i> Home</a></li>
-                        <li><a href="#packages"><i class="fas fa-chevron-right"></i> Packages</a></li>
-                        <li><a href="#gallery"><i class="fas fa-chevron-right"></i> Gallery</a></li>
-                        <li><a href="#about"><i class="fas fa-chevron-right"></i> About Us</a></li>
-                        <li><a href="#contact"><i class="fas fa-chevron-right"></i> Contact</a></li>
-                        <li><a href="/traveler"><i class="fas fa-user"></i> Traveler Portal</a></li>
+                        <li><a href="/"><span class="emoji">▸</span> Home</a></li>
+                        <li><a href="#packages"><span class="emoji">▸</span> Packages</a></li>
+                        <li><a href="#gallery"><span class="emoji">▸</span> Gallery</a></li>
+                        <li><a href="#about"><span class="emoji">▸</span> About Us</a></li>
+                        <li><a href="#contact"><span class="emoji">▸</span> Contact</a></li>
+                        <li><a href="/traveler"><span class="emoji">👤</span> Traveler Portal</a></li>
                     </ul>
                 </div>
                 <div class="footer-section">
@@ -1053,16 +815,12 @@
         </div>
     </footer>
 
-    <!-- =========================================================================
-         [HTML.10] FLOATING WHATSAPP
-         ========================================================================= -->
+    <!-- [HTML.10] FLOATING WHATSAPP -->
     <a href="#" id="floatingWhatsapp" class="floating-whatsapp" target="_blank" aria-label="WhatsApp">
-        <i class="fab fa-whatsapp"></i>
+        <span class="emoji">💬</span>
     </a>
 
-    <!-- =========================================================================
-         [HTML.12] LIGHTBOX
-         ========================================================================= -->
+    <!-- [HTML.12] LIGHTBOX -->
     <div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
         <button class="lightbox-close" onclick="closeLightbox(event)">&times;</button>
         <div id="lightboxContent"></div>
@@ -1078,23 +836,92 @@
         let GALLERY = { photos: [], videos: [], enabled: false };
 
         // =====================================================================
-        // [JS.0b] SOCIAL PLATFORM MAP  (v2.31 — NEW)
-        //   Maps platform keys → Font Awesome icon + display label.
-        //   Matches the SOCIAL_PLATFORMS tuple in frontpage_config.py v2.3.
+        // [JS.0b] EMOJI MAPS  (v2.32 — replaces Font Awesome)
         // =====================================================================
-        const SOCIAL_PLATFORM_ICONS = {
-            facebook:  "fa-facebook-f",
-            instagram: "fa-instagram",
-            twitter:   "fa-twitter",
-            telegram:  "fa-telegram",
-            whatsapp:  "fa-whatsapp",
-            youtube:   "fa-youtube",
-            linkedin:  "fa-linkedin-in",
-            tiktok:    "fa-tiktok",
-            snapchat:  "fa-snapchat",
-            pinterest: "fa-pinterest",
-            email:     "fa-envelope",
-            website:   "fa-globe"
+
+        // Feature-card icons: FA class → emoji
+        // The admin may still have legacy fa-* values in config —
+        // we map them to emojis here so they render on all browsers
+        // without needing any font files.
+        const FA_TO_EMOJI = {
+            // Worship
+            "fa-mosque": "🕌",
+            "fa-kaaba": "🕋",
+            "fa-book-quran": "📖",
+            "fa-hands-praying": "🤲",
+            "fa-star-and-crescent": "☪️",
+            "fa-dove": "🕊️",
+            // Travel
+            "fa-plane": "✈️",
+            "fa-bus": "🚌",
+            "fa-car": "🚗",
+            "fa-suitcase-rolling": "🧳",
+            "fa-passport": "🛂",
+            "fa-globe": "🌍",
+            "fa-map-marked-alt": "🗺️",
+            "fa-route": "🛣️",
+            "fa-compass": "🧭",
+            // Stay
+            "fa-hotel": "🏨",
+            "fa-bed": "🛏️",
+            "fa-utensils": "🍽️",
+            "fa-mug-hot": "☕",
+            "fa-wifi": "📶",
+            // People
+            "fa-users": "👥",
+            "fa-user-tie": "👔",
+            "fa-user-shield": "🛡️",
+            "fa-people-group": "👨‍👩‍👧‍👦",
+            "fa-user-check": "✅",
+            "fa-user-group": "👫",
+            // Services
+            "fa-headset": "🎧",
+            "fa-shield-halved": "🛡️",
+            "fa-clock": "🕐",
+            "fa-calendar-check": "📅",
+            "fa-hand-holding-dollar": "💰",
+            "fa-credit-card": "💳",
+            "fa-file-contract": "📄",
+            "fa-stethoscope": "🩺",
+            "fa-language": "🌐",
+            // Contact
+            "fa-phone": "📞",
+            "fa-envelope": "✉️",
+            "fa-comments": "💬",
+            "fa-location-dot": "📍",
+            "fa-address-book": "📒",
+            "fa-whatsapp": "💬",
+            // Quality
+            "fa-star": "⭐",
+            "fa-heart": "❤️",
+            "fa-check-circle": "✅",
+            "fa-award": "🏆",
+            "fa-certificate": "📜",
+            "fa-thumbs-up": "👍",
+            "fa-circle-info": "ℹ️",
+            "fa-lightbulb": "💡",
+            "fa-bolt": "⚡",
+            // Extras / defaults
+            "fa-check": "✔️",
+            "fa-link": "🔗",
+            "fa-arrow-right": "➡️",
+            "fa-chevron-right": "▸",
+        };
+
+        // Social platform keys → emoji
+        const SOCIAL_PLATFORM_EMOJI = {
+            facebook:  "📘",
+            instagram: "📷",
+            twitter:   "🐦",
+            telegram:  "✈️",
+            whatsapp:  "💬",
+            youtube:   "▶️",
+            linkedin:  "💼",
+            tiktok:    "🎵",
+            snapchat:  "👻",
+            pinterest: "📌",
+            email:     "✉️",
+            website:   "🌐"
         };
         const SOCIAL_PLATFORM_LABELS = {
             facebook:  "Facebook",
@@ -1111,6 +938,23 @@
             website:   "Website"
         };
 
+        // Convert any icon value → emoji for rendering
+        function iconToEmoji(value) {
+            const v = String(value || "").trim();
+            if (!v) return "⭐";
+            // If it's already a FA class, look it up
+            if (v.startsWith("fa-")) {
+                return FA_TO_EMOJI[v] || "⭐";
+            }
+            // Otherwise assume it's an emoji or plain text — return as-is
+            return v;
+        }
+
+        // Render an icon as inline emoji HTML
+        function iconHTML(value) {
+            return `<span class="emoji">${escapeHTML(iconToEmoji(value))}</span>`;
+        }
+
         // =====================================================================
         // [JS.1] HELPERS
         // =====================================================================
@@ -1118,11 +962,8 @@
             try {
                 const n = Number(amount) || 0;
                 return '₹' + n.toLocaleString('en-IN');
-            } catch (e) {
-                return '₹' + amount;
-            }
+            } catch (e) { return '₹' + amount; }
         }
-
         function formatDate(d) {
             if (!d) return '';
             try {
@@ -1131,17 +972,13 @@
                 return dt.toLocaleDateString('en-IN', {
                     day: '2-digit', month: 'short', year: 'numeric'
                 });
-            } catch (e) {
-                return d;
-            }
+            } catch (e) { return d; }
         }
-
         function safeText(s, fallback) {
             if (s === null || s === undefined) return fallback || '';
             const str = String(s).trim();
             return str || (fallback || '');
         }
-
         function escapeHTML(s) {
             if (s === null || s === undefined) return '';
             return String(s)
@@ -1151,16 +988,13 @@
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
         }
-
         function whatsappURL(number, message) {
             const clean = String(number || '').replace(/\D/g, '');
             const base = `https://wa.me/${clean}`;
             return message ? `${base}?text=${encodeURIComponent(message)}` : base;
         }
 
-        // ---- v2.31 — social link helpers ----
-        // normalizeSocialLinks(s) accepts either the new {links: [...]} format
-        // or the legacy {facebook, instagram, twitter} format.
+        // ---- Social links helpers ----
         function normalizeSocialLinks(s) {
             if (!s) return [];
             if (Array.isArray(s.links) && s.links.length > 0) {
@@ -1177,9 +1011,9 @@
             if (s.twitter)   out.push({ platform: "twitter",   url: String(s.twitter).trim() });
             return out;
         }
-        function platformIcon(platform) {
+        function platformEmoji(platform) {
             const key = String(platform || "").toLowerCase();
-            return SOCIAL_PLATFORM_ICONS[key] || "fa-link";
+            return SOCIAL_PLATFORM_EMOJI[key] || "🔗";
         }
         function platformLabel(platform) {
             const key = String(platform || "").toLowerCase();
@@ -1189,28 +1023,24 @@
         function platformHref(link) {
             let url = String(link.url || "").trim();
             const plat = String(link.platform || "").toLowerCase();
-            if (plat === "email" && !/^mailto:/i.test(url)) {
-                return "mailto:" + url;
-            }
+            if (plat === "email" && !/^mailto:/i.test(url)) return "mailto:" + url;
             if (plat === "whatsapp" && !/^https?:/i.test(url)) {
                 const clean = url.replace(/\D/g, "");
                 return "https://wa.me/" + clean;
             }
             return url;
         }
-        // withLabel=false → compact icon-only anchor (top bar)
-        // withLabel=true  → <li><a>icon + label</a></li> (footer)
         function socialIconHTML(link, withLabel) {
-            const icon = platformIcon(link.platform);
+            const emoji = platformEmoji(link.platform);
             const href = escapeHTML(platformHref(link));
             const label = escapeHTML(platformLabel(link.platform));
             if (withLabel) {
                 return `<li><a href="${href}" target="_blank" rel="noopener">` +
-                       `<i class="fab ${icon}"></i> ${label}</a></li>`;
+                       `<span class="emoji">${emoji}</span> ${label}</a></li>`;
             }
             return `<a href="${href}" target="_blank" rel="noopener" ` +
                    `aria-label="${label}" title="${label}">` +
-                   `<i class="fab ${icon}"></i></a>`;
+                   `<span class="emoji">${emoji}</span></a>`;
         }
 
         // =====================================================================
@@ -1221,14 +1051,12 @@
                 fetch('/api/frontpage', { cache: 'no-store' }).then(r => r.json()),
                 fetch('/api/batches',   { cache: 'no-store' }).then(r => r.json()),
             ]);
-
             if (cfgResult.status === 'fulfilled' && cfgResult.value) {
                 CONFIG = cfgResult.value;
             } else {
                 console.warn('Failed to load frontpage config', cfgResult);
                 CONFIG = {};
             }
-
             if (bResult.status === 'fulfilled'
                 && bResult.value
                 && bResult.value.success) {
@@ -1237,7 +1065,6 @@
                 console.warn('Failed to load batches', bResult);
                 BATCHES = [];
             }
-
             render();
         }
 
@@ -1264,53 +1091,40 @@
             const banner = document.getElementById('alertBanner');
             const msgEl = document.getElementById('alertMessage');
             const linkEl = document.getElementById('alertLink');
-
             if (!a.enabled) {
                 banner.classList.remove('active');
                 banner.style.display = 'none';
                 return;
             }
-
             if (localStorage.getItem('alertClosed') === 'true') {
                 banner.classList.remove('active');
                 banner.style.display = 'none';
                 return;
             }
-
             msgEl.innerHTML = escapeHTML(a.message || '');
-
             if (a.link && a.link !== '#') {
                 linkEl.href = a.link;
                 linkEl.style.display = 'inline-flex';
             } else {
                 linkEl.style.display = 'none';
             }
-
             const col = a.color || '#f39c12';
             banner.style.background = `linear-gradient(135deg, ${col}, ${shadeColor(col, -20)})`;
-
             banner.classList.remove('pulse', 'blink');
             if (a.style === 'pulse') banner.classList.add('pulse');
             else if (a.style === 'blink') banner.classList.add('blink');
-
             banner.classList.add('active');
             banner.style.display = 'block';
         }
-
         function closeAlert() {
             document.getElementById('alertBanner').style.display = 'none';
             localStorage.setItem('alertClosed', 'true');
-            setTimeout(() => {
-                localStorage.removeItem('alertClosed');
-            }, 3600 * 1000);
+            setTimeout(() => { localStorage.removeItem('alertClosed'); }, 3600 * 1000);
         }
-
         function shadeColor(hex, percent) {
             try {
                 let h = String(hex).replace('#', '');
-                if (h.length === 3) {
-                    h = h.split('').map(c => c + c).join('');
-                }
+                if (h.length === 3) h = h.split('').map(c => c + c).join('');
                 const num = parseInt(h, 16);
                 let r = (num >> 16) + Math.round(255 * percent / 100);
                 let g = ((num >> 8) & 0x00FF) + Math.round(255 * percent / 100);
@@ -1319,9 +1133,7 @@
                 g = Math.max(0, Math.min(255, g));
                 b = Math.max(0, Math.min(255, b));
                 return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
-            } catch (e) {
-                return hex;
-            }
+            } catch (e) { return hex; }
         }
 
         // =====================================================================
@@ -1339,29 +1151,27 @@
         }
 
         // =====================================================================
-        // [JS.6] FEATURES
+        // [JS.6] FEATURES  (v2.32 — emoji icons)
         // =====================================================================
         function renderFeatures(features) {
             const grid = document.getElementById('featuresGrid');
             grid.innerHTML = '';
-
             if (!features || features.length === 0) {
                 grid.innerHTML = `
                     <div class="feature-card">
-                        <div class="feature-icon"><i class="fas fa-mosque"></i></div>
+                        <div class="feature-icon"><span class="emoji">🕌</span></div>
                         <h3>Trusted Service</h3>
                         <p>Decades of experience serving pilgrims</p>
                     </div>`;
                 return;
             }
-
             grid.innerHTML = features.map(f => {
-                const icon = safeText(f.icon, 'fa-check-circle');
+                const emoji = iconToEmoji(f.icon);
                 const title = safeText(f.title, '');
                 const text = safeText(f.text, '');
                 return `
                     <div class="feature-card">
-                        <div class="feature-icon"><i class="fas ${escapeHTML(icon)}"></i></div>
+                        <div class="feature-icon"><span class="emoji">${escapeHTML(emoji)}</span></div>
                         <h3>${escapeHTML(title)}</h3>
                         <p>${escapeHTML(text)}</p>
                     </div>`;
@@ -1376,22 +1186,18 @@
                 safeText(pcfg.title, 'Our Haj & Umrah Packages');
             document.getElementById('packagesSubtitle').textContent =
                 safeText(pcfg.subtitle, '');
-
             const grid = document.getElementById('packagesGrid');
             grid.innerHTML = '';
-
             if (!batches || batches.length === 0) {
                 grid.innerHTML = `
                     <div class="packages-empty">
-                        <i class="fas fa-mosque" style="font-size:2rem;display:block;margin-bottom:15px;color:var(--primary-color)"></i>
+                        <span class="emoji" style="font-size:2rem;display:block;margin-bottom:15px">🕌</span>
                         <p>Packages will be published soon. Please contact us for details.</p>
                     </div>`;
                 return;
             }
-
             const whatsappNum = (CONFIG.contact || {}).whatsapp || '919876543210';
             const emailAddr = (CONFIG.contact || {}).email || 'info@alhudha.com';
-
             grid.innerHTML = batches.map(b => {
                 const name = safeText(b.name, 'Package');
                 const desc = safeText(b.description, 'Complete Haj/Umrah package');
@@ -1400,36 +1206,31 @@
                 const ret = b.return_date ? formatDate(b.return_date) : '';
                 const seats = Number(b.total_seats) || 0;
                 const status = safeText(b.status, '');
-
                 const waMsg = `Hi, I'm interested in the "${name}" package. Please share more details.`;
                 const waUrl = whatsappURL(whatsappNum, waMsg);
                 const emailSub = `Package Inquiry: ${name}`;
                 const emailBody = `I am interested in the "${name}" package. Please share more details.`;
                 const emailUrl = `mailto:${emailAddr}?subject=${encodeURIComponent(emailSub)}&body=${encodeURIComponent(emailBody)}`;
-
                 const lines = [];
-                lines.push(`<li><i class="fas fa-check-circle"></i> ${escapeHTML(desc)}</li>`);
-                if (dep) lines.push(`<li><i class="fas fa-calendar"></i> Departure: ${escapeHTML(dep)}</li>`);
-                if (ret) lines.push(`<li><i class="fas fa-calendar-check"></i> Return: ${escapeHTML(ret)}</li>`);
-                if (seats > 0) lines.push(`<li><i class="fas fa-users"></i> Seats available: ${seats}</li>`);
-                if (status) lines.push(`<li><i class="fas fa-circle-info"></i> Status: ${escapeHTML(status)}</li>`);
-
+                lines.push(`<li><span class="emoji">✅</span> ${escapeHTML(desc)}</li>`);
+                if (dep) lines.push(`<li><span class="emoji">📅</span> Departure: ${escapeHTML(dep)}</li>`);
+                if (ret) lines.push(`<li><span class="emoji">🗓️</span> Return: ${escapeHTML(ret)}</li>`);
+                if (seats > 0) lines.push(`<li><span class="emoji">👥</span> Seats available: ${seats}</li>`);
+                if (status) lines.push(`<li><span class="emoji">ℹ️</span> Status: ${escapeHTML(status)}</li>`);
                 return `
                     <div class="package-card">
                         <div class="package-header">
-                            <h3><i class="fas fa-mosque"></i> ${escapeHTML(name)}</h3>
+                            <h3><span class="emoji">🕌</span> ${escapeHTML(name)}</h3>
                             <div class="package-price">${formatINR(price)}</div>
                         </div>
                         <div class="package-body">
-                            <ul class="package-features">
-                                ${lines.join('')}
-                            </ul>
+                            <ul class="package-features">${lines.join('')}</ul>
                             <div class="package-actions">
                                 <a href="${waUrl}" target="_blank" class="btn btn-whatsapp">
-                                    <i class="fab fa-whatsapp"></i> WhatsApp
+                                    <span class="emoji">💬</span> WhatsApp
                                 </a>
                                 <a href="${emailUrl}" class="btn btn-primary">
-                                    <i class="far fa-envelope"></i> Email
+                                    <span class="emoji">✉️</span> Email
                                 </a>
                             </div>
                         </div>
@@ -1445,13 +1246,9 @@
                 safeText(a.heading, 'About Alhudha Haj Travel');
             document.getElementById('aboutPara1').textContent = safeText(a.paragraph1, '');
             document.getElementById('aboutPara2').textContent = safeText(a.paragraph2, '');
-
             const statsGrid = document.getElementById('statsGrid');
             const stats = a.stats || [];
-            if (stats.length === 0) {
-                statsGrid.innerHTML = '';
-                return;
-            }
+            if (stats.length === 0) { statsGrid.innerHTML = ''; return; }
             statsGrid.innerHTML = stats.map(s => `
                 <div class="stat-item">
                     <div class="stat-number">${escapeHTML(s.number || '')}</div>
@@ -1464,13 +1261,11 @@
         // =====================================================================
         function renderGallery(g) {
             const section = document.getElementById('gallery');
-
             GALLERY = {
                 photos: g.photos || [],
                 videos: g.videos || [],
                 enabled: !!g.enabled,
             };
-
             const hasPhotos = (g.photos && g.photos.length > 0);
             const hasVideos = (g.videos && g.videos.length > 0);
             if (!g.enabled || (!hasPhotos && !hasVideos)) {
@@ -1478,23 +1273,19 @@
                 return;
             }
             section.style.display = 'block';
-
             document.getElementById('galleryTitle').textContent =
                 safeText(g.title, 'Sacred Places & Pilgrim Attractions');
             document.getElementById('gallerySubtitle').textContent =
                 safeText(g.subtitle, '');
-
             const maxP = Number(g.max_photos_shown) || 12;
             const maxV = Number(g.max_videos_shown) || 6;
-
             const photos = (g.photos || []).slice(0, maxP);
             const videos = (g.videos || []).slice(0, maxV);
-
             const photoGrid = document.getElementById('galleryPhotos');
             if (photos.length === 0) {
                 photoGrid.innerHTML = `
                     <div class="gallery-empty">
-                        <i class="fas fa-camera"></i>
+                        <span class="emoji">📷</span>
                         <p>No photos uploaded yet.</p>
                     </div>`;
             } else {
@@ -1508,12 +1299,11 @@
                             : ''}
                     </div>`).join('');
             }
-
             const videoGrid = document.getElementById('galleryVideos');
             if (videos.length === 0) {
                 videoGrid.innerHTML = `
                     <div class="gallery-empty">
-                        <i class="fas fa-video"></i>
+                        <span class="emoji">🎥</span>
                         <p>No videos uploaded yet.</p>
                     </div>`;
             } else {
@@ -1522,15 +1312,12 @@
                          onclick="openLightbox('video', ${idx})">
                         <video src="${escapeHTML(v.url)}#t=0.5"
                                preload="metadata" muted playsinline></video>
-                        <div class="play-badge">
-                            <i class="fas fa-play-circle"></i>
-                        </div>
+                        <div class="play-badge">▶️</div>
                         ${v.caption
                             ? `<div class="caption">${escapeHTML(v.caption)}</div>`
                             : ''}
                     </div>`).join('');
             }
-
             const tabs = document.querySelectorAll('.gallery-tab');
             tabs.forEach(btn => {
                 const fresh = btn.cloneNode(true);
@@ -1544,22 +1331,14 @@
                     videoGrid.style.display = isPhotos ? 'none' : 'grid';
                 });
             });
-
             photoGrid.style.display = 'grid';
             videoGrid.style.display = 'none';
         }
-
-        // ---------------------------------------------------------------------
-        // [JS.11.1] Lightbox
-        // ---------------------------------------------------------------------
         function openLightbox(kind, idx) {
             const lb = document.getElementById('lightbox');
             const content = document.getElementById('lightboxContent');
             const cap = document.getElementById('lightboxCaption');
-
-            let url = '';
-            let caption = '';
-
+            let url = ''; let caption = '';
             if (kind === 'photo' && GALLERY.photos[idx]) {
                 url = GALLERY.photos[idx].url;
                 caption = GALLERY.photos[idx].caption || '';
@@ -1567,32 +1346,22 @@
             } else if (kind === 'video' && GALLERY.videos[idx]) {
                 url = GALLERY.videos[idx].url;
                 caption = GALLERY.videos[idx].caption || '';
-                content.innerHTML =
-                    `<video src="${escapeHTML(url)}" controls autoplay playsinline></video>`;
-            } else {
-                return;
-            }
-
+                content.innerHTML = `<video src="${escapeHTML(url)}" controls autoplay playsinline></video>`;
+            } else { return; }
             cap.textContent = caption;
             lb.classList.add('active');
             document.body.style.overflow = 'hidden';
         }
-
         function closeLightbox(e) {
             if (e && e.target && e.target.id !== 'lightbox'
-                && !e.target.classList.contains('lightbox-close')) {
-                return;
-            }
+                && !e.target.classList.contains('lightbox-close')) return;
             const lb = document.getElementById('lightbox');
             lb.classList.remove('active');
             document.getElementById('lightboxContent').innerHTML = '';
             document.body.style.overflow = '';
         }
-
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                closeLightbox({ target: { id: 'lightbox' } });
-            }
+            if (e.key === 'Escape') closeLightbox({ target: { id: 'lightbox' } });
         });
 
         // =====================================================================
@@ -1605,96 +1374,86 @@
             const email = safeText(c.email, '');
             const addr1 = safeText(c.address_line1, '');
             const addr2 = safeText(c.address_line2, '');
-
             const items = [];
-
             if (phone || phone2) {
                 items.push(`
                     <div class="contact-card">
-                        <div class="contact-icon"><i class="fas fa-phone-alt"></i></div>
+                        <div class="contact-icon"><span class="emoji">📞</span></div>
                         <h3>Phone</h3>
                         ${phone ? `<p><a href="tel:${escapeHTML(phone)}">${escapeHTML(phone)}</a></p>` : ''}
                         ${phone2 ? `<p><a href="tel:${escapeHTML(phone2)}">${escapeHTML(phone2)}</a></p>` : ''}
                     </div>`);
             }
-
             if (email) {
                 items.push(`
                     <div class="contact-card">
-                        <div class="contact-icon"><i class="far fa-envelope"></i></div>
+                        <div class="contact-icon"><span class="emoji">✉️</span></div>
                         <h3>Email</h3>
                         <p><a href="mailto:${escapeHTML(email)}">${escapeHTML(email)}</a></p>
                     </div>`);
             }
-
             if (addr1 || addr2) {
                 items.push(`
                     <div class="contact-card">
-                        <div class="contact-icon"><i class="fas fa-map-marker-alt"></i></div>
+                        <div class="contact-icon"><span class="emoji">📍</span></div>
                         <h3>Office</h3>
                         ${addr1 ? `<p>${escapeHTML(addr1)}</p>` : ''}
                         ${addr2 ? `<p>${escapeHTML(addr2)}</p>` : ''}
                     </div>`);
             }
-
             grid.innerHTML = items.join('') ||
                 '<div class="packages-empty">Contact information coming soon.</div>';
         }
 
         // =====================================================================
-        // [JS.10] FOOTER  (v2.31 — dynamic social links)
+        // [JS.10] FOOTER
         // =====================================================================
         function renderFooter(f, c) {
             document.getElementById('footerAbout').textContent =
                 safeText(f.about_text, '');
             document.getElementById('footerCopyright').textContent =
                 safeText(f.copyright, `© ${new Date().getFullYear()} Alhudha Haj Travel. All rights reserved.`);
-
             const footerContact = document.getElementById('footerContact');
             const items = [];
-            if (c.phone) items.push(`<li><a href="tel:${escapeHTML(c.phone)}"><i class="fas fa-phone-alt"></i> ${escapeHTML(c.phone)}</a></li>`);
-            if (c.email) items.push(`<li><a href="mailto:${escapeHTML(c.email)}"><i class="far fa-envelope"></i> ${escapeHTML(c.email)}</a></li>`);
-            if (c.address_line2) items.push(`<li><a href="#"><i class="fas fa-map-marker-alt"></i> ${escapeHTML(c.address_line2)}</a></li>`);
+            if (c.phone) items.push(`<li><a href="tel:${escapeHTML(c.phone)}"><span class="emoji">📞</span> ${escapeHTML(c.phone)}</a></li>`);
+            if (c.email) items.push(`<li><a href="mailto:${escapeHTML(c.email)}"><span class="emoji">✉️</span> ${escapeHTML(c.email)}</a></li>`);
+            if (c.address_line2) items.push(`<li><a href="#"><span class="emoji">📍</span> ${escapeHTML(c.address_line2)}</a></li>`);
             footerContact.innerHTML = items.join('');
 
-            // v2.31 — dynamic social links
             const footerSocial = document.getElementById('footerSocial');
             const links = normalizeSocialLinks(CONFIG.social);
             const socItems = [];
             for (const link of links) {
                 socItems.push(socialIconHTML(link, true));
             }
-            // Auto-append WhatsApp if configured in contact but not in social.links
             if (c.whatsapp && !links.find(l => (l.platform || '').toLowerCase() === 'whatsapp')) {
                 socItems.push(
                     `<li><a href="${escapeHTML(whatsappURL(c.whatsapp))}" target="_blank" rel="noopener">` +
-                    `<i class="fab fa-whatsapp"></i> WhatsApp</a></li>`);
+                    `<span class="emoji">💬</span> WhatsApp</a></li>`);
             }
             footerSocial.innerHTML = socItems.join('');
         }
 
         // =====================================================================
-        // [JS.12] TOP BAR  (v2.31 — dynamic social links)
+        // [JS.12] TOP BAR
         // =====================================================================
         function renderTopBar(c, s) {
             const topBar = document.getElementById('topBarContact');
             const items = [];
-            if (c.phone) items.push(`<span><i class="fas fa-phone-alt"></i> <a href="tel:${escapeHTML(c.phone)}">${escapeHTML(c.phone)}</a></span>`);
-            if (c.email) items.push(`<span><i class="far fa-envelope"></i> <a href="mailto:${escapeHTML(c.email)}">${escapeHTML(c.email)}</a></span>`);
+            if (c.phone) items.push(`<span><span class="emoji">📞</span> <a href="tel:${escapeHTML(c.phone)}">${escapeHTML(c.phone)}</a></span>`);
+            if (c.email) items.push(`<span><span class="emoji">✉️</span> <a href="mailto:${escapeHTML(c.email)}">${escapeHTML(c.email)}</a></span>`);
             topBar.innerHTML = items.join('');
 
-            // v2.31 — dynamic social links (icon-only)
             const topBarSocial = document.getElementById('topBarSocial');
             const links = normalizeSocialLinks(s);
             const socialItems = [];
             for (const link of links) {
                 socialItems.push(socialIconHTML(link, false));
             }
-            // Auto-append WhatsApp if configured in contact but not in social.links
             if (c.whatsapp && !links.find(l => (l.platform || '').toLowerCase() === 'whatsapp')) {
                 socialItems.push(
                     `<a href="${escapeHTML(whatsappURL(c.whatsapp))}" target="_blank" rel="noopener" ` +
-                    `aria-label="WhatsApp" title="WhatsApp"><i class="fab fa-whatsapp"></i></a>`);
+                    `aria-label="WhatsApp" title="WhatsApp"><span class="emoji">💬</span></a>`);
             }
             topBarSocial.innerHTML = socialItems.join('');
         }
