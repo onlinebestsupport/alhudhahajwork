@@ -1,16 +1,31 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.5 — Document upload via native browser page (mobile fix)
-#   • NEW §8.10b: _open_browser_upload() — opens /traveler-doc-upload
-#   • Document rows now have a 🌐 button (browser upload) alongside 📎
-#   • save() merges server-side doc paths for existing travelers
-#   • save() scans moved new_traveler folder for pending uploads
-#   • v1.4 date format DD-MM-YYYY preserved
+# v1.6 — Pagination persistence fix (auto-refresh no longer resets to page 1)
+#
+#   ROOT CAUSE:
+#     refresh() unconditionally set self.current_page = 1. When the parent
+#     MainWindowView auto-refreshed the tab (background task), the user
+#     was silently moved back to page 1.
+#
+#   FIX:
+#     • __init__ loads current page from page.session.store
+#     • refresh() CLAMPS instead of resetting
+#     • next_page / prev_page SAVE page after change
+#     • search_travelers SAVES page (still resets — correct behaviour)
+#
+#   Preserved from v1.5:
+#     • Document upload via native browser page (mobile fix)
+#     • §8.10b: _open_browser_upload() — opens /traveler-doc-upload
+#     • Document rows have a 🌐 button (browser upload) alongside 📎
+#     • save() merges server-side doc paths for existing travelers
+#     • save() scans moved new_traveler folder for pending uploads
+#     • v1.4 date format DD-MM-YYYY preserved
 #
 # SECTION INDEX
 #   [H]     Module-level helpers
 #   [8.1]   TravelersTab class
+#   [8.1b]  Page-state persistence                    ← NEW v1.6
 #   [8.2]   setup_ui
 #   [8.3]   Helpers
 #   [8.4]   refresh
@@ -22,7 +37,7 @@
 #   [8.8]   Stats
 #   [8.9]   Dialog launchers
 #   [8.10]  View / Delete / Open doc
-#   [8.10b] Browser upload                          ← NEW
+#   [8.10b] Browser upload
 #   [8.11]  Exports
 #   [9.1]   TravelerDialog (Add/Edit)
 #   [10.1]  TravelerViewDialog
@@ -122,6 +137,11 @@ def _to_storage_date(value) -> str:
     return s
 
 
+def traceback_print():
+    import traceback
+    traceback.print_exc()
+
+
 # =================================================================================
 # [8.1] CLASS: TravelersTab
 # =================================================================================
@@ -135,7 +155,8 @@ class TravelersTab:
         self.travelers = []
         self.batches = []
         self.filtered_travelers = []
-        self.current_page = 1
+        # v1.6 — restore page from session so auto-refresh can't reset it
+        self.current_page = self._load_saved_page()
         self.items_per_page = 10
 
         self.stats_labels = {}
@@ -153,6 +174,28 @@ class TravelersTab:
 
     def build(self):
         return self.root
+
+    # =============================================================================
+    # [8.1b] PAGE-STATE PERSISTENCE  (v1.6 — fixes auto-reset to page 1)
+    # =============================================================================
+    def _load_saved_page(self) -> int:
+        """Restore the last-viewed page from page.session.store."""
+        try:
+            v = self.page.session.store.get("travelers_page")
+            if v:
+                n = int(v)
+                return n if n >= 1 else 1
+        except Exception:
+            pass
+        return 1
+
+    def _save_page(self):
+        """Remember the current page in page.session.store."""
+        try:
+            self.page.session.store.set(
+                "travelers_page", str(self.current_page))
+        except Exception:
+            pass
 
     # =============================================================================
     # [8.2] setup_ui
@@ -373,7 +416,7 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # [8.4] refresh
+    # [8.4] refresh  (v1.6 — CLAMP page instead of resetting to 1)
     # =============================================================================
     def refresh(self):
         try:
@@ -393,10 +436,41 @@ class TravelersTab:
                     batch_map.get(str(bid), 'Not Assigned') if bid
                     else 'Not Assigned')
 
-            self.filtered_travelers = self.travelers[:]
-            self.current_page = 1
-            print(f"[TRAVELERS] loaded {len(self.travelers)} travelers, "
-                  f"{len(self.batches)} batches")
+            # Reapply the search filter if one is active
+            text = ""
+            try:
+                text = (self.search_input.value or "").strip().lower()
+            except Exception:
+                text = ""
+
+            if not text:
+                self.filtered_travelers = self.travelers[:]
+            else:
+                self.filtered_travelers = [
+                    t for t in self.travelers
+                    if (text in (f"{t.get('first_name', '')} "
+                                 f"{t.get('last_name', '')}").lower()
+                        or text in str(t.get('passport_no', '')).lower()
+                        or text in str(t.get('mobile', '')).lower()
+                        or text in str(t.get('email', '')).lower()
+                        or text in str(t.get('batch_name', '')).lower())
+                ]
+
+            # v1.6 — CLAMP page into valid range instead of resetting to 1
+            total_pages = max(
+                1,
+                (len(self.filtered_travelers) + self.items_per_page - 1)
+                // self.items_per_page)
+            if self.current_page > total_pages:
+                self.current_page = total_pages
+            if self.current_page < 1:
+                self.current_page = 1
+            self._save_page()
+
+            print(f"[TRAVELERS] refreshed — page "
+                  f"{self.current_page}/{total_pages}, "
+                  f"{len(self.travelers)} travelers, "
+                  f"{len(self.filtered_travelers)} filtered")
 
             self.display_travelers()
             self.update_stats()
@@ -561,7 +635,7 @@ class TravelersTab:
                      if t.get('id') == self._selected_traveler_id), None)
 
     # =============================================================================
-    # [8.6] Pagination
+    # [8.6] Pagination  (v1.6 — SAVES page after every change)
     # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_travelers)
@@ -575,18 +649,22 @@ class TravelersTab:
     def prev_page(self, e):
         if self.current_page > 1:
             self.current_page -= 1
+            self._save_page()      # v1.6
             self.display_travelers()
+            print(f"[TRAVELERS] -> page {self.current_page} (prev)")
             self.page.update()
 
     def next_page(self, e):
         if (self.current_page * self.items_per_page
                 < len(self.filtered_travelers)):
             self.current_page += 1
+            self._save_page()      # v1.6
             self.display_travelers()
+            print(f"[TRAVELERS] -> page {self.current_page} (next)")
             self.page.update()
 
     # =============================================================================
-    # [8.7] Search
+    # [8.7] Search  (v1.6 — SAVES page after reset)
     # =============================================================================
     def search_travelers(self, e):
         text = (self.search_input.value or "").strip().lower()
@@ -603,6 +681,7 @@ class TravelersTab:
                     or text in str(t.get('batch_name', '')).lower())
             ]
         self.current_page = 1
+        self._save_page()          # v1.6
         self.display_travelers()
         self.page.update()
 
@@ -718,9 +797,7 @@ class TravelersTab:
             self._snack(f"⚠️ Could not open: {ex}")
 
     # =============================================================================
-    # [8.10b] _open_browser_upload — NEW v1.5
-    #         Opens the native HTML upload page in a new tab.
-    #         Used for mobile Safari where Flet's picker is blocked.
+    # [8.10b] _open_browser_upload — browser-based doc upload
     # =============================================================================
     def _open_browser_upload(self, traveler_id, doc_key, mode):
         url = (f"/traveler-doc-upload"
@@ -730,7 +807,6 @@ class TravelersTab:
         print(f"[TRAVELERS] opening browser upload: {url}")
 
         async def _go():
-            # Flet 1.0 param
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url,
@@ -744,7 +820,6 @@ class TravelersTab:
             except Exception as e:
                 print(f"[TRAVELERS] 1.0 param raised: {e}")
 
-            # Legacy param
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url, web_window_name="_blank")
@@ -755,7 +830,6 @@ class TravelersTab:
             except Exception as e:
                 print(f"[TRAVELERS] legacy param failed: {e}")
 
-            # Bare — new tab
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
@@ -1163,7 +1237,7 @@ class TravelerDialog:
             ], spacing=10,
         )
 
-        # ---- Section 5: Document uploads (v1.5 — dual button) ----
+        # ---- Section 5: Document uploads (dual button) ----
         doc_fields = [
             ("passport_scan", "Passport Scan", "📄"),
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
@@ -1177,7 +1251,6 @@ class TravelerDialog:
             status_lbl = ft.Text("No file", size=11, color="#95a5a6")
             self.doc_status_labels[key] = status_lbl
 
-            # Flet picker button (desktop)
             btn_flet = ft.Button(
                 content=ft.Text("📎 Pick", size=11),
                 on_click=lambda e, k=key: self.choose_document(k),
@@ -1186,7 +1259,6 @@ class TravelerDialog:
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
-            # Browser upload button (mobile)
             btn_browser = ft.Button(
                 content=ft.Text("🌐", size=11),
                 on_click=lambda e, k=key: self._open_browser_upload(k),
@@ -1290,7 +1362,7 @@ class TravelerDialog:
             print(f"run_task failed: {ex}")
 
     # -----------------------------------------------------------------------------
-    # [9.1.4] _open_browser_upload (v1.5 — native HTML page)
+    # [9.1.4] _open_browser_upload (native HTML page)
     # -----------------------------------------------------------------------------
     def _open_browser_upload(self, key):
         """Open /traveler-doc-upload in a new tab."""
@@ -1345,7 +1417,6 @@ class TravelerDialog:
             print(f"[TRAVELER-DIALOG] run_task failed: {ex}")
             self._snack("⚠️ Could not open browser upload")
 
-        # Show hint to user
         self._snack("🌐 Opened upload page in a new tab. "
                     "Upload the file, then return here.")
 
@@ -1354,7 +1425,6 @@ class TravelerDialog:
     # -----------------------------------------------------------------------------
     async def _pick_doc_async(self):
         try:
-            # Flet 1.0-friendly: use file_type where possible
             file_type = None
             try:
                 if self._current_doc_key == "photo":
@@ -1446,7 +1516,7 @@ class TravelerDialog:
                     lbl.color = "#27ae60"
 
     # -----------------------------------------------------------------------------
-    # [9.1.7] save (v1.5 — merges server-side docs)
+    # [9.1.7] save (merges server-side docs)
     # -----------------------------------------------------------------------------
     def save(self, e):
         try:
@@ -1484,14 +1554,9 @@ class TravelerDialog:
                 self._snack("⚠️ PIN must be 4–8 digits")
                 return
 
-            # ---- Merge in dialog's picked docs ----
             for key, rel in self.doc_paths.items():
                 data[key] = rel
 
-            # ---- v1.5: merge server-side uploaded docs (from CSV) ----
-            # If the user uploaded via the browser page in a new tab,
-            # the server wrote the path into travelers.csv directly.
-            # We need to preserve those here so save() doesn't wipe them.
             if self.is_edit and self.traveler:
                 try:
                     base = get_app_base_path()
@@ -1524,7 +1589,6 @@ class TravelerDialog:
                 action = "add_traveler"
                 msg = "Traveler added"
 
-                # Move new_traveler folder → documents/<tid>/
                 base = get_app_base_path()
                 src = Path(base) / "documents" / "new_traveler"
                 dst = Path(base) / "documents" / (
@@ -1532,7 +1596,6 @@ class TravelerDialog:
                 if src.exists() and not dst.exists():
                     shutil.move(str(src), str(dst))
 
-                    # v1.5: scan the moved folder for browser uploads
                     subfolder_map = {
                         'passport_scan': 'passports',
                         'aadhaar_scan': 'aadhaar',
@@ -1597,11 +1660,6 @@ class TravelerDialog:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
         except Exception:
             pass
-
-
-def traceback_print():
-    import traceback
-    traceback.print_exc()
 
 
 # =================================================================================
@@ -1886,5 +1944,5 @@ class TravelerViewDialog:
 
 
 # =================================================================================
-# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION)
+# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.6
 # =================================================================================
