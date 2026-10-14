@@ -1,22 +1,26 @@
 # =================================================================================
 # SECTION 16 — REPORTS TAB (FLET 1.0, Mobile-Responsive)
 # =================================================================================
-# v1.2 — Mobile-Responsive
-#   • Banner stacks on narrow screens
-#   • Stat cards 2-per-row mobile, 5 desktop
-#   • Report category cards stack on mobile
-#   • Single Traveler: sidebar stacks ABOVE right column on mobile
-#   • Standard Reports toolbar wraps
-#   • Photo Viewer dropdown + display stack
-#   • All original patches preserved:
-#       16.1.A — refresh() reload
-#       16.1.B — _rebuild_traveler_lists()
-#       16.1.C — _generate_standard() reload
-#       16.1.D — Flet 1.0 web-safe SnackBar
+# v1.3 — Typing-safety fixes
+#
+#   FIXES:
+#     • _std_from / _std_to now have on_change with explicit value sync
+#     • Added _typing_until guard + _field() helper
+#     • _goto_tab() uses self.tabs.update() (leaf) instead of page_ref.update()
+#     • _safe_update() skips while typing
+#     • refresh() defers if user is typing
+#
+#   Preserved from v1.2:
+#     • Mobile-responsive layout everywhere
+#     • 16.1.A: refresh() reload
+#     • 16.1.B: _rebuild_traveler_lists()
+#     • 16.1.C: _generate_standard() reload
+#     • 16.1.D: Flet 1.0 web-safe SnackBar
 # =================================================================================
 
 import os
 import sys
+import time
 import base64
 import traceback
 from datetime import datetime, timedelta
@@ -28,6 +32,9 @@ try:
     from core.settings_manager import SettingsManager
 except ImportError:
     SettingsManager = None
+
+
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -286,12 +293,34 @@ class ReportsTab(ft.Column):
         self._std_to = None
         self._std_output = None
 
+        # v1.3 — typing guard
+        self._typing_until = 0.0
+
         try:
             self._build()
         except Exception as e:
             print(f"[REPORTS] build failed: {e}")
             traceback.print_exc()
             self.controls = [self._build_error_ui(e)]
+
+    # -----------------------------------------------------------------------------
+    # 16.2.1a — _field  (v1.3 — TextField with explicit value sync)
+    # -----------------------------------------------------------------------------
+    def _field(self, **kwargs):
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
 
     # -----------------------------------------------------------------------------
     # 16.2.1b — _build_error_ui
@@ -340,7 +369,6 @@ class ReportsTab(ft.Column):
             self._build_standard_reports_tab(),
             self._build_photo_viewer_tab(),
         ]
-        # Scrollable tab bar for mobile
         self.tabs = ft.Tabs(
             selected_index=0,
             animation_duration=200,
@@ -361,10 +389,15 @@ class ReportsTab(ft.Column):
         self.controls = [self.tabs]
 
     # -----------------------------------------------------------------------------
-    # 16.2.5 — refresh  (PATCH 16.1.A + 16.1.B preserved)
+    # 16.2.5 — refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
         try:
+            # v1.3 — defer while typing
+            if time.time() < self._typing_until:
+                print("[REPORTS] refresh DEFERRED (typing)")
+                return
+
             try:
                 if hasattr(self.db, "reload"):
                     self.db.reload()
@@ -381,7 +414,7 @@ class ReportsTab(ft.Column):
             traceback.print_exc()
 
     # -----------------------------------------------------------------------------
-    # 16.2.5b — _rebuild_traveler_lists  (PATCH 16.1.B)
+    # 16.2.5b — _rebuild_traveler_lists
     # -----------------------------------------------------------------------------
     def _rebuild_traveler_lists(self):
         try:
@@ -389,7 +422,6 @@ class ReportsTab(ft.Column):
             travelers.sort(key=lambda t: (
                 f"{t.get('first_name','')} {t.get('last_name','')}".lower()))
 
-            # Single Traveler dropdown
             if self._single_search is not None:
                 self._single_map = {}
                 opts = [ft.dropdown.Option("", "— Select a traveler —")]
@@ -409,7 +441,6 @@ class ReportsTab(ft.Column):
                     except Exception as _e:
                         print(f"[REPORTS] re-render single: {_e}")
 
-            # Photo Viewer dropdown
             if self._photo_search is not None:
                 self._photo_map = {}
                 opts = [ft.dropdown.Option("", "— Select a traveler —")]
@@ -426,7 +457,7 @@ class ReportsTab(ft.Column):
             print(f"[REPORTS] _rebuild_traveler_lists: {ex}")
 
     # =============================================================================
-    # 16.2.6 — Reports Hub tab  (MOBILE-RESPONSIVE)
+    # 16.2.6 — Reports Hub tab
     # =============================================================================
     def _build_reports_hub_tab(self):
         user_name = (self.current_user.get("full_name")
@@ -564,7 +595,7 @@ class ReportsTab(ft.Column):
         self._refresh_hub_stats()
 
     # -----------------------------------------------------------------------------
-    # 16.2.7 — _refresh_hub_stats  (PATCH 16.1.A preserved)
+    # 16.2.7 — _refresh_hub_stats
     # -----------------------------------------------------------------------------
     def _refresh_hub_stats(self, e=None):
         try:
@@ -626,13 +657,14 @@ class ReportsTab(ft.Column):
             print(f"[REPORTS] hub stats: {e}")
 
     # -----------------------------------------------------------------------------
-    # 16.2.8 — _goto_tab
+    # 16.2.8 — _goto_tab  (v1.3 — leaf-only update)
     # -----------------------------------------------------------------------------
     def _goto_tab(self, idx):
         try:
             if self.tabs:
                 self.tabs.selected_index = idx
-                self.page_ref.update()
+                # v1.3 — leaf update (was page_ref.update())
+                self.tabs.update()
         except Exception as e:
             print(f"[REPORTS] goto_tab: {e}")
 
@@ -681,7 +713,7 @@ class ReportsTab(ft.Column):
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # 16.2.10 — Single Traveler tab  (MOBILE-RESPONSIVE)
+    # 16.2.10 — Single Traveler tab
     # =============================================================================
     def _build_single_traveler_tab(self):
         travelers = self.db.get_travelers()
@@ -764,7 +796,6 @@ class ReportsTab(ft.Column):
             padding=14, bgcolor=ft.Colors.WHITE,
             border=ft.Border.all(1.5, ft.Colors.GREY_300),
             border_radius=14,
-            # Desktop fixed width, mobile full-width
             col={"xs": 12, "sm": 12, "md": 4})
 
         def _kpi(key, icon, title, color):
@@ -1051,7 +1082,7 @@ class ReportsTab(ft.Column):
                 border_radius=8))
 
     # =============================================================================
-    # 16.2.13 — Standard Reports tab  (MOBILE-RESPONSIVE)
+    # 16.2.13 — Standard Reports tab  (v1.3 — TextFields use _field helper)
     # =============================================================================
     def _build_standard_reports_tab(self):
         self._std_type = ft.Dropdown(
@@ -1061,11 +1092,12 @@ class ReportsTab(ft.Column):
                       "Batch Utilization", "Payment Analysis"]],
             value="Financial Summary")
 
-        self._std_from = ft.TextField(
+        # v1.3 — use _field helper for date inputs
+        self._std_from = self._field(
             label="From (dd/mm/yyyy)",
             value=(datetime.now() - timedelta(days=30)
                    ).strftime("%d/%m/%Y"))
-        self._std_to = ft.TextField(
+        self._std_to = self._field(
             label="To (dd/mm/yyyy)",
             value=datetime.now().strftime("%d/%m/%Y"))
 
@@ -1135,7 +1167,7 @@ class ReportsTab(ft.Column):
             padding=14, expand=True)
 
     # -----------------------------------------------------------------------------
-    # 16.2.13.0 — _generate_standard  (PATCH 16.1.C preserved)
+    # 16.2.13.0 — _generate_standard
     # -----------------------------------------------------------------------------
     def _generate_standard(self, e=None):
         try:
@@ -1280,7 +1312,7 @@ class ReportsTab(ft.Column):
         return True
 
     # =============================================================================
-    # 16.2.14 — Photo Viewer tab  (MOBILE-RESPONSIVE)
+    # 16.2.14 — Photo Viewer tab
     # =============================================================================
     def _build_photo_viewer_tab(self):
         travelers = self.db.get_travelers()
@@ -1376,13 +1408,17 @@ class ReportsTab(ft.Column):
     # 16.2.15 — Helpers
     # =============================================================================
     def _safe_update(self):
+        """v1.3 — skip while typing."""
+        if time.time() < self._typing_until:
+            print("[REPORTS] _safe_update SKIPPED (typing)")
+            return
         try:
             self.update()
         except Exception:
             pass
 
     # -----------------------------------------------------------------------------
-    # 16.2.15b — _snack  (PATCH 16.1.D preserved)
+    # 16.2.15b — _snack
     # -----------------------------------------------------------------------------
     def _snack(self, msg, color=ft.Colors.GREEN_700):
         try:
@@ -1401,5 +1437,5 @@ class ReportsTab(ft.Column):
 
 
 # =================================================================================
-# SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION)
+# SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION) — v1.3
 # =================================================================================
