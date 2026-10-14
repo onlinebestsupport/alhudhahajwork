@@ -1,19 +1,7 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.35 — Visual icon picker for Feature cards
-#
-#   NEW:
-#     • Icon field in Features now has a preview box + Browse button
-#     • Click the preview (or the 📁 button) to open a categorized
-#       icon picker dialog
-#     • Picking an icon fills the text field + updates the preview
-#     • Text field remains editable — power users can type fa-* directly
-#     • Icon library covers Haj/Umrah-relevant topics:
-#         Worship, Travel, Stay, People, Services, Contact, Quality
-#
-#   PRESERVED: everything from v3.34 (stats fix, dynamic social links,
-#   verbose logging, save verification)
+# v3.36 — FIX: ft.Icon uses `icon=` not `name=` in Flet 1.0.4
 # =================================================================================
 
 import os
@@ -63,11 +51,6 @@ SOCIAL_PLATFORMS = [
 ]
 
 
-# =================================================================================
-# §0b — ICON LIBRARY (v3.35)
-#   Curated list of Font Awesome icons useful for a Haj/Umrah travel site.
-#   Each entry: (fa_class_saved_to_config, material_icon_name_for_preview, label)
-# =================================================================================
 ICON_LIBRARY = [
     ("Worship", [
         ("fa-mosque",            "MOSQUE",               "Mosque"),
@@ -136,9 +119,7 @@ ICON_LIBRARY = [
 ]
 
 
-# ---- Helpers for the icon library ----
 def _resolve_material(name: str):
-    """Look up an Material icon constant on ft (works across Flet versions)."""
     try:
         for attr in ("Icons", "icons"):
             container = getattr(ft, attr, None)
@@ -149,7 +130,6 @@ def _resolve_material(name: str):
                 return val
     except Exception:
         pass
-    # Fallback — safe-ish glyph
     try:
         return ft.Icons.HELP_OUTLINE
     except Exception:
@@ -175,10 +155,7 @@ def _material_for_fa(fa_class: str):
     key = str(fa_class or "").strip().lower()
     if not key:
         return _resolve_material("CHECK_CIRCLE")
-    mat_name = _MATERIAL_FOR_FA.get(key)
-    if not mat_name:
-        # Unknown fa class — derive from common patterns
-        mat_name = "CHECK_CIRCLE"
+    mat_name = _MATERIAL_FOR_FA.get(key) or "CHECK_CIRCLE"
     return _resolve_material(mat_name)
 
 
@@ -211,7 +188,7 @@ def _input_border(radius=8, width=1, color=BORDER):
 
 
 # =================================================================================
-# §1 — CLASS FrontPageSettingsTab
+# §1 — FrontPageSettingsTab
 # =================================================================================
 class FrontPageSettingsTab:
 
@@ -559,7 +536,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §7 — FEATURES  (v3.35 — icon picker)
+# §7 — FEATURES with icon picker
 # =================================================================================
     def _section_4_features(self):
         self.feature_rows_container = ft.Column(spacing=8)
@@ -583,9 +560,6 @@ class FrontPageSettingsTab:
             "Click the icon box to pick one visually.",
             [self.feature_rows_container, add_btn], accent=SUCCESS)
 
-    # -----------------------------------------------------------------------------
-    # §7.1 — _add_feature_row  (v3.35 — icon picker composite)
-    # -----------------------------------------------------------------------------
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field("Icon", icon_val,
                                  hint_text="fa-mosque")
@@ -606,7 +580,6 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
-        # Build the icon picker composite (preview + field + browse)
         icon_composite = self._build_icon_picker_composite(icon_field)
 
         row = ft.Container(
@@ -630,22 +603,14 @@ class FrontPageSettingsTab:
         return entry
 
     # -----------------------------------------------------------------------------
-    # §7.2 — _build_icon_picker_composite (v3.35)
+    # v3.36 — uses ft.Icon(icon=...) — not name=
     # -----------------------------------------------------------------------------
     def _build_icon_picker_composite(self, icon_field):
-        """
-        Wrap a plain icon TextField with:
-          • a preview box (shows the actual Material icon approximation)
-          • a browse button that opens the picker dialog
-        The text field remains editable — the preview updates as you type.
-        """
-        # Live-updating preview icon
         try:
             preview_icon = ft.Icon(
-                name=_material_for_fa(icon_field.value or ""),
+                icon=_material_for_fa(icon_field.value or ""),
                 size=22, color=PRIMARY)
         except Exception:
-            # Older Flet might require positional name
             preview_icon = ft.Icon(
                 _material_for_fa(icon_field.value or ""),
                 size=22, color=PRIMARY)
@@ -665,7 +630,6 @@ class FrontPageSettingsTab:
             ink=True,
         )
 
-        # Wrap icon_field.on_change so the preview refreshes on typing
         _original_on_change = icon_field.on_change
 
         def _composite_on_change(e, _f=icon_field,
@@ -677,7 +641,8 @@ class FrontPageSettingsTab:
                 except Exception:
                     pass
             try:
-                _pi.name = _material_for_fa(_f.value or "")
+                # v3.36 — icon property, not name
+                _pi.icon = _material_for_fa(_f.value or "")
                 _pi.update()
             except Exception:
                 pass
@@ -700,15 +665,12 @@ class FrontPageSettingsTab:
             browse_btn,
         ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-    # -----------------------------------------------------------------------------
-    # §7.3 — _apply_icon_pick (v3.35)
-    # -----------------------------------------------------------------------------
     def _apply_icon_pick(self, icon_field, preview_icon, fa_class):
-        """Called when user picks an icon from the dialog."""
         try:
             icon_field.value = fa_class
             try:
-                preview_icon.name = _material_for_fa(fa_class)
+                # v3.36 — icon property
+                preview_icon.icon = _material_for_fa(fa_class)
                 preview_icon.update()
             except Exception:
                 pass
@@ -725,14 +687,7 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
-    # -----------------------------------------------------------------------------
-    # §7.4 — _open_icon_picker (v3.35)
-    # -----------------------------------------------------------------------------
     def _open_icon_picker(self, initial_fa, on_pick):
-        """
-        Show a modal dialog with a categorized grid of icons.
-        `on_pick(fa_class)` is called when the user clicks an icon.
-        """
         current = str(initial_fa or "").strip().lower()
 
         def _pick(fa_class, ev=None):
@@ -741,10 +696,8 @@ class FrontPageSettingsTab:
             except Exception as ex:
                 print(f"[FRONTPAGE] icon pick callback failed: {ex}")
 
-        # Build the sections
         sections = []
         for category, items in ICON_LIBRARY:
-            # Category header
             sections.append(ft.Container(
                 content=ft.Text(category, size=11,
                                 weight=ft.FontWeight.BOLD,
@@ -752,14 +705,14 @@ class FrontPageSettingsTab:
                 padding=ft.Padding.only(top=10, bottom=4, left=2),
             ))
 
-            # Grid of icons
             cells = []
             for fa, mat_name, label in items:
                 mat = _resolve_material(mat_name)
                 is_current = (fa == current)
 
+                # v3.36 — icon=, not name=
                 try:
-                    ico = ft.Icon(name=mat, size=24,
+                    ico = ft.Icon(icon=mat, size=24,
                                   color=(SUCCESS if is_current
                                          else PRIMARY))
                 except Exception:
@@ -798,7 +751,8 @@ class FrontPageSettingsTab:
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([
-                ft.Icon(name=ft.Icons.IMAGE_SEARCH, color=PRIMARY_LT),
+                # v3.36 — icon=, not name=
+                ft.Icon(icon=ft.Icons.IMAGE_SEARCH, color=PRIMARY_LT),
                 ft.Text("Choose an icon", size=14,
                         weight=ft.FontWeight.BOLD),
             ], spacing=8),
@@ -815,9 +769,6 @@ class FrontPageSettingsTab:
         )
         self.page_ref.show_dialog(dlg)
 
-    # -----------------------------------------------------------------------------
-    # §7.5 — _add_feature_empty
-    # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
         if self.feature_rows_container is None:
             self._set_status("⚠️ Feature container not ready.", DANGER)
@@ -1031,7 +982,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §9 — ABOUT (with statistics)
+# §9 — ABOUT with statistics
 # =================================================================================
     def _section_6_about(self):
         a = self.cfg.get("about", {})
@@ -1146,7 +1097,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §11 — SOCIAL LINKS (dynamic)
+# §11 — SOCIAL LINKS
 # =================================================================================
     def _section_8_social(self):
         s = self.cfg.get("social", {})
@@ -1762,8 +1713,7 @@ class FrontPageSettingsTab:
                 "whatsapp": self._v(self.contact_whatsapp),
                 "address_line1": self._v(self.contact_addr1),
                 "address_line2": self._v(self.contact_addr2)},
-            "social": {
-                "links": social_links},
+            "social": {"links": social_links},
             "footer": {
                 "about_text": self._v(self.footer_about),
                 "copyright": self._v(self.footer_copyright)},
@@ -1832,7 +1782,6 @@ class FrontPageSettingsTab:
 
             cfg = self._collect_config()
             ui_stats_count = len(cfg.get("about", {}).get("stats") or [])
-
             n_sel = len(cfg.get("packages", {})
                          .get("selected_batch_ids", []))
             changes = self._summarize_changes(old_cfg, cfg)
@@ -1848,9 +1797,6 @@ class FrontPageSettingsTab:
                                      .get("stats") or [])
                     print(f"[FRONTPAGE] _save verify: "
                           f"disk stats={disk_stats}")
-                    if disk_stats != ui_stats_count:
-                        print(f"[FRONTPAGE] WARNING: stats mismatch! "
-                              f"UI={ui_stats_count} disk={disk_stats}")
                 except Exception as ve:
                     print(f"[FRONTPAGE] verify failed: {ve}")
 
@@ -1969,5 +1915,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.35
+# SECTION END — core/frontpage_settings_tab.py v3.36
 # =================================================================================
