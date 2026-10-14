@@ -1,19 +1,25 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.3 — Row Selection + Data-Loading Safety
-#   • ADDED: Tap any row → SELECTS (does not open anything)
-#   • ADDED: Toolbar 📄 PDF / 🖨️ Print act on selected row
-#   • ADDED: "Sel" column with ✓ marker
-#   • FIXED: on_select_change (correct Flet 1.0.0 param)
-#   • FIXED: refresh() no longer calls db.reload() (was wiping cache)
-#   • Preserved: 14.1.A (reload before read), 14.1.B (action re-fetch),
-#                14.3.A/B/C (cascade paid ↔ payment create/delete)
+# v1.4 — Typing-wipe fix (same pattern as users/batches/payments/receipts/reports)
+#   • Added import time
+#   • Added self._typing_until guard + _safe_update() helper to every class
+#   • update_tax_display() → leaf update on tax_info_label
+#   • refresh() → _safe_update() (skips if typing)
+#   • _select_invoice() → leaf updates only
+#   • apply_filters() → leaf update on table
+#   • _snack() no longer calls page.update()
+#   • InvoiceDialog / InvoiceModifyDialog / ManualInvoiceDialog:
+#       - TextFields now use _field() helper with value sync
+#       - recalculate() uses leaf-only updates
+#       - on_traveler_change / on_disc_type_change → leaf updates
+#   • All v1.3 features preserved
 # =================================================================================
 
 import flet as ft
 import json
 import os
+import time
 import base64
 import io
 from pathlib import Path
@@ -29,6 +35,9 @@ from core.helpers import (
 )
 from core.settings_manager import SettingsManager
 from core.company_settings_dialog import CompanySettingsDialog
+
+
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -56,14 +65,36 @@ class InvoicesTab:
         self.root = None
         self.selection_label = None
 
-        # Currently selected invoice (for toolbar PDF/Print)
         self._selected_invoice_id = None
+        # v1.4 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         self.refresh()
 
     def build(self):
         return self.root
+
+    # =============================================================================
+    # 14.1.0 — _safe_update / _update_table_only  (v1.4)
+    # =============================================================================
+    def _safe_update(self):
+        if time.time() < self._typing_until:
+            print("[INVOICES] _safe_update SKIPPED (typing)")
+            return
+        try:
+            if self.root is not None:
+                self.root.update()
+        except Exception as e:
+            print(f"[INVOICES] _safe_update failed: {e}")
+
+    def _update_table_only(self):
+        for c in (self.table, self.selection_label):
+            try:
+                if c is not None:
+                    c.update()
+            except Exception:
+                pass
 
     # =============================================================================
     # 14.1.1 — setup_ui
@@ -131,7 +162,6 @@ class InvoicesTab:
             border_radius=12,
         )
 
-        # ---- STAT CARDS ----
         stat_configs = [
             ("total_invoices",   "📊 Invoices",   "#3498db"),
             ("pending",          "⏳ Pending",    "#f39c12"),
@@ -174,7 +204,6 @@ class InvoicesTab:
             spacing=6, run_spacing=6,
         )
 
-        # ---- TOOLBAR ----
         def _tb(label, color, handler):
             return ft.Button(
                 content=ft.Text(label, size=11,
@@ -199,11 +228,24 @@ class InvoicesTab:
             value="All", height=48, text_size=11)
         self.status_filter.on_change = self.apply_filters
 
+        # v1.4 — search_input with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search invoice or traveler...",
             height=48, text_size=12,
             content_padding=ft.Padding.symmetric(horizontal=10, vertical=8))
-        self.search_input.on_change = self.apply_filters
+
+        def _search_on_change(e, _f=self.search_input):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.apply_filters(e)
+
+        self.search_input.on_change = _search_on_change
 
         toolbar = ft.ResponsiveRow(
             controls=[
@@ -231,7 +273,6 @@ class InvoicesTab:
             spacing=8, run_spacing=8,
         )
 
-        # ---- TABLE ----
         self.table = ft.DataTable(
             columns=[
                 ft.DataColumn(ft.Text("Sel", size=11)),
@@ -270,7 +311,6 @@ class InvoicesTab:
                                        weight=ft.FontWeight.BOLD,
                                        italic=True)
 
-        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -360,21 +400,16 @@ class InvoicesTab:
             tcs_rate = 0.1
         self.tax_info_label.value = (
             f"GST {gst_rate}%  |  TCS {tcs_rate}%")
+        # v1.4 — leaf-only update
         try:
-            self.page.update()
+            self.tax_info_label.update()
         except Exception:
             pass
 
     # =============================================================================
-    # 14.1.3 — refresh (destructive reload removed)
+    # 14.1.3 — refresh
     # =============================================================================
     def refresh(self, e=None):
-        """
-        Load invoices + related data from the in-memory DB cache.
-
-        IMPORTANT: Do NOT call db.reload() here — on Railway the CSV path
-        can differ from the volume mount, which wipes the cache.
-        """
         try:
             self.invoices = self.db.get_invoices()
             self.travelers = {
@@ -417,10 +452,8 @@ class InvoicesTab:
             self.display_invoices()
             self.update_summary_stats()
             self.update_tax_display()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            # v1.4 — skip if user just typed
+            self._safe_update()
         except Exception as ex:
             print(f"Invoices refresh error: {ex}")
             import traceback
@@ -478,7 +511,6 @@ class InvoicesTab:
                 pkg_txt = "N/A"
                 pkg_color = "#95a5a6"
 
-            # PATCH 14.1.B — capture ID, re-fetch before dispatch
             def _make_actions_menu(_inv_id=inv_id):
                 def _fresh():
                     return next(
@@ -527,7 +559,6 @@ class InvoicesTab:
 
             is_selected = (self._selected_invoice_id == inv_id)
 
-            # -------- ROW TAP → SELECT (not open) --------
             def _on_row_tap(e, _inv_id=inv_id):
                 try:
                     self._select_invoice(_inv_id)
@@ -539,7 +570,6 @@ class InvoicesTab:
                     on_select_change=_on_row_tap,
                     selected=is_selected,
                     cells=[
-                        # Selection indicator
                         ft.DataCell(
                             ft.Container(
                                 content=ft.Text(
@@ -613,10 +643,8 @@ class InvoicesTab:
                 self.selection_label.value = ""
 
         self.display_invoices()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.4 — leaf-only updates
+        self._update_table_only()
 
     def _get_selected_invoice(self):
         if not self._selected_invoice_id:
@@ -669,11 +697,13 @@ class InvoicesTab:
         self.stat_labels['package_pending'].value = _short(pkg_pending)
 
     # =============================================================================
-    # 14.1.6 — Filter
+    # 14.1.6 — Filter  (v1.4 — leaf-only update)
     # =============================================================================
-    def apply_filters(self, e=None):
-        status = self.status_filter.value or "All"
-        search = (self.search_input.value or "").lower().strip()
+    def _apply_filters_internal(self):
+        status = (self.status_filter.value or "All") \
+            if self.status_filter else "All"
+        search = (self.search_input.value or "").lower().strip() \
+            if self.search_input else ""
         filtered = self.invoices
         if status != "All":
             filtered = [i for i in filtered
@@ -685,10 +715,11 @@ class InvoicesTab:
                     or search in self.travelers.get(
                         i.get('traveler_id', ''), '').lower())]
         self.display_invoices(filtered)
-        try:
-            self.page.update()
-        except Exception:
-            pass
+
+    def apply_filters(self, e=None):
+        self._apply_filters_internal()
+        # v1.4 — leaf-only update (search field is not an ancestor)
+        self._update_table_only()
 
     # =============================================================================
     # 14.1.7 — CRUD
@@ -752,7 +783,7 @@ class InvoicesTab:
         dlg.show()
 
     # =============================================================================
-    # 14.1.8 — Toolbar PDF / Print (act on selected)
+    # 14.1.8 — Toolbar PDF / Print
     # =============================================================================
     def export_pdf_selected(self, e):
         inv = self._get_selected_invoice()
@@ -769,7 +800,7 @@ class InvoicesTab:
         self.print_invoice(inv)
 
     # =============================================================================
-    # 14.1.8b — export_invoice_to_pdf (all logic preserved)
+    # 14.1.8b — export_invoice_to_pdf (unchanged from v1.3)
     # =============================================================================
     def export_invoice_to_pdf(self, invoice):
         try:
@@ -1447,19 +1478,16 @@ class InvoicesTab:
         self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
         self.export_invoice_to_pdf(invoice)
 
+    # v1.4 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[INVOICES] snack failed: {ex}")
 
 
 # =================================================================================
-# 14.2 — CLASS: InvoiceDialog
+# 14.2 — CLASS: InvoiceDialog  (v1.4 — typing guard)
 # =================================================================================
 class InvoiceDialog:
 
@@ -1491,9 +1519,31 @@ class InvoiceDialog:
         self._computed_discount_pct = 0.0
         self._computed_discount_amount = 0.0
         self._computed_taxable_value = 0.0
+        # v1.4 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         self.load_tax_rates()
+
+    # v1.4 — TextField helper with explicit value sync
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
 
     def setup_ui(self):
         traveler_opts = [ft.dropdown.Option(key="", text="Select Traveler")]
@@ -1520,10 +1570,23 @@ class InvoiceDialog:
             "Not assigned", size=12,
             weight=ft.FontWeight.BOLD, color="#2c3e50")
 
-        self.amount_field = ft.TextField(
+        # v1.4 — use _field helper
+        self.amount_field = self._field(
             label="💰 Base Amount (₹) *", value="0",
             height=48, text_size=12)
-        self.amount_field.on_change = self.recalculate
+
+        def _amount_on_change(e, _f=self.amount_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalculate(e)
+
+        self.amount_field.on_change = _amount_on_change
 
         self.discount_type_dd = ft.Dropdown(
             label="🎁 Discount Type",
@@ -1534,10 +1597,22 @@ class InvoiceDialog:
             value="pct", height=48, text_size=12)
         self.discount_type_dd.on_change = self.on_disc_type_change
 
-        self.discount_value = ft.TextField(
+        self.discount_value = self._field(
             label="🎁 Discount Value", value="0",
             height=48, text_size=12)
-        self.discount_value.on_change = self.recalculate
+
+        def _discval_on_change(e, _f=self.discount_value):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalculate(e)
+
+        self.discount_value.on_change = _discval_on_change
 
         self.gst_dd = ft.Dropdown(
             label="📊 GST %",
@@ -1546,10 +1621,22 @@ class InvoiceDialog:
             value="18", height=48, text_size=12)
         self.gst_dd.on_change = self.recalculate
 
-        self.tcs_field = ft.TextField(
+        self.tcs_field = self._field(
             label="📊 TCS %", value="0.1",
             height=48, text_size=12)
-        self.tcs_field.on_change = self.recalculate
+
+        def _tcs_on_change(e, _f=self.tcs_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalculate(e)
+
+        self.tcs_field.on_change = _tcs_on_change
 
         self.discount_amt_lbl = ft.Text(
             "Discount Amount: ₹0.00", size=12,
@@ -1567,7 +1654,7 @@ class InvoiceDialog:
         self.breakdown_lbl = ft.Text(
             "GST: ₹0.00 | TCS: ₹0.00", size=11, color=ft.Colors.GREY_600)
 
-        self.notes_field = ft.TextField(
+        self.notes_field = self._field(
             label="📝 Notes", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
 
@@ -1632,14 +1719,21 @@ class InvoiceDialog:
             self.traveler_info.value = "No traveler selected"
             self.batch_label.value = "Not assigned"
             self.generate_btn.disabled = True
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            # v1.4 — leaf updates
+            for c in (self.traveler_info, self.batch_label,
+                      self.generate_btn):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             return
         t = self.db.get_traveler_by_id(tid)
         if not t:
             self.traveler_info.value = "⚠️ Not found"
+            try:
+                self.traveler_info.update()
+            except Exception:
+                pass
             return
         name = (f"{t.get('first_name', '')} "
                 f"{t.get('last_name', '')}").strip()
@@ -1659,6 +1753,13 @@ class InvoiceDialog:
             self.batch_label.value = "No batch assigned"
             self.generate_btn.disabled = True
         self.recalculate(None)
+        # v1.4 — leaf updates
+        for c in (self.traveler_info, self.batch_label,
+                  self.amount_field, self.generate_btn):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -1666,12 +1767,14 @@ class InvoiceDialog:
         else:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
+        # v1.4 — leaf update
         try:
-            self.page.update()
+            self.discount_value.update()
         except Exception:
             pass
         self.recalculate(None)
 
+    # v1.4 — leaf-only updates
     def recalculate(self, e):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1720,10 +1823,14 @@ class InvoiceDialog:
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
         self.breakdown_lbl.value = (f"GST: ₹{gst_amt:,.2f} | "
                                     f"TCS: ₹{tcs_amt:,.2f}")
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.4 — leaf-only updates
+        for c in (self.discount_amt_lbl, self.discount_pct_lbl,
+                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
+                  self.breakdown_lbl):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def save(self, e):
         tid = self.traveler_dd.value
@@ -1764,6 +1871,7 @@ class InvoiceDialog:
                     f"Generated invoice for {traveler.get('first_name', '')}")
             except Exception:
                 pass
+            self._typing_until = 0.0
             self.page.pop_dialog()
             self._snack(f"✅ Invoice {inv_id} generated")
             if self.on_save:
@@ -1776,19 +1884,16 @@ class InvoiceDialog:
     def show(self):
         self.page.show_dialog(self.dialog)
 
+    # v1.4 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[INV-DIALOG] snack failed: {ex}")
 
 
 # =================================================================================
-# 14.3 — CLASS: InvoiceModifyDialog
+# 14.3 — CLASS: InvoiceModifyDialog  (v1.4 — typing guard)
 # =================================================================================
 class InvoiceModifyDialog:
 
@@ -1812,14 +1917,48 @@ class InvoiceModifyDialog:
         self.rounded_lbl = None
         self.dialog = None
         self._computed = {}
+        # v1.4 — typing guard
+        self._typing_until = 0.0
 
         self.setup_ui()
         self.load_data()
 
+    # v1.4 — field helper
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
     def setup_ui(self):
-        self.amount_field = ft.TextField(
+        self.amount_field = self._field(
             label="Base Amount (₹)", height=48, text_size=12)
-        self.amount_field.on_change = self.recalc
+
+        def _amt_change(e, _f=self.amount_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalc(e)
+
+        self.amount_field.on_change = _amt_change
 
         self.disc_type_dd = ft.Dropdown(
             label="Discount Type",
@@ -1829,10 +1968,22 @@ class InvoiceModifyDialog:
             ], value="pct", height=48, text_size=12)
         self.disc_type_dd.on_change = self.recalc
 
-        self.disc_value = ft.TextField(
+        self.disc_value = self._field(
             label="Discount Value", value="0",
             height=48, text_size=12)
-        self.disc_value.on_change = self.recalc
+
+        def _dv_change(e, _f=self.disc_value):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalc(e)
+
+        self.disc_value.on_change = _dv_change
 
         self.gst_dd = ft.Dropdown(
             label="GST %",
@@ -1841,10 +1992,22 @@ class InvoiceModifyDialog:
             value="18", height=48, text_size=12)
         self.gst_dd.on_change = self.recalc
 
-        self.tcs_field = ft.TextField(
+        self.tcs_field = self._field(
             label="TCS %", value="0.1",
             height=48, text_size=12)
-        self.tcs_field.on_change = self.recalc
+
+        def _tcs_change(e, _f=self.tcs_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalc(e)
+
+        self.tcs_field.on_change = _tcs_change
 
         self.status_dd = ft.Dropdown(
             label="Status",
@@ -1852,7 +2015,7 @@ class InvoiceModifyDialog:
                      ["pending", "paid", "overdue", "cancelled"]],
             value="pending", height=48, text_size=12)
 
-        self.notes_field = ft.TextField(
+        self.notes_field = self._field(
             label="Notes", multiline=True,
             min_lines=2, max_lines=3, text_size=12)
 
@@ -1932,6 +2095,7 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             return d
 
+    # v1.4 — leaf-only updates
     def recalc(self, e=None):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1978,10 +2142,13 @@ class InvoiceModifyDialog:
         self.disc_pct_lbl.value = f"Effective Discount %: {disc_pct:.2f}%"
         self.taxable_lbl.value = f"Taxable Value: ₹{taxable:,.2f}"
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.4 — leaf-only updates
+        for c in (self.disc_amt_lbl, self.disc_pct_lbl,
+                  self.taxable_lbl, self.rounded_lbl):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def save(self, e):
         try:
@@ -2034,6 +2201,7 @@ class InvoiceModifyDialog:
             except Exception:
                 pass
 
+            self._typing_until = 0.0
             self.page.pop_dialog()
             self._snack("✅ Invoice updated")
             if self.on_save:
@@ -2133,10 +2301,6 @@ class InvoiceModifyDialog:
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
         except Exception:
             pass
 
@@ -2259,7 +2423,7 @@ class InvoiceDetailsDialog:
 
 
 # =================================================================================
-# 14.5 — CLASS: ManualInvoiceDialog
+# 14.5 — CLASS: ManualInvoiceDialog  (v1.4 — typing guard)
 # =================================================================================
 class ManualInvoiceDialog:
 
@@ -2285,7 +2449,29 @@ class ManualInvoiceDialog:
         self.total_lbl = None
 
         self.dialog = None
+        # v1.4 — typing guard
+        self._typing_until = 0.0
         self.setup_ui()
+
+    # v1.4 — field helper
+    def _field(self, **kwargs):
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=10, vertical=10)
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
 
     def setup_ui(self):
         topts = [ft.dropdown.Option(key="", text="Select Traveler")]
@@ -2314,16 +2500,16 @@ class ManualInvoiceDialog:
             label="Package", options=bopts, value="",
             height=48, text_size=12)
 
-        self.invoice_date = ft.TextField(
+        self.invoice_date = self._field(
             label="Invoice Date",
             value=datetime.now().strftime("%Y-%m-%d"),
             height=48, text_size=12)
 
-        self.cust_name = ft.TextField(
+        self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
-        self.cust_phone = ft.TextField(
+        self.cust_phone = self._field(
             label="Phone *", height=48, text_size=12)
-        self.cust_email = ft.TextField(
+        self.cust_email = self._field(
             label="Email", height=48, text_size=12)
 
         self.items_table = ft.DataTable(
@@ -2446,6 +2632,7 @@ class ManualInvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
+    # v1.4 — leaf-only updates
     def refresh_items(self):
         self.items_table.rows.clear()
         for i, item in enumerate(self.item_rows):
@@ -2504,10 +2691,13 @@ class ManualInvoiceDialog:
         self.disc_lbl.value = f"Discount: ₹{disc:,.2f}"
         self.taxable_lbl.value = f"Taxable: ₹{taxable:,.2f}"
         self.total_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        # v1.4 — leaf updates
+        for c in (self.items_table, self.sub_lbl, self.disc_lbl,
+                  self.taxable_lbl, self.total_lbl):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def generate_invoice(self):
         if not self.item_rows:
@@ -2556,6 +2746,7 @@ class ManualInvoiceDialog:
             except Exception:
                 pass
 
+            self._typing_until = 0.0
             self.page.pop_dialog()
             self._snack(f"✅ Invoice generated: {inv_id}")
             if self.on_save:
@@ -2573,12 +2764,8 @@ class ManualInvoiceDialog:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
         except Exception:
             pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION)
+# SECTION 14 END (FLET 1.0.0 VERSION) — v1.4
 # =================================================================================
