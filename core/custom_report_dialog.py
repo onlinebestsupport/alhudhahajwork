@@ -1,25 +1,28 @@
 # =================================================================================
 # SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, MOBILE-RESPONSIVE)
 # =================================================================================
-# PURPOSE
-#   Self-contained report generator embedded in the admin app. Lets the
-#   user pick columns from Travelers / Batches / Payments, filter by date,
-#   batch, status, method, amount, generate a summary or ledger report,
-#   and export to Excel / CSV / PDF.
+# v1.5 — 2026-10-14
+#   • FIX: date/amount filter TextFields now have on_change with
+#     explicit value sync → typed dates/amounts reach the server
+#     reliably (was: Generate used stale defaults)
+#   • FIX: _all / _clear handlers in the 3 column tabs use leaf
+#     updates instead of page.update() — no more wiping typed dates
+#   • FIX: _snack() no longer calls page.update()
+#   • FIX: _set_status() uses leaf-only updates
+#   • FIX: _on_report_format_changed() uses leaf update
+#   • FIX: select_all_checkboxes() uses leaf update
+#   • FIX: generate_preview() / _generate_ledger_preview() skip final
+#     page.update() if user is mid-typing (3s guard)
 #
-# VERSION
-#   v1.4 — 2026-10-07
-#     • §17.3.23/24/25 export_to_excel/csv/pdf now open the download in
-#       a NEW TAB (web_only_window_name="_blank"). This keeps the report
-#       tab alive so Safari doesn't reload /admin and lose the session.
-#     • Helper §17.3.2d _launch_in_new_tab() centralises the Flet 1.0
-#       web_only_window_name fallback logic.
-#     • All v1.3 features preserved (scroll fix, mobile layout, etc.).
+#   Preserved from v1.4:
+#     • Exports open in a NEW TAB (Safari session keep-alive)
+#     • §17.3.2d _launch_in_new_tab() helper
+#     • All v1.3 features (scroll fix, mobile layout, etc.)
 #
 # SECTION INDEX
 #   17.1   Imports
-#   17.1b  _fmt_inr_                — INR number formatter
-#   17.1c  _app_base                — find project root
+#   17.1b  _fmt_inr_
+#   17.1c  _app_base
 #   17.1d  _export_dir / _assets_export_dir / _open_local_file
 #   17.1e  _fmt_date_ddmmyyyy / _parse_ui_date
 #   17.1f  _photo_data_uri / _find_photo_path
@@ -34,6 +37,7 @@
 #
 #   17.3   class CustomReportDialog
 #   17.3.1   __init__
+#   17.3.1a  _field                      ← NEW v1.5
 #   17.3.1b  _fmt_money_inr
 #   17.3.1c  _load_live_tax_rates
 #   17.3.1d  _refresh_invoice_caches
@@ -42,7 +46,7 @@
 #   17.3.1g  _get_payment_share
 #   17.3.1h  _get_invoice_share
 #   17.3.2   PATH / STRING HELPERS
-#   17.3.2d  _launch_in_new_tab               ← NEW v1.4
+#   17.3.2d  _launch_in_new_tab
 #   17.3.3   setup_ui
 #   17.3.4   setup_left_panel
 #   17.3.5   setup_traveler_tab
@@ -67,9 +71,9 @@
 #   17.3.20  _build_row_wide
 #   17.3.21  _format_payment_value
 #   17.3.22  display_preview
-#   17.3.23  export_to_excel                  ← updated v1.4
-#   17.3.24  export_to_csv                    ← updated v1.4
-#   17.3.25  export_to_pdf                    ← updated v1.4
+#   17.3.23  export_to_excel
+#   17.3.24  export_to_csv
+#   17.3.25  export_to_pdf
 #   17.3.26  generate_pdf_report
 #   17.3.27  _build_pdf_photo_cell
 #   17.3.28  show / reject / _snack / _set_status
@@ -85,6 +89,7 @@ import os
 import sys
 import csv
 import io
+import time
 import base64
 import shutil
 import subprocess
@@ -110,9 +115,6 @@ except ImportError:
 
 # =================================================================================
 # 17.1b — MODULE HELPER: _fmt_inr_
-# PURPOSE
-#   Format a number as Indian Rupees with lakh/crore grouping.
-#   (e.g. 1234567.89 → "12,34,567.89"). Never raises.
 # =================================================================================
 if '_fmt_inr_' not in globals():
     def _fmt_inr_(value):
@@ -120,7 +122,7 @@ if '_fmt_inr_' not in globals():
             v = float(value or 0)
         except (TypeError, ValueError):
             return "0.00"
-        if v != v:  # NaN
+        if v != v:
             return "0.00"
         negative = v < 0
         v = abs(v)
@@ -149,9 +151,6 @@ if '_fmt_inr_' not in globals():
 
 # =================================================================================
 # 17.1c — MODULE HELPER: _app_base
-# PURPOSE
-#   Locate the project root regardless of whether the app is frozen
-#   (PyInstaller) or running from core/ inside the repo.
 # =================================================================================
 def _app_base():
     if getattr(sys, "frozen", False):
@@ -173,9 +172,6 @@ def _app_base():
 
 # =================================================================================
 # 17.1d — MODULE HELPERS: export dirs
-# PURPOSE
-#   Return (and create) the correct export folders under the project root.
-#   _open_local_file is a no-op on web — kept for API compatibility.
 # =================================================================================
 def _export_dir(sub):
     d = Path(_app_base()) / "exports" / sub
@@ -196,9 +192,6 @@ def _open_local_file(path):
 
 # =================================================================================
 # 17.1e — MODULE HELPERS: date formatting
-# PURPOSE
-#   _fmt_date_ddmmyyyy: normalise any date value → "DD/MM/YYYY" string.
-#   _parse_ui_date:     parse a UI string into a datetime or None.
 # =================================================================================
 def _fmt_date_ddmmyyyy(dv):
     if dv is None:
@@ -247,9 +240,6 @@ def _parse_ui_date(s):
 
 # =================================================================================
 # 17.1f — MODULE HELPERS: photo helpers
-# PURPOSE
-#   _photo_data_uri: read a photo from disk → data URI for Flet Image.
-#   _find_photo_path: scan documents/<traveler_id>/photos for a photo.
 # =================================================================================
 def _photo_data_uri(path):
     if not path or not os.path.exists(path):
@@ -293,9 +283,6 @@ def _find_photo_path(t):
 
 # =================================================================================
 # 17.1g — MODULE HELPER: money label detection
-# PURPOSE
-#   Decide whether a column label represents a currency value so we
-#   render it right-aligned with the correct ₹ formatting.
 # =================================================================================
 def _is_money_label(label):
     if not label:
@@ -315,9 +302,6 @@ def _is_money_label(label):
 
 # =================================================================================
 # 17.1h — FIELD CATALOGS
-# PURPOSE
-#   Static lists of every column the user can pick from, grouped by
-#   source (traveler / batch / payment) plus helper metadata.
 # =================================================================================
 TRAVELER_FIELDS = [
     ("id", "ID"), ("first_name", "First Name"),
@@ -440,7 +424,6 @@ MONEY_FIELDS = {
 
 
 def _dyn_label(key, n):
-    """Return the per-slot label for a dynamic payment column."""
     return {
         "__dyn_amount":    f"Payment {n} Amount",
         "__dyn_date":      f"Payment {n} Date",
@@ -457,17 +440,8 @@ def _dyn_label(key, n):
 # =================================================================================
 # 17.2 — CLASS: ColumnOrderDialog
 # =================================================================================
-# PURPOSE
-#   Small modal for reordering the columns in the current report. Shows
-#   the selected columns as a list; tap a row, use Up/Down to move it.
-# =================================================================================
 class ColumnOrderDialog:
 
-    # -----------------------------------------------------------------------------
-    # 17.2.1 — __init__
-    # PURPOSE
-    #   Capture the column list, wire the on-apply callback, prep the list.
-    # -----------------------------------------------------------------------------
     def __init__(self, page, columns, on_apply):
         self.page = page
         self.columns = list(columns)
@@ -478,11 +452,6 @@ class ColumnOrderDialog:
         self._rebuild_list()
         self.setup_ui()
 
-    # -----------------------------------------------------------------------------
-    # 17.2.2 — _rebuild_list
-    # PURPOSE
-    #   Redraw the clickable list of columns. Selected row is highlighted.
-    # -----------------------------------------------------------------------------
     def _rebuild_list(self):
         self._list.controls.clear()
         for i, col in enumerate(self.columns):
@@ -513,11 +482,6 @@ class ColumnOrderDialog:
                 else ft.Border.all(1, ft.Colors.GREY_200),
                 border_radius=6, on_click=_click, ink=True))
 
-    # -----------------------------------------------------------------------------
-    # 17.2.3 — setup_ui
-    # PURPOSE
-    #   Build the modal. Buttons: Up / Down / Reset / Apply / Cancel.
-    # -----------------------------------------------------------------------------
     def setup_ui(self):
         header = ft.Container(
             content=ft.Row([
@@ -616,9 +580,6 @@ class ColumnOrderDialog:
             ],
             actions_alignment=ft.MainAxisAlignment.CENTER)
 
-    # -----------------------------------------------------------------------------
-    # 17.2.4 — show
-    # -----------------------------------------------------------------------------
     def show(self):
         self.page.show_dialog(self.dialog)
 
@@ -629,12 +590,10 @@ class ColumnOrderDialog:
 class CustomReportDialog:
 
     _MONEY_FIELDS = MONEY_FIELDS
-    HARD_CAP = 10  # max dynamic payment slots
+    HARD_CAP = 10
 
     # =============================================================================
     # 17.3.1 — __init__
-    # PURPOSE
-    #   Load data, prime invoice caches, then build the UI.
     # =============================================================================
     def __init__(self, page, db, current_user):
         self.page = page
@@ -660,6 +619,9 @@ class CustomReportDialog:
         self.current_report_mode = 'summary'
         self._column_order = {}
         self._last_payment_source = "(not loaded)"
+
+        # v1.5 — typing guard
+        self._typing_until = 0.0
 
         self.column_group = None
         self.column_group_title = None
@@ -691,6 +653,25 @@ class CustomReportDialog:
         self.setup_ui()
 
     # =============================================================================
+    # 17.3.1a — _field  (v1.5 — TextField with on_change + guard)
+    # =============================================================================
+    def _field(self, **kwargs):
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + 3.0
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    # =============================================================================
     # 17.3.1b — _fmt_money_inr
     # =============================================================================
     def _fmt_money_inr(self, value):
@@ -698,8 +679,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1c — _load_live_tax_rates
-    # PURPOSE
-    #   Read GST and TCS percentages from SettingsManager.
     # =============================================================================
     def _load_live_tax_rates(self):
         try:
@@ -714,13 +693,7 @@ class CustomReportDialog:
             self.tcs_rate = 0.0
 
     # =============================================================================
-    # 17.3.1d — _refresh_invoice_caches   (FIX-PAID-CASCADE)
-    # PURPOSE
-    #   Build three dicts from the invoices table:
-    #     invoice_by_id / invoice_by_no       — fast lookup by ID or number
-    #     default_invoice_by_traveler         — fallback invoice per traveler
-    #     traveler_invoice_data               — SUM per traveler (all invoices)
-    #   This is what lets us pro-rate any payment across its invoice.
+    # 17.3.1d — _refresh_invoice_caches
     # =============================================================================
     def _refresh_invoice_caches(self):
         self.traveler_invoice_data = {}
@@ -817,9 +790,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1e — _resolve_invoice_for_payment
-    # PURPOSE
-    #   Find the invoice that a payment belongs to. Uses payment.invoice_id
-    #   first, then falls back to the traveler's default invoice.
     # =============================================================================
     def _resolve_invoice_for_payment(self, payment, traveler_id):
         inv_id = str(payment.get('invoice_id', '') or '').strip()
@@ -838,9 +808,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1f — _is_invoice_paid_for_payment
-    # PURPOSE
-    #   True if the payment's invoice is marked Paid. Falls back to
-    #   a live DB scan if the cache misses.
     # =============================================================================
     def _is_invoice_paid_for_payment(self, payment, traveler_id):
         try:
@@ -861,10 +828,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1g — _get_payment_share
-    # PURPOSE
-    #   Given a single payment and its traveler, return the pro-rated
-    #   invoice components (base, discount, taxable, GST, TCS, total)
-    #   that this payment represents.
     # =============================================================================
     def _get_payment_share(self, payment, traveler_id):
         amt = 0.0
@@ -906,9 +869,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.1h — _get_invoice_share
-    # PURPOSE
-    #   Fallback when no single invoice can be resolved: pro-rate the
-    #   traveler's total invoice components by the payment amount.
     # =============================================================================
     def _get_invoice_share(self, traveler_id, payment_amount):
         data = self.traveler_invoice_data.get(traveler_id)
@@ -1104,28 +1064,13 @@ class CustomReportDialog:
         return '\n'.join(lines)
 
     # =============================================================================
-    # 17.3.2d — _launch_in_new_tab   ← NEW v1.4
-    # PURPOSE
-    #   Open a URL in a NEW browser tab. Used by all export methods so
-    #   the report tab is NOT navigated away from, keeping the Flet
-    #   session alive (fixes "logged out after viewing report" on iOS
-    #   Safari).
-    #
-    #   Falls back through three Flet API variants:
-    #     1. UrlLauncher.launch_url(url, web_only_window_name="_blank")
-    #        (Flet 1.0)
-    #     2. UrlLauncher.launch_url(url, web_window_name="_blank")
-    #        (legacy)
-    #     3. UrlLauncher.launch_url(url) (bare — most browsers open
-    #        in new tab by default for cross-origin urls; for same-
-    #        origin, will fall through to whatever the browser does)
+    # 17.3.2d — _launch_in_new_tab
     # =============================================================================
     def _launch_in_new_tab(self, url):
         if not url:
             return
 
         async def _do():
-            # Attempt 1 — Flet 1.0 parameter name
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url,
@@ -1139,7 +1084,6 @@ class CustomReportDialog:
             except Exception as e:
                 print(f"[EXPORT] 1.0 param raised: {e}")
 
-            # Attempt 2 — legacy parameter name
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url,
@@ -1151,7 +1095,6 @@ class CustomReportDialog:
             except Exception as e:
                 print(f"[EXPORT] legacy param failed: {e}")
 
-            # Attempt 3 — bare (browser default)
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
@@ -1166,15 +1109,11 @@ class CustomReportDialog:
             self.page.run_task(_do)
         except Exception as ex:
             print(f"[EXPORT] run_task failed: {ex}")
-            # =============================================================================
-    # 17.3.3 — setup_ui   (MOBILE-RESPONSIVE + SCROLL)
-    # PURPOSE
-    #   Build the dialog. Everything below the header is inside a
-    #   scrollable Column so the bottom buttons stay reachable on any
-    #   viewport height. Dialog clamps to (viewport − margins).
+
+    # =============================================================================
+    # 17.3.3 — setup_ui
     # =============================================================================
     def setup_ui(self):
-        # ---- 17.3.3.1  Header (compact, close always visible) ----
         header = ft.Container(
             content=ft.Row([
                 ft.Text("📊", size=20),
@@ -1200,7 +1139,6 @@ class CustomReportDialog:
                 colors=["#1e40af", "#2563eb", "#7c3aed"]),
             border_radius=10)
 
-        # ---- 17.3.3.2  Build panels ----
         left_panel = self.setup_left_panel()
         right_panel = self.setup_right_panel()
 
@@ -1218,7 +1156,6 @@ class CustomReportDialog:
         buttons = self.setup_buttons()
         status = self.setup_status()
 
-        # ---- 17.3.3.3  Inner scrollable column ----
         inner = ft.Column(
             controls=[
                 filters_card,
@@ -1231,7 +1168,6 @@ class CustomReportDialog:
             expand=True,
         )
 
-        # ---- 17.3.3.4  Dialog clamped to viewport ----
         try:
             vw = self.page.width or 400
         except Exception:
@@ -1264,9 +1200,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.4 — setup_left_panel
-    # PURPOSE
-    #   Wrap the column selector tabs in a fixed-height card that
-    #   stacks full-width on mobile, sits 380px wide on desktop.
     # =============================================================================
     def setup_left_panel(self):
         column_group_title = ft.Text(
@@ -1308,10 +1241,7 @@ class CustomReportDialog:
         return self._left_panel_container
 
     # =============================================================================
-    # 17.3.5 — setup_traveler_tab
-    # PURPOSE
-    #   Build the "Travelers" tab in the column selector with All/Clear
-    #   buttons and a scrollable list of checkboxes.
+    # 17.3.5 — setup_traveler_tab  (v1.5 — leaf updates)
     # =============================================================================
     def setup_traveler_tab(self):
         for k, l in TRAVELER_FIELDS:
@@ -1324,12 +1254,18 @@ class CustomReportDialog:
         def _all(e):
             for cb in self.traveler_checkboxes.values():
                 cb.value = True
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         def _clear(e):
             for cb in self.traveler_checkboxes.values():
                 cb.value = False
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         return ft.Container(
             content=ft.Column([
@@ -1350,7 +1286,7 @@ class CustomReportDialog:
             padding=8, expand=True)
 
     # =============================================================================
-    # 17.3.6 — setup_batch_tab
+    # 17.3.6 — setup_batch_tab  (v1.5 — leaf updates)
     # =============================================================================
     def setup_batch_tab(self):
         for k, l in BATCH_FIELDS:
@@ -1363,12 +1299,18 @@ class CustomReportDialog:
         def _all(e):
             for cb in self.batch_checkboxes.values():
                 cb.value = True
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         def _clear(e):
             for cb in self.batch_checkboxes.values():
                 cb.value = False
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         return ft.Container(
             content=ft.Column([
@@ -1389,7 +1331,7 @@ class CustomReportDialog:
             padding=8, expand=True)
 
     # =============================================================================
-    # 17.3.7 — setup_payment_tab
+    # 17.3.7 — setup_payment_tab  (v1.5 — leaf updates)
     # =============================================================================
     def setup_payment_tab(self):
         for k, l in PAYMENT_FIELDS:
@@ -1402,12 +1344,18 @@ class CustomReportDialog:
         def _all(e):
             for cb in self.payment_checkboxes.values():
                 cb.value = True
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         def _clear(e):
             for cb in self.payment_checkboxes.values():
                 cb.value = False
-            self.page.update()
+                try:
+                    cb.update()
+                except Exception:
+                    pass
 
         return ft.Container(
             content=ft.Column([
@@ -1438,10 +1386,7 @@ class CustomReportDialog:
             padding=0, expand=True)
 
     # =============================================================================
-    # 17.3.9 — setup_filters
-    # PURPOSE
-    #   Build the entire filter bar. Uses ResponsiveRow so each field
-    #   wraps to its own row on xs, packs tighter on md and up.
+    # 17.3.9 — setup_filters  (v1.5 — TextFields use _field)
     # =============================================================================
     def setup_filters(self):
         self.report_format_dropdown = ft.Dropdown(
@@ -1455,12 +1400,13 @@ class CustomReportDialog:
             value="summary", text_size=12, content_padding=8)
         self.report_format_dropdown.on_change = self._on_report_format_changed
 
-        self.reg_date_from = ft.TextField(
+        # v1.5 — _field helper ensures typed dates reach the server
+        self.reg_date_from = self._field(
             label="From",
             value=(datetime.now() - timedelta(days=90)
                    ).strftime("%d/%m/%Y"),
             text_size=12, content_padding=8)
-        self.reg_date_to = ft.TextField(
+        self.reg_date_to = self._field(
             label="To",
             value=datetime.now().strftime("%d/%m/%Y"),
             text_size=12, content_padding=8)
@@ -1497,9 +1443,10 @@ class CustomReportDialog:
                      ["All", "completed", "pending", "failed", "refunded"]],
             value="All", text_size=12, content_padding=8)
 
-        self.min_amount_input = ft.TextField(
+        # v1.5 — _field helper for amount inputs too
+        self.min_amount_input = self._field(
             label="Min ₹", text_size=12, content_padding=8)
-        self.max_amount_input = ft.TextField(
+        self.max_amount_input = self._field(
             label="Max ₹", text_size=12, content_padding=8)
 
         def _quick(days):
@@ -1508,6 +1455,8 @@ class CustomReportDialog:
                     datetime.now() - timedelta(days=days)
                 ).strftime("%d/%m/%Y")
                 self.reg_date_to.value = datetime.now().strftime("%d/%m/%Y")
+                # v1.5 — extend guard so refresh doesn't wipe
+                self._typing_until = time.time() + 3.0
                 self.generate_preview(None)
             return _h
 
@@ -1564,7 +1513,7 @@ class CustomReportDialog:
             border_radius=10)
 
     # =============================================================================
-    # 17.3.9b — _on_report_format_changed
+    # 17.3.9b — _on_report_format_changed  (v1.5 — leaf update)
     # =============================================================================
     def _on_report_format_changed(self, e=None):
         try:
@@ -1578,15 +1527,16 @@ class CustomReportDialog:
                 self.column_group_title.value = (
                     "📋  Select Columns")
                 self.column_group_title.color = "#1e3a8a"
-            self.page.update()
+            # v1.5 — leaf update
+            try:
+                self.column_group_title.update()
+            except Exception:
+                pass
         except Exception as ex:
             print(f"[CR] _on_report_format_changed error: {ex}")
 
     # =============================================================================
-    # 17.3.10 — setup_preview   (MOBILE-RESPONSIVE: shorter height)
-    # PURPOSE
-    #   Build the preview area with horizontal scroll. Height is
-    #   smaller on mobile (220px) than desktop (380px).
+    # 17.3.10 — setup_preview
     # =============================================================================
     def setup_preview(self):
         pw = self.page.width or 1000
@@ -1639,7 +1589,7 @@ class CustomReportDialog:
             border_radius=10, expand=True)
 
     # =============================================================================
-    # 17.3.11 — setup_buttons   (MOBILE-RESPONSIVE: 2 per row on xs)
+    # 17.3.11 — setup_buttons
     # =============================================================================
     def setup_buttons(self):
         def _btn(label, icon, color, handler):
@@ -1713,25 +1663,20 @@ class CustomReportDialog:
         return {k: ft.Checkbox(label=l, value=False) for k, l in items}
 
     # =============================================================================
-    # 17.3.14 — select_all_checkboxes
+    # 17.3.14 — select_all_checkboxes  (v1.5 — leaf updates)
     # =============================================================================
     def select_all_checkboxes(self, checkboxes, select):
-        if isinstance(checkboxes, dict):
-            for cb in checkboxes.values():
-                cb.value = select
-        else:
-            for cb in checkboxes:
-                cb.value = select
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        items = (checkboxes.values()
+                 if isinstance(checkboxes, dict) else checkboxes)
+        for cb in items:
+            cb.value = select
+            try:
+                cb.update()
+            except Exception:
+                pass
 
     # =============================================================================
     # 17.3.15 — get_selected_columns
-    # PURPOSE
-    #   Return the list of {key, label, source} for every checked box
-    #   across the three column tabs.
     # =============================================================================
     def get_selected_columns(self):
         selected = []
@@ -1758,6 +1703,7 @@ class CustomReportDialog:
     def set_date_today(self):
         self.reg_date_from.value = datetime.now().strftime("%d/%m/%Y")
         self.reg_date_to.value = datetime.now().strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     def set_date_this_week(self):
@@ -1765,12 +1711,14 @@ class CustomReportDialog:
         start = today - timedelta(days=today.weekday())
         self.reg_date_from.value = start.strftime("%d/%m/%Y")
         self.reg_date_to.value = today.strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     def set_date_this_month(self):
         today = datetime.now()
         self.reg_date_from.value = today.replace(day=1).strftime("%d/%m/%Y")
         self.reg_date_to.value = today.strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     def set_date_last_month(self):
@@ -1780,6 +1728,7 @@ class CustomReportDialog:
         self.reg_date_from.value = last_last.replace(
             day=1).strftime("%d/%m/%Y")
         self.reg_date_to.value = last_last.strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     def set_date_this_year(self):
@@ -1788,6 +1737,7 @@ class CustomReportDialog:
             month=1, day=1).strftime("%d/%m/%Y")
         self.reg_date_to.value = today.replace(
             month=12, day=31).strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     def set_date_default(self):
@@ -1795,6 +1745,7 @@ class CustomReportDialog:
         self.reg_date_from.value = (
             today - timedelta(days=90)).strftime("%d/%m/%Y")
         self.reg_date_to.value = today.strftime("%d/%m/%Y")
+        self._typing_until = time.time() + 3.0
         self.generate_preview(None)
 
     # =============================================================================
@@ -1826,10 +1777,7 @@ class CustomReportDialog:
         ColumnOrderDialog(self.page, selected, _apply).show()
 
     # =============================================================================
-    # 17.3.18 — load_data_preview   (FIX-CSV-AUTHORITY)
-    # PURPOSE
-    #   Initial data load. Chooses between DB memory and CSV file by
-    #   row count (CSV is authoritative if it has more rows).
+    # 17.3.18 — load_data_preview
     # =============================================================================
     def load_data_preview(self):
         try:
@@ -1914,8 +1862,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.18b — _force_reload_csv
-    # PURPOSE
-    #   Force a fresh read of payments.csv and regenerate the preview.
     # =============================================================================
     def _force_reload_csv(self, e=None):
         try:
@@ -1964,6 +1910,7 @@ class CustomReportDialog:
                 self._last_payment_source = (
                     f"CSV {best_path} ({len(best_rows)} rows) [FORCE]")
             self._refresh_invoice_caches()
+            self._typing_until = time.time() + 3.0
             self.generate_preview(None)
             self._snack(f"✅ Loaded {len(self.payment_data)} payments "
                         f"from CSV", "#059669")
@@ -1973,9 +1920,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.18c — _diagnose
-    # PURPOSE
-    #   Dump the payment source and per-traveler counts to stdout so
-    #   the user can debug why a report is empty.
     # =============================================================================
     def _diagnose(self, e=None):
         try:
@@ -2012,11 +1956,7 @@ class CustomReportDialog:
             self._snack(f"❌ Diagnose failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19 — generate_preview   (FIX-FRESH-DATA preserved)
-    # PURPOSE
-    #   Main entry point for report generation. Reloads payments +
-    #   invoices from the DB, then either generates the summary (with
-    #   column picker) or delegates to ledger generation.
+    # 17.3.19 — generate_preview  (v1.5 — skip final update while typing)
     # =============================================================================
     def generate_preview(self, e=None):
         try:
@@ -2101,7 +2041,6 @@ class CustomReportDialog:
             payment_cols = [c for c in selected if c['source'] == 'payment']
             has_payment_cols = len(payment_cols) > 0
 
-            # ---- Filter travelers ----
             filtered_travelers = []
             for traveler in self.traveler_data:
                 try:
@@ -2141,7 +2080,6 @@ class CustomReportDialog:
                 except Exception as ex:
                     print(f"[CR] Error filtering traveler: {ex}")
 
-            # ---- Determine how many payment slots are needed ----
             max_slots = 0
             if has_payment_cols:
                 for traveler in filtered_travelers:
@@ -2165,7 +2103,6 @@ class CustomReportDialog:
                 if max_slots < 1:
                     max_slots = 1
 
-            # ---- Classify payment columns ----
             slot_source_fields = [
                 pf for pf in payment_cols
                 if not pf['key'].startswith('__sum_')
@@ -2185,7 +2122,6 @@ class CustomReportDialog:
                 if pf['key'].startswith('__inv_paid_')
             ]
 
-            # ---- Expand dynamic columns ----
             dynamic_payment_cols = []
             if has_payment_cols:
                 for slot in range(1, max_slots + 1):
@@ -2221,7 +2157,6 @@ class CustomReportDialog:
             final_columns = (traveler_cols + batch_cols
                              + dynamic_payment_cols)
 
-            # ---- Build rows ----
             report_data = []
             batch_lookup = {b['id']: b for b in self.db.get_batches()}
             for traveler in filtered_travelers:
@@ -2273,20 +2208,19 @@ class CustomReportDialog:
                 self.record_count_label.value = (
                     f"📊 {len(report_data)} travelers | "
                     f"{len(final_columns)} cols")
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            # v1.5 — skip if user just typed
+            if time.time() >= self._typing_until:
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
         except Exception as ex:
             traceback.print_exc()
             self._set_status("❌", f"Error: {ex}", "#dc2626")
             self._snack(f"Could not generate report: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.19b — _generate_ledger_preview
-    # PURPOSE
-    #   Alternate flow: one row per payment (flattened). Filters apply
-    #   to both payment and traveler sides. Auto-managed columns.
+    # 17.3.19b — _generate_ledger_preview  (v1.5 — skip update while typing)
     # =============================================================================
     def _generate_ledger_preview(self):
         try:
@@ -2479,10 +2413,12 @@ class CustomReportDialog:
             if self.record_count_label:
                 self.record_count_label.value = (
                     f"🧾 {len(report_data)} payments")
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            # v1.5 — skip if user just typed
+            if time.time() >= self._typing_until:
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
 
         except Exception as ex:
             traceback.print_exc()
@@ -2490,14 +2426,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.20 — _build_row_wide
-    # PURPOSE
-    #   Flatten one traveler + its batch + its payments into a single
-    #   dict keyed by column label. Handles:
-    #     • traveler-side fields (dates, aadhaar grouping, photos)
-    #     • batch-side fields (name, dates, price)
-    #     • dynamic payment slots (Payment 1, Payment 2, ...)
-    #     • summary totals (Total Paid, GST, Outstanding, etc.)
-    #     • invoice snapshots for paid invoices
     # =============================================================================
     def _build_row_wide(self, traveler_cols, batch_cols, payment_cols,
                         traveler, batch, payments, max_slots):
@@ -2751,10 +2679,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.21 — _format_payment_value
-    # PURPOSE
-    #   Format one field from one payment row (used by dynamic and
-    #   per-slot column expansion). Money fields are ₹-formatted;
-    #   dates become DD/MM/YYYY; other fields pass through safe_str.
     # =============================================================================
     def _format_payment_value(self, key, payment, traveler):
         if key == 'passport_name':
@@ -2854,10 +2778,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.22 — display_preview
-    # PURPOSE
-    #   Render the preview DataTable from the generated rows.
-    #   Column widths adapt to viewport; money cells are right-aligned;
-    #   photo cells use base64 data URIs.
     # =============================================================================
     def display_preview(self, selected, report_data):
         try:
@@ -2929,12 +2849,7 @@ class CustomReportDialog:
             self.preview_table.rows.append(ft.DataRow(cells=cells))
 
     # =============================================================================
-    # 17.3.23 — export_to_excel   (v1.4: opens in new tab)
-    # PURPOSE
-    #   Generate .xlsx with two sheets: "Report" and "Summary".
-    #   Photo cells embed the actual image (via Pillow). Money cells
-    #   use the INR number format. Download opens in a NEW TAB so the
-    #   report tab keeps its Flet session.
+    # 17.3.23 — export_to_excel
     # =============================================================================
     def export_to_excel(self, e=None):
         if not self.report_data:
@@ -3081,19 +2996,13 @@ class CustomReportDialog:
             url = send_file_to_user(self.page, str(path), "Excel Report")
             self._snack(f"✅ Excel saved → {path}", "#059669")
             if url:
-                # v1.4: open in NEW TAB so the report tab keeps
-                # its Flet session.
                 self._launch_in_new_tab(url)
         except Exception as ex:
             traceback.print_exc()
             self._snack(f"❌ Excel export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.24 — export_to_csv   (v1.4: opens in new tab)
-    # PURPOSE
-    #   Write the report as a UTF-8-BOM CSV with a metadata header
-    #   block (7 comment lines) followed by the table. Download opens
-    #   in a NEW TAB so the report tab keeps its Flet session.
+    # 17.3.24 — export_to_csv
     # =============================================================================
     def export_to_csv(self, e=None):
         if not self.report_data:
@@ -3166,18 +3075,13 @@ class CustomReportDialog:
             url = send_file_to_user(self.page, str(path), "CSV Report")
             self._snack(f"✅ CSV saved → {path}", "#059669")
             if url:
-                # v1.4: open in NEW TAB
                 self._launch_in_new_tab(url)
         except Exception as ex:
             traceback.print_exc()
             self._snack(f"❌ CSV export failed: {ex}", "#dc2626")
 
     # =============================================================================
-    # 17.3.25 — export_to_pdf   (v1.4: opens in new tab)
-    # PURPOSE
-    #   Thin wrapper around generate_pdf_report() that saves to the PDF
-    #   export folder and serves the file. Download opens in a NEW TAB
-    #   so the report tab keeps its Flet session.
+    # 17.3.25 — export_to_pdf
     # =============================================================================
     def export_to_pdf(self, e=None):
         if not self.report_data:
@@ -3197,7 +3101,6 @@ class CustomReportDialog:
             url = send_file_to_user(self.page, str(path), "PDF Report")
             self._snack(f"✅ PDF saved → {path}", "#059669")
             if url:
-                # v1.4: open in NEW TAB
                 self._launch_in_new_tab(url)
         except Exception as ex:
             traceback.print_exc()
@@ -3205,10 +3108,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.26 — generate_pdf_report
-    # PURPOSE
-    #   Build a landscape PDF with reportlab. If more than 7 columns,
-    #   splits the table into multiple pages (7 columns per page) so
-    #   nothing gets squished. Photo cells embed the actual image.
     # =============================================================================
     def generate_pdf_report(self, filepath, selected, report_data):
         try:
@@ -3406,9 +3305,6 @@ class CustomReportDialog:
 
     # =============================================================================
     # 17.3.27 — _build_pdf_photo_cell
-    # PURPOSE
-    #   Helper to build a scaled reportlab image cell for a photo path.
-    #   Kept for future reuse (main PDF flow inlines the logic).
     # =============================================================================
     def _build_pdf_photo_cell(self, rel_path, base_path, max_size,
                               cell_style):
@@ -3437,7 +3333,7 @@ class CustomReportDialog:
             return None
 
     # =============================================================================
-    # 17.3.28 — SHOW / REJECT / SNACK / STATUS HELPERS
+    # 17.3.28 — SHOW / REJECT / SNACK / STATUS
     # =============================================================================
     def show(self):
         try:
@@ -3459,23 +3355,30 @@ class CustomReportDialog:
         except Exception:
             pass
 
+    # v1.5 — use show_dialog (leaf-safe)
     def _snack(self, msg, color="#059669"):
         try:
-            self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(msg), bgcolor=color)
-            self.page.snack_bar.open = True
-            self.page.update()
+            self.page.show_dialog(
+                ft.SnackBar(content=ft.Text(msg), bgcolor=color))
         except Exception:
             pass
 
+    # v1.5 — leaf-only updates
     def _set_status(self, icon, text, color):
         try:
             if self.status_icon:
                 self.status_icon.value = icon
+                try:
+                    self.status_icon.update()
+                except Exception:
+                    pass
             if self.status_label:
                 self.status_label.value = text
                 self.status_label.color = color
-            self.page.update()
+                try:
+                    self.status_label.update()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -3484,7 +3387,6 @@ class CustomReportDialog:
 # 17.4 — MAINTENANCE WARNINGS
 # =================================================================================
 # 17.4.1  — FIX-CLOUD-EXPORTS : exports use send_file_to_user (HTTP).
-#            Files are written to /app/exports/<type>/ on the volume.
 # 17.4.2  — FIX-FRESH-DATA    : generate_preview() reloads CSVs first.
 # 17.4.3  — All prior fixes preserved (paid-cascade, per-invoice share,
 #              dynamic payments, CSV authority, tax-in-source,
@@ -3496,13 +3398,20 @@ class CustomReportDialog:
 #              • dialog clamps to (viewport − 60px)
 #              • §17.3.10: preview height 220 (mobile) vs 380 (desktop)
 #              • §17.3.11: buttons wrap to 2 per row on xs
-#              • header inside scroll content (no title bar)
-# 17.4.5  — NEW-TAB DOWNLOADS (v1.4):
+# 17.4.5  — NEW-TAB DOWNLOADS (v1.4 preserved):
 #              • All three export methods call §17.3.2d
 #                _launch_in_new_tab() so the download opens in a
 #                separate browser tab. The report tab stays alive,
-#                which keeps the Flet session (no more "logged out
-#                after viewing report" on iOS Safari).
+#                keeping the Flet session.
+# 17.4.6  — TYPING-SYNC FIXES (v1.5 NEW):
+#              • §17.3.1a: _field() helper adds on_change with value
+#                sync + typing guard. Applied to From/To/Min/Max.
+#              • §17.3.5/6/7: _all / _clear handlers use leaf updates
+#              • §17.3.9b: _on_report_format_changed() leaf update
+#              • §17.3.14: select_all_checkboxes() leaf updates
+#              • §17.3.19 / 19b: skip final page.update() while typing
+#              • §17.3.28: _snack / _set_status no longer call
+#                page.update()
 # =================================================================================
-# SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION)
+# SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION) — v1.5
 # =================================================================================
