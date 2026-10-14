@@ -1,27 +1,11 @@
 # =================================================================================
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
-# v2.1 — Aligned with frontpage_settings_tab.py v3.20 + main.py v2.25
-#
-#   CHANGES vs v2.0:
-#   • §0     NEW constants: MAX_PACKAGES_SHOWN_DEFAULT=9, HARD_CAP=30
-#   • §1.6   DEFAULT packages.max_shown now 9 (was 0)
-#   • §3.1   _normalize_id handles float IDs ("123.0" → "123")
-#   • §5.5   get_selected_batches clamps max_shown to 9 when ≤0
-#
-#   PRESERVED from v2.0:
-#   • §4.2   Atomic write (temp file + os.replace)
-#   • §5.1   normalize_batch_ids
-#   • §6.6/7 gallery_media_path / gallery_media_url
-#
-# SECTION INDEX
-#   §0      Constants
-#   §1      DEFAULT_CONFIG (all defaults)
-#   §2      Path resolution
-#   §3      Deep merge + ID normalization
-#   §4      Public API (load/save/public_view/config_exists/delete)
-#   §5      Batch selection helpers
-#   §6      Gallery helpers
+# v2.2 — _normalize_id now handles "123.0" strings correctly
+#   • "123.0"  → "123"
+#   • "123.00" → "123"
+#   • "123.5"  → "123.5" (unchanged — not whole number)
+#   • Preserves all other v2.1 behavior
 # =================================================================================
 
 import os
@@ -30,19 +14,14 @@ import tempfile
 from datetime import datetime
 
 
-# =================================================================================
-# §0 — CONSTANTS
-# =================================================================================
-MAX_PACKAGES_SHOWN_DEFAULT = 9      # front page shows up to 9 by default
-MAX_PACKAGES_SHOWN_HARD_CAP = 30    # absolute upper bound
+MAX_PACKAGES_SHOWN_DEFAULT = 9
+MAX_PACKAGES_SHOWN_HARD_CAP = 30
 
 
 # =================================================================================
-# §1 — DEFAULT CONFIG
+# DEFAULT CONFIG
 # =================================================================================
 DEFAULT_CONFIG = {
-
-    # §1.1 — Hero section
     "hero": {
         "heading": "Your Journey to the Holy Land",
         "subheading": (
@@ -52,20 +31,16 @@ DEFAULT_CONFIG = {
         "button_text": "View Packages",
         "whatsapp_text": "Chat on WhatsApp",
     },
-
-    # §1.2 — Alert banner
     "alert": {
         "enabled": False,
         "message": (
-            "⚠️ Important: Visa requirements updated for 2026 Hajj. "
+            "Important: Visa requirements updated for 2026 Hajj. "
             "Please submit documents by March 15th."
         ),
         "link": "#",
         "color": "#f39c12",
         "style": "pulse",
     },
-
-    # §1.3 — Contact info
     "contact": {
         "phone": "+91 98765 43210",
         "phone2": "",
@@ -74,15 +49,11 @@ DEFAULT_CONFIG = {
         "address_line1": "123, Haj House",
         "address_line2": "Mumbai - 400001, India",
     },
-
-    # §1.4 — Social links
     "social": {
         "facebook": "",
         "instagram": "",
         "twitter": "",
     },
-
-    # §1.5 — Feature cards
     "features": [
         {"icon": "fa-mosque", "title": "25+ Years Experience",
          "text": "Trusted by thousands of pilgrims worldwide"},
@@ -93,8 +64,6 @@ DEFAULT_CONFIG = {
         {"icon": "fa-users", "title": "Expert Guides",
          "text": "Knowledgeable guides throughout your journey"},
     ],
-
-    # §1.6 — Packages  (max_shown default = 9 now)
     "packages": {
         "title": "Our Haj & Umrah Packages",
         "subtitle": (
@@ -102,11 +71,9 @@ DEFAULT_CONFIG = {
         ),
         "source": "batches",
         "selected_batch_ids": [],
-        "max_shown": MAX_PACKAGES_SHOWN_DEFAULT,    # ← 9, was 0
+        "max_shown": MAX_PACKAGES_SHOWN_DEFAULT,
         "manual": [],
     },
-
-    # §1.7 — About section
     "about": {
         "heading": "About Alhudha Haj Travel",
         "paragraph1": (
@@ -128,20 +95,16 @@ DEFAULT_CONFIG = {
             {"number": "100%", "label": "Satisfaction"},
         ],
     },
-
-    # §1.8 — Footer
     "footer": {
         "about_text": (
             "Your trusted partner for Haj and Umrah since 1998. "
             "We provide comprehensive services for pilgrims."
         ),
         "copyright": (
-            f"© {datetime.now().year} Alhudha Haj Travel System. "
+            f"(c) {datetime.now().year} Alhudha Haj Travel System. "
             f"All rights reserved."
         ),
     },
-
-    # §1.9 — Gallery
     "gallery": {
         "enabled": True,
         "title": "Sacred Places & Pilgrim Attractions",
@@ -156,10 +119,9 @@ DEFAULT_CONFIG = {
 
 
 # =================================================================================
-# §2 — PATH RESOLUTION
+# PATH RESOLUTION
 # =================================================================================
 def _data_dir() -> str:
-    """Absolute path to <base>/data/, created if missing."""
     try:
         from core.helpers import get_app_base_path
         base = get_app_base_path()
@@ -171,19 +133,13 @@ def _data_dir() -> str:
 
 
 def _config_path() -> str:
-    """Where frontpage_config.json lives (inside the volume)."""
     return os.path.join(_data_dir(), "frontpage_config.json")
 
 
 # =================================================================================
-# §3 — DEEP MERGE + ID NORMALIZATION
+# DEEP MERGE
 # =================================================================================
 def _deep_merge(base: dict, override: dict) -> dict:
-    """
-    Merge override onto base. Nested dicts recurse; lists REPLACE
-    (so an empty selected_batch_ids stays empty — never refilled).
-    None values in override are ignored.
-    """
     result = dict(base or {})
     if not override:
         return result
@@ -199,19 +155,30 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+# =================================================================================
+# ID NORMALIZATION (v2.2 — handles "123.0" strings)
+# =================================================================================
 def _normalize_id(x) -> str:
     """
     Canonical string form for any batch ID.
 
-    Handles:  int 123 → "123"
-              float 123.0 → "123"
-              str "  123  " → "123"
-              None → ""
+    Handles:
+        int 123        -> "123"
+        float 123.0    -> "123"
+        float 123.5    -> "123.5"
+        str "123"      -> "123"
+        str "  123  "  -> "123"
+        str "123.0"    -> "123"     ← NEW in v2.2
+        str "123.00"   -> "123"     ← NEW in v2.2
+        str "123.5"    -> "123.5"   (not whole, unchanged)
+        None           -> ""
     """
     if x is None:
         return ""
     if isinstance(x, bool):
         return str(x)
+
+    # Direct numeric types
     if isinstance(x, float):
         try:
             if x.is_integer():
@@ -220,17 +187,32 @@ def _normalize_id(x) -> str:
             pass
     if isinstance(x, int):
         return str(x)
+
+    # String handling
     try:
-        return str(x).strip()
+        s = str(x).strip()
     except Exception:
         return ""
 
+    if not s:
+        return ""
+
+    # NEW v2.2: if string looks like "123.0" or "123.00", strip the .0
+    if "." in s:
+        try:
+            f = float(s)
+            if f.is_integer():
+                return str(int(f))
+        except Exception:
+            pass
+
+    return s
+
 
 # =================================================================================
-# §4 — PUBLIC API
+# PUBLIC API
 # =================================================================================
 def load_config() -> dict:
-    """Load config; create defaults if missing; never crash."""
     path = _config_path()
     if not os.path.exists(path):
         print(f"[FP-CFG] no config at {path} — creating defaults")
@@ -253,16 +235,13 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> bool:
-    """
-    ATOMIC write: temp file in same dir + os.replace().
-    Prevents half-written JSON if the process dies mid-write.
-    """
+    """Atomic write: temp file + os.replace()."""
     path = _config_path()
     tmp_path = None
     try:
         merged = _deep_merge(DEFAULT_CONFIG, cfg or {})
 
-        # Sanitise batch IDs on the way out
+        # Sanitise batch IDs (applies _normalize_id)
         try:
             pkg = merged.setdefault("packages", {})
             raw = pkg.get("selected_batch_ids", []) or []
@@ -308,14 +287,12 @@ def save_config(cfg: dict) -> bool:
 
 
 def public_view(cfg: dict = None) -> dict:
-    """Return config as seen by the public front page."""
     if cfg is None:
         cfg = load_config()
     return cfg
 
 
 def config_exists() -> bool:
-    """True if the config JSON file exists on disk."""
     try:
         return os.path.exists(_config_path())
     except Exception:
@@ -323,7 +300,6 @@ def config_exists() -> bool:
 
 
 def delete_config() -> bool:
-    """Delete the config file (next load recreates defaults)."""
     path = _config_path()
     try:
         if os.path.exists(path):
@@ -336,18 +312,10 @@ def delete_config() -> bool:
 
 
 # =================================================================================
-# §5 — BATCH SELECTION HELPERS
+# BATCH SELECTION HELPERS
 # =================================================================================
-
-# ---------------------------------------------------------------------------------
-# §5.1 — normalize_batch_ids
-# ---------------------------------------------------------------------------------
 def normalize_batch_ids(ids) -> list:
-    """
-    Clean, dedup, order-preserving list of batch IDs.
-    [" HAJ/001 ", "", None, "HAJ/002", "HAJ/001"]
-        → ["HAJ/001", "HAJ/002"]
-    """
+    """Clean, dedupe, order-preserving list of batch IDs."""
     out = []
     seen = set()
     for x in (ids or []):
@@ -359,22 +327,14 @@ def normalize_batch_ids(ids) -> list:
     return out
 
 
-# ---------------------------------------------------------------------------------
-# §5.2 — get_selected_batch_ids
-# ---------------------------------------------------------------------------------
 def get_selected_batch_ids(cfg: dict = None) -> list:
-    """Normalized list of selected batch IDs from a config."""
     if cfg is None:
         cfg = load_config()
     pkg = (cfg or {}).get("packages", {}) or {}
     return normalize_batch_ids(pkg.get("selected_batch_ids", []) or [])
 
 
-# ---------------------------------------------------------------------------------
-# §5.3 — set_selected_batch_ids
-# ---------------------------------------------------------------------------------
 def set_selected_batch_ids(cfg: dict, ids) -> dict:
-    """Update cfg in place (does NOT save)."""
     if not isinstance(cfg, dict):
         cfg = load_config()
     pkg = cfg.setdefault("packages", {})
@@ -382,31 +342,12 @@ def set_selected_batch_ids(cfg: dict, ids) -> dict:
     return cfg
 
 
-# ---------------------------------------------------------------------------------
-# §5.4 — count_selected_batches
-# ---------------------------------------------------------------------------------
 def count_selected_batches(cfg: dict = None) -> int:
-    """Number of selected batch IDs in cfg."""
     return len(get_selected_batch_ids(cfg))
 
 
-# ---------------------------------------------------------------------------------
-# §5.5 — get_selected_batches
-# ---------------------------------------------------------------------------------
 def get_selected_batches(cfg: dict, all_batches: list) -> list:
-    """
-    Return batches that should appear on the public front page.
-
-    STRICT CHECKBOX SEMANTICS:
-        • Checked   → appears (regardless of Full/Closed status)
-        • Unchecked → hidden
-        • Nothing   → ZERO packages
-
-    max_shown:
-        ≤0           → treated as MAX_PACKAGES_SHOWN_DEFAULT (9)
-        >30          → clamped to 30
-        N (1..30)    → hard cap at N
-    """
+    """Return batches that should appear on the public front page."""
     pcfg = (cfg or {}).get("packages", {}) or {}
     source = pcfg.get("source", "batches")
 
@@ -424,7 +365,7 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
     if source == "manual":
         manual = pcfg.get("manual", []) or []
         result = list(manual)[:max_shown] if cap_enabled else list(manual)
-        print(f"[FP-BATCH] source=manual → {len(result)} batch(es)")
+        print(f"[FP-BATCH] source=manual -> {len(result)} batch(es)")
         return result
 
     # ---- Real batches ----
@@ -436,23 +377,23 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
     print(f"[FP-BATCH] max_shown       : {max_shown}")
     print(f"[FP-BATCH] selected ids    : {len(selected_ids)}")
     for sid in selected_ids:
-        print(f"[FP-BATCH]   • {sid!r}")
+        print(f"[FP-BATCH]   - {sid!r}")
     print(f"[FP-BATCH] DB batches      : {len(all_batches)}")
 
     db_ids = []
     for b in all_batches:
         bid = _normalize_id(b.get("id"))
         db_ids.append(bid)
-        print(f"[FP-BATCH]   • {bid!r} name={b.get('batch_name')!r}")
+        print(f"[FP-BATCH]   - {bid!r} name={b.get('batch_name')!r}")
 
     missing = [sid for sid in selected_ids if sid not in db_ids]
     if missing:
-        print(f"[FP-BATCH] ⚠ {len(missing)} selected ID(s) NOT in DB:")
+        print(f"[FP-BATCH] Warning: {len(missing)} selected ID(s) NOT in DB:")
         for sid in missing:
-            print(f"[FP-BATCH]     • {sid!r}")
+            print(f"[FP-BATCH]     - {sid!r}")
 
     if not selected_ids:
-        print("[FP-BATCH] → nothing selected, returning []")
+        print("[FP-BATCH] -> nothing selected, returning []")
         print("=" * 60)
         return []
 
@@ -464,19 +405,18 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
             continue
         out.append(b)
         if len(out) >= max_shown:
-            print(f"[FP-BATCH] → capped at {max_shown}")
+            print(f"[FP-BATCH] -> capped at {max_shown}")
             break
 
-    print(f"[FP-BATCH] → returning {len(out)} batch(es)")
+    print(f"[FP-BATCH] -> returning {len(out)} batch(es)")
     print("=" * 60)
     return out
 
 
 # =================================================================================
-# §6 — GALLERY HELPERS
+# GALLERY HELPERS
 # =================================================================================
 def gallery_dir() -> str:
-    """Persistent gallery directory inside the volume."""
     d = os.path.join(_data_dir(), "gallery")
     os.makedirs(os.path.join(d, "photos"), exist_ok=True)
     os.makedirs(os.path.join(d, "videos"), exist_ok=True)
@@ -484,12 +424,9 @@ def gallery_dir() -> str:
 
 
 def add_gallery_item(media_type: str, item: dict) -> bool:
-    """Append one item to gallery[media_type] and save."""
     if media_type not in ("photos", "videos"):
-        print(f"[FP-CFG] add_gallery_item: bad media_type {media_type!r}")
         return False
     if not isinstance(item, dict) or not item.get("url"):
-        print("[FP-CFG] add_gallery_item: item missing url")
         return False
     try:
         cfg = load_config()
@@ -503,7 +440,6 @@ def add_gallery_item(media_type: str, item: dict) -> bool:
 
 
 def remove_gallery_item(media_type: str, url: str) -> bool:
-    """Remove any item whose url matches (config only, not disk)."""
     if media_type not in ("photos", "videos"):
         return False
     try:
@@ -518,7 +454,6 @@ def remove_gallery_item(media_type: str, url: str) -> bool:
 
 
 def list_gallery_items(media_type: str = None) -> list:
-    """Return gallery items, optionally filtered."""
     cfg = load_config()
     gal = cfg.get("gallery", {}) or {}
     if media_type == "photos":
@@ -530,7 +465,6 @@ def list_gallery_items(media_type: str = None) -> list:
 
 
 def gallery_summary() -> dict:
-    """Small summary for admin UI."""
     cfg = load_config()
     gal = cfg.get("gallery", {}) or {}
     photos = gal.get("photos", []) or []
@@ -559,7 +493,6 @@ def gallery_summary() -> dict:
 
 
 def gallery_media_path(media_type: str, filename: str) -> str:
-    """Disk path for one gallery file (traversal-safe)."""
     if media_type not in ("photos", "videos"):
         raise ValueError(f"bad media_type: {media_type!r}")
     if not filename:
@@ -569,7 +502,6 @@ def gallery_media_path(media_type: str, filename: str) -> str:
 
 
 def gallery_media_url(media_type: str, filename: str) -> str:
-    """Public URL path for one gallery file."""
     if media_type not in ("photos", "videos"):
         raise ValueError(f"bad media_type: {media_type!r}")
     if not filename:
@@ -579,5 +511,5 @@ def gallery_media_url(media_type: str, filename: str) -> str:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_config.py v2.1
+# SECTION END — core/frontpage_config.py v2.2
 # =================================================================================
