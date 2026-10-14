@@ -1,13 +1,28 @@
 # =================================================================================
 # core/frontpage_config.py — Front page configuration storage
 # =================================================================================
-# v2.2 — _normalize_id now handles "123.0" strings correctly
-#   • "123.0"  → "123"
-#   • "123.00" → "123"
-#   • "123.5"  → "123.5" (unchanged — not whole number)
-#   • Preserves all other v2.1 behavior
+# v2.3 — Dynamic social links support
+#   • social.links = [{platform, url}, ...] — the new source of truth
+#   • Legacy social.{facebook,instagram,twitter} still supported for read
+#   • New helpers: get_social_links(), set_social_links(), normalize_social_links()
+#   • All v2.2 behaviour preserved (ID normalization, batch helpers, gallery)
+#
+# SECTION INDEX
+#   [S.1] Imports & constants
+#   [S.2] DEFAULT_CONFIG
+#   [S.3] Path resolution
+#   [S.4] Deep merge
+#   [S.5] ID normalization
+#   [S.6] Public config API   (load / save / exists / delete / public_view)
+#   [S.7] Batch-selection helpers
+#   [S.8] Social-links helpers                              ← NEW in v2.3
+#   [S.9] Gallery helpers
 # =================================================================================
 
+
+# =================================================================================
+# [S.1] IMPORTS & CONSTANTS
+# =================================================================================
 import os
 import json
 import tempfile
@@ -19,7 +34,7 @@ MAX_PACKAGES_SHOWN_HARD_CAP = 30
 
 
 # =================================================================================
-# DEFAULT CONFIG
+# [S.2] DEFAULT_CONFIG
 # =================================================================================
 DEFAULT_CONFIG = {
     "hero": {
@@ -49,7 +64,11 @@ DEFAULT_CONFIG = {
         "address_line1": "123, Haj House",
         "address_line2": "Mumbai - 400001, India",
     },
+    # ---- v2.3: dynamic social links ----
+    # "links" is a list of {platform, url} dicts — the new source of truth.
+    # The legacy keys are kept so old configs read cleanly.
     "social": {
+        "links": [],
         "facebook": "",
         "instagram": "",
         "twitter": "",
@@ -119,7 +138,7 @@ DEFAULT_CONFIG = {
 
 
 # =================================================================================
-# PATH RESOLUTION
+# [S.3] PATH RESOLUTION
 # =================================================================================
 def _data_dir() -> str:
     try:
@@ -137,7 +156,7 @@ def _config_path() -> str:
 
 
 # =================================================================================
-# DEEP MERGE
+# [S.4] DEEP MERGE
 # =================================================================================
 def _deep_merge(base: dict, override: dict) -> dict:
     result = dict(base or {})
@@ -156,7 +175,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 # =================================================================================
-# ID NORMALIZATION (v2.2 — handles "123.0" strings)
+# [S.5] ID NORMALIZATION (v2.2 — handles "123.0" strings)
 # =================================================================================
 def _normalize_id(x) -> str:
     """
@@ -168,8 +187,8 @@ def _normalize_id(x) -> str:
         float 123.5    -> "123.5"
         str "123"      -> "123"
         str "  123  "  -> "123"
-        str "123.0"    -> "123"     ← NEW in v2.2
-        str "123.00"   -> "123"     ← NEW in v2.2
+        str "123.0"    -> "123"
+        str "123.00"   -> "123"
         str "123.5"    -> "123.5"   (not whole, unchanged)
         None           -> ""
     """
@@ -177,8 +196,6 @@ def _normalize_id(x) -> str:
         return ""
     if isinstance(x, bool):
         return str(x)
-
-    # Direct numeric types
     if isinstance(x, float):
         try:
             if x.is_integer():
@@ -187,17 +204,12 @@ def _normalize_id(x) -> str:
             pass
     if isinstance(x, int):
         return str(x)
-
-    # String handling
     try:
         s = str(x).strip()
     except Exception:
         return ""
-
     if not s:
         return ""
-
-    # NEW v2.2: if string looks like "123.0" or "123.00", strip the .0
     if "." in s:
         try:
             f = float(s)
@@ -205,12 +217,11 @@ def _normalize_id(x) -> str:
                 return str(int(f))
         except Exception:
             pass
-
     return s
 
 
 # =================================================================================
-# PUBLIC API
+# [S.6] PUBLIC CONFIG API
 # =================================================================================
 def load_config() -> dict:
     path = _config_path()
@@ -225,7 +236,9 @@ def load_config() -> dict:
         try:
             ids = merged.get("packages", {}).get("selected_batch_ids", []) or []
             ms = merged.get("packages", {}).get("max_shown", 0)
-            print(f"[FP-CFG] loaded · {len(ids)} selected · max_shown={ms}")
+            nl = len(get_social_links(merged))
+            print(f"[FP-CFG] loaded · {len(ids)} selected · "
+                  f"max_shown={ms} · social_links={nl}")
         except Exception:
             pass
         return merged
@@ -241,7 +254,7 @@ def save_config(cfg: dict) -> bool:
     try:
         merged = _deep_merge(DEFAULT_CONFIG, cfg or {})
 
-        # Sanitise batch IDs (applies _normalize_id)
+        # Sanitise batch IDs
         try:
             pkg = merged.setdefault("packages", {})
             raw = pkg.get("selected_batch_ids", []) or []
@@ -250,6 +263,12 @@ def save_config(cfg: dict) -> bool:
             ]
         except Exception as e:
             print(f"[FP-CFG] warn: batch id cleanup failed: {e}")
+
+        # Sanitise social links (v2.3)
+        try:
+            set_social_links(merged, get_social_links(merged))
+        except Exception as e:
+            print(f"[FP-CFG] warn: social links cleanup failed: {e}")
 
         d = os.path.dirname(path)
         os.makedirs(d, exist_ok=True)
@@ -277,7 +296,9 @@ def save_config(cfg: dict) -> bool:
         try:
             n = len(merged.get("packages", {})
                          .get("selected_batch_ids", []) or [])
-            print(f"[FP-CFG] saved · {n} selected batch(es)")
+            nl = len(get_social_links(merged))
+            print(f"[FP-CFG] saved · {n} selected batch(es) · "
+                  f"social_links={nl}")
         except Exception:
             print(f"[FP-CFG] saved")
         return True
@@ -312,7 +333,7 @@ def delete_config() -> bool:
 
 
 # =================================================================================
-# BATCH SELECTION HELPERS
+# [S.7] BATCH-SELECTION HELPERS
 # =================================================================================
 def normalize_batch_ids(ids) -> list:
     """Clean, dedupe, order-preserving list of batch IDs."""
@@ -414,7 +435,86 @@ def get_selected_batches(cfg: dict, all_batches: list) -> list:
 
 
 # =================================================================================
-# GALLERY HELPERS
+# [S.8] SOCIAL-LINKS HELPERS (v2.3 — NEW)
+# =================================================================================
+# Supported platform keys (used by the frontend to pick icons).
+SOCIAL_PLATFORMS = (
+    "facebook", "instagram", "twitter", "telegram", "whatsapp",
+    "youtube", "linkedin", "tiktok", "snapchat", "pinterest",
+    "email", "website",
+)
+
+
+def normalize_social_links(links) -> list:
+    """
+    Clean + dedupe a list of {platform, url} dicts.
+
+    Rules:
+      • platform must be a non-empty string → lowercased
+      • url must be a non-empty string → trimmed
+      • duplicates (platform, url) removed
+      • preserves insertion order
+    """
+    out = []
+    seen = set()
+    for x in (links or []):
+        if not isinstance(x, dict):
+            continue
+        plat = str(x.get("platform", "")).strip().lower()
+        url = str(x.get("url", "")).strip()
+        if not plat or not url:
+            continue
+        key = (plat, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"platform": plat, "url": url})
+    return out
+
+
+def get_social_links(cfg: dict = None) -> list:
+    """
+    Return the normalized social-links list.
+
+    Prefers social.links (new format). If empty, falls back to the
+    legacy facebook/instagram/twitter string keys.
+    """
+    if cfg is None:
+        cfg = load_config()
+    s = (cfg or {}).get("social", {}) or {}
+
+    # New format
+    raw = s.get("links")
+    if isinstance(raw, list) and raw:
+        return normalize_social_links(raw)
+
+    # Legacy migration path
+    out = []
+    for k in ("facebook", "instagram", "twitter"):
+        v = str(s.get(k, "") or "").strip()
+        if v:
+            out.append({"platform": k, "url": v})
+    return out
+
+
+def set_social_links(cfg: dict, links) -> dict:
+    """
+    Write a cleaned links list into cfg["social"]["links"].
+    Keeps legacy keys untouched (they become harmless once links is set).
+    """
+    if not isinstance(cfg, dict):
+        cfg = load_config()
+    s = cfg.setdefault("social", {})
+    s["links"] = normalize_social_links(links)
+    return cfg
+
+
+def count_social_links(cfg: dict = None) -> int:
+    return len(get_social_links(cfg))
+
+
+# =================================================================================
+# [S.9] GALLERY HELPERS
 # =================================================================================
 def gallery_dir() -> str:
     d = os.path.join(_data_dir(), "gallery")
@@ -511,5 +611,5 @@ def gallery_media_url(media_type: str, filename: str) -> str:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_config.py v2.2
+# SECTION END — core/frontpage_config.py v2.3
 # =================================================================================

@@ -184,7 +184,6 @@
             color: var(--gray-color);
         }
 
-        /* Nav menu — holds nav links, centers on desktop */
         .nav-menu {
             display: flex;
             align-items: center;
@@ -203,7 +202,6 @@
         }
         .nav-links a:hover { border-color: var(--primary-color); }
 
-        /* Login buttons — ALWAYS visible top-right */
         .nav-buttons {
             display: flex;
             gap: 10px;
@@ -247,7 +245,6 @@
         .btn-whatsapp { background: #25D366; color: white; }
         .btn-whatsapp:hover { background: #128C7E; }
 
-        /* Hamburger */
         .mobile-toggle {
             display: none;
             align-items: center;
@@ -264,7 +261,6 @@
         }
         .mobile-toggle:hover { background: #e2e8f0; }
 
-        /* Close button inside mobile menu */
         .nav-menu-close {
             display: none;
             position: absolute;
@@ -710,7 +706,6 @@
         /* =========================================================================
            [CSS.13] RESPONSIVE — MOBILE
            ========================================================================= */
-        /* Tablet: slightly smaller buttons */
         @media (max-width: 900px) {
             .nav-links { gap: 15px; }
             .nav-links a { font-size: 0.9rem; }
@@ -722,7 +717,6 @@
             .nav-brand img { height: 48px; }
         }
 
-        /* Mobile: hamburger for nav links, buttons stay visible */
         @media (max-width: 768px) {
             .nav-container {
                 padding: 12px 15px;
@@ -733,7 +727,6 @@
             .nav-brand img { height: 42px; }
             .nav-brand { gap: 8px; }
 
-            /* Slide-out menu for nav links only */
             .nav-menu {
                 position: fixed;
                 top: 0;
@@ -768,11 +761,9 @@
             }
             .nav-links a:last-child { border-bottom: none; }
 
-            /* Show hamburger + close button */
             .mobile-toggle { display: flex; }
             .nav-menu-close { display: flex; }
 
-            /* Login buttons — COMPACT and ALWAYS visible */
             .nav-buttons {
                 display: flex;
                 gap: 6px;
@@ -785,7 +776,6 @@
             }
             .nav-buttons .btn i { font-size: 0.9rem; }
 
-            /* Content adjustments */
             .hero { padding: 70px 0; }
             .hero h1 { font-size: 2rem; }
             .hero p { font-size: 1rem; }
@@ -826,7 +816,6 @@
             .lightbox-close { top: 10px; right: 10px; font-size: 2rem; }
         }
 
-        /* Small phones: even more compact buttons */
         @media (max-width: 480px) {
             .nav-container { padding: 10px 12px; gap: 8px; }
             .nav-brand { gap: 6px; }
@@ -834,7 +823,6 @@
             .brand-text { font-size: 0.92rem; line-height: 1.1; }
             .brand-text small { font-size: 0.6rem; }
 
-            /* Hide text labels on buttons, keep icons */
             .nav-buttons .btn-label { display: none; }
             .nav-buttons .btn {
                 padding: 9px 11px;
@@ -886,8 +874,6 @@
 
     <!-- =========================================================================
          [HTML.3] NAVIGATION
-         Login buttons are OUTSIDE the slide-out menu — always visible.
-         Nav links slide out via hamburger on mobile.
          ========================================================================= -->
     <nav class="navbar">
         <div class="nav-container">
@@ -897,7 +883,6 @@
                 <span class="brand-text">Alhudha Haj<small>Travel</small></span>
             </a>
 
-            <!-- Slide-out menu for nav links only -->
             <div class="nav-menu" id="navMenu">
                 <button class="nav-menu-close" onclick="toggleMobileMenu()"
                         aria-label="Close menu">
@@ -912,7 +897,6 @@
                 </div>
             </div>
 
-            <!-- Login buttons + hamburger (buttons always visible) -->
             <div class="nav-buttons">
                 <a href="/traveler" class="btn btn-traveler"
                    title="Traveler Login" aria-label="Traveler Login">
@@ -998,7 +982,7 @@
     </section>
 
     <!-- =========================================================================
-         [HTML.11] GALLERY — hidden unless config has items
+         [HTML.11] GALLERY
          ========================================================================= -->
     <section class="gallery-section" id="gallery" style="display:none;">
         <div class="container">
@@ -1094,6 +1078,40 @@
         let GALLERY = { photos: [], videos: [], enabled: false };
 
         // =====================================================================
+        // [JS.0b] SOCIAL PLATFORM MAP  (v2.31 — NEW)
+        //   Maps platform keys → Font Awesome icon + display label.
+        //   Matches the SOCIAL_PLATFORMS tuple in frontpage_config.py v2.3.
+        // =====================================================================
+        const SOCIAL_PLATFORM_ICONS = {
+            facebook:  "fa-facebook-f",
+            instagram: "fa-instagram",
+            twitter:   "fa-twitter",
+            telegram:  "fa-telegram",
+            whatsapp:  "fa-whatsapp",
+            youtube:   "fa-youtube",
+            linkedin:  "fa-linkedin-in",
+            tiktok:    "fa-tiktok",
+            snapchat:  "fa-snapchat",
+            pinterest: "fa-pinterest",
+            email:     "fa-envelope",
+            website:   "fa-globe"
+        };
+        const SOCIAL_PLATFORM_LABELS = {
+            facebook:  "Facebook",
+            instagram: "Instagram",
+            twitter:   "Twitter / X",
+            telegram:  "Telegram",
+            whatsapp:  "WhatsApp",
+            youtube:   "YouTube",
+            linkedin:  "LinkedIn",
+            tiktok:    "TikTok",
+            snapchat:  "Snapchat",
+            pinterest: "Pinterest",
+            email:     "Email",
+            website:   "Website"
+        };
+
+        // =====================================================================
         // [JS.1] HELPERS
         // =====================================================================
         function formatINR(amount) {
@@ -1138,6 +1156,61 @@
             const clean = String(number || '').replace(/\D/g, '');
             const base = `https://wa.me/${clean}`;
             return message ? `${base}?text=${encodeURIComponent(message)}` : base;
+        }
+
+        // ---- v2.31 — social link helpers ----
+        // normalizeSocialLinks(s) accepts either the new {links: [...]} format
+        // or the legacy {facebook, instagram, twitter} format.
+        function normalizeSocialLinks(s) {
+            if (!s) return [];
+            if (Array.isArray(s.links) && s.links.length > 0) {
+                return s.links
+                    .filter(l => l && l.url && l.platform)
+                    .map(l => ({
+                        platform: String(l.platform).toLowerCase().trim(),
+                        url: String(l.url).trim()
+                    }));
+            }
+            const out = [];
+            if (s.facebook)  out.push({ platform: "facebook",  url: String(s.facebook).trim() });
+            if (s.instagram) out.push({ platform: "instagram", url: String(s.instagram).trim() });
+            if (s.twitter)   out.push({ platform: "twitter",   url: String(s.twitter).trim() });
+            return out;
+        }
+        function platformIcon(platform) {
+            const key = String(platform || "").toLowerCase();
+            return SOCIAL_PLATFORM_ICONS[key] || "fa-link";
+        }
+        function platformLabel(platform) {
+            const key = String(platform || "").toLowerCase();
+            return SOCIAL_PLATFORM_LABELS[key] ||
+                   (key.charAt(0).toUpperCase() + key.slice(1));
+        }
+        function platformHref(link) {
+            let url = String(link.url || "").trim();
+            const plat = String(link.platform || "").toLowerCase();
+            if (plat === "email" && !/^mailto:/i.test(url)) {
+                return "mailto:" + url;
+            }
+            if (plat === "whatsapp" && !/^https?:/i.test(url)) {
+                const clean = url.replace(/\D/g, "");
+                return "https://wa.me/" + clean;
+            }
+            return url;
+        }
+        // withLabel=false → compact icon-only anchor (top bar)
+        // withLabel=true  → <li><a>icon + label</a></li> (footer)
+        function socialIconHTML(link, withLabel) {
+            const icon = platformIcon(link.platform);
+            const href = escapeHTML(platformHref(link));
+            const label = escapeHTML(platformLabel(link.platform));
+            if (withLabel) {
+                return `<li><a href="${href}" target="_blank" rel="noopener">` +
+                       `<i class="fab ${icon}"></i> ${label}</a></li>`;
+            }
+            return `<a href="${href}" target="_blank" rel="noopener" ` +
+                   `aria-label="${label}" title="${label}">` +
+                   `<i class="fab ${icon}"></i></a>`;
         }
 
         // =====================================================================
@@ -1569,7 +1642,7 @@
         }
 
         // =====================================================================
-        // [JS.10] FOOTER
+        // [JS.10] FOOTER  (v2.31 — dynamic social links)
         // =====================================================================
         function renderFooter(f, c) {
             document.getElementById('footerAbout').textContent =
@@ -1584,20 +1657,24 @@
             if (c.address_line2) items.push(`<li><a href="#"><i class="fas fa-map-marker-alt"></i> ${escapeHTML(c.address_line2)}</a></li>`);
             footerContact.innerHTML = items.join('');
 
+            // v2.31 — dynamic social links
             const footerSocial = document.getElementById('footerSocial');
+            const links = normalizeSocialLinks(CONFIG.social);
             const socItems = [];
-            const social = CONFIG.social || {};
-            if (c.facebook || social.facebook)
-                socItems.push(`<li><a href="${escapeHTML(c.facebook || social.facebook)}" target="_blank"><i class="fab fa-facebook-f"></i> Facebook</a></li>`);
-            if (c.instagram || social.instagram)
-                socItems.push(`<li><a href="${escapeHTML(c.instagram || social.instagram)}" target="_blank"><i class="fab fa-instagram"></i> Instagram</a></li>`);
-            if (c.whatsapp)
-                socItems.push(`<li><a href="${whatsappURL(c.whatsapp)}" target="_blank"><i class="fab fa-whatsapp"></i> WhatsApp</a></li>`);
+            for (const link of links) {
+                socItems.push(socialIconHTML(link, true));
+            }
+            // Auto-append WhatsApp if configured in contact but not in social.links
+            if (c.whatsapp && !links.find(l => (l.platform || '').toLowerCase() === 'whatsapp')) {
+                socItems.push(
+                    `<li><a href="${escapeHTML(whatsappURL(c.whatsapp))}" target="_blank" rel="noopener">` +
+                    `<i class="fab fa-whatsapp"></i> WhatsApp</a></li>`);
+            }
             footerSocial.innerHTML = socItems.join('');
         }
 
         // =====================================================================
-        // [JS.12] TOP BAR
+        // [JS.12] TOP BAR  (v2.31 — dynamic social links)
         // =====================================================================
         function renderTopBar(c, s) {
             const topBar = document.getElementById('topBarContact');
@@ -1606,11 +1683,19 @@
             if (c.email) items.push(`<span><i class="far fa-envelope"></i> <a href="mailto:${escapeHTML(c.email)}">${escapeHTML(c.email)}</a></span>`);
             topBar.innerHTML = items.join('');
 
+            // v2.31 — dynamic social links (icon-only)
             const topBarSocial = document.getElementById('topBarSocial');
+            const links = normalizeSocialLinks(s);
             const socialItems = [];
-            if (s.facebook) socialItems.push(`<a href="${escapeHTML(s.facebook)}" target="_blank" aria-label="Facebook"><i class="fab fa-facebook-f"></i></a>`);
-            if (s.instagram) socialItems.push(`<a href="${escapeHTML(s.instagram)}" target="_blank" aria-label="Instagram"><i class="fab fa-instagram"></i></a>`);
-            if (c.whatsapp) socialItems.push(`<a href="${whatsappURL(c.whatsapp)}" target="_blank" aria-label="WhatsApp"><i class="fab fa-whatsapp"></i></a>`);
+            for (const link of links) {
+                socialItems.push(socialIconHTML(link, false));
+            }
+            // Auto-append WhatsApp if configured in contact but not in social.links
+            if (c.whatsapp && !links.find(l => (l.platform || '').toLowerCase() === 'whatsapp')) {
+                socialItems.push(
+                    `<a href="${escapeHTML(whatsappURL(c.whatsapp))}" target="_blank" rel="noopener" ` +
+                    `aria-label="WhatsApp" title="WhatsApp"><i class="fab fa-whatsapp"></i></a>`);
+            }
             topBarSocial.innerHTML = socialItems.join('');
         }
 
