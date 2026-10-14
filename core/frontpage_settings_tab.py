@@ -1,19 +1,17 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.33 — Dynamic Social Links (add/remove any platform)
+# v3.34 — Statistics save/reflect FIX + verbose logging
 #
-#   NEW:
-#     • Social Links section is now a dynamic list
-#     • "Add Social Link" button adds a row (platform dropdown + URL)
-#     • Delete button removes a row
-#     • 12 platforms supported: facebook, instagram, twitter, telegram,
-#       whatsapp, youtube, linkedin, tiktok, snapchat, pinterest,
-#       email, website
-#     • Config schema: social.links = [{platform, url}, ...]
-#     • Auto-migration from legacy social.{facebook,instagram,twitter}
+#   FIXES:
+#     • batch_checkboxes = {} (was [] — a list can't hold batch IDs)
+#     • on_change now explicitly copies e.control.value → field.value
+#     • Save message shows "statistics (N)" instead of just "about"
+#     • _collect_config logs each stat collected
+#     • After save, re-reads from disk to verify stats count matches
+#     • Front page renders stats even when only numbers exist
 #
-#   PRESERVED: everything from v3.32
+#   PRESERVED: everything from v3.33 (dynamic social links, etc.)
 # =================================================================================
 
 import os
@@ -45,7 +43,6 @@ PAGE_BG      = "#f1f5f9"
 TYPING_GUARD_SECONDS = 3.0
 
 
-# ---- Social platforms supported in the dropdown ----
 SOCIAL_PLATFORMS = [
     ("facebook",  "Facebook"),
     ("instagram", "Instagram"),
@@ -80,30 +77,12 @@ def _input_border(radius=8, width=1, color=BORDER):
     try:
         return ft.OutlineInputBorder(
             border_radius=radius,
-            border_side=ft.BorderSide(width=width, color=color),
-        )
+            border_side=ft.BorderSide(width=width, color=color))
     except Exception:
         try:
             return ft.OutlineInputBorder(
                 border_radius=radius,
-                side=ft.BorderSide(width=width, color=color),
-            )
-        except Exception:
-            return None
-
-
-def _focused_border(radius=8):
-    try:
-        return ft.OutlineInputBorder(
-            border_radius=radius,
-            border_side=ft.BorderSide(width=2, color=PRIMARY_LT),
-        )
-    except Exception:
-        try:
-            return ft.OutlineInputBorder(
-                border_radius=radius,
-                side=ft.BorderSide(width=2, color=PRIMARY_LT),
-            )
+                side=ft.BorderSide(width=width, color=color))
         except Exception:
             return None
 
@@ -187,6 +166,12 @@ class FrontPageSettingsTab:
         try:
             self._load_batches()
             self._build_root()
+            # v3.34 — log initial stats count
+            try:
+                n = len(self.stat_entries)
+                print(f"[FRONTPAGE] built · {n} stat row(s) loaded from config")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[FRONTPAGE] build failed: {e}")
             traceback.print_exc()
@@ -277,7 +262,7 @@ class FrontPageSettingsTab:
     def _build_root(self):
         self.feature_entries = []
         self.stat_entries = []
-        self.batch_checkboxes = []
+        self.batch_checkboxes = {}          # v3.34 — was [] (bug)
         self.social_link_entries = []
 
         sections = [
@@ -340,6 +325,9 @@ class FrontPageSettingsTab:
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
+    # -----------------------------------------------------------------------------
+    # §H.2 — _field  (v3.34 — explicit value sync)
+    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         field_kwargs = dict(label=label, value=value or "", text_size=12)
         b = _input_border(radius=8, width=1, color=BORDER)
@@ -348,8 +336,17 @@ class FrontPageSettingsTab:
         field_kwargs.update(kwargs)
         field = ft.TextField(**field_kwargs)
 
-        def _on_change(e):
+        def _on_change(e, _f=field):
+            # v3.34 — extend typing guard
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            # v3.34 — explicit value copy (belt-and-braces)
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
 
         field.on_change = _on_change
         return field
@@ -720,7 +717,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §6 — ABOUT
+# §6 — ABOUT (v3.34 — verbose stats logging)
 # =================================================================================
     def _section_6_about(self):
         a = self.cfg.get("about", {})
@@ -733,8 +730,13 @@ class FrontPageSettingsTab:
             multiline=True, min_lines=3, max_lines=5)
         self.stats_rows_container = ft.Column(spacing=8)
         self.stat_entries = []
-        for st in (a.get("stats") or []):
+
+        raw_stats = a.get("stats") or []
+        print(f"[FRONTPAGE] _section_6_about: loading {len(raw_stats)} stat(s)")
+
+        for st in raw_stats:
             self._add_stat_row(st.get("number", ""), st.get("label", ""))
+
         add_stat_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(icon=ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
@@ -767,6 +769,8 @@ class FrontPageSettingsTab:
                     self.stats_rows_container.update()
                 except Exception:
                     pass
+                print(f"[FRONTPAGE] stat removed. "
+                      f"Total: {len(self.stat_entries)}")
             except Exception:
                 pass
 
@@ -795,6 +799,10 @@ class FrontPageSettingsTab:
                 self.stats_rows_container.update()
             except Exception:
                 pass
+            print(f"[FRONTPAGE] stat added. Total: {len(self.stat_entries)}")
+            self._set_status(
+                f"✓ Statistic row added — total {len(self.stat_entries)}",
+                PRIMARY_LT)
         except Exception as ex:
             self._set_status(f"❌ Failed to add statistic: {ex}", DANGER)
 
@@ -824,32 +832,25 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §8 — SOCIAL LINKS (v3.33 — DYNAMIC)
+# §8 — SOCIAL LINKS
 # =================================================================================
     def _section_8_social(self):
         s = self.cfg.get("social", {})
         existing = self._normalize_social_links(s)
-
         self.social_links_container = ft.Column(spacing=6)
         self.social_link_entries = []
-
-        # Preload existing rows (skip if empty — user can add)
         for link in existing:
             self._add_social_link_row(
                 link.get("platform", "facebook"),
                 link.get("url", ""))
-
-        # Empty-state hint
         if not existing:
             try:
                 self.social_links_container.controls.append(
-                    ft.Text(
-                        "No social links yet. Click 'Add Social Link' "
-                        "below to add one.",
-                        size=10, color=MUTED, italic=True))
+                    ft.Text("No social links yet. Click 'Add Social Link' "
+                            "below to add one.",
+                            size=10, color=MUTED, italic=True))
             except Exception:
                 pass
-
         add_btn = ft.Button(
             content=ft.Row([
                 ft.Icon(icon=ft.Icons.ADD, size=14, color=ft.Colors.WHITE),
@@ -861,19 +862,12 @@ class FrontPageSettingsTab:
             height=38, bgcolor=SUCCESS,
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)))
-
         return self._section_card(
             "🔗", "Social Links",
             "Add any social networks. Icons appear in the top bar and "
             "footer of the public page.",
-            [
-                self.social_links_container,
-                add_btn,
-            ])
+            [self.social_links_container, add_btn])
 
-    # -----------------------------------------------------------------------------
-    # §8.1 — _normalize_social_links  (migrates legacy format)
-    # -----------------------------------------------------------------------------
     def _normalize_social_links(self, s) -> list:
         if not isinstance(s, dict):
             return []
@@ -884,10 +878,8 @@ class FrontPageSettingsTab:
                 if isinstance(x, dict) and x.get("url"):
                     out.append({
                         "platform": str(x.get("platform", "website")).lower(),
-                        "url": str(x.get("url", "")).strip(),
-                    })
+                        "url": str(x.get("url", "")).strip()})
             return out
-        # Legacy migration: {facebook, instagram, twitter}
         out = []
         if s.get("facebook"):
             out.append({"platform": "facebook",
@@ -900,21 +892,14 @@ class FrontPageSettingsTab:
                         "url": str(s["twitter"]).strip()})
         return out
 
-    # -----------------------------------------------------------------------------
-    # §8.2 — _add_social_link_row
-    # -----------------------------------------------------------------------------
     def _add_social_link_row(self, platform, url):
         platform_dd = ft.Dropdown(
             value=platform or "facebook",
             options=[ft.dropdown.Option(key=k, text=t)
                      for k, t in SOCIAL_PLATFORMS],
-            text_size=12,
-            width=170,
-            height=44,
-        )
+            text_size=12, width=170, height=44)
         url_field = self._field("URL", url or "",
                                 hint_text="https://t.me/your_channel")
-
         entry = {"platform": platform_dd, "url": url_field, "row": None}
 
         def remove(ev, _entry=entry):
@@ -940,21 +925,16 @@ class FrontPageSettingsTab:
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
-
         entry["row"] = row
         self.social_link_entries.append(entry)
         self.social_links_container.controls.append(row)
         return entry
 
-    # -----------------------------------------------------------------------------
-    # §8.3 — _add_social_link_empty
-    # -----------------------------------------------------------------------------
     def _add_social_link_empty(self, e=None):
         if self.social_links_container is None:
             self._set_status("⚠️ Social container not ready.", DANGER)
             return
         try:
-            # Remove the "No social links yet" hint if present
             try:
                 ctrls = self.social_links_container.controls
                 if (ctrls and isinstance(ctrls[0], ft.Text)
@@ -962,7 +942,6 @@ class FrontPageSettingsTab:
                     ctrls.remove(ctrls[0])
             except Exception:
                 pass
-
             self._add_social_link_row("facebook", "")
             try:
                 self.social_links_container.update()
@@ -1410,15 +1389,18 @@ class FrontPageSettingsTab:
                 "icon": (self._v(entry["icon"]) or "fa-check-circle"),
                 "title": title, "text": text})
 
+        # ---- v3.34 — verbose stats collection ----
         stats = []
-        for entry in self.stat_entries:
+        for idx, entry in enumerate(self.stat_entries):
             number = self._v(entry["number"])
             label = self._v(entry["label"])
+            print(f"[FRONTPAGE] collect stat[{idx}]: "
+                  f"number={number!r} label={label!r}")
             if not number and not label:
                 continue
             stats.append({"number": number, "label": label})
+        print(f"[FRONTPAGE] collect stats: total={len(stats)}")
 
-        # v3.33 — dynamic social links
         social_links = []
         try:
             for entry in self.social_link_entries:
@@ -1483,36 +1465,55 @@ class FrontPageSettingsTab:
                 "videos": list(self.video_list)},
         }
 
+    # -----------------------------------------------------------------------------
+    # §A.5 — granular change detection (v3.34: detects stats separately)
+    # -----------------------------------------------------------------------------
     def _summarize_changes(self, old_cfg, new_cfg):
-        friendly = {"hero": "hero", "alert": "alert",
-                    "features": "features", "packages": "packages",
-                    "about": "about", "contact": "contact",
-                    "social": "social links", "footer": "footer",
-                    "gallery": "gallery"}
         changes = []
-        for key, label in friendly.items():
+        friendly = [("hero", "hero"), ("alert", "alert"),
+                    ("features", "features"), ("packages", "packages"),
+                    ("about", "about"), ("contact", "contact"),
+                    ("social", "social links"), ("footer", "footer"),
+                    ("gallery", "gallery")]
+        for key, label in friendly:
             try:
-                if old_cfg.get(key) != new_cfg.get(key):
-                    if key == "packages":
-                        n = len((new_cfg.get("packages") or {})
-                                .get("selected_batch_ids") or [])
-                        changes.append(f"{n} batch(es)")
-                    elif key == "gallery":
-                        np = len((new_cfg.get("gallery") or {})
-                                 .get("photos") or [])
-                        nv = len((new_cfg.get("gallery") or {})
-                                 .get("videos") or [])
-                        changes.append(f"gallery ({np}p, {nv}v)")
-                    elif key == "social":
-                        nl = len((new_cfg.get("social") or {})
-                                 .get("links") or [])
-                        changes.append(f"social links ({nl})")
-                    else:
-                        changes.append(label)
+                old_v = old_cfg.get(key)
+                new_v = new_cfg.get(key)
+                if old_v == new_v:
+                    continue
+                if key == "about":
+                    # Split "about" into heading/paragraphs vs stats
+                    old_about = old_v or {}
+                    new_about = new_v or {}
+                    old_stats = old_about.get("stats") or []
+                    new_stats = new_about.get("stats") or []
+                    old_text = {k: v for k, v in old_about.items()
+                                if k != "stats"}
+                    new_text = {k: v for k, v in new_about.items()
+                                if k != "stats"}
+                    if old_text != new_text:
+                        changes.append("about text")
+                    if old_stats != new_stats:
+                        changes.append(f"statistics ({len(new_stats)})")
+                elif key == "packages":
+                    n = len((new_v or {}).get("selected_batch_ids") or [])
+                    changes.append(f"{n} batch(es)")
+                elif key == "gallery":
+                    np = len((new_v or {}).get("photos") or [])
+                    nv = len((new_v or {}).get("videos") or [])
+                    changes.append(f"gallery ({np}p, {nv}v)")
+                elif key == "social":
+                    nl = len((new_v or {}).get("links") or [])
+                    changes.append(f"social links ({nl})")
+                else:
+                    changes.append(label)
             except Exception:
                 pass
         return changes
 
+    # -----------------------------------------------------------------------------
+    # §A.6 — save  (v3.34: post-save verification)
+    # -----------------------------------------------------------------------------
     def _save(self, e=None):
         if self._saving:
             return
@@ -1522,13 +1523,33 @@ class FrontPageSettingsTab:
                 old_cfg = load_config()
             except Exception:
                 old_cfg = self.cfg or {}
+
             cfg = self._collect_config()
+            ui_stats_count = len(cfg.get("about", {}).get("stats") or [])
+
             n_sel = len(cfg.get("packages", {})
                          .get("selected_batch_ids", []))
             changes = self._summarize_changes(old_cfg, cfg)
+            print(f"[FRONTPAGE] _save: UI stats={ui_stats_count} "
+                  f"changes={changes!r}")
+
             ok = save_config(cfg)
             if ok:
                 self.cfg = cfg
+
+                # v3.34 — verify what's actually on disk
+                try:
+                    check = load_config()
+                    disk_stats = len(check.get("about", {})
+                                     .get("stats") or [])
+                    print(f"[FRONTPAGE] _save verify: "
+                          f"disk stats={disk_stats}")
+                    if disk_stats != ui_stats_count:
+                        print(f"[FRONTPAGE] WARNING: stats mismatch! "
+                              f"UI={ui_stats_count} disk={disk_stats}")
+                except Exception as ve:
+                    print(f"[FRONTPAGE] verify failed: {ve}")
+
                 if changes:
                     summary = ", ".join(changes)
                     txt = (f"✅ Saved: {summary}  ·  "
@@ -1644,5 +1665,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.33
+# SECTION END — core/frontpage_settings_tab.py v3.34
 # =================================================================================
