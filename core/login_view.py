@@ -1,10 +1,16 @@
 # =================================================================================
 # SECTION 2 (FLET 1.0.0 VERSION) — LOGIN VIEW
 # =================================================================================
-# v1.9 — 2026-10-06
-#   • Session helpers now use Flet 1.0.3's page.session.store
-#     (client_storage was removed in Flet 1.0.3)
-#   • Everything else identical to v1.8
+# v2.0 — 2026-10-14
+#   • FIX: added typing guard (_typing_until) + on_change handlers on all
+#     three text fields (username, password, captcha answer)
+#   • FIX: _set_status() uses leaf-only update on status_label
+#   • FIX: _refresh_captcha() uses leaf-only update on captcha_question_label
+#   • FIX: _safe_update() skips while user is typing (3s guard)
+#   • Preserved from v1.9:
+#     • page.session.store session helpers (Flet 1.0.3)
+#     • Captcha workflow, validation, hashing
+#     • Back-to-Home navigation
 # =================================================================================
 
 import asyncio
@@ -38,6 +44,7 @@ except ImportError:
 
 _SESSION_KEY = "alhudha_admin_session"
 _SESSION_TTL = 8 * 3600
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -65,7 +72,7 @@ def _safe_str(v) -> str:
 
 
 # =================================================================================
-# 2.3 — Session helpers (v1.9 — page.session.store)
+# 2.3 — Session helpers (v1.9 preserved)
 # =================================================================================
 def save_session_to_storage(page, user: dict):
     """Save user session to Flet's per-session store (Flet 1.0.3)."""
@@ -81,7 +88,6 @@ def save_session_to_storage(page, user: dict):
         print(f"[LOGIN] Session saved to page.session.store: {uid}")
     except Exception as ex:
         print(f"[LOGIN] page.session.store write failed: {ex}")
-        # Legacy fallback
         try:
             storage = getattr(page, "client_storage", None)
             if storage is not None:
@@ -111,7 +117,6 @@ def load_session_from_storage(page):
     except Exception as ex:
         print(f"[LOGIN] page.session.store read failed: {ex}")
 
-    # Legacy fallback
     try:
         storage = getattr(page, "client_storage", None)
         if storage is None:
@@ -143,7 +148,6 @@ def clear_session_from_storage(page):
         print("[LOGIN] Session cleared (page.session.store)")
     except Exception as ex:
         print(f"[LOGIN] clear failed: {ex}")
-    # Legacy fallback
     try:
         storage = getattr(page, "client_storage", None)
         if storage is not None:
@@ -153,7 +157,7 @@ def clear_session_from_storage(page):
 
 
 # =================================================================================
-# 2.4 — CLASS: LoginView
+# 2.4 — CLASS: LoginView  (v2.0 — typing guard)
 # =================================================================================
 class LoginView:
 
@@ -174,7 +178,34 @@ class LoginView:
         self.captcha_question_label = None
         self.captcha_answer_field = None
 
+        # v2.0 — typing guard
+        self._typing_until = 0.0
+
         self._build()
+
+    # -----------------------------------------------------------------------------
+    # 2.4.1 — _field  (v2.0 — TextField with on_change + value sync)
+    # -----------------------------------------------------------------------------
+    def _field(self, **kwargs):
+        """
+        Build a TextField with on_change handler that:
+          1. Extends the typing guard (blocks _safe_update for 3s)
+          2. Explicitly syncs the value from the event → server
+        """
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
 
     def _build(self):
         company_name = "Alhudha Haj Travel System"
@@ -229,7 +260,8 @@ class LoginView:
             text_align=ft.TextAlign.CENTER,
         )
 
-        self.username_field = ft.TextField(
+        # v2.0 — username field with on_change handler
+        self.username_field = self._field(
             label="Username",
             hint_text="Enter username",
             prefix_icon=ft.Icons.PERSON_OUTLINE,
@@ -239,7 +271,8 @@ class LoginView:
             on_submit=lambda e: self._do_login(None),
         )
 
-        self.password_field = ft.TextField(
+        # v2.0 — password field with on_change handler
+        self.password_field = self._field(
             label="Password",
             hint_text="Enter password",
             prefix_icon=ft.Icons.LOCK_OUTLINE,
@@ -298,7 +331,8 @@ class LoginView:
             ),
         ], spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
-        self.captcha_answer_field = ft.TextField(
+        # v2.0 — captcha answer field with on_change handler
+        self.captcha_answer_field = self._field(
             label="Answer",
             hint_text="Enter the answer",
             prefix_icon=ft.Icons.CALCULATE,
@@ -465,15 +499,26 @@ class LoginView:
         except Exception as ex:
             print(f"[LOGIN] run_task failed: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # _refresh_captcha  (v2.0 — leaf-only updates)
+    # -----------------------------------------------------------------------------
     def _refresh_captcha(self, e=None):
         try:
             challenge = generate_math_captcha(self.captcha_session_id)
             question = challenge.get("question", "? + ?")
             if self.captcha_question_label:
                 self.captcha_question_label.value = f"{question} = ?"
+                # v2.0 — leaf-only update
+                try:
+                    self.captcha_question_label.update()
+                except Exception:
+                    pass
             if self.captcha_answer_field:
                 self.captcha_answer_field.value = ""
-            self._safe_update()
+                try:
+                    self.captcha_answer_field.update()
+                except Exception:
+                    pass
         except Exception as ex:
             print(f"[LOGIN] captcha refresh failed: {ex}")
 
@@ -505,12 +550,19 @@ class LoginView:
             self._set_status("❌ Security check error.")
             return False
 
+    # -----------------------------------------------------------------------------
+    # _set_status  (v2.0 — leaf-only update)
+    # -----------------------------------------------------------------------------
     def _set_status(self, message, color=ft.Colors.RED_500):
         try:
             if self.status_label is not None:
                 self.status_label.value = message or ""
                 self.status_label.color = color
-            self._safe_update()
+                # v2.0 — leaf-only update
+                try:
+                    self.status_label.update()
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -578,7 +630,6 @@ class LoginView:
         user = dict(match)
         user.pop("password_hash", None)
 
-        # v1.9: save to page.session.store
         save_session_to_storage(self.page, user)
 
         try:
@@ -605,7 +656,16 @@ class LoginView:
             traceback.print_exc()
             self._set_status(f"❌ Login handler failed: {ex}")
 
+    # -----------------------------------------------------------------------------
+    # _safe_update  (v2.0 — skips while typing)
+    # -----------------------------------------------------------------------------
     def _safe_update(self):
+        """
+        v2.0 — Skip if user typed within the last 3 seconds.
+        Only used as a fallback when a leaf update isn't possible.
+        """
+        if time.time() < self._typing_until:
+            return
         try:
             self.page.update()
         except Exception:
