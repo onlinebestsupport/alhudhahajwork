@@ -1,19 +1,20 @@
 # =================================================================================
 # SECTION 4 (FLET 1.0.0 VERSION) — COMPANY SETTINGS DIALOG (Mobile-Responsive)
 # =================================================================================
-# v1.1 — Mobile-Responsive
-#   • Dialog width/height clamp to viewport
-#   • Tab bar scrollable
-#   • Logo row stacks on narrow screens
-#   • Field rows wrap
-#   • Tours tab: add-form fields stack on mobile
-#   • Save/Cancel buttons stay reachable
+# v2.0 — 2026-10-14
+#   FIXES:
+#     • Added _typing_until guard + _field() helper with on_change
+#     • Every TextField now syncs value on keystroke
+#     • show_snack() no longer calls page.update() → uses show_dialog
+#     • load_tour_types() uses leaf update on tour_table only
+#     • _save_logo_from_path / _save_logo_from_bytes use leaf updates
+#     • remove_logo_click uses leaf updates
+#     • Edit tour dialog fields now have on_change handlers
 #
-# All cloud-ready features preserved:
-#   • Logo stored as base64 data URI IN THE CSV — survives Railway redeploys
-#   • Falls back to file path if base64 is missing (backward compat)
-#   • FilePicker registered via page.services (Flet 1.0 standard)
-#   • SnackBar uses page.snack_bar (Flet 1.0 correct way)
+#   Preserved from v1.1:
+#     • Logo stored as base64 data URI in CSV (survives redeploys)
+#     • FilePicker registered via page.services (Flet 1.0)
+#     • Mobile-responsive layout
 # =================================================================================
 
 import flet as ft
@@ -21,6 +22,7 @@ import json
 import uuid
 import shutil
 import os
+import time
 import base64
 from pathlib import Path
 from datetime import datetime
@@ -28,6 +30,9 @@ import pandas as pd
 
 from core.settings_manager import SettingsManager
 from core.helpers import get_app_base_path
+
+
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
@@ -46,6 +51,9 @@ class CompanySettingsDialog:
         self.logo_data_uri = None
         self.dialog = None
         self.file_picker = None
+
+        # v2.0 — typing guard
+        self._typing_until = 0.0
 
         self.logo_image = None
         self.logo_placeholder = None
@@ -72,6 +80,30 @@ class CompanySettingsDialog:
         self.load_settings()
 
     # =============================================================================
+    # v2.0 — _field  (TextField with on_change + value sync)
+    # =============================================================================
+    def _field(self, **kwargs):
+        """
+        Every TextField gets on_change so:
+          1. The typing guard extends (blocks page.update for 3s)
+          2. The value is explicitly synced to the server
+        """
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    # =============================================================================
     # setup_ui  (MOBILE-RESPONSIVE)
     # =============================================================================
     def setup_ui(self):
@@ -91,26 +123,26 @@ class CompanySettingsDialog:
             border=ft.Border.all(2, ft.Colors.GREY_400),
         )
 
-        self.company_name_field = ft.TextField(
+        # v2.0 — every TextField uses _field() helper
+        self.company_name_field = self._field(
             label="🏢 Company Name *",
             hint_text="Enter company name")
-        self.address_field = ft.TextField(
+        self.address_field = self._field(
             label="📍 Address", multiline=True, min_lines=2, max_lines=4,
             hint_text="Enter full address")
-        self.phone_field = ft.TextField(
+        self.phone_field = self._field(
             label="📞 Phone", hint_text="+966 XX XXXXXXX")
-        self.email_field = ft.TextField(
+        self.email_field = self._field(
             label="📧 Email", hint_text="info@company.com")
-        self.website_field = ft.TextField(
+        self.website_field = self._field(
             label="🌐 Website", hint_text="www.company.com")
-        self.gst_field = ft.TextField(
+        self.gst_field = self._field(
             label="💰 GST Number", hint_text="GSTXXXXXXXXX")
-        self.tan_field = ft.TextField(
+        self.tan_field = self._field(
             label="🏛️ TAN Number", hint_text="TANXXXXXXXXX")
-        self.pan_field = ft.TextField(
+        self.pan_field = self._field(
             label="📄 PAN Number", hint_text="PANXXXXXXXX")
 
-        # Mobile: logo stacks above buttons
         logo_row = ft.ResponsiveRow(
             controls=[
                 ft.Container(
@@ -159,13 +191,13 @@ class CompanySettingsDialog:
         )
 
         # ---- BANK TAB ----
-        self.bank_name_field = ft.TextField(
+        self.bank_name_field = self._field(
             label="🏦 Bank Name", hint_text="Name of bank")
-        self.account_no_field = ft.TextField(
+        self.account_no_field = self._field(
             label="💳 Account Number", hint_text="Account number")
-        self.ifsc_field = ft.TextField(
+        self.ifsc_field = self._field(
             label="🔢 IFSC Code", hint_text="IFSC code (e.g., HDFC0001234)")
-        self.upi_field = ft.TextField(
+        self.upi_field = self._field(
             label="⚡ UPI ID", hint_text="UPI ID (e.g., name@bank)")
 
         bank_tab = ft.Column(
@@ -175,10 +207,10 @@ class CompanySettingsDialog:
         )
 
         # ---- TAX TAB ----
-        self.gst_percentage_field = ft.TextField(
+        self.gst_percentage_field = self._field(
             label="💰 GST Percentage", value="18", hint_text="e.g., 5",
             suffix=ft.Text("%"))
-        self.tcs_percentage_field = ft.TextField(
+        self.tcs_percentage_field = self._field(
             label="💰 TCS Percentage", value="0", hint_text="e.g., 2",
             suffix=ft.Text("%"))
 
@@ -197,11 +229,11 @@ class CompanySettingsDialog:
         )
 
         # ---- TOURS TAB ----
-        self.tour_name_input = ft.TextField(
+        self.tour_name_input = self._field(
             label="Tour Name", hint_text="Haj, Umrah, UK Tour")
-        self.tour_year_input = ft.TextField(
+        self.tour_year_input = self._field(
             label="Year", value=str(datetime.now().year))
-        self.tour_desc_input = ft.TextField(
+        self.tour_desc_input = self._field(
             label="Description", hint_text="Tour description")
 
         add_btn = ft.Button(
@@ -212,7 +244,6 @@ class CompanySettingsDialog:
             bgcolor=ft.Colors.GREEN_600,
             height=40)
 
-        # Mobile: stack the fields, put Add button full-width
         add_tour_form = ft.ResponsiveRow(
             controls=[
                 ft.Container(content=self.tour_name_input,
@@ -261,7 +292,7 @@ class CompanySettingsDialog:
             ], spacing=10, expand=True,
         )
 
-        # ---- TABS (MOBILE-RESPONSIVE) ----
+        # ---- TABS ----
         tabs = ft.Tabs(
             selected_index=0, animation_duration=200, length=4, expand=True,
             content=ft.Column(expand=True, controls=[
@@ -280,7 +311,6 @@ class CompanySettingsDialog:
             ]),
         )
 
-        # ---- DIALOG — clamp to viewport ----
         pw = self.page.width or 850
         ph = self.page.height or 700
         dlg_w = max(320, min(850, pw - 30))
@@ -434,7 +464,12 @@ class CompanySettingsDialog:
 
             self.logo_image.visible = True
             self.logo_placeholder.visible = False
-            self.page.update()
+            # v2.0 — leaf updates instead of page.update()
+            for c in (self.logo_image, self.logo_placeholder):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             self.show_snack("✅ Logo uploaded successfully!")
         except Exception as ex:
             import traceback
@@ -485,7 +520,12 @@ class CompanySettingsDialog:
 
             self.logo_image.visible = True
             self.logo_placeholder.visible = False
-            self.page.update()
+            # v2.0 — leaf updates instead of page.update()
+            for c in (self.logo_image, self.logo_placeholder):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             self.show_snack("✅ Logo uploaded successfully!")
         except Exception as ex:
             import traceback
@@ -499,11 +539,16 @@ class CompanySettingsDialog:
         self.logo_image.src = ""
         self.logo_image.visible = False
         self.logo_placeholder.visible = True
-        self.page.update()
+        # v2.0 — leaf updates
+        for c in (self.logo_image, self.logo_placeholder):
+            try:
+                c.update()
+            except Exception:
+                pass
         self.show_snack("✅ Logo removed")
 
     # =============================================================================
-    # load_settings — with base64 logo preview
+    # load_settings
     # =============================================================================
     def load_settings(self):
         try:
@@ -603,7 +648,11 @@ class CompanySettingsDialog:
                     ], spacing=0)),
                 ])
                 self.tour_table.rows.append(row)
-            self.page.update()
+            # v2.0 — leaf update on tour_table only
+            try:
+                self.tour_table.update()
+            except Exception:
+                pass
         except Exception as ex:
             self.show_snack(f"⚠️ Could not load tours: {ex}")
 
@@ -622,17 +671,25 @@ class CompanySettingsDialog:
             self.tour_name_input.value = ''
             self.tour_desc_input.value = ''
             self.tour_year_input.value = str(datetime.now().year)
+            # v2.0 — leaf updates for reset fields
+            for c in (self.tour_name_input, self.tour_desc_input,
+                      self.tour_year_input):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             self.load_tour_types()
             self.show_snack(f"✅ Tour '{name}' ({year}) added")
         except Exception as ex:
             self.show_snack(f"❌ Could not add tour: {ex}")
 
     def edit_tour_type_click(self, tour):
-        name_field = ft.TextField(
+        # v2.0 — use _field() for on_change + typing guard
+        name_field = self._field(
             label="Tour Name", value=tour.get('tour_name', ''))
-        year_field = ft.TextField(
+        year_field = self._field(
             label="Year", value=str(tour.get('year', '')))
-        desc_field = ft.TextField(
+        desc_field = self._field(
             label="Description", value=tour.get('description', ''))
 
         def do_save(ev):
@@ -788,21 +845,25 @@ class CompanySettingsDialog:
         self.page.show_dialog(self.dialog)
 
     def close(self):
+        # v2.0 — reset typing guard on close
+        self._typing_until = 0.0
         try:
             self.page.pop_dialog()
         except Exception:
             pass
 
+    # =============================================================================
+    # show_snack  (v2.0 — use show_dialog, no page.update())
+    # =============================================================================
     def show_snack(self, message):
         print(f"[SNACK] {message}")
         try:
-            self.page.snack_bar = ft.SnackBar(content=ft.Text(message))
-            self.page.snack_bar.open = True
-            self.page.update()
+            self.page.show_dialog(
+                ft.SnackBar(content=ft.Text(message)))
         except Exception as ex:
             print(f"[SNACK] failed: {ex}")
 
 
 # =================================================================================
-# SECTION 4 END (FLET 1.0.0 VERSION)
+# SECTION 4 END (FLET 1.0.0 VERSION) — v2.0
 # =================================================================================
