@@ -1,11 +1,23 @@
 # =================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW (MOBILE-RESPONSIVE)
 # =================================================================================
-# v2.4 — Added Data Administration tab (super_admin only)
-#   • Compact header (fewer buttons visible)
-#   • Scrollable tab bar
-#   • Responsive dialogs and status bar
-#   • NEW: 🗄️ Data Admin tab
+# v2.5 — CRITICAL FIX: clock loop no longer calls page.update()
+#
+#   ROOT CAUSE:
+#     _clock_loop() ran every 1 second and called self.page.update()
+#     globally. This wiped the browser-side state of every TextField
+#     in every tab, mid-keystroke. This was the PRIMARY cause of the
+#     "text disappears while typing" bug across the entire admin panel.
+#
+#   FIX:
+#     • _clock_loop() now uses leaf-only update on status_time_label
+#     • All other page.update() calls in this file audited
+#     • _auto_refresh_loop() relies on each tab's own typing guard
+#
+#   Preserved from v2.4:
+#     • Data Admin tab (super_admin only)
+#     • Compact header, scrollable tab bar
+#     • Responsive dialogs and status bar
 # =================================================================================
 
 import flet as ft
@@ -145,7 +157,7 @@ class MainWindowView:
         self.users_tab = None
         self.frontpage_tab = None
         self.backup_tab = None
-        self.data_admin_tab = None       # ← NEW
+        self.data_admin_tab = None
 
         self.tab_instances = {}
         self.tabs_control = None
@@ -178,8 +190,9 @@ class MainWindowView:
                 self._show_snack(f"⚠️ '{tab_name}' tab is not visible")
                 return
             self.tabs_control.selected_index = idx
+            # v2.5 — leaf update only on tabs_control
             try:
-                self.page.update()
+                self.tabs_control.update()
             except Exception:
                 pass
             if action == "add":
@@ -218,7 +231,7 @@ class MainWindowView:
         user_role = self.current_user.get('role', 'user')
 
         # =====================================================================
-        # HEADER — mobile-compact
+        # HEADER
         # =====================================================================
         def open_settings(e):
             if CompanySettingsDialog is None:
@@ -438,7 +451,6 @@ class MainWindowView:
                 traceback.print_exc()
                 return make_placeholder(f"{plain_label} (error)", icon)
 
-        # Short labels for mobile
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
              "view_dashboard",   DashboardTab),
@@ -460,7 +472,6 @@ class MainWindowView:
              "manage_settings",  FrontPageSettingsTab),
             ("💾 Backup",    ft.Icons.BACKUP,    "backup_tab",
              "manage_backups",   BackupTab),
-            # ✅ NEW: Data Admin — super_admin only (gated inside tab too)
             ("🗄️ Data Admin", ft.Icons.STORAGE, "data_admin_tab",
              "manage_settings",  DataAdminTab),
         ]
@@ -473,7 +484,6 @@ class MainWindowView:
                 print(f"[TAB] {label.strip()}: ⛔ denied")
                 continue
 
-            # Extra gate for Data Admin: only super_admin
             if attr_name == "data_admin_tab":
                 if str(user_role).strip().lower() != "super_admin":
                     print(f"[TAB] {label.strip()}: ⛔ super_admin only")
@@ -550,7 +560,16 @@ class MainWindowView:
 
         return self.root
 
+    # =============================================================================
+    # _clock_loop  (v2.5 — LEAF-ONLY update)
+    # =============================================================================
     async def _clock_loop(self):
+        """
+        v2.5 CRITICAL FIX:
+          Was: self.page.update() every 1 second → wiped every
+          TextField's browser state across every tab.
+          Now: leaf-only update on status_time_label.
+        """
         if self._clock_running:
             return
         self._clock_running = True
@@ -560,7 +579,11 @@ class MainWindowView:
                     if self.status_time_label:
                         self.status_time_label.value = (
                             datetime.now().strftime("%H:%M:%S"))
-                        self.page.update()
+                        # v2.5 — leaf-only update (was: self.page.update())
+                        try:
+                            self.status_time_label.update()
+                        except Exception:
+                            break
                 except Exception:
                     break
                 await asyncio.sleep(1)
@@ -569,7 +592,15 @@ class MainWindowView:
         finally:
             self._clock_running = False
 
+    # =============================================================================
+    # _auto_refresh_loop  (v2.5 — relies on each tab's own typing guard)
+    # =============================================================================
     async def _auto_refresh_loop(self):
+        """
+        v2.5: This loop calls refresh_all() every 30s. Each tab's
+        refresh() has its own typing guard (v1.x + v3.x) so typing
+        in any tab is protected.
+        """
         if self._refresh_running:
             return
         self._refresh_running = True
@@ -624,15 +655,10 @@ class MainWindowView:
             ])
         self.page.show_dialog(dialog)
 
+    # v2.5 — use show_dialog (leaf-safe)
     def _show_snack(self, message):
         try:
             self.page.show_dialog(
                 ft.SnackBar(content=ft.Text(message)))
-        except Exception:
-            try:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(message))
-                self.page.snack_bar.open = True
-                self.page.update()
-            except Exception as ex:
-                print(f"[SNACK] {message} ({ex})")
+        except Exception as ex:
+            print(f"[SNACK] {message} ({ex})")
