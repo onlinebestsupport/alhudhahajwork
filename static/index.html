@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <title>Alhudha Haj Travel - Your Journey to the Holy Land</title>
     <link rel="icon" href="/static/logo.png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
@@ -161,12 +161,14 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 16px;
         }
         .nav-brand {
             display: flex;
             align-items: center;
             gap: 12px;
             text-decoration: none;
+            flex-shrink: 0;
         }
         .nav-brand img { height: 55px; width: auto; }
         .brand-text {
@@ -181,7 +183,15 @@
             font-weight: 400;
             color: var(--gray-color);
         }
-        .nav-menu { display: flex; align-items: center; gap: 30px; }
+
+        /* Nav menu — holds nav links, centers on desktop */
+        .nav-menu {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            flex: 1;
+            justify-content: center;
+        }
         .nav-links { display: flex; gap: 25px; }
         .nav-links a {
             color: var(--dark-color);
@@ -192,7 +202,15 @@
             transition: border-color 0.3s ease;
         }
         .nav-links a:hover { border-color: var(--primary-color); }
-        .nav-buttons { display: flex; gap: 10px; align-items: center; }
+
+        /* Login buttons — ALWAYS visible top-right */
+        .nav-buttons {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
         .btn {
             padding: 10px 20px;
             border-radius: 50px;
@@ -228,12 +246,43 @@
         .btn-outline:hover { background: var(--primary-color); color: white; }
         .btn-whatsapp { background: #25D366; color: white; }
         .btn-whatsapp:hover { background: #128C7E; }
+
+        /* Hamburger */
         .mobile-toggle {
             display: none;
-            font-size: 1.5rem;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            height: 42px;
+            border-radius: 10px;
+            background: #f1f5f9;
             cursor: pointer;
             color: var(--primary-color);
+            font-size: 1.2rem;
+            transition: background 0.2s ease;
+            flex-shrink: 0;
         }
+        .mobile-toggle:hover { background: #e2e8f0; }
+
+        /* Close button inside mobile menu */
+        .nav-menu-close {
+            display: none;
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #f1f5f9;
+            border: none;
+            color: var(--primary-color);
+            font-size: 1.2rem;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s ease;
+        }
+        .nav-menu-close:hover { background: #e2e8f0; }
 
         /* =========================================================================
            [CSS.4] HERO
@@ -425,7 +474,7 @@
         }
 
         /* =========================================================================
-           [CSS.11] GALLERY (NEW)
+           [CSS.11] GALLERY
            ========================================================================= */
         .gallery-section { padding: 70px 0; background: var(--lighter-color); }
 
@@ -450,13 +499,8 @@
             align-items: center;
             gap: 8px;
         }
-        .gallery-tab:hover {
-            background: rgba(30, 60, 114, 0.06);
-        }
-        .gallery-tab.active {
-            background: var(--primary-color);
-            color: white;
-        }
+        .gallery-tab:hover { background: rgba(30, 60, 114, 0.06); }
+        .gallery-tab.active { background: var(--primary-color); color: white; }
 
         .gallery-grid {
             display: grid;
@@ -479,16 +523,13 @@
         }
         .gallery-item img,
         .gallery-item video {
-            width: 100%;
-            height: 100%;
+            width: 100%; height: 100%;
             object-fit: cover;
             transition: transform 0.4s ease;
             display: block;
         }
         .gallery-item:hover img,
-        .gallery-item:hover video {
-            transform: scale(1.06);
-        }
+        .gallery-item:hover video { transform: scale(1.06); }
         .gallery-item .caption {
             position: absolute;
             left: 0; right: 0; bottom: 0;
@@ -525,7 +566,6 @@
             color: var(--primary-color);
         }
 
-        /* ---- Lightbox ---- */
         .lightbox {
             position: fixed;
             inset: 0;
@@ -551,30 +591,25 @@
         }
         .lightbox-close {
             position: absolute;
-            top: 20px;
-            right: 30px;
+            top: 20px; right: 30px;
             color: white;
             font-size: 2.4rem;
             background: none;
             border: none;
             cursor: pointer;
             line-height: 1;
-            width: 48px;
-            height: 48px;
+            width: 48px; height: 48px;
             display: flex;
             align-items: center;
             justify-content: center;
             border-radius: 50%;
             transition: background 0.2s ease;
         }
-        .lightbox-close:hover {
-            background: rgba(255, 255, 255, 0.15);
-        }
+        .lightbox-close:hover { background: rgba(255, 255, 255, 0.15); }
         .lightbox-caption {
             position: absolute;
             bottom: 25px;
-            left: 0;
-            right: 0;
+            left: 0; right: 0;
             text-align: center;
             color: white;
             font-size: 0.95rem;
@@ -633,11 +668,7 @@
             margin-bottom: 30px;
         }
         .footer-section h3 { margin-bottom: 15px; font-size: 1.05rem; }
-        .footer-section p {
-            opacity: 0.8;
-            line-height: 1.6;
-            font-size: 0.9rem;
-        }
+        .footer-section p { opacity: 0.8; line-height: 1.6; font-size: 0.9rem; }
         .footer-links { list-style: none; }
         .footer-links li { margin-bottom: 8px; }
         .footer-links a {
@@ -677,51 +708,115 @@
         .floating-whatsapp:hover { transform: scale(1.1); }
 
         /* =========================================================================
-           [CSS.13] MOBILE
+           [CSS.13] RESPONSIVE — MOBILE
            ========================================================================= */
+        /* Tablet: slightly smaller buttons */
         @media (max-width: 900px) {
-            .nav-buttons { flex-wrap: wrap; gap: 6px; }
-            .nav-buttons .btn { padding: 8px 14px; font-size: 0.8rem; }
+            .nav-links { gap: 15px; }
+            .nav-links a { font-size: 0.9rem; }
+            .nav-buttons .btn {
+                padding: 8px 14px;
+                font-size: 0.78rem;
+            }
+            .brand-text { font-size: 1.2rem; }
+            .nav-brand img { height: 48px; }
         }
+
+        /* Mobile: hamburger for nav links, buttons stay visible */
         @media (max-width: 768px) {
-            .mobile-toggle { display: block; }
+            .nav-container {
+                padding: 12px 15px;
+                gap: 10px;
+            }
+            .brand-text { font-size: 1.05rem; }
+            .brand-text small { font-size: 0.68rem; }
+            .nav-brand img { height: 42px; }
+            .nav-brand { gap: 8px; }
+
+            /* Slide-out menu for nav links only */
             .nav-menu {
                 position: fixed;
-                top: 0; right: -100%;
-                width: 80%; height: 100vh;
+                top: 0;
+                right: -100%;
+                width: 82%;
+                max-width: 320px;
+                height: 100vh;
                 background: white;
                 flex-direction: column;
-                padding: 60px 30px;
-                box-shadow: -5px 0 30px rgba(0, 0, 0, 0.1);
+                align-items: stretch;
+                justify-content: flex-start;
+                padding: 70px 24px 30px;
+                box-shadow: -5px 0 30px rgba(0, 0, 0, 0.15);
                 transition: right 0.3s ease;
                 z-index: 1001;
+                gap: 0;
+                flex: none;
             }
             .nav-menu.active { right: 0; }
+
             .nav-links {
                 flex-direction: column;
-                align-items: center;
-                margin-bottom: 25px;
+                align-items: stretch;
+                gap: 0;
+                margin-bottom: 0;
             }
+            .nav-links a {
+                padding: 14px 0;
+                border-bottom: 1px solid #eef2f6;
+                font-size: 1rem;
+                border-radius: 0;
+            }
+            .nav-links a:last-child { border-bottom: none; }
+
+            /* Show hamburger + close button */
+            .mobile-toggle { display: flex; }
+            .nav-menu-close { display: flex; }
+
+            /* Login buttons — COMPACT and ALWAYS visible */
             .nav-buttons {
-                flex-direction: column;
-                width: 100%;
+                display: flex;
+                gap: 6px;
+                align-items: center;
             }
             .nav-buttons .btn {
-                width: 100%;
-                justify-content: center;
-                padding: 12px 20px;
-                font-size: 0.9rem;
+                padding: 8px 12px;
+                font-size: 0.75rem;
+                gap: 5px;
             }
+            .nav-buttons .btn i { font-size: 0.9rem; }
+
+            /* Content adjustments */
+            .hero { padding: 70px 0; }
             .hero h1 { font-size: 2rem; }
             .hero p { font-size: 1rem; }
-            .about-content { grid-template-columns: 1fr; }
-            .top-bar-content { flex-direction: column; text-align: center; }
-            .contact-info { flex-direction: column; align-items: center; }
-            .alert-content { flex-direction: column; text-align: center; }
-            .alert-message { flex-direction: column; text-align: center; }
+            .hero-buttons { gap: 12px; }
+
+            .section-header h2 { font-size: 1.7rem; }
+            .section-header { margin-bottom: 35px; }
+
+            .about-content {
+                grid-template-columns: 1fr;
+                gap: 30px;
+            }
+            .about-text h2 { font-size: 1.7rem; }
+
+            .top-bar-content {
+                flex-direction: column;
+                text-align: center;
+                gap: 8px;
+            }
+            .contact-info { flex-direction: column; align-items: center; gap: 6px; }
+
+            .alert-content {
+                flex-direction: column;
+                text-align: center;
+            }
+            .alert-message {
+                flex-direction: column;
+                text-align: center;
+            }
             .alert-message i { font-size: 2rem; }
 
-            /* Gallery on mobile */
             .gallery-grid {
                 grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
                 gap: 10px;
@@ -729,6 +824,37 @@
             .gallery-item .play-badge { font-size: 2rem; }
             .lightbox { padding: 12px; }
             .lightbox-close { top: 10px; right: 10px; font-size: 2rem; }
+        }
+
+        /* Small phones: even more compact buttons */
+        @media (max-width: 480px) {
+            .nav-container { padding: 10px 12px; gap: 8px; }
+            .nav-brand { gap: 6px; }
+            .nav-brand img { height: 36px; }
+            .brand-text { font-size: 0.92rem; line-height: 1.1; }
+            .brand-text small { font-size: 0.6rem; }
+
+            /* Hide text labels on buttons, keep icons */
+            .nav-buttons .btn-label { display: none; }
+            .nav-buttons .btn {
+                padding: 9px 11px;
+                gap: 0;
+            }
+            .nav-buttons .btn i { font-size: 1rem; }
+
+            .mobile-toggle {
+                width: 38px;
+                height: 38px;
+                font-size: 1.1rem;
+            }
+
+            .hero h1 { font-size: 1.6rem; }
+            .section-header h2 { font-size: 1.5rem; }
+            .floating-whatsapp {
+                width: 48px; height: 48px;
+                font-size: 1.5rem;
+                bottom: 18px; right: 18px;
+            }
         }
     </style>
 </head>
@@ -760,6 +886,8 @@
 
     <!-- =========================================================================
          [HTML.3] NAVIGATION
+         Login buttons are OUTSIDE the slide-out menu — always visible.
+         Nav links slide out via hamburger on mobile.
          ========================================================================= -->
     <nav class="navbar">
         <div class="nav-container">
@@ -768,7 +896,13 @@
                      onerror="this.style.display='none'">
                 <span class="brand-text">Alhudha Haj<small>Travel</small></span>
             </a>
+
+            <!-- Slide-out menu for nav links only -->
             <div class="nav-menu" id="navMenu">
+                <button class="nav-menu-close" onclick="toggleMobileMenu()"
+                        aria-label="Close menu">
+                    <i class="fas fa-times"></i>
+                </button>
                 <div class="nav-links">
                     <a href="/">Home</a>
                     <a href="#packages">Packages</a>
@@ -776,17 +910,24 @@
                     <a href="#about">About</a>
                     <a href="#contact">Contact</a>
                 </div>
-                <div class="nav-buttons">
-                    <a href="/traveler" class="btn btn-traveler">
-                        <i class="fas fa-user"></i> Traveler Login
-                    </a>
-                    <a href="/admin" class="btn btn-primary">
-                        <i class="fas fa-lock"></i> Admin
-                    </a>
-                </div>
             </div>
-            <div class="mobile-toggle" onclick="toggleMobileMenu()">
-                <i class="fas fa-bars"></i>
+
+            <!-- Login buttons + hamburger (buttons always visible) -->
+            <div class="nav-buttons">
+                <a href="/traveler" class="btn btn-traveler"
+                   title="Traveler Login" aria-label="Traveler Login">
+                    <i class="fas fa-user"></i>
+                    <span class="btn-label">Traveler Login</span>
+                </a>
+                <a href="/admin" class="btn btn-primary"
+                   title="Admin Login" aria-label="Admin Login">
+                    <i class="fas fa-lock"></i>
+                    <span class="btn-label">Admin</span>
+                </a>
+                <div class="mobile-toggle" onclick="toggleMobileMenu()"
+                     aria-label="Open menu">
+                    <i class="fas fa-bars"></i>
+                </div>
             </div>
         </div>
     </nav>
@@ -857,7 +998,7 @@
     </section>
 
     <!-- =========================================================================
-         [HTML.11] GALLERY (NEW) — hidden unless config has items
+         [HTML.11] GALLERY — hidden unless config has items
          ========================================================================= -->
     <section class="gallery-section" id="gallery" style="display:none;">
         <div class="container">
@@ -936,7 +1077,7 @@
     </a>
 
     <!-- =========================================================================
-         [HTML.12] LIGHTBOX (for gallery photos / videos)
+         [HTML.12] LIGHTBOX
          ========================================================================= -->
     <div class="lightbox" id="lightbox" onclick="closeLightbox(event)">
         <button class="lightbox-close" onclick="closeLightbox(event)">&times;</button>
@@ -1246,19 +1387,17 @@
         }
 
         // =====================================================================
-        // [JS.11] GALLERY (NEW)
+        // [JS.11] GALLERY
         // =====================================================================
         function renderGallery(g) {
             const section = document.getElementById('gallery');
 
-            // Store for lightbox
             GALLERY = {
                 photos: g.photos || [],
                 videos: g.videos || [],
                 enabled: !!g.enabled,
             };
 
-            // Hide section entirely if disabled OR empty
             const hasPhotos = (g.photos && g.photos.length > 0);
             const hasVideos = (g.videos && g.videos.length > 0);
             if (!g.enabled || (!hasPhotos && !hasVideos)) {
@@ -1267,20 +1406,17 @@
             }
             section.style.display = 'block';
 
-            // Titles
             document.getElementById('galleryTitle').textContent =
                 safeText(g.title, 'Sacred Places & Pilgrim Attractions');
             document.getElementById('gallerySubtitle').textContent =
                 safeText(g.subtitle, '');
 
-            // Limits
             const maxP = Number(g.max_photos_shown) || 12;
             const maxV = Number(g.max_videos_shown) || 6;
 
             const photos = (g.photos || []).slice(0, maxP);
             const videos = (g.videos || []).slice(0, maxV);
 
-            // ---- Photos grid ----
             const photoGrid = document.getElementById('galleryPhotos');
             if (photos.length === 0) {
                 photoGrid.innerHTML = `
@@ -1300,7 +1436,6 @@
                     </div>`).join('');
             }
 
-            // ---- Videos grid ----
             const videoGrid = document.getElementById('galleryVideos');
             if (videos.length === 0) {
                 videoGrid.innerHTML = `
@@ -1323,10 +1458,8 @@
                     </div>`).join('');
             }
 
-            // ---- Tab switching ----
             const tabs = document.querySelectorAll('.gallery-tab');
             tabs.forEach(btn => {
-                // Remove old listeners by cloning
                 const fresh = btn.cloneNode(true);
                 btn.parentNode.replaceChild(fresh, btn);
                 fresh.addEventListener('click', () => {
@@ -1339,7 +1472,6 @@
                 });
             });
 
-            // Default: photos visible
             photoGrid.style.display = 'grid';
             videoGrid.style.display = 'none';
         }
@@ -1374,7 +1506,6 @@
         }
 
         function closeLightbox(e) {
-            // Only close when clicking outside the media or the close button
             if (e && e.target && e.target.id !== 'lightbox'
                 && !e.target.classList.contains('lightbox-close')) {
                 return;
@@ -1385,7 +1516,6 @@
             document.body.style.overflow = '';
         }
 
-        // Close lightbox on Escape
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 closeLightbox({ target: { id: 'lightbox' } });
