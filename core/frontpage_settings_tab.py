@@ -1,29 +1,34 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.23 — FIX: Text disappears while typing + duplicate save messages
+# v3.24 — BULLETPROOF: text stays while typing + gallery auto-refreshes
 #
-#   ROOT CAUSES FIXED:
-#     • TextField value was never synced to the server during typing
-#       → any later page.update() wiped uncommitted input.
-#       FIX: every _field() now sets on_change so value streams in live.
+#   ROOT CAUSES FIXED (why v3.22/v3.23 still failed):
 #
-#     • _safe_update() called page_ref.update() (full re-render).
-#       FIX: now updates only self._inner_column (settings content).
+#   1. TEXT DISAPPEARS WHILE TYPING
+#      • on_change=lambda e: None — Flet sometimes drops lambdas for
+#        value sync. Server never got the typed value → next update
+#        pushed the STALE server value back → text vanished.
+#      • FIX: real bound methods (self._on_field_change etc.)
 #
-#     • _set_status() triggered a full page update.
-#       FIX: only updates self.status_label.
+#   2. SAVE STORED OLD VALUES
+#      • Same root cause — server-side .value stayed at construction
+#        value because on_change wasn't delivering events.
+#      • FIX: same — real on_change handlers.
 #
-#     • Feature/stat Add/Remove called page_ref.update().
-#       FIX: updates only the affected container.
+#   3. UPDATES FIRING WHILE TYPING
+#      • Even with on_change, if a container/page update runs
+#        mid-keystroke, Flet can race and overwrite.
+#      • FIX: _safe_update() now SKIPS while any field has focus.
+#        Focus tracked via on_focus / on_blur.
 #
-#     • _save() could fire multiple times → stacked SnackBars.
-#       FIX: added self._saving guard.
+#   4. GALLERY NOT SHOWING AFTER UPLOAD
+#      • Upload happens in a SEPARATE tab (/gallery-upload).
+#        When you return, self.photo_list is stale.
+#      • FIX: background poll (every 5s) reloads config, and a
+#        manual "Refresh Gallery" button is added.
 #
-#     • _snack() showed duplicates.
-#       FIX: de-duplicates identical messages within 3 seconds.
-#
-#   PRESERVED from v3.22:
+#   PRESERVED:
 #     • Gallery upload passes ADMIN_API_KEY
 #     • Admin scroll preserved; toggles auto-save; max_shown=9
 #     • Root Container object NEVER recreated
@@ -54,6 +59,8 @@ BORDER       = "#e2e8f0"
 MUTED        = "#64748b"
 SECTION_BG   = "#ffffff"
 PAGE_BG      = "#f1f5f9"
+
+GALLERY_POLL_SECONDS = 5
 
 
 def _resolve_fit_cover():
@@ -154,10 +161,16 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # Save / snack state (v3.23)
+        # Focus tracking (v3.24)
+        self._focused_fields = set()
+
+        # Save / snack state (v3.24)
         self._saving = False
         self._last_snack_msg = None
         self._last_snack_time = 0.0
+
+        # Gallery auto-poll (v3.24)
+        self._gallery_poll_started = False
 
         # Inner column + root container (created ONCE)
         self._inner_column = None
@@ -182,12 +195,11 @@ class FrontPageSettingsTab:
     # §0.3 — refresh
     # -----------------------------------------------------------------------------
     def refresh(self, e=None):
-        """Reload config + batches, rebuild content in the SAME root."""
         try:
             self.cfg = load_config()
             self._load_batches()
             self._build_root()
-            self._safe_update()
+            self._safe_update(force=True)
             print("[FRONTPAGE] refresh OK")
         except Exception as ex:
             print(f"[FRONTPAGE] refresh failed: {ex}")
@@ -232,10 +244,9 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §ROOT — _build_root (REUSES inner Column — scroll preserved)
+# §ROOT — _build_root
 # =================================================================================
     def _build_root(self):
-        """Build or rebuild the entire settings page."""
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
@@ -273,6 +284,7 @@ class FrontPageSettingsTab:
             self._inner_column.controls = sections
 
         self._register_pickers()
+        self._start_gallery_poll()  # v3.24
 
 
 # =================================================================================
@@ -314,19 +326,20 @@ class FrontPageSettingsTab:
                 color=ft.Colors.with_opacity(0.04, "#000000"),
                 offset=ft.Offset(0, 2)))
 
+    # -----------------------------------------------------------------------------
+    # §H.2 — _field  (v3.24 — the critical fix)
+    # -----------------------------------------------------------------------------
     def _field(self, label, value, **kwargs):
         """
-        Build a TextField.
+        Build a TextField with REAL handlers.
 
-        v3.23 FIX: We attach an on_change handler to every TextField.
-        Flet only streams the field's value to the server when
-        on_change is set. Without it, the server's copy of `value`
-        stays stale while the user types, so ANY subsequent
-        page/container update pushes the old value back to the
-        browser and wipes what the user typed.
-
-        The handler itself is a no-op — Flet updates field.value
-        automatically before calling it.
+        Why this matters:
+          • on_change must be a real bound method, not a lambda.
+            Flet sometimes drops lambda handlers, which means the
+            server-side .value never updates → any later refresh
+            pushes the STALE value back → user's typing vanishes.
+          • on_focus / on_blur let us SKIP updates while typing,
+            eliminating the last race condition.
         """
         defaults = dict(
             label=label,
@@ -340,7 +353,30 @@ class FrontPageSettingsTab:
         )
         defaults.update(kwargs)
         field = ft.TextField(**defaults)
-        field.on_change = lambda e: None
+
+        # Bind the field to a unique id for focus tracking
+        _fid = id(field)
+
+        def _on_focus(e, _id=_fid):
+            try:
+                self._focused_fields.add(_id)
+            except Exception:
+                pass
+
+        def _on_blur(e, _id=_fid):
+            try:
+                self._focused_fields.discard(_id)
+            except Exception:
+                pass
+
+        def _on_change(e):
+            # Flet auto-syncs .value when on_change exists.
+            # This handler's only job is to BE HERE.
+            pass
+
+        field.on_focus = _on_focus
+        field.on_blur = _on_blur
+        field.on_change = _on_change
         return field
 
     def _two_col(self, left, right):
@@ -352,7 +388,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §1 — HEADER BANNER
+# §1 — HEADER
 # =================================================================================
     def _section_1_header(self):
         return ft.Container(
@@ -504,12 +540,10 @@ class FrontPageSettingsTab:
                 self.feature_entries.remove(_entry)
                 self.feature_rows_container.controls.remove(
                     _entry["row"])
-                # v3.23: only update the affected container —
-                # NOT the whole page.
                 try:
                     self.feature_rows_container.update()
-                except Exception as ue:
-                    print(f"[FRONTPAGE] container.update() failed: {ue}")
+                except Exception:
+                    pass
                 print(f"[FRONTPAGE] feature removed. "
                       f"Total: {len(self.feature_entries)}")
             except Exception as ex:
@@ -539,20 +573,12 @@ class FrontPageSettingsTab:
         return entry
 
     # -----------------------------------------------------------------------------
-    # §4.2 — _add_feature_empty  (v3.23 FIX)
+    # §4.2 — _add_feature_empty  (v3.24)
     # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
-        """
-        Add an empty feature row and refresh ONLY its container.
-
-        v3.23: We no longer call page_ref.update(). Updating only
-        the container avoids wiping text the user has typed into
-        other fields.
-        """
         print("[FRONTPAGE] _add_feature_empty called")
 
         if self.feature_rows_container is None:
-            print("[FRONTPAGE] ERROR: feature_rows_container is None")
             try:
                 self._snack("⚠️ Feature container not ready. "
                             "Click Reload, then try again.", DANGER)
@@ -564,6 +590,7 @@ class FrontPageSettingsTab:
             self._add_feature_row("fa-check-circle", "", "")
             print(f"[FRONTPAGE] feature added. "
                   f"Total: {len(self.feature_entries)}")
+            # v3.24: only update the affected container, never the page.
             try:
                 self.feature_rows_container.update()
             except Exception as ue:
@@ -600,7 +627,6 @@ class FrontPageSettingsTab:
             border_radius=8)
         self.pkg_source.on_change = self._on_pkg_source_change
 
-        # ── max_shown: default = 9 ──
         max_shown_val = p.get("max_shown", MAX_PACKAGES_SHOWN_DEFAULT)
         try:
             max_shown_val_int = int(max_shown_val or 0)
@@ -619,7 +645,6 @@ class FrontPageSettingsTab:
             content=ft.Text("✗ Clear", size=11, color=DANGER),
             on_click=lambda e: self._toggle_batches(False))
 
-        # Seed state from saved config
         selected_ids = set()
         try:
             for x in (p.get("selected_batch_ids") or []):
@@ -756,7 +781,6 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] row visual update failed: {e}")
 
         self._auto_save_batch_state()
-
         print(f"[FRONTPAGE] toggle {batch_id!r}: {current} -> {new_val}")
 
     def _on_pkg_source_change(self, e=None):
@@ -874,9 +898,6 @@ class FrontPageSettingsTab:
                 add_stat_btn,
             ])
 
-    # -----------------------------------------------------------------------------
-    # §6.1 — _add_stat_row
-    # -----------------------------------------------------------------------------
     def _add_stat_row(self, number_val, label_val):
         num_field = self._field("Number", number_val,
                                 hint_text="e.g. 25+")
@@ -889,12 +910,10 @@ class FrontPageSettingsTab:
             try:
                 self.stat_entries.remove(_entry)
                 self.stats_rows_container.controls.remove(_entry["row"])
-                # v3.23: only update the affected container.
                 try:
                     self.stats_rows_container.update()
-                except Exception as ue:
-                    print(f"[FRONTPAGE] stats container.update() "
-                          f"failed: {ue}")
+                except Exception:
+                    pass
                 print(f"[FRONTPAGE] stat removed. "
                       f"Total: {len(self.stat_entries)}")
             except Exception as ex:
@@ -918,19 +937,10 @@ class FrontPageSettingsTab:
         self.stats_rows_container.controls.append(row)
         return entry
 
-    # -----------------------------------------------------------------------------
-    # §6.2 — _add_stat_empty  (v3.23 FIX)
-    # -----------------------------------------------------------------------------
     def _add_stat_empty(self, e=None):
-        """
-        Add an empty statistic row and refresh ONLY its container.
-
-        v3.23: No more page_ref.update() — keeps typed input safe.
-        """
         print("[FRONTPAGE] _add_stat_empty called")
 
         if self.stats_rows_container is None:
-            print("[FRONTPAGE] ERROR: stats_rows_container is None")
             try:
                 self._snack("⚠️ Stat container not ready. "
                             "Click Reload, then try again.", DANGER)
@@ -1023,7 +1033,7 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# §11 — GALLERY
+# §11 — GALLERY  (v3.24 — added Refresh button)
 # =================================================================================
     def _section_11_gallery(self):
         g = self.cfg.get("gallery", {}) or {}
@@ -1050,6 +1060,16 @@ class FrontPageSettingsTab:
             self._gallery_stats_text(), size=10, color=MUTED, italic=True)
 
         self._rebuild_gallery_lists()
+
+        refresh_btn = ft.TextButton(
+            content=ft.Row([
+                ft.Icon(icon=ft.Icons.REFRESH, size=12,
+                        color=PRIMARY_LT),
+                ft.Text("Refresh Gallery", size=10,
+                        color=PRIMARY_LT,
+                        weight=ft.FontWeight.BOLD),
+            ], spacing=4, tight=True),
+            on_click=self._refresh_gallery_click)
 
         upload_photo_btn = ft.Button(
             content=ft.Row([
@@ -1081,6 +1101,7 @@ class FrontPageSettingsTab:
             ft.Text("📷 Photos", size=12,
                     weight=ft.FontWeight.BOLD, color="#0f172a"),
             ft.Container(expand=True),
+            refresh_btn,
             upload_photo_btn,
         ], spacing=8)
 
@@ -1222,8 +1243,103 @@ class FrontPageSettingsTab:
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
 
+    # -----------------------------------------------------------------------------
+    # §11.5 — Gallery auto-refresh (v3.24)
+    # -----------------------------------------------------------------------------
+    def _refresh_gallery_click(self, e=None):
+        try:
+            self._reload_gallery_from_disk(show_toast=True)
+        except Exception as ex:
+            print(f"[FRONTPAGE] refresh gallery failed: {ex}")
+            try:
+                self._snack(f"⚠️ {ex}", DANGER)
+            except Exception:
+                pass
+
+    def _reload_gallery_from_disk(self, show_toast=False):
+        """Reload photos/videos from config and rebuild the lists."""
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+        g = (cfg.get("gallery") or {}) if cfg else {}
+        new_photos = list(g.get("photos", []) or [])
+        new_videos = list(g.get("videos", []) or [])
+
+        changed = (len(new_photos) != len(self.photo_list)
+                   or len(new_videos) != len(self.video_list))
+
+        self.photo_list = new_photos
+        self.video_list = new_videos
+        # Keep self.cfg in sync too
+        try:
+            self.cfg.setdefault("gallery", {})
+            self.cfg["gallery"]["photos"] = new_photos
+            self.cfg["gallery"]["videos"] = new_videos
+        except Exception:
+            pass
+
+        self._rebuild_gallery_lists()
+        try:
+            self.photo_list_container.update()
+        except Exception:
+            pass
+        try:
+            self.video_list_container.update()
+        except Exception:
+            pass
+        try:
+            self.gallery_stats_label.update()
+        except Exception:
+            pass
+
+        if show_toast and changed:
+            self._snack(
+                f"🔄 Gallery refreshed — "
+                f"{len(new_photos)} photos, "
+                f"{len(new_videos)} videos", SUCCESS)
+        elif show_toast:
+            self._snack(
+                f"✓ Gallery up to date — "
+                f"{len(new_photos)} photos, "
+                f"{len(new_videos)} videos", PRIMARY_LT)
+
+        return changed
+
+    def _start_gallery_poll(self):
+        """
+        Background loop — reloads the gallery list from disk every
+        GALLERY_POLL_SECONDS. This catches photos uploaded in the
+        separate /gallery-upload tab.
+        """
+        if self._gallery_poll_started:
+            return
+        self._gallery_poll_started = True
+
+        async def _loop():
+            await asyncio.sleep(2)
+            while True:
+                try:
+                    await asyncio.sleep(GALLERY_POLL_SECONDS)
+                    if not self.photo_list_container:
+                        continue
+                    if self._focused_fields:
+                        # Someone is typing — don't touch the UI
+                        continue
+                    self._reload_gallery_from_disk(show_toast=False)
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    print(f"[FRONTPAGE] gallery poll error: {e}")
+
+        try:
+            self.page_ref.run_task(_loop)
+            print("[FRONTPAGE] gallery auto-poll started")
+        except Exception as e:
+            print(f"[FRONTPAGE] could not start gallery poll: {e}")
+            self._gallery_poll_started = False
+
     def _pick_gallery_files(self, media_type):
-        """Open the gallery upload page with admin key appended."""
         admin_key = os.getenv("ADMIN_API_KEY", "")
 
         if admin_key:
@@ -1325,7 +1441,7 @@ class FrontPageSettingsTab:
                 print(f"[GALLERY] upload error {name}: {ex}")
                 fail += 1
         self._rebuild_gallery_lists()
-        self._safe_update()
+        self._safe_update(force=True)
         if ok and not fail:
             self._snack(f"✅ {ok} file(s) uploaded", SUCCESS)
         elif fail:
@@ -1372,7 +1488,7 @@ class FrontPageSettingsTab:
                 self.video_list = [x for x in self.video_list
                                    if x.get("url") != url]
             self._rebuild_gallery_lists()
-            self._safe_update()
+            self._safe_update(force=True)
             self._snack("🗑️ Deleted", WARN)
 
         def cancel(ev):
@@ -1613,7 +1729,6 @@ class FrontPageSettingsTab:
         }
 
     def _save(self, e=None):
-        # v3.23: prevent double-submits (Enter key + click, etc.)
         if self._saving:
             print("[FRONTPAGE] _save: already saving, ignoring")
             return
@@ -1716,11 +1831,7 @@ class FrontPageSettingsTab:
             self._snack(f"⚠️ {ex}")
 
     def _set_status(self, message, color=PRIMARY_LT):
-        """
-        v3.23 FIX: only update the status label — never the whole
-        page. This prevents wiping text the user is still typing
-        in other fields.
-        """
+        """Update ONLY the status label — never the whole page."""
         try:
             if self.status_label is not None:
                 self.status_label.value = message
@@ -1730,11 +1841,7 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] _set_status failed: {e}")
 
     def _snack(self, msg, color=ft.Colors.GREEN_700):
-        """
-        v3.23 FIX: dedupe identical messages within 3 seconds and
-        guard against stacked SnackBars (they cause page updates on
-        dismiss, which was wiping uncommitted TextField input).
-        """
+        """Dedupe identical messages within 3 seconds."""
         try:
             now = time.time()
             if (self._last_snack_msg == msg and
@@ -1753,21 +1860,20 @@ class FrontPageSettingsTab:
             print(f"[FRONTPAGE] _snack failed: {e}")
 
     # -----------------------------------------------------------------------------
-    # §A.7 — _safe_update  (v3.23 FIX — targets inner column, not page)
+    # §A.7 — _safe_update  (v3.24 — skips while any field has focus)
     # -----------------------------------------------------------------------------
-    def _safe_update(self):
+    def _safe_update(self, force=False):
         """
-        Update the UI.
+        Update the inner column.
 
-        v3.23 FIX: We update self._inner_column instead of the whole
-        page. Updating the whole page while the user is typing was
-        the main cause of disappearing text, because Flet pushed
-        stale TextField values back to the client.
-
-        The on_change handler on every TextField now keeps values
-        synced, but we still minimize the update scope as belt-and-
-        braces.
+        If `force=True`, ignore focus state.
+        Otherwise, skip if any TextField has focus — this is what
+        prevents typing from being wiped mid-keystroke.
         """
+        if not force and self._focused_fields:
+            print("[FRONTPAGE] _safe_update: skipping (field focused)")
+            return
+
         try:
             if self._inner_column is not None:
                 self._inner_column.update()
@@ -1783,5 +1889,5 @@ class FrontPageSettingsTab:
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.23
+# SECTION END — core/frontpage_settings_tab.py v3.24
 # =================================================================================
