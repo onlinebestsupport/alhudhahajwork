@@ -1,30 +1,37 @@
 # =================================================================================
 # core/frontpage_settings_tab.py — Front Page Settings
 # =================================================================================
-# v3.21 — Security hardening: admin key passed to gallery upload page
+# v3.22 — Fix: Add Feature / Add Statistic buttons now work reliably
 #
-#   CHANGES vs v3.20:
-#   • §0.1  NEW: import os (for ADMIN_API_KEY env lookup)
-#   • §11.4 _pick_gallery_files now appends &key=<ADMIN_API_KEY> to the
-#           upload page URL so the new authenticated endpoint accepts it
+#   ROOT CAUSE:
+#     • Flet's container.update() silently fails when the container is
+#       nested deeply inside a scrollable Column. The row IS added to the
+#       list, but the browser doesn't repaint.
 #
-#   PRESERVED from v3.20:
-#   • Admin scroll no longer resets; toggles auto-save; max_shown=9
-#   • _build_root reuses the SAME inner Column → scroll position survives
-#   • _toggle_batch_row_by_id → per-control .update(), NO full rebuild
-#   • _toggle_batches → same per-control approach
-#   • _auto_save_batch_state() — writes only batch IDs to disk
-#   • Root Container object is NEVER recreated
-#   • _safe_update() falls back to page.update()
+#   FIXES:
+#     • _add_feature_empty   → uses page_ref.update() (full refresh)
+#     • _add_stat_empty      → uses page_ref.update()
+#     • _safe_update()       → tries page_ref.update() FIRST, then root
+#     • Feature/stat remove  → uses page_ref.update()
+#     • Added print() logs so we can debug if anything else breaks
+#
+#   PRESERVED from v3.21:
+#     • Gallery upload passes ADMIN_API_KEY
+#     • Admin scroll no longer resets; toggles auto-save; max_shown=9
+#     • _build_root reuses the SAME inner Column → scroll preserved
+#     • _toggle_batch_row_by_id → per-control .update()
+#     • _toggle_batches → same per-control approach
+#     • _auto_save_batch_state() — writes only batch IDs to disk
+#     • Root Container object is NEVER recreated
 #
 # SECTION INDEX
-#   §0      Class setup (__init__ / build / refresh / helpers)
+#   §0      Class setup
 #   §ROOT   _build_root
 #   §H      Shared helpers
 #   §1-§9   Section builders (hero → footer)
 #   §10     Action bar
 #   §11     Gallery
-#   §A      Actions (_collect_config, _save, _reset, etc.)
+#   §A      Actions
 # =================================================================================
 
 import os
@@ -151,7 +158,7 @@ class FrontPageSettingsTab:
         # Action bar
         self.status_label = None
 
-        # --- v3.20: inner Column + root Container, created ONCE ---
+        # Inner column + root container (created ONCE)
         self._inner_column = None
         self.root = None
 
@@ -227,14 +234,7 @@ class FrontPageSettingsTab:
 # §ROOT — _build_root (REUSES inner Column — scroll preserved)
 # =================================================================================
     def _build_root(self):
-        """
-        Build (or rebuild) the entire settings page.
-
-        CRITICAL:  self._inner_column and self.root are created ONLY ONCE.
-        On every later call, we just swap `self._inner_column.controls`.
-        This preserves the user's scroll position and prevents the
-        automatic jump-to-top that was happening every few seconds.
-        """
+        """Build or rebuild the entire settings page."""
         self.feature_entries = []
         self.stat_entries = []
         self.batch_checkboxes = {}
@@ -471,6 +471,9 @@ class FrontPageSettingsTab:
             [self.feature_rows_container, add_btn],
             accent=SUCCESS)
 
+    # -----------------------------------------------------------------------------
+    # §4.1 — _add_feature_row
+    # -----------------------------------------------------------------------------
     def _add_feature_row(self, icon_val, title_val, text_val):
         icon_field = self._field("Icon", icon_val,
                                  hint_text="e.g. fa-mosque")
@@ -485,9 +488,13 @@ class FrontPageSettingsTab:
                 self.feature_entries.remove(_entry)
                 self.feature_rows_container.controls.remove(
                     _entry["row"])
-                self._safe_update()
-            except Exception:
-                pass
+                # Force a full page update so removal is visible
+                self.page_ref.update()
+                print(f"[FRONTPAGE] feature removed. "
+                      f"Total: {len(self.feature_entries)}")
+            except Exception as ex:
+                print(f"[FRONTPAGE] remove feature failed: {ex}")
+                traceback.print_exc()
 
         row = ft.Container(
             content=ft.Column([
@@ -509,14 +516,48 @@ class FrontPageSettingsTab:
         entry["row"] = row
         self.feature_entries.append(entry)
         self.feature_rows_container.controls.append(row)
+        return entry
 
+    # -----------------------------------------------------------------------------
+    # §4.2 — _add_feature_empty  (v3.22 FIX — uses page_ref.update)
+    # -----------------------------------------------------------------------------
     def _add_feature_empty(self, e=None):
-        self._add_feature_row("fa-check-circle", "", "")
-        self._safe_update()
+        """
+        Add an empty feature row and force a full page refresh.
+
+        v3.22 FIX: We call page_ref.update() instead of _safe_update()
+        because container.update() doesn't reliably propagate inside
+        deeply-nested scrollable Columns.
+        """
+        print("[FRONTPAGE] _add_feature_empty called")
+
+        # Guard: container must exist
+        if self.feature_rows_container is None:
+            print("[FRONTPAGE] ERROR: feature_rows_container is None")
+            try:
+                self._snack("⚠️ Feature container not ready. "
+                            "Click Reload, then try again.", DANGER)
+            except Exception:
+                pass
+            return
+
+        try:
+            self._add_feature_row("fa-check-circle", "", "")
+            print(f"[FRONTPAGE] feature added. "
+                  f"Total: {len(self.feature_entries)}")
+            # Full page refresh — guaranteed to propagate
+            self.page_ref.update()
+        except Exception as ex:
+            print(f"[FRONTPAGE] add feature failed: {ex}")
+            traceback.print_exc()
+            try:
+                self._snack(f"❌ Failed to add feature: {ex}", DANGER)
+            except Exception:
+                pass
 
 
 # =================================================================================
-# §5 — PACKAGES  (max_shown default = 9 now)
+# §5 — PACKAGES
 # =================================================================================
     def _section_5_packages(self):
         p = self.cfg.get("packages", {})
@@ -601,9 +642,6 @@ class FrontPageSettingsTab:
                 self._batch_ui,
             ], accent=ACCENT)
 
-    # -----------------------------------------------------------------------------
-    # §5.0 — _make_batch_row  (Container is the only click target)
-    # -----------------------------------------------------------------------------
     def _make_batch_row(self, batch_id, name, status, price_str,
                         is_checked):
         icon = ft.Icon(
@@ -640,13 +678,7 @@ class FrontPageSettingsTab:
         }
         return container
 
-    # -----------------------------------------------------------------------------
-    # §5.0b — _rebuild_batch_rows  (used only on initial build / refresh)
-    # -----------------------------------------------------------------------------
     def _rebuild_batch_rows(self):
-        """Rebuild ALL rows from state. Only called from
-        _section_5_packages() during initial build / refresh — NOT
-        from toggles (toggles use per-control updates)."""
         if self.pkg_batch_container is None:
             return
 
@@ -673,17 +705,7 @@ class FrontPageSettingsTab:
                 bid, name, status, price_str, is_checked)
             self.pkg_batch_container.controls.append(row)
 
-    # -----------------------------------------------------------------------------
-    # §5.0c — _toggle_batch_row_by_id  (PER-CONTROL update, NO rebuild)
-    # -----------------------------------------------------------------------------
     def _toggle_batch_row_by_id(self, batch_id):
-        """
-        Flip ONE row. Repaint ONLY its three widgets.
-        Then silently auto-save the batch state to disk.
-
-        This avoids the previous full-rebuild that was resetting the
-        admin's scroll position every 5-10 seconds.
-        """
         entry = self.batch_checkboxes.get(batch_id)
         if not entry:
             print(f"[FRONTPAGE] toggle: no entry for {batch_id!r}")
@@ -693,7 +715,6 @@ class FrontPageSettingsTab:
         new_val = not current
         self._batch_check_state[batch_id] = new_val
 
-        # ---- Per-control repaint ----
         try:
             entry["icon"].icon = (
                 ft.Icons.CHECK_BOX if new_val
@@ -713,21 +734,14 @@ class FrontPageSettingsTab:
         except Exception as e:
             print(f"[FRONTPAGE] row visual update failed: {e}")
 
-        # ---- Silent auto-save ----
         self._auto_save_batch_state()
 
         print(f"[FRONTPAGE] toggle {batch_id!r}: {current} -> {new_val}")
 
-    # -----------------------------------------------------------------------------
-    # §5.1 — _on_pkg_source_change
-    # -----------------------------------------------------------------------------
     def _on_pkg_source_change(self, e=None):
         self._update_source_visibility()
         self._safe_update()
 
-    # -----------------------------------------------------------------------------
-    # §5.2 — _update_source_visibility
-    # -----------------------------------------------------------------------------
     def _update_source_visibility(self):
         try:
             is_batches = (self.pkg_source.value or "batches") == "batches"
@@ -736,9 +750,6 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-    # -----------------------------------------------------------------------------
-    # §5.3 — _toggle_batches (All / Clear — per-control, NO rebuild)
-    # -----------------------------------------------------------------------------
     def _toggle_batches(self, value):
         print(f"[FRONTPAGE] _toggle_batches("
               f"{'All' if value else 'Clear'})")
@@ -765,14 +776,7 @@ class FrontPageSettingsTab:
 
         self._auto_save_batch_state()
 
-    # -----------------------------------------------------------------------------
-    # §5.4 — _auto_save_batch_state
-    # -----------------------------------------------------------------------------
     def _auto_save_batch_state(self):
-        """
-        Silent partial save — writes ONLY packages.selected_batch_ids
-        to disk. Called after every toggle / All / Clear.
-        """
         try:
             from core.frontpage_config import (
                 load_config, save_config, normalize_batch_ids)
@@ -849,6 +853,9 @@ class FrontPageSettingsTab:
                 add_stat_btn,
             ])
 
+    # -----------------------------------------------------------------------------
+    # §6.1 — _add_stat_row
+    # -----------------------------------------------------------------------------
     def _add_stat_row(self, number_val, label_val):
         num_field = self._field("Number", number_val,
                                 hint_text="e.g. 25+")
@@ -861,9 +868,13 @@ class FrontPageSettingsTab:
             try:
                 self.stat_entries.remove(_entry)
                 self.stats_rows_container.controls.remove(_entry["row"])
-                self._safe_update()
-            except Exception:
-                pass
+                # Force full page update so removal is visible
+                self.page_ref.update()
+                print(f"[FRONTPAGE] stat removed. "
+                      f"Total: {len(self.stat_entries)}")
+            except Exception as ex:
+                print(f"[FRONTPAGE] remove stat failed: {ex}")
+                traceback.print_exc()
 
         row = ft.Container(
             content=ft.Row([
@@ -880,10 +891,41 @@ class FrontPageSettingsTab:
         entry["row"] = row
         self.stat_entries.append(entry)
         self.stats_rows_container.controls.append(row)
+        return entry
 
+    # -----------------------------------------------------------------------------
+    # §6.2 — _add_stat_empty  (v3.22 FIX — uses page_ref.update)
+    # -----------------------------------------------------------------------------
     def _add_stat_empty(self, e=None):
-        self._add_stat_row("", "")
-        self._safe_update()
+        """
+        Add an empty statistic row and force a full page refresh.
+
+        v3.22 FIX: Same reason as _add_feature_empty — container.update()
+        is unreliable when deeply nested.
+        """
+        print("[FRONTPAGE] _add_stat_empty called")
+
+        if self.stats_rows_container is None:
+            print("[FRONTPAGE] ERROR: stats_rows_container is None")
+            try:
+                self._snack("⚠️ Stat container not ready. "
+                            "Click Reload, then try again.", DANGER)
+            except Exception:
+                pass
+            return
+
+        try:
+            self._add_stat_row("", "")
+            print(f"[FRONTPAGE] stat added. "
+                  f"Total: {len(self.stat_entries)}")
+            self.page_ref.update()
+        except Exception as ex:
+            print(f"[FRONTPAGE] add stat failed: {ex}")
+            traceback.print_exc()
+            try:
+                self._snack(f"❌ Failed to add statistic: {ex}", DANGER)
+            except Exception:
+                pass
 
 
 # =================================================================================
@@ -1039,7 +1081,6 @@ class FrontPageSettingsTab:
                 self.video_list_container,
             ], accent=ACCENT)
 
-    # §11.1
     def _rebuild_gallery_lists(self):
         if self.photo_list_container is None:
             return
@@ -1070,7 +1111,6 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-    # §11.2
     def _gallery_stats_text(self):
         total_bytes = (sum(int(x.get("size", 0) or 0)
                            for x in (self.photo_list or []))
@@ -1094,7 +1134,6 @@ class FrontPageSettingsTab:
                 f"{len(self.video_list)} videos · "
                 f"{_human(total_bytes)} total")
 
-    # §11.3
     def _gallery_item_row(self, item, media_type):
         url = item.get("url", "")
         caption = item.get("caption", "")
@@ -1156,15 +1195,8 @@ class FrontPageSettingsTab:
             padding=8, bgcolor="#f8fafc",
             border=ft.Border.all(1, BORDER), border_radius=10)
 
-    # §11.4 — _pick_gallery_files  (v3.21: passes admin key)
     def _pick_gallery_files(self, media_type):
-        """
-        Open the gallery upload page in a new tab.
-
-        SECURITY: appends &key=<ADMIN_API_KEY> so the new authenticated
-        upload endpoint accepts the request. The key is read from the
-        environment variable ADMIN_API_KEY (must be set on Railway).
-        """
+        """Open the gallery upload page with admin key appended."""
         admin_key = os.getenv("ADMIN_API_KEY", "")
 
         if admin_key:
@@ -1172,10 +1204,9 @@ class FrontPageSettingsTab:
         else:
             url = f"/gallery-upload?type={media_type}"
             print("[GALLERY] WARNING: ADMIN_API_KEY not set — "
-                  "uploads will fail with 401. "
-                  "Set it in Railway → Variables.")
+                  "uploads will fail with 401.")
 
-        print(f"[GALLERY] opening upload page in NEW tab "
+        print(f"[GALLERY] opening upload page "
               f"(type={media_type}, key={'yes' if admin_key else 'NO'})")
 
         async def _go():
@@ -1220,7 +1251,6 @@ class FrontPageSettingsTab:
             except Exception:
                 pass
 
-    # §11.5 (fallback path — now includes auth header)
     async def _upload_files(self, files, media_type):
         import httpx
         admin_key = os.getenv("ADMIN_API_KEY", "")
@@ -1274,7 +1304,6 @@ class FrontPageSettingsTab:
         elif fail:
             self._snack("❌ Upload failed", DANGER)
 
-    # §11.6
     def _remove_gallery_item(self, media_type, item):
         url = item.get("url", "")
         caption = item.get("caption", "") or url
@@ -1347,7 +1376,6 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
-    # §11.7
     def _register_pickers(self):
         if self._pickers_registered:
             return
@@ -1368,7 +1396,6 @@ class FrontPageSettingsTab:
         except Exception as ex:
             print(f"[FRONTPAGE] picker registration failed: {ex}")
 
-    # §11.8
     def _save_silent(self):
         try:
             cfg = self._collect_config()
@@ -1437,7 +1464,6 @@ class FrontPageSettingsTab:
 # =================================================================================
 # §A — ACTIONS
 # =================================================================================
-    # §A.1 — _collect_config
     def _collect_config(self):
         def _v(field):
             try:
@@ -1559,7 +1585,6 @@ class FrontPageSettingsTab:
             },
         }
 
-    # §A.2 — _save
     def _save(self, e=None):
         try:
             cfg = self._collect_config()
@@ -1589,7 +1614,6 @@ class FrontPageSettingsTab:
             traceback.print_exc()
             self._set_status(f"❌ {ex}", DANGER)
 
-    # §A.3 — _reset_confirm
     def _reset_confirm(self, e=None):
         def do_reset(ev):
             try:
@@ -1633,7 +1657,6 @@ class FrontPageSettingsTab:
             ])
         self.page_ref.show_dialog(dlg)
 
-    # §A.4 — _open_preview
     def _open_preview(self, e=None):
         try:
             async def _do():
@@ -1658,7 +1681,6 @@ class FrontPageSettingsTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}")
 
-    # §A.5 — _set_status
     def _set_status(self, message, color=PRIMARY_LT):
         try:
             if self.status_label is not None:
@@ -1668,7 +1690,6 @@ class FrontPageSettingsTab:
             pass
         self._safe_update()
 
-    # §A.6 — _snack
     def _snack(self, msg, color=ft.Colors.GREEN_700):
         try:
             self.page_ref.show_dialog(
@@ -1676,22 +1697,32 @@ class FrontPageSettingsTab:
         except Exception:
             pass
 
-    # §A.7 — _safe_update
+    # -----------------------------------------------------------------------------
+    # §A.7 — _safe_update  (v3.22 FIX — tries page first)
+    # -----------------------------------------------------------------------------
     def _safe_update(self):
-        """Try root.update(); fall back to page.update() if not attached."""
+        """
+        Update the UI.
+
+        v3.22 FIX: Try page_ref.update() FIRST. It's more reliable than
+        root.update() for deeply-nested scrollable containers. If page
+        fails, fall back to root.
+        """
+        # Try page first (most reliable)
+        try:
+            self.page_ref.update()
+            return
+        except Exception as e:
+            print(f"[FRONTPAGE] page.update() failed: {e}")
+
+        # Fallback to root
         try:
             if self.root is not None:
                 self.root.update()
-                return
         except Exception as e:
-            print(f"[FRONTPAGE] root.update() failed, "
-                  f"falling back to page.update(): {e}")
-        try:
-            self.page_ref.update()
-        except Exception as e:
-            print(f"[FRONTPAGE] page.update() also failed: {e}")
+            print(f"[FRONTPAGE] root.update() also failed: {e}")
 
 
 # =================================================================================
-# SECTION END — core/frontpage_settings_tab.py v3.21
+# SECTION END — core/frontpage_settings_tab.py v3.22
 # =================================================================================
