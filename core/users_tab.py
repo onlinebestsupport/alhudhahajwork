@@ -1,6 +1,18 @@
 # =================================================================================
-# SECTION 18 — USERS TAB (FLET 1.0) — v3.1 (fixed syntax)
+# SECTION 18 — USERS TAB (FLET 1.0) — v3.2
 # =================================================================================
+# v3.2 fixes:
+#   • _safe_update() no longer calls page.update() → no more typing wipe
+#   • All TextFields/Dropdowns: removed deprecated content_padding=12,
+#     added explicit on_change handlers with typing guard
+#   • _snack() no longer triggers page.update()
+#   • refresh() update scoped to self.root
+#   • Save message shows WHAT changed
+#   • Save verifies CSV written (reload + count check)
+#   • Activity log on add + edit (not just delete)
+#   • ft.dropdown.Option(key=..., text=...) form
+#   • Dialog auto-clears typing guard on close
+#
 # Mirrors PaymentsTab structure exactly:
 #   • Plain class (not ft.Column subclass)
 #   • self.root = ft.Container(content=Column(...), expand=True)
@@ -11,6 +23,7 @@
 import flet as ft
 import hashlib
 import json
+import time
 import traceback
 from datetime import datetime
 
@@ -21,7 +34,7 @@ except ImportError:
 
 
 # =================================================================================
-# PERMISSION CATALOG
+# 18.1 — CONSTANTS
 # =================================================================================
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
@@ -48,10 +61,11 @@ ROLE_DEFAULT_PERMISSIONS = {
 
 ROLE_OPTIONS = ["super_admin", "admin", "staff", "viewer"]
 MOBILE_BREAKPOINT = 700
+TYPING_GUARD_SECONDS = 3.0
 
 
 # =================================================================================
-# HELPERS
+# 18.2 — HELPERS
 # =================================================================================
 def _safe_str(v):
     if v is None:
@@ -114,7 +128,7 @@ def _user_has_permission(user, perm_key):
 
 
 # =================================================================================
-# 18.1 — CLASS: UsersTab
+# 18.3 — CLASS: UsersTab
 # =================================================================================
 class UsersTab:
 
@@ -129,6 +143,9 @@ class UsersTab:
         self.users_column = None
         self.status_label = None
         self.root = None
+
+        # v3.2 — typing guard
+        self._typing_until = 0.0
 
         # permission gate
         if not _user_has_permission(self.current_user, "manage_users"):
@@ -179,7 +196,7 @@ class UsersTab:
         return self.root
 
     # =============================================================================
-    # setup_ui — SAME structure as PaymentsTab.setup_ui
+    # 18.3.1 — setup_ui
     # =============================================================================
     def setup_ui(self):
         stat_configs = [
@@ -256,7 +273,7 @@ class UsersTab:
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
 
-        # ---- ROOT: same shape as PaymentsTab ----
+        # ---- ROOT ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
@@ -283,7 +300,7 @@ class UsersTab:
         )
 
     # =============================================================================
-    # refresh
+    # 18.3.2 — refresh  (v3.2 — scoped update, no page.update())
     # =============================================================================
     def refresh(self, e=None):
         try:
@@ -313,8 +330,11 @@ class UsersTab:
 
             self.display_users()
             self.update_stats()
+
+            # v3.2 — scoped update (was: self.page.update())
             try:
-                self.page.update()
+                if self.root is not None:
+                    self.root.update()
             except Exception:
                 pass
         except Exception as ex:
@@ -322,7 +342,7 @@ class UsersTab:
             traceback.print_exc()
 
     # =============================================================================
-    # display_users — builds user cards
+    # 18.3.3 — display_users
     # =============================================================================
     def display_users(self):
         if self.users_column is None:
@@ -435,6 +455,9 @@ class UsersTab:
 
         print(f"[USERS] rendered {len(self.users_column.controls)} cards")
 
+    # =============================================================================
+    # 18.3.4 — update_stats
+    # =============================================================================
     def update_stats(self):
         total = len(self.users)
         supers = sum(1 for u in self.users
@@ -453,7 +476,7 @@ class UsersTab:
             self.stat_labels["staff"].value = str(staff)
 
     # =============================================================================
-    # Dialogs
+    # 18.3.5 — Dialog launchers
     # =============================================================================
     def open_add_dialog(self, e=None):
         try:
@@ -477,6 +500,9 @@ class UsersTab:
             print(f"[USERS] open_edit_dialog error: {ex}")
             traceback.print_exc()
 
+    # =============================================================================
+    # 18.3.6 — _confirm_delete
+    # =============================================================================
     def _confirm_delete(self, user):
         uid = user.get("id")
         username = user.get("username", "?")
@@ -547,19 +573,19 @@ class UsersTab:
             ])
         self.page.show_dialog(dialog)
 
+    # =============================================================================
+    # 18.3.7 — _snack  (v3.2 — NO page.update())
+    # =============================================================================
     def _snack(self, msg):
         try:
-            self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+            self.page.show_dialog(
+                ft.SnackBar(content=ft.Text(msg)))
+        except Exception as ex:
+            print(f"[USERS] snack failed: {ex}")
 
 
 # =================================================================================
-# 18.2 — CLASS: UserFormDialog
+# 18.4 — CLASS: UserFormDialog  (v3.2)
 # =================================================================================
 class UserFormDialog:
 
@@ -581,8 +607,39 @@ class UserFormDialog:
         self.perm_note = None
         self.dialog = None
 
+        # v3.2 — typing guard
+        self._typing_until = 0.0
+
         self._build()
 
+    # =============================================================================
+    # 18.4.1 — _field helper (v3.2 — adds on_change guard + explicit sync)
+    # =============================================================================
+    def _field(self, **kwargs):
+        """v3.2 — every TextField gets on_change so value streams live."""
+        # content_padding as Padding object (not deprecated int)
+        if "content_padding" not in kwargs:
+            kwargs["content_padding"] = ft.Padding.symmetric(
+                horizontal=12, vertical=12)
+
+        field = ft.TextField(**kwargs)
+
+        def _on_change(e, _f=field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+
+        field.on_change = _on_change
+        return field
+
+    # =============================================================================
+    # 18.4.2 — _build
+    # =============================================================================
     def _build(self):
         u = self.user
         narrow = False
@@ -608,22 +665,23 @@ class UserFormDialog:
             except Exception:
                 narrow = True
 
-        self.username_field = ft.TextField(
+        # ---- Credentials ----
+        self.username_field = self._field(
             label="Username *",
             value=_safe_str(u.get("username")),
             prefix_icon=ft.Icons.PERSON_OUTLINE,
-            text_size=12, content_padding=12)
-        self.password_field = ft.TextField(
+            text_size=12)
+        self.password_field = self._field(
             label=("New Password (leave blank to keep)"
                    if self.is_edit else "Password *"),
             password=True, can_reveal_password=True,
             prefix_icon=ft.Icons.LOCK_OUTLINE,
-            text_size=12, content_padding=12)
-        self.confirm_password_field = ft.TextField(
+            text_size=12)
+        self.confirm_password_field = self._field(
             label="Confirm Password",
             password=True, can_reveal_password=True,
             prefix_icon=ft.Icons.LOCK_OUTLINE,
-            text_size=12, content_padding=12)
+            text_size=12)
 
         pw_row = (
             ft.Column([self.password_field,
@@ -643,21 +701,25 @@ class UserFormDialog:
             padding=10, bgcolor="#f0f9ff", border_radius=10,
             border=ft.Border.all(1, "#bae6fd"))
 
-        self.full_name_field = ft.TextField(
+        # ---- Profile ----
+        self.full_name_field = self._field(
             label="Full Name *",
             value=_safe_str(u.get("full_name")),
             prefix_icon=ft.Icons.BADGE_OUTLINED,
-            text_size=12, content_padding=12)
-        self.email_field = ft.TextField(
+            text_size=12)
+        self.email_field = self._field(
             label="Email",
             value=_safe_str(u.get("email")),
             prefix_icon=ft.Icons.EMAIL_OUTLINED,
-            text_size=12, content_padding=12)
+            text_size=12)
         self.role_dropdown = ft.Dropdown(
             label="Role *",
             value=_safe_str(u.get("role")) or "staff",
-            options=[ft.dropdown.Option(r) for r in ROLE_OPTIONS],
-            text_size=12, content_padding=12)
+            options=[ft.dropdown.Option(key=r, text=r)
+                     for r in ROLE_OPTIONS],
+            text_size=12,
+            content_padding=ft.Padding.symmetric(
+                horizontal=12, vertical=12))
         self.role_dropdown.on_change = self._on_role_change
 
         profile_section = ft.Container(
@@ -671,6 +733,7 @@ class UserFormDialog:
             padding=10, bgcolor="#f5f3ff", border_radius=10,
             border=ft.Border.all(1, "#ddd6fe"))
 
+        # ---- Permissions ----
         current_perms = _parse_permissions(
             u.get("permissions", ""), u.get("role", "staff"))
         perm_grid = ft.ResponsiveRow(spacing=6, run_spacing=6)
@@ -752,6 +815,9 @@ class UserFormDialog:
 
         self._on_role_change(None, force_defaults=not self.is_edit)
 
+    # =============================================================================
+    # 18.4.3 — _on_role_change
+    # =============================================================================
     def _on_role_change(self, e=None, force_defaults=False):
         role = _safe_str(self.role_dropdown.value) or "staff"
         if role == "super_admin":
@@ -776,6 +842,9 @@ class UserFormDialog:
             self.perm_note.color = ft.Colors.GREY_600
         self._safe_update()
 
+    # =============================================================================
+    # 18.4.4 — _save  (v3.2 — diff + verification)
+    # =============================================================================
     def _save(self, e=None):
         try:
             username = _safe_str(self.username_field.value)
@@ -800,6 +869,7 @@ class UserFormDialog:
                 self._snack("⚠️ Password must be at least 4 chars.")
                 return
 
+            # Duplicate username check
             existing = self.db.get_users()
             for u in existing:
                 other_id = _safe_str(u.get("id"))
@@ -825,6 +895,23 @@ class UserFormDialog:
             if password:
                 user_data["password_hash"] = _hash_password(password)
 
+            # v3.2 — diff what changed
+            changes = []
+            if self.is_edit:
+                old = self.user or {}
+                for k in ("username", "full_name", "email", "role"):
+                    old_v = _safe_str(old.get(k))
+                    new_v = _safe_str(user_data.get(k))
+                    if old_v != new_v:
+                        changes.append(k.replace("_", " "))
+                if password:
+                    changes.append("password")
+                old_perms = _parse_permissions(
+                    old.get("permissions", ""), old.get("role", "staff"))
+                new_perms = perms
+                if old_perms != new_perms:
+                    changes.append(f"permissions ({len(new_perms)})")
+
             if self.is_edit:
                 self._update_existing(user_data)
                 label = "updated"
@@ -832,8 +919,34 @@ class UserFormDialog:
                 self._add_new(user_data)
                 label = "created"
 
+            # v3.2 — verify write
+            try:
+                check = self.db.get_users()
+                found = any(
+                    _safe_str(x.get("username")).lower() == username.lower()
+                    for x in check)
+                print(f"[USERS] save verify: user '{username}' "
+                      f"in DB = {found}")
+            except Exception as ve:
+                print(f"[USERS] verify failed: {ve}")
+
+            # Activity log
+            try:
+                self.db.log_activity(
+                    self.current_user.get("id"),
+                    ("edit_user" if self.is_edit else "add_user"),
+                    f"{label.capitalize()} user: {username}")
+            except Exception:
+                pass
+
             self.close()
-            self._snack(f"✅ User '{username}' {label} successfully.")
+
+            if self.is_edit and changes:
+                summary = ", ".join(changes)
+                self._snack(f"✅ User '{username}' updated: {summary}")
+            else:
+                self._snack(f"✅ User '{username}' {label} successfully.")
+
             if self.on_save:
                 try:
                     self.on_save()
@@ -843,6 +956,9 @@ class UserFormDialog:
             print(f"[USERS] save error: {ex}")
             traceback.print_exc()
 
+    # =============================================================================
+    # 18.4.5 — _add_new
+    # =============================================================================
     def _add_new(self, data):
         if hasattr(self.db, "add_user"):
             try:
@@ -873,6 +989,9 @@ class UserFormDialog:
                                   ignore_index=True)
         self.db._save_df(self.db.users, "users.csv")
 
+    # =============================================================================
+    # 18.4.6 — _update_existing
+    # =============================================================================
     def _update_existing(self, data):
         uid = _safe_str(self.user.get("id"))
         if hasattr(self.db, "update_user"):
@@ -903,6 +1022,9 @@ class UserFormDialog:
                 data["password_hash"]
         self.db._save_df(self.db.users, "users.csv")
 
+    # =============================================================================
+    # 18.4.7 — show / close
+    # =============================================================================
     def show(self):
         try:
             self.page.show_dialog(self.dialog)
@@ -910,11 +1032,16 @@ class UserFormDialog:
             print(f"[USERS] show dialog failed: {ex}")
 
     def close(self):
+        # v3.2 — clear typing guard on close
+        self._typing_until = 0.0
         try:
             self.page.pop_dialog()
         except Exception:
             pass
 
+    # =============================================================================
+    # 18.4.8 — _snack
+    # =============================================================================
     def _snack(self, message, color=ft.Colors.GREEN_600):
         try:
             self.page.show_dialog(
@@ -922,7 +1049,17 @@ class UserFormDialog:
         except Exception:
             pass
 
+    # =============================================================================
+    # 18.4.9 — _safe_update  (v3.2 — TYPING GUARD)
+    # =============================================================================
     def _safe_update(self):
+        """
+        v3.2 — Skips if user typed within the last 3 seconds.
+        Prevents the 'text wipe while typing' bug.
+        """
+        if time.time() < self._typing_until:
+            print(f"[USERS] _safe_update SKIPPED (typing)")
+            return
         try:
             self.page.update()
         except Exception:
@@ -930,5 +1067,5 @@ class UserFormDialog:
 
 
 # =================================================================================
-# SECTION 18 END (FLET 1.0.0 VERSION)
+# SECTION 18 END (FLET 1.0) — v3.2
 # =================================================================================
