@@ -1693,10 +1693,8 @@ def _build_app() -> FastAPI:
 
     _boot_log("robots.txt route registered")
 
-    return app
-
     # -----------------------------------------------------------------------------
-    # 21.5.13 — /sitemap.xml  (embedded — no external file needed)
+    # 21.5.13 -- /sitemap.xml  (embedded -- no external file needed)
     # -----------------------------------------------------------------------------
     @app.get("/sitemap.xml")
     async def sitemap_xml():
@@ -1722,7 +1720,6 @@ def _build_app() -> FastAPI:
     _boot_log("sitemap.xml route registered")
 
     return app
-
 # =================================================================================
 # 21.6 — ENTRY POINT
 # =================================================================================
