@@ -1696,18 +1696,28 @@ def _build_app() -> FastAPI:
     return app
 
     # -----------------------------------------------------------------------------
-    # 21.5.13 — /sitemap.xml  (helps search engines index the site)
+    # 21.5.13 — /sitemap.xml  (embedded — no external file needed)
     # -----------------------------------------------------------------------------
     @app.get("/sitemap.xml")
     async def sitemap_xml():
-        sitemap_path = os.path.join(static_dir, "sitemap.xml")
-        if os.path.exists(sitemap_path):
-            return FileResponse(
-                sitemap_path,
-                media_type="application/xml",
-                headers={"Cache-Control": "public, max-age=86400"})
-        raise HTTPException(status_code=404,
-                            detail="Sitemap not found")
+        sitemap_content = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://alhudhahaj.work/</loc>
+        <changefreq>weekly</changefreq>
+        <priority>1.0</priority>
+    </url>
+    <url>
+        <loc>https://alhudhahaj.work/traveler</loc>
+        <changefreq>monthly</changefreq>
+        <priority>0.5</priority>
+    </url>
+</urlset>
+"""
+        return Response(
+            content=sitemap_content,
+            media_type="application/xml",
+            headers={"Cache-Control": "public, max-age=86400"})
 
     _boot_log("sitemap.xml route registered")
 
