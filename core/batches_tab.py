@@ -1,49 +1,28 @@
 # =================================================================================
 # SECTION 11 (FLET 1.0.0 VERSION) — BATCHES TAB + DIALOGS
 # =================================================================================
-# v1.5 — Typing wipe fix + pagination persistence + filters preserved
+# v1.6 — Review-fix release (builds on v1.5)
 #
 #   FIXES:
-#     • Added _typing_until guard to BatchesTab and BatchFormDialog
-#     • Added _safe_update() — skips while typing (3s window)
-#     • Every TextField now has on_change with explicit value sync
-#     • _snack() no longer calls page.update()
-#     • refresh() CLAMPS page instead of resetting to 1
-#     • refresh() re-applies active filters instead of wiping them
-#     • current_page persisted to page.session.store
-#     • prev_page/next_page save page
-#     • apply_filters() uses leaf-only updates (table + pagination)
-#     • ft.dropdown.Option(key=..., text=...) form
-#
-#   Preserved from v1.4:
-#     • DD-MM-YYYY date format everywhere
-#     • Legacy ISO dates auto-convert on load
-#     • Row selection, data-loading safety
-#
-# SECTION INDEX
-#   [H]     Module-level helpers (prefix, date conversion, db adapters)
-#   [11.1]  BatchesTab class
-#   [11.2]  setup_ui
-#   [11.3]  Helpers (safe_str, _fmt_date, _field, _safe_update)
-#   [11.4]  load_tour_types_and_years
-#   [11.5]  refresh
-#   [11.6]  display_batches
-#   [11.7]  _select_batch / _get_selected_batch
-#   [11.8]  Pagination
-#   [11.9]  Filters
-#   [11.10] Statistics
-#   [11.11] Dialog launchers
-#   [11.12] Delete
-#   [11.13] View
-#   [11.14] Exports
-#   [12.1]  BatchFormDialog (Add/Edit)
-#   [13.1]  BatchViewDialog
+#     • Seat validation: reject ≤ 0, non-integer, seats < booked on edit
+#     • Price validation via Decimal — negative rejected, decimals preserved
+#     • Strict date parsing (no [:10] truncation) — "05-10-2026abc" rejected
+#     • Tour-name validation — stale/missing tour type rejected
+#     • Logging in show(), open_create_dialog, open_edit_dialog
+#     • Duplicate-dialog guard via _active_batch_dialog
+#     • Delete blocks on invoice/payment references (defense in depth)
+#     • Delete activity-log failures logged
+#     • Case-insensitive status normalization
+#     • refresh() copies records before enrichment
+#     • TYPING_GUARD_SECONDS 3.0 → 0.6
+#     • display_batches logs WARN when stored avail ≠ computed
 # =================================================================================
 
 import flet as ft
 import os
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import pandas as pd
 
@@ -53,12 +32,9 @@ except ImportError:
     SettingsManager = None
 
 
-TYPING_GUARD_SECONDS = 3.0
+TYPING_GUARD_SECONDS = 0.6
+OPEN_STATUSES = {"open", "active", "closing soon"}
 
-
-# =================================================================================
-# [H] MODULE-LEVEL HELPERS
-# =================================================================================
 
 # ---- [H.0] App base path ----
 def get_app_base_path():
@@ -146,14 +122,18 @@ def _to_storage_date(value) -> str:
     return s
 
 
-def _to_storage_datetime(value) -> str:
+def _to_storage_datetime(value):
+    """
+    v1.6 — STRICT parsing: full-string match only. No [:10] truncation,
+    so trailing garbage like '05-10-2026abc' is rejected.
+    """
     s = str(value or "").strip()
     if not s:
         raise ValueError("empty date")
-    head = s[:10]
-    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%m-%y", "%d/%m/%y"):
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%d-%m-%y", "%d/%m/%y",
+                "%Y-%m-%d"):
         try:
-            dt = datetime.strptime(head, fmt)
+            dt = datetime.strptime(s, fmt)
             return dt.strftime(f"%d{_DATE_SEP}%m{_DATE_SEP}%Y"), dt
         except ValueError:
             continue
@@ -170,8 +150,8 @@ def _db_add_batch(db, data):
     new_id = db._generate_id(prefix, "BCH", str(year))
     data["id"] = new_id
     data["available_seats"] = int(data.get("total_seats", 0) or 0)
-    new_row = pd.DataFrame([data])
-    db.batches = pd.concat([db.batches, new_row], ignore_index=True)
+    db.batches = pd.concat(
+        [db.batches, pd.DataFrame([data])], ignore_index=True)
     db._save_df(db.batches, "batches.csv")
     return new_id
 
@@ -190,7 +170,8 @@ def _db_get_tour_types(db):
             tname = b.get("tour_type_name")
             if tid and tname and tid not in seen:
                 seen.add(tid)
-                tours.append({"id": tid, "tour_name": tname, "is_active": True})
+                tours.append({"id": tid, "tour_name": tname,
+                              "is_active": True})
     except Exception:
         pass
     return tours
@@ -205,9 +186,6 @@ def _db_get_tour_years(db):
     return list(range(2020, 2100))
 
 
-# =================================================================================
-# [11.1] CLASS: BatchesTab
-# =================================================================================
 class BatchesTab:
 
     def __init__(self, page: ft.Page, db, current_user):
@@ -215,15 +193,13 @@ class BatchesTab:
         self.db = db
         self.current_user = current_user
         self.settings_manager = (
-            SettingsManager(db) if SettingsManager is not None else None
-        )
+            SettingsManager(db) if SettingsManager is not None else None)
 
         self.batches = []
         self.travelers = []
         self.filtered_batches = []
         self.tour_types = []
         self.available_years = []
-        # v1.5 — restore page from session
         self.current_page = self._load_saved_page()
         self.items_per_page = 10
 
@@ -239,8 +215,8 @@ class BatchesTab:
         self.root = None
 
         self._selected_batch_id = None
-        # v1.5 — typing guard
         self._typing_until = 0.0
+        self._active_batch_dialog = None
 
         try:
             self.setup_ui()
@@ -264,9 +240,6 @@ class BatchesTab:
     def build(self):
         return self.root
 
-    # =============================================================================
-    # [11.1b] Page-state persistence (v1.5)
-    # =============================================================================
     def _load_saved_page(self) -> int:
         try:
             v = self.page.session.store.get("batches_page")
@@ -284,9 +257,6 @@ class BatchesTab:
         except Exception:
             pass
 
-    # =============================================================================
-    # [11.2] setup_ui
-    # =============================================================================
     def setup_ui(self):
         stat_configs = [
             ("total",       "Total Batches",    "📦", "#3498db"),
@@ -303,38 +273,24 @@ class BatchesTab:
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stats_labels[key] = value_label
-            card = ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Row(
-                            controls=[
-                                ft.Text(icon, size=14),
-                                ft.Text(label, size=9,
-                                        color=ft.Colors.WHITE,
-                                        weight=ft.FontWeight.BOLD,
-                                        no_wrap=False,
-                                        max_lines=2),
-                            ],
-                            spacing=4,
-                        ),
-                        value_label,
-                    ],
-                    spacing=2,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                padding=8,
-                bgcolor=color,
-                border_radius=10,
-                height=72,
-            )
-            stat_cards.append(card)
+            stat_cards.append(ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Text(icon, size=14),
+                        ft.Text(label, size=9, color=ft.Colors.WHITE,
+                                weight=ft.FontWeight.BOLD,
+                                no_wrap=False, max_lines=2),
+                    ], spacing=4),
+                    value_label,
+                ], spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=8, bgcolor=color, border_radius=10, height=72,
+            ))
 
         stats_row = ft.ResponsiveRow(
-            controls=[
-                ft.Container(content=c,
-                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
-                for c in stat_cards
-            ],
+            controls=[ft.Container(content=c,
+                                   col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                      for c in stat_cards],
             spacing=6, run_spacing=6,
         )
 
@@ -350,7 +306,6 @@ class BatchesTab:
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
 
-        # v1.5 — dropdowns with proper key=/text= form
         self.year_filter = ft.Dropdown(
             label="Year",
             options=[ft.dropdown.Option(key="", text="All")],
@@ -365,7 +320,6 @@ class BatchesTab:
         )
         self.tour_filter.on_change = self.apply_filters
 
-        # v1.5 — search input with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search...",
             height=48, text_size=12,
@@ -381,7 +335,6 @@ class BatchesTab:
                         _f.value = ctrl.value
             except Exception:
                 pass
-            # Defer the filter so we don't update while typing
             self.apply_filters(e)
 
         self.search_input.on_change = _search_on_change
@@ -409,8 +362,7 @@ class BatchesTab:
                 ft.Container(
                     content=self.search_input,
                     col={"xs": 12, "sm": 12, "md": 2}),
-            ],
-            spacing=8, run_spacing=8,
+            ], spacing=8, run_spacing=8,
         )
 
         self.table = ft.DataTable(
@@ -429,21 +381,16 @@ class BatchesTab:
                 ft.DataColumn(ft.Text("Status", size=11)),
                 ft.DataColumn(ft.Text("Occ%", size=11)),
                 ft.DataColumn(ft.Text("Actions", size=11)),
-            ],
-            rows=[],
-            column_spacing=10,
+            ], rows=[], column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
             heading_row_height=40,
-            data_row_min_height=44,
-            data_row_max_height=56,
+            data_row_min_height=44, data_row_max_height=56,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
         )
 
-        self.selection_label = ft.Text("", size=10,
-                                       color=ft.Colors.BLUE_700,
-                                       weight=ft.FontWeight.BOLD,
-                                       italic=True)
+        self.selection_label = ft.Text("", size=10, color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD, italic=True)
 
         self.pagination_label = ft.Text("0–0 of 0", size=11,
                                         weight=ft.FontWeight.BOLD,
@@ -451,15 +398,11 @@ class BatchesTab:
         self.prev_btn = ft.Button(
             content=ft.Text("◀ Prev", size=11),
             on_click=self.prev_page, height=34,
-            bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE,
-            disabled=True,
-        )
+            bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE, disabled=True)
         self.next_btn = ft.Button(
             content=ft.Text("Next ▶", size=11),
             on_click=self.next_page, height=34,
-            bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE,
-            disabled=True,
-        )
+            bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE, disabled=True)
         pagination_row = ft.Row(
             controls=[
                 ft.Container(content=self.pagination_label, expand=True),
@@ -472,36 +415,27 @@ class BatchesTab:
                 controls=[
                     stats_row,
                     ft.Container(content=toolbar, padding=10,
-                                 bgcolor=ft.Colors.WHITE,
-                                 border_radius=10),
+                                 bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
                         content=ft.Column([
                             ft.Text("💡 Tap a row to SELECT it, then use "
-                                    "toolbar 📊 Export / 🖨️ Print. "
-                                    "Use icons in Actions column for "
-                                    "per-row actions.",
-                                    size=10,
-                                    color=ft.Colors.GREY_600,
+                                    "toolbar 📊 Export / 🖨️ Print.",
+                                    size=10, color=ft.Colors.GREY_600,
                                     italic=True),
                             self.selection_label,
                             ft.Row([self.table],
                                    scroll=ft.ScrollMode.ADAPTIVE),
                         ], spacing=6),
-                        bgcolor=ft.Colors.WHITE,
-                        border_radius=10,
-                        padding=10,
+                        bgcolor=ft.Colors.WHITE, border_radius=10, padding=10,
                     ),
                     pagination_row,
                 ],
-                spacing=10,
-                scroll=ft.ScrollMode.AUTO,
+                spacing=10, scroll=ft.ScrollMode.AUTO,
             ),
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
-    # =============================================================================
-    # [11.3] Helpers
-    # =============================================================================
+    # ---- Helpers ----
     def safe_str(self, value):
         if value is None:
             return ""
@@ -515,15 +449,9 @@ class BatchesTab:
     def _fmt_date(self, value):
         if not value:
             return "-"
-        out = _to_display_date(value)
-        return out or "-"
+        return _to_display_date(value) or "-"
 
-    # v1.5 — leaf-safe update helpers
     def _safe_update(self):
-        """
-        Update the root column.
-        v1.5 — skips while typing (prevents wipe).
-        """
         if time.time() < self._typing_until:
             print("[BATCHES] _safe_update SKIPPED (typing)")
             return
@@ -534,76 +462,45 @@ class BatchesTab:
             print(f"[BATCHES] _safe_update failed: {e}")
 
     def _update_table_and_pagination(self):
-        """
-        Leaf-only updates — safe even while typing because they don't
-        touch ancestors of the search field.
-        """
-        try:
-            if self.table is not None:
-                self.table.update()
-        except Exception:
-            pass
-        try:
-            if self.pagination_label is not None:
-                self.pagination_label.update()
-        except Exception:
-            pass
-        try:
-            if self.prev_btn is not None:
-                self.prev_btn.update()
-        except Exception:
-            pass
-        try:
-            if self.next_btn is not None:
-                self.next_btn.update()
-        except Exception:
-            pass
-        try:
-            if self.selection_label is not None:
-                self.selection_label.update()
-        except Exception:
-            pass
+        for ctrl in (self.table, self.pagination_label, self.prev_btn,
+                     self.next_btn, self.selection_label):
+            if ctrl is None:
+                continue
+            try:
+                ctrl.update()
+            except Exception:
+                pass
 
-    # =============================================================================
-    # [11.4] load_tour_types_and_years  (v1.5 — no page.update)
-    # =============================================================================
     def load_tour_types_and_years(self):
         try:
             self.tour_types = _db_get_tour_types(self.db)
             current_year = datetime.now().year
             default_years = list(range(current_year - 2, current_year + 6))
             tour_years = _db_get_tour_years(self.db)
-            all_years = list(set(default_years + tour_years))
-            self.available_years = sorted(all_years, reverse=True)
+            self.available_years = sorted(
+                set(default_years + tour_years), reverse=True)
             if not self.available_years:
                 self.available_years = [current_year]
 
-            year_opts = [ft.dropdown.Option(key="", text="All")]
-            for y in self.available_years:
-                year_opts.append(
-                    ft.dropdown.Option(key=str(y), text=str(y)))
-            self.year_filter.options = year_opts
+            self.year_filter.options = [
+                ft.dropdown.Option(key="", text="All")] + [
+                ft.dropdown.Option(key=str(y), text=str(y))
+                for y in self.available_years]
 
-            tour_opts = [ft.dropdown.Option(key="", text="All")]
-            for t in self.tour_types:
-                if t.get("is_active", True):
-                    tour_opts.append(ft.dropdown.Option(
-                        key=str(t.get("id", "")),
-                        text=str(t.get("tour_name", "")),
-                    ))
-            self.tour_filter.options = tour_opts
-            # v1.5 — no page.update() here
+            self.tour_filter.options = [
+                ft.dropdown.Option(key="", text="All")] + [
+                ft.dropdown.Option(key=str(t.get("id", "")),
+                                   text=str(t.get("tour_name", "")))
+                for t in self.tour_types if t.get("is_active", True)]
         except Exception as ex:
             print(f"Error loading tour types/years: {ex}")
 
-    # =============================================================================
-    # [11.5] refresh  (v1.5 — CLAMP page, PRESERVE filters)
-    # =============================================================================
     def refresh(self):
         try:
             self.load_tour_types_and_years()
-            self.batches = self.db.get_batches()
-            self.travelers = self.db.get_travelers()
+            # v1.6 — copy records before enrichment
+            self.batches = [dict(b) for b in self.db.get_batches()]
+            self.travelers = [dict(t) for t in self.db.get_travelers()]
 
             tour_map = {str(t.get("id")): t.get("tour_name", "N/A")
                         for t in self.tour_types}
@@ -619,13 +516,10 @@ class BatchesTab:
             print(f"[BATCHES] loaded {len(self.batches)} batches, "
                   f"{len(self.travelers)} travelers")
 
-            # v1.5 — re-apply existing filters instead of wiping them
             self._apply_filters_internal()
 
-            # v1.5 — CLAMP page instead of resetting
             total_pages = max(
-                1,
-                (len(self.filtered_batches) + self.items_per_page - 1)
+                1, (len(self.filtered_batches) + self.items_per_page - 1)
                 // self.items_per_page)
             if self.current_page > total_pages:
                 self.current_page = total_pages
@@ -639,20 +533,13 @@ class BatchesTab:
 
             self.display_batches()
             self.update_statistics()
-
-            # v1.5 — leaf-only updates (safe)
             self._update_table_and_pagination()
-
-            # v1.5 — safe update for stats if not typing
             self._safe_update()
         except Exception as ex:
             print(f"Batches refresh error: {ex}")
             import traceback
             traceback.print_exc()
 
-    # =============================================================================
-    # [11.6] display_batches
-    # =============================================================================
     def display_batches(self):
         start = (self.current_page - 1) * self.items_per_page
         end = min(start + self.items_per_page, len(self.filtered_batches))
@@ -669,7 +556,17 @@ class BatchesTab:
             bid = b.get("id")
             booked = bookings.get(bid, 0)
             total = int(b.get("total_seats", 0) or 0)
-            avail = total - booked
+
+            # v1.6 — prefer stored available_seats, log drift
+            computed_avail = total - booked
+            try:
+                stored_avail = int(b.get("available_seats", computed_avail))
+            except (ValueError, TypeError):
+                stored_avail = computed_avail
+            if stored_avail != computed_avail:
+                print(f"[BATCHES] WARN avail drift for {bid}: "
+                      f"stored={stored_avail} computed={computed_avail}")
+            avail = computed_avail
             occ = (booked / total * 100) if total > 0 else 0
 
             tname = str(b.get("tour_type_name", "N/A"))
@@ -684,10 +581,10 @@ class BatchesTab:
                            else "#27ae60")
 
             status = str(b.get("status", "Open") or "Open")
-            status_lower = status.strip().lower()
-            status_color = ("#27ae60" if status_lower == "open"
-                            else "#e67e22" if status_lower == "closing soon"
-                            else "#e74c3c" if status_lower == "full"
+            sl = status.strip().lower()
+            status_color = ("#27ae60" if sl in ("open", "active")
+                            else "#e67e22" if sl == "closing soon"
+                            else "#e74c3c" if sl == "full"
                             else "#95a5a6")
 
             occ_color = ("#e74c3c" if occ >= 90
@@ -699,9 +596,8 @@ class BatchesTab:
 
             def _make_actions(_bid=b_id):
                 def _fresh():
-                    return next(
-                        (x for x in self.batches
-                         if x.get("id") == _bid), None)
+                    return next((x for x in self.batches
+                                 if x.get("id") == _bid), None)
 
                 def _wrap(handler):
                     def h(e, _h=handler, _f=_fresh):
@@ -735,57 +631,47 @@ class BatchesTab:
                 except Exception as ex:
                     print(f"[BATCHES] row tap error: {ex}")
 
-            self.table.rows.append(
-                ft.DataRow(
-                    on_select_change=_on_row_tap,
-                    selected=is_selected,
-                    cells=[
-                        ft.DataCell(
-                            ft.Container(
-                                content=ft.Text(
-                                    "✓" if is_selected else "",
-                                    size=14,
-                                    weight=ft.FontWeight.BOLD,
-                                    color="#27ae60"),
-                                width=24,
-                                alignment=ft.Alignment.CENTER,
-                                bgcolor=("#dcfce7" if is_selected
-                                         else None),
-                                border_radius=4,
-                            )),
-                        ft.DataCell(ft.Text(str(bid or "")[:18], size=9)),
-                        ft.DataCell(ft.Text(str(b.get("batch_name", "")),
-                                            size=10,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(tname, size=10, color=tcolor,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(str(b.get("year", "")), size=10,
-                                            color="#0064c8")),
-                        ft.DataCell(ft.Text(
-                            self._fmt_date(b.get("departure_date")), size=10)),
-                        ft.DataCell(ft.Text(
-                            self._fmt_date(b.get("return_date")), size=10)),
-                        ft.DataCell(ft.Text(
-                            f"₹{int(b.get('price', 0) or 0):,}", size=10)),
-                        ft.DataCell(ft.Text(str(total), size=10)),
-                        ft.DataCell(ft.Text(str(booked), size=10,
-                                            color="#1e8449" if booked > 0
-                                            else "#95a5a6")),
-                        ft.DataCell(ft.Text(str(avail), size=10,
-                                            color=avail_color)),
-                        ft.DataCell(ft.Text(status, size=10,
-                                            color=status_color,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(f"{occ:.0f}%", size=10,
-                                            color=occ_color)),
-                        ft.DataCell(_make_actions()),
-                    ]))
+            self.table.rows.append(ft.DataRow(
+                on_select_change=_on_row_tap,
+                selected=is_selected,
+                cells=[
+                    ft.DataCell(ft.Container(
+                        content=ft.Text("✓" if is_selected else "",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#27ae60"),
+                        width=24, alignment=ft.Alignment.CENTER,
+                        bgcolor=("#dcfce7" if is_selected else None),
+                        border_radius=4)),
+                    ft.DataCell(ft.Text(str(bid or "")[:18], size=9)),
+                    ft.DataCell(ft.Text(str(b.get("batch_name", "")), size=10,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(tname, size=10, color=tcolor,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(str(b.get("year", "")), size=10,
+                                        color="#0064c8")),
+                    ft.DataCell(ft.Text(
+                        self._fmt_date(b.get("departure_date")), size=10)),
+                    ft.DataCell(ft.Text(
+                        self._fmt_date(b.get("return_date")), size=10)),
+                    ft.DataCell(ft.Text(
+                        f"₹{int(float(b.get('price', 0) or 0)):,}", size=10)),
+                    ft.DataCell(ft.Text(str(total), size=10)),
+                    ft.DataCell(ft.Text(str(booked), size=10,
+                                        color="#1e8449" if booked > 0
+                                        else "#95a5a6")),
+                    ft.DataCell(ft.Text(str(avail), size=10,
+                                        color=avail_color)),
+                    ft.DataCell(ft.Text(status, size=10,
+                                        color=status_color,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(f"{occ:.0f}%", size=10,
+                                        color=occ_color)),
+                    ft.DataCell(_make_actions()),
+                ]))
 
         self.update_pagination()
 
-    # =============================================================================
-    # [11.7] _select_batch / _get_selected_batch
-    # =============================================================================
     def _select_batch(self, batch_id):
         if self._selected_batch_id == batch_id:
             self._selected_batch_id = None
@@ -801,14 +687,13 @@ class BatchesTab:
                         f"✅ Selected: {b.get('batch_name', '')} | "
                         f"{b.get('tour_type_name', 'N/A')} | "
                         f"Year: {b.get('year', '')} | "
-                        f"₹{int(b.get('price', 0) or 0):,}")
+                        f"₹{int(float(b.get('price', 0) or 0)):,}")
                 else:
                     self.selection_label.value = ""
             else:
                 self.selection_label.value = ""
 
         self.display_batches()
-        # v1.5 — leaf-only updates
         self._update_table_and_pagination()
 
     def _get_selected_batch(self):
@@ -817,9 +702,6 @@ class BatchesTab:
         return next((b for b in self.batches
                      if b.get("id") == self._selected_batch_id), None)
 
-    # =============================================================================
-    # [11.8] Pagination  (v1.5 — SAVES page)
-    # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_batches)
         start = ((self.current_page - 1) * self.items_per_page + 1
@@ -832,86 +714,64 @@ class BatchesTab:
     def prev_page(self, e):
         if self.current_page > 1:
             self.current_page -= 1
-            self._save_page()  # v1.5
+            self._save_page()
             self.display_batches()
-            self._update_table_and_pagination()  # v1.5
+            self._update_table_and_pagination()
 
     def next_page(self, e):
         if (self.current_page * self.items_per_page
                 < len(self.filtered_batches)):
             self.current_page += 1
-            self._save_page()  # v1.5
+            self._save_page()
             self.display_batches()
-            self._update_table_and_pagination()  # v1.5
+            self._update_table_and_pagination()
 
-    # =============================================================================
-    # [11.9] Filters  (v1.5 — split internal + public)
-    # =============================================================================
     def _apply_filters_internal(self):
-        """Compute filtered_batches without touching UI."""
         year = (self.year_filter.value or "") if self.year_filter else ""
         tour_id = (self.tour_filter.value or "") if self.tour_filter else ""
-        text = (self.search_input.value or "").strip().lower() \
-            if self.search_input else ""
+        text = ((self.search_input.value or "").strip().lower()
+                if self.search_input else "")
 
         result = self.batches[:]
-
         if year:
             result = [b for b in result
                       if str(b.get("year", "")) == str(year)]
-
         if tour_id:
             result = [b for b in result
                       if str(b.get("tour_type_id", "")) == str(tour_id)]
-
         if text:
-            result = [
-                b for b in result
-                if (text in str(b.get("batch_name", "")).lower()
-                    or text in str(b.get("departure_date", "")).lower()
-                    or text in str(b.get("return_date", "")).lower()
-                    or text in str(b.get("status", "")).lower()
-                    or text in str(b.get("tour_type_name", "")).lower())
-            ]
-
+            result = [b for b in result
+                      if (text in str(b.get("batch_name", "")).lower()
+                          or text in str(b.get("departure_date", "")).lower()
+                          or text in str(b.get("return_date", "")).lower()
+                          or text in str(b.get("status", "")).lower()
+                          or text in str(b.get("tour_type_name", "")).lower())]
         self.filtered_batches = result
 
     def apply_filters(self, e=None):
         self._apply_filters_internal()
         self.current_page = 1
-        self._save_page()  # v1.5
+        self._save_page()
         self.display_batches()
-        # v1.5 — leaf-only updates (search field is not an ancestor of these)
         self._update_table_and_pagination()
 
-    # =============================================================================
-    # [11.10] Statistics
-    # =============================================================================
     def update_statistics(self):
         total = len(self.batches)
-
         open_batches = len([
             b for b in self.batches
-            if str(b.get("status", "")).strip().lower()
-               in ("open", "closing soon")
-        ])
-
+            if str(b.get("status", "")).strip().lower() in OPEN_STATUSES])
         total_seats = sum(int(b.get("total_seats", 0) or 0)
                           for b in self.batches)
-
         bookings = {}
         for t in self.travelers:
             bid = t.get("batch_id")
             if bid:
                 bookings[bid] = bookings.get(bid, 0) + 1
         booked = sum(bookings.values())
-
         total_value = sum(
-            int(b.get("price", 0) or 0) * bookings.get(b.get("id"), 0)
+            int(float(b.get("price", 0) or 0)) * bookings.get(b.get("id"), 0)
             for b in self.batches)
-
-        with_return = len([b for b in self.batches
-                           if b.get("return_date")])
+        with_return = len([b for b in self.batches if b.get("return_date")])
 
         self.stats_labels["total"].value = str(total)
         self.stats_labels["open"].value = str(open_batches)
@@ -920,37 +780,62 @@ class BatchesTab:
         self.stats_labels["value"].value = f"₹{total_value:,}"
         self.stats_labels["return_date"].value = str(with_return)
 
-    # =============================================================================
-    # [11.11] Dialog launchers
-    # =============================================================================
+    # ---- Dialog launchers ----
     def open_create_dialog(self, e):
-        dlg = BatchFormDialog(
-            self.page, self.db, self.current_user,
-            batch=None,
-            settings_manager=self.settings_manager,
-            tour_types=self.tour_types,
-            available_years=self.available_years,
-            on_save=self._on_saved,
-        )
-        dlg.show()
+        if self._active_batch_dialog is not None:
+            print("[BATCHES] dialog already open — ignoring click")
+            return
+        print("[BATCHES] Create Batch clicked")
+        try:
+            self._active_batch_dialog = BatchFormDialog(
+                self.page, self.db, self.current_user,
+                batch=None,
+                settings_manager=self.settings_manager,
+                tour_types=self.tour_types,
+                available_years=self.available_years,
+                on_save=self._on_saved,
+                on_close_callback=self._clear_dialog_reference,
+            )
+            print("[BATCHES] BatchFormDialog created")
+            self._active_batch_dialog.show()
+            print("[BATCHES] BatchFormDialog.show() completed")
+        except Exception as ex:
+            print(f"[BATCHES] open_create_dialog failed: {ex}")
+            import traceback
+            traceback.print_exc()
+            self._active_batch_dialog = None
+            self._snack(f"Could not open batch form: {ex}")
 
     def open_edit_dialog(self, batch):
-        dlg = BatchFormDialog(
-            self.page, self.db, self.current_user,
-            batch=batch,
-            settings_manager=self.settings_manager,
-            tour_types=self.tour_types,
-            available_years=self.available_years,
-            on_save=self._on_saved,
-        )
-        dlg.show()
+        if self._active_batch_dialog is not None:
+            print("[BATCHES] dialog already open — ignoring edit click")
+            return
+        print("[BATCHES] Edit Batch clicked")
+        try:
+            self._active_batch_dialog = BatchFormDialog(
+                self.page, self.db, self.current_user,
+                batch=batch,
+                settings_manager=self.settings_manager,
+                tour_types=self.tour_types,
+                available_years=self.available_years,
+                on_save=self._on_saved,
+                on_close_callback=self._clear_dialog_reference,
+            )
+            self._active_batch_dialog.show()
+        except Exception as ex:
+            print(f"[BATCHES] open_edit_dialog failed: {ex}")
+            import traceback
+            traceback.print_exc()
+            self._active_batch_dialog = None
+            self._snack(f"Could not open batch form: {ex}")
 
     def _on_saved(self):
         self.refresh()
 
-    # =============================================================================
-    # [11.12] Delete
-    # =============================================================================
+    def _clear_dialog_reference(self):
+        self._active_batch_dialog = None
+
+    # ---- Delete ----
     def delete_batch(self, batch):
         assigned = [t for t in self.travelers
                     if str(t.get("batch_id")) == str(batch.get("id"))]
@@ -963,30 +848,35 @@ class BatchesTab:
             invoices = self.db.get_invoices()
         except Exception:
             invoices = []
-        linked_invoices = [
-            i for i in invoices
-            if str(i.get("batch_id", "")) == str(batch.get("id"))
-        ]
+        linked_invoices = [i for i in invoices
+                           if str(i.get("batch_id", "")) == str(batch.get("id"))]
+
+        try:
+            payments = self.db.get_payments()
+        except Exception:
+            payments = []
+        linked_payments = [p for p in payments
+                           if str(p.get("batch_id", "")) == str(batch.get("id"))]
 
         warn = f"Delete batch '{batch.get('batch_name', '')}'?"
-        if linked_invoices:
-            warn += (f"\n\n⚠️ {len(linked_invoices)} invoice(s) reference "
-                     f"this batch.")
+        if linked_invoices or linked_payments:
+            warn += (f"\n\n⚠️ {len(linked_invoices)} invoice(s) and "
+                     f"{len(linked_payments)} payment(s) reference this batch.\n"
+                     f"Deletion will be blocked by the database if any exist.")
 
         def confirm(ev):
             try:
-                if hasattr(self.db, "delete_batch"):
+                try:
                     self.db.delete_batch(batch.get("id"))
-                else:
-                    self.db.batches = self.db.batches[
-                        self.db.batches["id"] != batch.get("id")]
-                    self.db._save_df(self.db.batches, "batches.csv")
+                except ValueError as ve:
+                    self._snack(f"⚠️ {ve}")
+                    return
                 try:
                     self.db.log_activity(
                         self.current_user["id"], "delete_batch",
                         f"Deleted batch: {batch.get('batch_name', '')}")
-                except Exception:
-                    pass
+                except Exception as log_ex:
+                    print(f"[BATCHES] activity log failed: {log_ex}")
                 self.page.pop_dialog()
                 self.refresh()
                 self._snack("✅ Batch deleted")
@@ -1006,16 +896,11 @@ class BatchesTab:
         )
         self.page.show_dialog(dialog)
 
-    # =============================================================================
-    # [11.13] View
-    # =============================================================================
     def view_batch(self, batch):
         dlg = BatchViewDialog(self.page, self.db, batch)
         dlg.show()
 
-    # =============================================================================
-    # [11.14] Exports
-    # =============================================================================
+    # ---- Exports ----
     def export_to_excel(self, e):
         selected = self._get_selected_batch()
         if selected:
@@ -1031,8 +916,8 @@ class BatchesTab:
         try:
             headers = ["ID", "Batch Name", "Tour Type", "Year",
                        "Departure Date", "Return Date", "Price",
-                       "Total Seats", "Booked", "Available",
-                       "Status", "Occupancy%", "Description"]
+                       "Total Seats", "Booked", "Available", "Status",
+                       "Occupancy%", "Description"]
             bookings = {}
             for t in self.travelers:
                 bid = t.get("batch_id")
@@ -1057,17 +942,14 @@ class BatchesTab:
                 ])
 
             df = pd.DataFrame(data, columns=headers)
-            base = get_app_base_path()
-            exports = Path(base) / "exports"
+            exports = Path(get_app_base_path()) / "exports"
             exports.mkdir(exist_ok=True)
-            fname = (f"{suffix}_"
-                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-            path = exports / fname
+            path = exports / (f"{suffix}_"
+                              f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
             df.to_csv(path, index=False, encoding="utf-8-sig")
 
             from core.helpers import send_file_to_user
-            url = send_file_to_user(self.page, str(path),
-                                    "Batches CSV")
+            url = send_file_to_user(self.page, str(path), "Batches CSV")
             self._snack(f"✅ Exported {len(batches_to_export)} "
                         f"batch{'es' if len(batches_to_export) != 1 else ''}")
             if url:
@@ -1083,17 +965,13 @@ class BatchesTab:
     def print_batches(self, e):
         selected = self._get_selected_batch()
         if selected:
-            self._snack(
-                f"🖨️ Selected: {selected.get('batch_name', '')} — "
-                f"opening export…")
+            self._snack(f"🖨️ Selected: {selected.get('batch_name', '')} — "
+                        f"opening export…")
             self.export_to_excel(e)
         else:
             self._snack("⚠️ Tap a row to select, then tap 🖨️ Print. "
                         "Or use Ctrl+P for the full page.")
 
-    # =============================================================================
-    # [11.15] _snack  (v1.5 — NO page.update)
-    # =============================================================================
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -1102,13 +980,14 @@ class BatchesTab:
 
 
 # =================================================================================
-# [12.1] CLASS: BatchFormDialog (v1.5 — typing guard + on_change)
+# BatchFormDialog (v1.6)
 # =================================================================================
 class BatchFormDialog:
 
     def __init__(self, page, db, current_user, batch=None,
                  settings_manager=None, tour_types=None,
-                 available_years=None, on_save=None):
+                 available_years=None, on_save=None,
+                 on_close_callback=None):
         self.page = page
         self.db = db
         self.current_user = current_user
@@ -1118,6 +997,7 @@ class BatchFormDialog:
         self.tour_types = tour_types or []
         self.available_years = available_years or []
         self.on_save = on_save
+        self.on_close_callback = on_close_callback
 
         self.name_field = None
         self.year_dropdown = None
@@ -1132,14 +1012,13 @@ class BatchFormDialog:
         self.description_field = None
         self.dialog = None
 
-        # v1.5 — typing guard
         self._typing_until = 0.0
+        self._closed = False
 
         self.setup_ui()
         if self.is_edit:
             self.load_batch()
 
-    # v1.5 — field helper with on_change guard
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -1159,20 +1038,9 @@ class BatchFormDialog:
         field.on_change = _on_change
         return field
 
-    def _safe_update(self):
-        """v1.5 — skip update while typing."""
-        if time.time() < self._typing_until:
-            print("[BATCH-FORM] _safe_update SKIPPED (typing)")
-            return
-        try:
-            self.page.update()
-        except Exception:
-            pass
-
     def setup_ui(self):
-        year_opts = []
-        for y in self.available_years:
-            year_opts.append(ft.dropdown.Option(key=str(y), text=str(y)))
+        year_opts = [ft.dropdown.Option(key=str(y), text=str(y))
+                     for y in self.available_years]
         if not year_opts:
             y = datetime.now().year
             year_opts = [ft.dropdown.Option(key=str(y), text=str(y))]
@@ -1182,62 +1050,42 @@ class BatchFormDialog:
             if t.get("is_active", True):
                 tour_opts.append(ft.dropdown.Option(
                     key=str(t.get("id", "")),
-                    text=str(t.get("tour_name", "")),
-                ))
+                    text=str(t.get("tour_name", ""))))
 
-        # v1.5 — use _field helper
         self.name_field = self._field(
-            label="Batch Name *",
-            hint_text="e.g., Haj Silver 2026",
-            height=48, text_size=12,
-        )
+            label="Batch Name *", hint_text="e.g., Haj Silver 2026",
+            height=48, text_size=12)
 
         self.year_dropdown = ft.Dropdown(
-            label="Year *",
-            options=year_opts,
+            label="Year *", options=year_opts,
             value=str(datetime.now().year),
-            width=120, height=48, text_size=12,
-        )
+            width=120, height=48, text_size=12)
         self.year_dropdown.on_change = self.on_year_change
 
         self.tour_dropdown = ft.Dropdown(
-            label="Tour Type *",
-            options=tour_opts,
-            value="",
-            width=180, height=48, text_size=12,
-        )
+            label="Tour Type *", options=tour_opts,
+            value="", width=180, height=48, text_size=12)
         self.tour_dropdown.on_change = self.on_tour_change
 
         self.id_preview = ft.Text(
             "📋 Batch ID: Select Year and Tour Type",
             size=11, weight=ft.FontWeight.BOLD,
-            color=ft.Colors.RED_600,
-        )
+            color=ft.Colors.RED_600)
 
         self.seats_field = self._field(
-            label="Seats", value="150", width=120,
-            height=48, text_size=12,
-        )
+            label="Seats", value="150", width=120, height=48, text_size=12)
         self.price_field = self._field(
             label="Price (₹)", hint_text="350000",
-            width=180, height=48, text_size=12,
-        )
+            width=180, height=48, text_size=12)
 
         today_dmy = datetime.now().strftime("%d-%m-%Y")
         self.departure_field = self._field(
-            label="Departure (DD-MM-YYYY)",
-            value=today_dmy,
-            hint_text="e.g. 05-10-2026",
-            height=48, text_size=12,
-        )
+            label="Departure (DD-MM-YYYY)", value=today_dmy,
+            hint_text="e.g. 05-10-2026", height=48, text_size=12)
         self.return_field = self._field(
-            label="Return (DD-MM-YYYY)",
-            value=today_dmy,
-            hint_text="e.g. 20-10-2026",
-            height=48, text_size=12,
-        )
-        self.date_validation = ft.Text("", size=11,
-                                       color=ft.Colors.GREEN_700)
+            label="Return (DD-MM-YYYY)", value=today_dmy,
+            hint_text="e.g. 20-10-2026", height=48, text_size=12)
+        self.date_validation = ft.Text("", size=11, color=ft.Colors.GREEN_700)
 
         self.status_dropdown = ft.Dropdown(
             label="Status",
@@ -1246,16 +1094,10 @@ class BatchFormDialog:
                 ft.dropdown.Option(key="Closing Soon", text="Closing Soon"),
                 ft.dropdown.Option(key="Full", text="Full"),
                 ft.dropdown.Option(key="Closed", text="Closed"),
-            ],
-            value="Open",
-            width=180, height=48, text_size=12,
-        )
+            ], value="Open", width=180, height=48, text_size=12)
         self.description_field = self._field(
-            label="Description",
-            hint_text="Package details...",
-            multiline=True, min_lines=2, max_lines=3,
-            text_size=12,
-        )
+            label="Description", hint_text="Package details...",
+            multiline=True, min_lines=2, max_lines=3, text_size=12)
 
         content = ft.Column(
             controls=[
@@ -1265,32 +1107,24 @@ class BatchFormDialog:
                 self.id_preview,
                 ft.Row([self.seats_field, self.price_field],
                        spacing=10, wrap=True),
-                self.departure_field,
-                self.return_field,
-                self.date_validation,
-                self.status_dropdown,
+                self.departure_field, self.return_field,
+                self.date_validation, self.status_dropdown,
                 self.description_field,
-            ],
-            spacing=12,
-            scroll=ft.ScrollMode.AUTO,
-        )
+            ], spacing=12, scroll=ft.ScrollMode.AUTO)
 
         title = "✏️ Edit Batch" if self.is_edit else "➕ Create New Batch"
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=600, height=560, padding=10),
+            content=ft.Container(content=content, width=600, height=560,
+                                 padding=10),
             actions=[
-                ft.TextButton(
-                    content=ft.Text("Cancel"),
-                    on_click=lambda e: self._close()),
-                ft.Button(
-                    content=ft.Text("💾 Save"),
-                    on_click=self.save,
-                    bgcolor=ft.Colors.GREEN_600,
-                    color=ft.Colors.WHITE),
+                ft.TextButton(content=ft.Text("Cancel"),
+                              on_click=lambda e: self._close()),
+                ft.Button(content=ft.Text("💾 Save"), on_click=self.save,
+                          bgcolor=ft.Colors.GREEN_600,
+                          color=ft.Colors.WHITE),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -1340,7 +1174,7 @@ class BatchFormDialog:
         prefix = _get_prefix(tour_name)
         next_num = self._get_next_batch_number(prefix, year)
         bid = f"{prefix}/BCH/{year}/{next_num:03d}"
-        self.id_preview.value = f"📋 Batch ID: {bid}"
+        self.id_preview.value = f"📋 Batch ID (preview): {bid}"
         self.id_preview.color = ft.Colors.GREEN_700
         try:
             self.id_preview.update()
@@ -1355,18 +1189,22 @@ class BatchFormDialog:
         if b.get("tour_type_id"):
             self.tour_dropdown.value = str(b.get("tour_type_id"))
         self.seats_field.value = str(int(b.get("total_seats", 150) or 150))
-        self.price_field.value = str(int(b.get("price", 0) or 0))
-
+        self.price_field.value = str(b.get("price", 0) or 0)
         if b.get("departure_date"):
             self.departure_field.value = _to_display_date(
                 b.get("departure_date"))
         if b.get("return_date"):
-            self.return_field.value = _to_display_date(
-                b.get("return_date"))
-
+            self.return_field.value = _to_display_date(b.get("return_date"))
         self.status_dropdown.value = str(b.get("status", "Open"))
         self.description_field.value = str(b.get("description", ""))
         self.update_id_preview()
+
+    def _count_bookings(self, batch_id):
+        try:
+            return sum(1 for t in self.db.get_travelers()
+                       if str(t.get("batch_id", "")) == str(batch_id))
+        except Exception:
+            return 0
 
     def save(self, e):
         try:
@@ -1374,28 +1212,64 @@ class BatchFormDialog:
             if not name:
                 self._snack("⚠️ Batch Name is required")
                 return
+
             year = self.year_dropdown.value
             if not year:
                 self._snack("⚠️ Please select a Year")
                 return
+
             tour_id = self.tour_dropdown.value
             if not tour_id:
                 self._snack("⚠️ Please select a Tour Type")
                 return
+
+            # v1.6 — tour-name validation
+            tour_name = ""
+            for t in self.tour_types:
+                if str(t.get("id", "")) == str(tour_id):
+                    tour_name = t.get("tour_name", "")
+                    break
+            if not tour_name:
+                self._snack("⚠️ Selected tour type is invalid")
+                return
+
+            # ---- Seats ----
+            seats_text = (self.seats_field.value or "").strip()
+            if not seats_text:
+                self._snack("⚠️ Seats is required")
+                return
+            try:
+                seats = int(seats_text)
+            except ValueError:
+                self._snack("⚠️ Seats must be a whole number")
+                return
+            if seats <= 0:
+                self._snack("⚠️ Seats must be greater than zero")
+                return
+            if self.is_edit:
+                booked = self._count_bookings(self.batch.get("id"))
+                if seats < booked:
+                    self._snack(
+                        f"⚠️ Seats cannot be less than current bookings "
+                        f"({booked})")
+                    return
+
+            # ---- Price ----
             price_text = (self.price_field.value or "").strip()
             if not price_text:
                 self._snack("⚠️ Price is required")
                 return
             try:
-                price = int(float(price_text))
-            except Exception:
-                self._snack("⚠️ Price must be a number")
+                price_decimal = Decimal(price_text)
+            except (InvalidOperation, ValueError):
+                self._snack("⚠️ Price must be a valid amount")
                 return
-            try:
-                seats = int(float(self.seats_field.value or 150))
-            except Exception:
-                seats = 150
+            if price_decimal < 0:
+                self._snack("⚠️ Price cannot be negative")
+                return
+            price = float(price_decimal)
 
+            # ---- Dates (strict) ----
             dep_raw = (self.departure_field.value or "").strip()
             ret_raw = (self.return_field.value or "").strip()
             if not dep_raw or not ret_raw:
@@ -1405,19 +1279,12 @@ class BatchFormDialog:
                 dep_norm, dep_dt = _to_storage_datetime(dep_raw)
                 ret_norm, ret_dt = _to_storage_datetime(ret_raw)
             except ValueError:
-                self._snack(
-                    "⚠️ Dates must be in DD-MM-YYYY format "
-                    "(e.g. 05-10-2026)")
+                self._snack("⚠️ Dates must be in DD-MM-YYYY format "
+                            "(e.g. 05-10-2026)")
                 return
             if ret_dt < dep_dt:
                 self._snack("⚠️ Return must be after departure")
                 return
-
-            tour_name = ""
-            for t in self.tour_types:
-                if str(t.get("id", "")) == str(tour_id):
-                    tour_name = t.get("tour_name", "")
-                    break
 
             data = {
                 "batch_name": name,
@@ -1432,7 +1299,6 @@ class BatchFormDialog:
                 "description": (self.description_field.value or "").strip(),
             }
 
-            # v1.5 — diff detection
             changes = []
             if self.is_edit:
                 old = self.batch or {}
@@ -1442,41 +1308,81 @@ class BatchFormDialog:
                     if str(old.get(k, "")) != str(data.get(k, "")):
                         changes.append(k.replace("_", " "))
 
-            if self.is_edit:
-                self.db.update_batch(self.batch.get("id"), data)
-                self.db.log_activity(
-                    self.current_user["id"], "edit_batch",
-                    f"Updated batch: {name}")
-                msg = "✅ Batch updated"
-                if changes:
-                    msg += f": {', '.join(changes)}"
-            else:
-                bid = _db_add_batch(self.db, data)
-                self.db.log_activity(
-                    self.current_user["id"], "add_batch",
-                    f"Added batch: {name}")
-                msg = f"✅ Batch created: {bid}"
+            try:
+                if self.is_edit:
+                    self.db.update_batch(self.batch.get("id"), data)
+                    self.db.log_activity(
+                        self.current_user["id"], "edit_batch",
+                        f"Updated batch: {name}")
+                    msg = "✅ Batch updated"
+                    if changes:
+                        msg += f": {', '.join(changes)}"
+                else:
+                    bid = _db_add_batch(self.db, data)
+                    self.db.log_activity(
+                        self.current_user["id"], "add_batch",
+                        f"Added batch: {name}")
+                    msg = f"✅ Batch created: {bid}"
+            except ValueError as ve:
+                self._snack(f"⚠️ {ve}")
+                return
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+                self._snack(f"❌ {ex}")
+                return
 
-            # v1.5 — clear typing guard before close
             self._typing_until = 0.0
-            self.page.pop_dialog()
+            self._close()
             self._snack(msg)
-            if self.on_save:
-                self.on_save()
+
+            try:
+                if self.on_save:
+                    self.on_save()
+            except Exception as cb_ex:
+                print(f"[BATCH-FORM] on_save callback failed: {cb_ex}")
+                import traceback
+                traceback.print_exc()
         except Exception as ex:
             import traceback
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
     def _close(self):
+        if self._closed:
+            return
+        self._closed = True
         self._typing_until = 0.0
         try:
             self.page.pop_dialog()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[BATCH-FORM] pop_dialog failed: {ex}")
+        if self.on_close_callback:
+            try:
+                self.on_close_callback()
+            except Exception as ex:
+                print(f"[BATCH-FORM] on_close_callback failed: {ex}")
 
     def show(self):
-        self.page.show_dialog(self.dialog)
+        try:
+            print("[BATCH-FORM] opening dialog")
+            self.page.show_dialog(self.dialog)
+            print("[BATCH-FORM] dialog opened")
+        except Exception as ex:
+            import traceback
+            print(f"[BATCH-FORM] dialog failed: {ex}")
+            traceback.print_exc()
+            try:
+                self.page.show_dialog(ft.SnackBar(
+                    content=ft.Text(f"Unable to open batch form: {ex}")))
+            except Exception:
+                pass
+            self._closed = True
+            if self.on_close_callback:
+                try:
+                    self.on_close_callback()
+                except Exception:
+                    pass
 
     def _snack(self, msg):
         try:
@@ -1486,7 +1392,7 @@ class BatchFormDialog:
 
 
 # =================================================================================
-# [13.1] CLASS: BatchViewDialog
+# BatchViewDialog
 # =================================================================================
 class BatchViewDialog:
 
@@ -1502,8 +1408,7 @@ class BatchViewDialog:
 
         def row(label, value):
             return ft.Row([
-                ft.Text(label, width=140,
-                        weight=ft.FontWeight.BOLD, size=11),
+                ft.Text(label, width=140, weight=ft.FontWeight.BOLD, size=11),
                 ft.Text(str(value) if value not in (None, "") else "-",
                         size=11, selectable=True, expand=True),
             ], spacing=8)
@@ -1515,32 +1420,26 @@ class BatchViewDialog:
                   f"{t.get('last_name', '')}").strip() or "N/A"
                  for t in assigned]
 
-        dep_disp = _to_display_date(b.get("departure_date")) or "-"
-        ret_disp = _to_display_date(b.get("return_date")) or "-"
-
-        content = ft.Column(
-            controls=[
-                ft.Text("Batch Information", size=12,
-                        weight=ft.FontWeight.BOLD, color="#1e40af"),
-                ft.Divider(),
-                row("ID", b.get("id", "")),
-                row("Batch Name", b.get("batch_name", "")),
-                row("Tour Type", b.get("tour_type_name", "N/A")),
-                row("Year", b.get("year", "")),
-                row("Departure", dep_disp),
-                row("Return", ret_disp),
-                row("Price", f"₹{int(b.get('price', 0) or 0):,}"),
-                row("Total Seats", b.get("total_seats", 0)),
-                row("Status", b.get("status", "")),
-                row("Description", b.get("description", "")),
-                ft.Divider(),
-                row("Travelers Booked", len(assigned)),
-                row("Traveler List",
-                    ", ".join(names[:5]) + ("..." if len(names) > 5 else "")),
-            ],
-            spacing=8,
-            scroll=ft.ScrollMode.AUTO,
-        )
+        content = ft.Column(controls=[
+            ft.Text("Batch Information", size=12,
+                    weight=ft.FontWeight.BOLD, color="#1e40af"),
+            ft.Divider(),
+            row("ID", b.get("id", "")),
+            row("Batch Name", b.get("batch_name", "")),
+            row("Tour Type", b.get("tour_type_name", "N/A")),
+            row("Year", b.get("year", "")),
+            row("Departure", _to_display_date(b.get("departure_date")) or "-"),
+            row("Return", _to_display_date(b.get("return_date")) or "-"),
+            row("Price", f"₹{int(float(b.get('price', 0) or 0)):,}"),
+            row("Total Seats", b.get("total_seats", 0)),
+            row("Available Seats", b.get("available_seats", 0)),
+            row("Status", b.get("status", "")),
+            row("Description", b.get("description", "")),
+            ft.Divider(),
+            row("Travelers Booked", len(assigned)),
+            row("Traveler List", ", ".join(names[:5])
+                + ("..." if len(names) > 5 else "")),
+        ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
         self.dialog = ft.AlertDialog(
             modal=True,
@@ -1548,19 +1447,28 @@ class BatchViewDialog:
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content, width=480,
                                  height=500, padding=10),
-            actions=[
-                ft.Button(
-                    content=ft.Text("Close"),
-                    on_click=lambda e: self.page.pop_dialog(),
-                    bgcolor=ft.Colors.BLUE_700,
-                    color=ft.Colors.WHITE),
-            ],
+            actions=[ft.Button(content=ft.Text("Close"),
+                               on_click=lambda e: self.page.pop_dialog(),
+                               bgcolor=ft.Colors.BLUE_700,
+                               color=ft.Colors.WHITE)],
         )
 
     def show(self):
-        self.page.show_dialog(self.dialog)
+        try:
+            print("[BATCH-VIEW] showing dialog")
+            self.page.show_dialog(self.dialog)
+            print("[BATCH-VIEW] dialog shown")
+        except Exception as ex:
+            import traceback
+            print(f"[BATCH-VIEW] dialog failed: {ex}")
+            traceback.print_exc()
+            try:
+                self.page.show_dialog(ft.SnackBar(
+                    content=ft.Text(f"Unable to open batch view: {ex}")))
+            except Exception:
+                pass
 
 
 # =================================================================================
-# END — core/batches_tab.py v1.5
+# END — core/batches_tab.py v1.6
 # =================================================================================

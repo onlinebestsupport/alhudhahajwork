@@ -1,29 +1,44 @@
 # =================================================================================
 # SECTION 12 + 13 (FLET 1.0.0 VERSION) — PAYMENTS TAB + DIALOGS
 # =================================================================================
-# v1.8 — Typing wipe fix + filter preservation
+# v1.9 — Financial-consistency review-fix release
 #
-#   FIXES (matching users_tab v3.2 / batches_tab v1.5):
-#     • Added _typing_until guard to all 3 classes
-#     • Added _safe_update() helper
-#     • Every TextField has explicit on_change with value sync
-#     • on_amount_changed() → leaf-only update (remaining_label + save_btn)
-#     • update_traveler_info() → leaf-only update (info labels)
-#     • filter_payments() → leaf-only update (table only)
-#     • _snack() no longer calls page.update()
-#     • refresh() preserves filters + scroll
-#     • ft.dropdown.Option(key=..., text=...) form
+#   REVIEW FIXES:
+#     §1  Balances use COMPLETED-only amounts (_completed_amount helper)
+#     §2  Financial-field edit triggers a confirmation dialog
+#     §3  Invoice rollback if payment creation fails
+#     §4  Invoice failure aborts payment (surfaced)
+#     §5  PaymentDialog has status dropdown (default: completed)
+#     §8  Strict payment-date parsing (YYYY-MM-DD or DD-MM-YYYY)
+#     §9  Decimal used for amount validation & 2-decimal quantize
+#     §10 Full UUID for auto trans IDs + uniqueness check on manual
+#     §11 pending_before clamped at 0; based on completed-only
+#     §12 Payments blocked when traveler has no assigned batch
+#     §13 view_specific_receipt no longer auto-generates
+#     §14 self.receipts is dict-of-lists (multiple receipts supported)
+#     §15 Receipt/payment amount mismatch warned in receipt viewer
+#     §17 Responsive dialog sizing
+#     §18 show() logging on PaymentDialog / PaymentEditDialog
+#     §19 Silent except blocks replaced with logged catches
 #
-#   Preserved from v1.7:
-#     • Row tap selects, doesn't edit
-#     • Toolbar PDF/Print act on selected row
-#     • Flet 1.0.0 compatible
+#   PRESERVED FROM v1.8:
+#     • Typing-wipe guard (_typing_until) on all three classes
+#     • Leaf-only updates for search/amount/traveler-info
+#     • Filter preservation across refresh
+#     • Row tap = select, toolbar PDF/Print act on selected
+#
+#   COMPANION DB CHANGES (must be applied to database.py):
+#     1. _generate_receipt() is called only when status == "completed"
+#     2. add_payment() validates traveler exists and has a batch_id
+#     3. update_payment() recalculates linked invoice status from all
+#        completed payments referencing that invoice (fixes §16)
 # =================================================================================
 
 import flet as ft
 import os
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -37,16 +52,88 @@ from core.helpers import (
 from core.settings_manager import SettingsManager
 
 
-TYPING_GUARD_SECONDS = 3.0
+TYPING_GUARD_SECONDS = 0.6
+FINANCIAL_FIELDS = {"amount", "status", "transaction_id", "invoice_id"}
 
 
 # =================================================================================
-# 12.2 — CLASS: PaymentEditDialog  (v1.8 — typing guard + on_change)
+# MODULE-LEVEL HELPERS
+# =================================================================================
+
+def _completed_amount(payments):
+    """Sum of amounts for payments whose status is 'completed'."""
+    total = 0.0
+    for p in payments:
+        if str(p.get("status", "")).strip().lower() == "completed":
+            try:
+                total += float(p.get("amount", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+    return total
+
+
+def _pending_amount(payments):
+    """Sum of amounts for payments whose status is 'pending'."""
+    total = 0.0
+    for p in payments:
+        if str(p.get("status", "")).strip().lower() == "pending":
+            try:
+                total += float(p.get("amount", 0) or 0)
+            except (ValueError, TypeError):
+                pass
+    return total
+
+
+def _parse_payment_date(value):
+    """
+    Strict parse — accepts YYYY-MM-DD or DD-MM-YYYY, returns YYYY-MM-DD.
+    Raises ValueError on empty or malformed input.
+    """
+    s = str(value or "").strip()
+    if not s:
+        raise ValueError("Payment date is required")
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    raise ValueError("Payment date must be YYYY-MM-DD or DD-MM-YYYY")
+
+
+def _parse_amount(value):
+    """Parse amount strictly; return float quantized to 2 decimals or raise."""
+    s = str(value or "").strip()
+    if not s:
+        raise ValueError("Amount is required")
+    try:
+        dec = Decimal(s)
+    except InvalidOperation:
+        raise ValueError("Amount must be a valid number")
+    if dec <= 0:
+        raise ValueError("Amount must be greater than zero")
+    return float(dec.quantize(Decimal("0.01")))
+
+
+def _check_unique_trans_id(new_id, all_payments, exclude_payment_id=None):
+    """Return True if transaction id is unique (ignoring exclude)."""
+    needle = str(new_id or "").strip().lower()
+    if not needle:
+        return True
+    for p in all_payments:
+        pid = p.get("id")
+        if exclude_payment_id and str(pid) == str(exclude_payment_id):
+            continue
+        if str(p.get("transaction_id", "")).strip().lower() == needle:
+            return False
+    return True
+
+
+# =================================================================================
+# CLASS: PaymentEditDialog  (v1.9)
 # =================================================================================
 class PaymentEditDialog:
 
-    def __init__(self, page, db, current_user, payment_data,
-                 on_save=None):
+    def __init__(self, page, db, current_user, payment_data, on_save=None):
         self.page = page
         self.db = db
         self.current_user = current_user
@@ -61,12 +148,11 @@ class PaymentEditDialog:
         self.notes_field = None
         self.dialog = None
 
-        # v1.8 — typing guard
         self._typing_until = 0.0
+        self._closed = False
 
         self.setup_ui()
 
-    # v1.8 — field helper with explicit sync
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -93,36 +179,39 @@ class PaymentEditDialog:
             try:
                 t = self.db.get_traveler_by_id(traveler_id)
                 if t:
-                    traveler_name = (
-                        f"{t.get('first_name', '')} "
-                        f"{t.get('last_name', '')}").strip() or "Unnamed"
-            except Exception:
-                pass
+                    traveler_name = (f"{t.get('first_name', '')} "
+                                     f"{t.get('last_name', '')}").strip() or "Unnamed"
+            except Exception as ex:
+                print(f"[PAY-EDIT] traveler lookup failed: {ex}")
 
         invoice_id = self.payment_data.get('invoice_id', '')
         invoice_text = "No invoice linked"
         if invoice_id:
             try:
-                invs = self.db.get_invoices()
-                for inv in invs:
+                for inv in self.db.get_invoices():
                     if str(inv.get('id')) == str(invoice_id):
-                        invoice_text = (
-                            f"{inv.get('invoice_no', 'N/A')} "
-                            f"(ID: {invoice_id})")
+                        invoice_text = (f"{inv.get('invoice_no', 'N/A')} "
+                                        f"(ID: {invoice_id})")
                         break
                 else:
                     invoice_text = f"ID: {invoice_id}"
-            except Exception:
+            except Exception as ex:
+                print(f"[PAY-EDIT] invoice lookup failed: {ex}")
                 invoice_text = f"ID: {invoice_id}"
 
         self.amount_field = self._field(
             label="Amount (₹) *",
             value=str(self.payment_data.get('amount', 0)),
             height=48, text_size=12)
+
+        # Normalize current date to YYYY-MM-DD for the field
+        current_date = str(self.payment_data.get('payment_date', ''))[:10]
         self.date_field = self._field(
-            label="Payment Date (YYYY-MM-DD)",
-            value=str(self.payment_data.get('payment_date', ''))[:10],
+            label="Payment Date (YYYY-MM-DD) *",
+            value=current_date,
+            hint_text="e.g. 2026-10-05",
             height=48, text_size=12)
+
         self.method_dropdown = ft.Dropdown(
             label="Payment Method",
             options=[
@@ -135,10 +224,12 @@ class PaymentEditDialog:
             ],
             value=str(self.payment_data.get('payment_method', 'Cash')),
             height=48, text_size=12)
+
         self.trans_field = self._field(
             label="Transaction ID",
             value=str(self.payment_data.get('transaction_id', '')),
             height=48, text_size=12)
+
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
@@ -149,16 +240,15 @@ class PaymentEditDialog:
             ],
             value=str(self.payment_data.get('status', 'pending')),
             height=48, text_size=12)
+
         self.notes_field = self._field(
             label="Notes",
             value=str(self.payment_data.get('notes', '')),
-            multiline=True, min_lines=2, max_lines=3,
-            text_size=12)
+            multiline=True, min_lines=2, max_lines=3, text_size=12)
 
         def info_row(label, value):
             return ft.Row([
-                ft.Text(label, width=140,
-                        weight=ft.FontWeight.BOLD, size=11),
+                ft.Text(label, width=140, weight=ft.FontWeight.BOLD, size=11),
                 ft.Text(str(value), size=11, selectable=True, expand=True),
             ], spacing=8)
 
@@ -176,16 +266,20 @@ class PaymentEditDialog:
                 info_row("Invoice", invoice_text),
                 self.notes_field,
             ],
-            spacing=12,
-            scroll=ft.ScrollMode.AUTO,
-        )
+            spacing=12, scroll=ft.ScrollMode.AUTO)
+
+        # §17 — responsive sizing
+        page_w = getattr(self.page, "width", None) or 900
+        page_h = getattr(self.page, "height", None) or 700
+        dialog_w = min(520, max(320, int(page_w) - 32))
+        dialog_h = min(560, max(280, int(page_h) - 120))
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Edit Payment",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=520, height=560, padding=10),
+            content=ft.Container(content=content, width=dialog_w,
+                                 height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self._close()),
@@ -194,68 +288,163 @@ class PaymentEditDialog:
                           bgcolor=ft.Colors.GREEN_600,
                           color=ft.Colors.WHITE),
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
+            actions_alignment=ft.MainAxisAlignment.END)
 
-    def save(self, e):
-        try:
-            amount_text = (self.amount_field.value or '').strip()
-            if not amount_text:
-                self._snack("⚠️ Please enter the payment amount")
-                return
+    def _build_updated(self):
+        amount = _parse_amount(self.amount_field.value)
+        payment_date = _parse_payment_date(self.date_field.value)
+        trans_id = (self.trans_field.value or '').strip()
+
+        # §10 — uniqueness check
+        if trans_id:
             try:
-                amount = float(amount_text)
-                if amount <= 0:
-                    self._snack("⚠️ Amount must be greater than 0")
-                    return
+                all_payments = self.db.get_payments()
+                if not _check_unique_trans_id(
+                        trans_id, all_payments,
+                        exclude_payment_id=self.payment_data.get('id')):
+                    raise ValueError(
+                        f"Transaction ID '{trans_id}' already exists")
             except ValueError:
-                self._snack("⚠️ Invalid amount — must be numeric")
+                raise
+            except Exception as ex:
+                print(f"[PAY-EDIT] trans-id check failed: {ex}")
+
+        return {
+            'amount': amount,
+            'payment_date': payment_date,
+            'payment_method': self.method_dropdown.value or 'Cash',
+            'transaction_id': trans_id,
+            'status': self.status_dropdown.value or 'pending',
+            'notes': (self.notes_field.value or '').strip(),
+        }
+
+    def save(self, e, _confirmed=False):
+        try:
+            try:
+                updated = self._build_updated()
+            except ValueError as ve:
+                self._snack(f"⚠️ {ve}")
                 return
 
-            updated = {
-                'amount': amount,
-                'payment_date': (self.date_field.value or '')[:10],
-                'payment_method': self.method_dropdown.value or 'Cash',
-                'transaction_id': (self.trans_field.value or '').strip(),
-                'status': self.status_dropdown.value or 'pending',
-                'notes': (self.notes_field.value or '').strip(),
-            }
+            # §2 — detect financial-field changes
+            if not _confirmed:
+                changed = []
+                for f in FINANCIAL_FIELDS:
+                    if f not in updated:
+                        continue
+                    old_val = self.payment_data.get(f, '')
+                    new_val = updated.get(f, '')
+                    if f == 'amount':
+                        try:
+                            old_val = float(old_val or 0)
+                            new_val = float(new_val or 0)
+                        except (ValueError, TypeError):
+                            pass
+                        if abs(old_val - new_val) > 0.005:
+                            changed.append(f)
+                    else:
+                        if str(old_val or "") != str(new_val or ""):
+                            changed.append(f)
 
+                if changed:
+                    self._show_financial_warning(changed, updated)
+                    return
+
+            self._apply_update(updated)
+
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            self._snack(f"❌ {ex}")
+
+    def _show_financial_warning(self, changed, updated):
+        labels = {"amount": "Amount", "status": "Status",
+                  "transaction_id": "Transaction ID",
+                  "invoice_id": "Invoice reference"}
+        human = ", ".join(labels.get(f, f) for f in changed)
+
+        def on_confirm(ev):
+            self.page.pop_dialog()
+            self._apply_update(updated)
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("⚠️ Confirm Financial Edit",
+                          weight=ft.FontWeight.BOLD, size=14),
+            content=ft.Text(
+                f"You are about to modify: {human}.\n\n"
+                "This affects the financial record. The linked "
+                "receipt/invoice may become inconsistent. "
+                "Continue?", size=12),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"),
+                              on_click=lambda e: self.page.pop_dialog()),
+                ft.Button(content=ft.Text("Continue"),
+                          on_click=on_confirm,
+                          bgcolor=ft.Colors.ORANGE_600,
+                          color=ft.Colors.WHITE),
+            ])
+        self.page.show_dialog(dialog)
+
+    def _apply_update(self, updated):
+        try:
             success = self.db.update_payment(
                 self.payment_data['id'], updated)
-            if success:
-                self.payment_data.update(updated)
-                try:
-                    self.db.log_activity(
-                        self.current_user['id'], "edit_payment",
-                        f"Edited payment #{self.payment_data['id']} - "
-                        f"Amount: ₹{amount:,.2f}")
-                except Exception:
-                    pass
-
-                self._typing_until = 0.0
-                self.page.pop_dialog()
-                self._snack("✅ Payment updated successfully!")
-                if self.on_save:
-                    self.on_save()
-            else:
+            if not success:
                 self._snack("❌ Failed to update payment")
+                return
+
+            self.payment_data.update(updated)
+
+            try:
+                self.db.log_activity(
+                    self.current_user['id'], "edit_payment",
+                    f"Edited payment #{self.payment_data['id']} - "
+                    f"Amount: ₹{updated['amount']:,.2f}, "
+                    f"Status: {updated['status']}")
+            except Exception as log_ex:
+                print(f"[PAY-EDIT] activity log failed: {log_ex}")
+
+            self._typing_until = 0.0
+            self._close()
+            self._snack("✅ Payment updated successfully!")
+
+            if self.on_save:
+                try:
+                    self.on_save()
+                except Exception as cb_ex:
+                    print(f"[PAY-EDIT] on_save callback failed: {cb_ex}")
         except Exception as ex:
             import traceback
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
     def _close(self):
+        if self._closed:
+            return
+        self._closed = True
         self._typing_until = 0.0
         try:
             self.page.pop_dialog()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-EDIT] pop_dialog failed: {ex}")
 
     def show(self):
-        self.page.show_dialog(self.dialog)
+        try:
+            print("[PAY-EDIT] opening edit dialog")
+            self.page.show_dialog(self.dialog)
+            print("[PAY-EDIT] dialog opened")
+        except Exception as ex:
+            import traceback
+            print(f"[PAY-EDIT] dialog failed: {ex}")
+            traceback.print_exc()
+            try:
+                self.page.show_dialog(ft.SnackBar(
+                    content=ft.Text(f"Unable to open edit form: {ex}")))
+            except Exception:
+                pass
+            self._closed = True
 
-    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -264,7 +453,7 @@ class PaymentEditDialog:
 
 
 # =================================================================================
-# 12.3 — CLASS: PaymentsTab  (v1.8)
+# CLASS: PaymentsTab  (v1.9)
 # =================================================================================
 class PaymentsTab:
 
@@ -275,7 +464,7 @@ class PaymentsTab:
 
         self.payments = []
         self.travelers = {}
-        self.receipts = {}
+        self.receipts = {}          # payment_id -> list[receipt]
         self.invoices = {}
         self.batches = {}
         self.traveler_details = {}
@@ -289,7 +478,6 @@ class PaymentsTab:
         self.selection_label = None
 
         self._selected_payment_id = None
-        # v1.8 — typing guard
         self._typing_until = 0.0
 
         self.setup_ui()
@@ -298,7 +486,6 @@ class PaymentsTab:
     def build(self):
         return self.root
 
-    # v1.8 — safe leaf-only update
     def _safe_update(self):
         if time.time() < self._typing_until:
             print("[PAYMENTS] _safe_update SKIPPED (typing)")
@@ -310,21 +497,17 @@ class PaymentsTab:
             print(f"[PAYMENTS] _safe_update failed: {e}")
 
     def _update_table_only(self):
-        """Leaf-only update — does NOT touch the search field's ancestors."""
-        try:
-            if self.table is not None:
-                self.table.update()
-        except Exception:
-            pass
-        try:
-            if self.selection_label is not None:
-                self.selection_label.update()
-        except Exception:
-            pass
+        for ctrl in (self.table, self.selection_label):
+            if ctrl is None:
+                continue
+            try:
+                ctrl.update()
+            except Exception:
+                pass
 
     def setup_ui(self):
         stat_configs = [
-            ("total",           "💰 Total",       "#3498db"),
+            ("total",           "💰 Recorded",    "#3498db"),
             ("completed",       "✅ Completed",   "#27ae60"),
             ("pending",         "⏳ Pending",     "#f39c12"),
             ("receipts",        "🧾 Receipts",    "#9b59b6"),
@@ -338,31 +521,21 @@ class PaymentsTab:
                                   weight=ft.FontWeight.BOLD,
                                   color=ft.Colors.WHITE)
             self.stat_labels[key] = value_label
-            card = ft.Container(
-                content=ft.Column(
-                    controls=[
-                        ft.Text(label, size=9,
-                                color=ft.Colors.WHITE,
-                                weight=ft.FontWeight.BOLD,
-                                no_wrap=False, max_lines=2),
-                        value_label,
-                    ],
-                    spacing=2,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                ),
-                padding=8,
-                bgcolor=color,
-                border_radius=10,
-                height=64,
-            )
-            stat_cards.append(card)
+            stat_cards.append(ft.Container(
+                content=ft.Column([
+                    ft.Text(label, size=9, color=ft.Colors.WHITE,
+                            weight=ft.FontWeight.BOLD,
+                            no_wrap=False, max_lines=2),
+                    value_label,
+                ], spacing=2,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=8, bgcolor=color, border_radius=10, height=64,
+            ))
 
         stats_row = ft.ResponsiveRow(
-            controls=[
-                ft.Container(content=c,
-                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
-                for c in stat_cards
-            ],
+            controls=[ft.Container(content=c,
+                                   col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                      for c in stat_cards],
             spacing=6, run_spacing=6,
         )
 
@@ -373,8 +546,7 @@ class PaymentsTab:
                                 color=ft.Colors.WHITE,
                                 no_wrap=True,
                                 overflow=ft.TextOverflow.ELLIPSIS),
-                on_click=handler, height=40,
-                bgcolor=color,
+                on_click=handler, height=40, bgcolor=color,
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
@@ -405,7 +577,6 @@ class PaymentsTab:
             value="All", height=48, text_size=11)
         self.method_filter.on_change = self.filter_payments
 
-        # v1.8 — search field with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search traveler or txn ID...",
             height=48, text_size=12,
@@ -472,16 +643,13 @@ class PaymentsTab:
             rows=[], column_spacing=10,
             heading_row_color=ft.Colors.BLUE_GREY_800,
             heading_row_height=40,
-            data_row_min_height=44,
-            data_row_max_height=58,
+            data_row_min_height=44, data_row_max_height=58,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
         )
 
-        self.selection_label = ft.Text("", size=10,
-                                       color=ft.Colors.BLUE_700,
-                                       weight=ft.FontWeight.BOLD,
-                                       italic=True)
+        self.selection_label = ft.Text("", size=10, color=ft.Colors.BLUE_700,
+                                       weight=ft.FontWeight.BOLD, italic=True)
 
         self.root = ft.Container(
             content=ft.Column(
@@ -494,26 +662,20 @@ class PaymentsTab:
                     ft.Container(
                         content=ft.Column([
                             ft.Text("💡 Tap a row to SELECT it, then use "
-                                    "toolbar 📄 PDF / 🖨️ Print. "
-                                    "Use ✏️ icon in Actions column to edit.",
-                                    size=10,
-                                    color=ft.Colors.GREY_600,
+                                    "toolbar 📄 PDF / 🖨️ Print.",
+                                    size=10, color=ft.Colors.GREY_600,
                                     italic=True),
                             self.selection_label,
                             ft.Row([self.table],
                                    scroll=ft.ScrollMode.ADAPTIVE),
                         ], spacing=6),
-                        bgcolor=ft.Colors.WHITE,
-                        border_radius=10, padding=10),
+                        bgcolor=ft.Colors.WHITE, border_radius=10, padding=10),
                 ],
                 spacing=10, scroll=ft.ScrollMode.AUTO,
             ),
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
-    # -----------------------------------------------------------------------------
-    # refresh — v1.8 preserves filters, uses _safe_update
-    # -----------------------------------------------------------------------------
     def refresh(self):
         try:
             self.payments = self.db.get_payments()
@@ -522,8 +684,12 @@ class PaymentsTab:
                           f"{t.get('last_name', '')}").strip() or "Unnamed"
                 for t in self.db.get_travelers()
             }
-            self.receipts = {r['payment_id']: r
-                             for r in self.db.get_receipts()}
+
+            # §14 — dict of lists
+            self.receipts = {}
+            for r in self.db.get_receipts():
+                self.receipts.setdefault(r.get('payment_id'), []).append(r)
+
             self.invoices = {i['id']: i for i in self.db.get_invoices()}
             self.batches = {b['id']: b for b in self.db.get_batches()}
 
@@ -546,10 +712,9 @@ class PaymentsTab:
 
             print(f"[PAYMENTS] loaded {len(self.payments)} payments, "
                   f"{len(self.travelers)} travelers, "
-                  f"{len(self.receipts)} receipts, "
+                  f"{sum(len(v) for v in self.receipts.values())} receipts, "
                   f"{len(self.invoices)} invoices")
 
-            # v1.8 — re-apply filters so auto-refresh doesn't wipe them
             self._apply_filters_internal()
             self.update_summary_stats()
             self._safe_update()
@@ -558,7 +723,6 @@ class PaymentsTab:
             import traceback
             traceback.print_exc()
 
-    # v1.8 — filter logic without UI
     def _apply_filters_internal(self):
         search = (self.search_input.value or "").strip().lower() \
             if self.search_input else ""
@@ -588,12 +752,17 @@ class PaymentsTab:
         if payments is None:
             payments = self.payments
 
-        traveler_paid = {}
+        # §1 — completed-only for balances
+        traveler_completed = {}
         for p in payments:
             tid = p.get('traveler_id')
-            if tid:
-                traveler_paid[tid] = (traveler_paid.get(tid, 0)
-                                      + float(p.get('amount', 0) or 0))
+            if tid and str(p.get('status', '')).lower() == 'completed':
+                try:
+                    traveler_completed[tid] = (
+                        traveler_completed.get(tid, 0)
+                        + float(p.get('amount', 0) or 0))
+                except (ValueError, TypeError):
+                    pass
 
         self.table.rows.clear()
         for p in payments:
@@ -602,7 +771,11 @@ class PaymentsTab:
             date_str = (str(p.get('payment_date', ''))[:10]
                         if p.get('payment_date') else '')
             traveler_name = self.travelers.get(tid, 'Unknown')
-            amount_text = f"₹{float(p.get('amount', 0) or 0):,.0f}"
+            try:
+                amount_val = float(p.get('amount', 0) or 0)
+            except (ValueError, TypeError):
+                amount_val = 0.0
+            amount_text = f"₹{amount_val:,.0f}"
             method = str(p.get('payment_method', ''))
             status = str(p.get('status', 'pending'))
             status_color = ("#27ae60" if status == "completed"
@@ -610,19 +783,22 @@ class PaymentsTab:
                             else "#e74c3c" if status == "failed"
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
-            receipt = self.receipts.get(pid)
-            receipt_no = (receipt.get('receipt_no', '—')
-                          if receipt else '—')
+
+            # §14 — list of receipts
+            receipt_list = self.receipts.get(pid, [])
+            receipt_no = receipt_list[0].get('receipt_no', '—') \
+                if receipt_list else '—'
+
             inv_id = p.get('invoice_id', '')
             inv_no = ''
             if inv_id and inv_id in self.invoices:
-                inv_no = self.invoices[inv_id].get('invoice_no', '')[:14]
+                inv_no = str(self.invoices[inv_id].get('invoice_no', ''))[:14]
 
             traveler_info = self.traveler_details.get(
                 tid, {'batch_price': 0, 'batch_name': 'No Batch'})
             batch_price = traveler_info['batch_price']
-            total_paid = traveler_paid.get(tid, 0)
-            package_pending = batch_price - total_paid
+            completed_paid = traveler_completed.get(tid, 0)
+            package_pending = max(0.0, batch_price - completed_paid)
 
             if batch_price > 0:
                 if package_pending <= 0:
@@ -640,10 +816,13 @@ class PaymentsTab:
             inv_pending = 0
             if inv_id and inv_id in self.invoices:
                 inv = self.invoices[inv_id]
-                if inv.get('status') == 'pending':
-                    inv_pending = float(
-                        inv.get('rounded_total',
-                                inv.get('total_amount', 0)) or 0)
+                if str(inv.get('status', '')).lower() == 'pending':
+                    try:
+                        inv_pending = float(
+                            inv.get('rounded_total',
+                                    inv.get('total_amount', 0)) or 0)
+                    except (ValueError, TypeError):
+                        inv_pending = 0
 
             if inv_pending > 0:
                 inv_txt = f"₹{inv_pending:,.0f}"
@@ -657,6 +836,21 @@ class PaymentsTab:
 
             is_selected = (self._selected_payment_id == pid)
 
+            # §13 — receipt action reflects whether a receipt exists
+            if receipt_list:
+                receipt_action = ft.IconButton(
+                    icon=ft.Icons.RECEIPT_LONG,
+                    icon_color="#3498db", icon_size=18,
+                    tooltip="View Receipt",
+                    on_click=lambda e, pp=p: self.view_specific_receipt(pp))
+            else:
+                receipt_action = ft.IconButton(
+                    icon=ft.Icons.ADD_BOX,
+                    icon_color="#f39c12", icon_size=18,
+                    tooltip="Generate Receipt (status: completed only)",
+                    on_click=lambda e, pp=p:
+                        self.generate_receipt_for_payment(pp))
+
             actions = ft.Row(
                 controls=[
                     ft.IconButton(icon=ft.Icons.EDIT,
@@ -664,11 +858,7 @@ class PaymentsTab:
                                   tooltip="Edit",
                                   on_click=lambda e, pp=p:
                                       self.edit_payment(pp)),
-                    ft.IconButton(icon=ft.Icons.RECEIPT_LONG,
-                                  icon_color="#3498db", icon_size=18,
-                                  tooltip="View Receipt",
-                                  on_click=lambda e, pp=p:
-                                      self.view_specific_receipt(pp)),
+                    receipt_action,
                     ft.IconButton(icon=ft.Icons.PICTURE_AS_PDF,
                                   icon_color="#e74c3c", icon_size=18,
                                   tooltip="PDF",
@@ -679,53 +869,43 @@ class PaymentsTab:
                                   tooltip="Print",
                                   on_click=lambda e, pp=p:
                                       self.print_single_receipt(pp)),
-                ], spacing=0,
-            )
+                ], spacing=0)
 
-            def _on_row_tap(e, pp=p, pid=pid):
+            def _on_row_tap(e, pid=pid):
                 try:
                     self._select_payment(pid)
                 except Exception as ex:
                     print(f"[PAYMENTS] row tap error: {ex}")
 
-            self.table.rows.append(
-                ft.DataRow(
-                    on_select_change=_on_row_tap,
-                    selected=is_selected,
-                    cells=[
-                        ft.DataCell(
-                            ft.Container(
-                                content=ft.Text(
-                                    "✓" if is_selected else "",
-                                    size=14,
-                                    weight=ft.FontWeight.BOLD,
-                                    color="#27ae60"),
-                                width=24,
-                                alignment=ft.Alignment.CENTER,
-                                bgcolor=("#dcfce7" if is_selected
-                                         else None),
-                                border_radius=4,
-                            )),
-                        ft.DataCell(ft.Text(date_str, size=10)),
-                        ft.DataCell(ft.Text(traveler_name[:18], size=10,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(amount_text, size=10,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(method[:12], size=10)),
-                        ft.DataCell(ft.Text(status, size=10,
-                                            color=status_color,
-                                            weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(txn, size=10)),
-                        ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
-                        ft.DataCell(ft.Text(str(inv_no), size=10)),
-                        ft.DataCell(ft.Text(pkg_txt, size=10,
-                                            color=pkg_color)),
-                        ft.DataCell(ft.Text(inv_txt, size=10,
-                                            color=inv_color)),
-                        ft.DataCell(actions),
-                    ]))
+            self.table.rows.append(ft.DataRow(
+                on_select_change=_on_row_tap,
+                selected=is_selected,
+                cells=[
+                    ft.DataCell(ft.Container(
+                        content=ft.Text("✓" if is_selected else "",
+                                        size=14,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#27ae60"),
+                        width=24, alignment=ft.Alignment.CENTER,
+                        bgcolor=("#dcfce7" if is_selected else None),
+                        border_radius=4)),
+                    ft.DataCell(ft.Text(date_str, size=10)),
+                    ft.DataCell(ft.Text(traveler_name[:18], size=10,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(amount_text, size=10,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(method[:12], size=10)),
+                    ft.DataCell(ft.Text(status, size=10,
+                                        color=status_color,
+                                        weight=ft.FontWeight.BOLD)),
+                    ft.DataCell(ft.Text(txn, size=10)),
+                    ft.DataCell(ft.Text(str(receipt_no)[:14], size=10)),
+                    ft.DataCell(ft.Text(str(inv_no), size=10)),
+                    ft.DataCell(ft.Text(pkg_txt, size=10, color=pkg_color)),
+                    ft.DataCell(ft.Text(inv_txt, size=10, color=inv_color)),
+                    ft.DataCell(actions),
+                ]))
 
-    # v1.8 — leaf-only updates
     def _select_payment(self, payment_id):
         if self._selected_payment_id == payment_id:
             self._selected_payment_id = None
@@ -737,18 +917,22 @@ class PaymentsTab:
                 p = next((x for x in self.payments
                           if x.get('id') == self._selected_payment_id), None)
                 if p:
+                    try:
+                        amt = float(p.get('amount', 0) or 0)
+                    except (ValueError, TypeError):
+                        amt = 0.0
                     self.selection_label.value = (
                         f"✅ Selected: "
                         f"{self.travelers.get(p.get('traveler_id',''),'?')} "
-                        f"| ₹{float(p.get('amount',0) or 0):,.0f} "
-                        f"| Txn: {str(p.get('transaction_id',''))[:12]}")
+                        f"| ₹{amt:,.0f} | "
+                        f"Txn: {str(p.get('transaction_id',''))[:12]}")
                 else:
                     self.selection_label.value = ""
             else:
                 self.selection_label.value = ""
 
         self.display_payments()
-        self._update_table_only()  # v1.8
+        self._update_table_only()
 
     def _get_selected_payment(self):
         if not self._selected_payment_id:
@@ -762,7 +946,6 @@ class PaymentsTab:
             on_save=self.refresh)
         dlg.show()
 
-    # v1.8 — leaf-only update (search box safe)
     def filter_payments(self, e=None):
         self._apply_filters_internal()
         self._update_table_only()
@@ -772,11 +955,13 @@ class PaymentsTab:
                             on_save=self.refresh)
         dlg.show()
 
+    # §13 — read-only; no auto-generate
     def view_specific_receipt(self, payment):
         receipts = self.db.get_receipts(payment.get('id'))
         if not receipts:
-            self._snack("ℹ️ No receipt — generating one now")
-            self.generate_receipt_for_payment(payment)
+            self._snack("⚠️ No receipt exists for this payment. "
+                        "Use the 🧾 Generate action (completed "
+                        "payments only).")
             return
 
         receipt = receipts[0]
@@ -789,19 +974,36 @@ class PaymentsTab:
                 company_name = str(
                     self.db.company_settings.iloc[0].get(
                         'company_name', company_name))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAYMENTS] company settings read failed: {ex}")
 
-        amount_in_words = number_to_words_indian(
-            int(receipt.get('amount', 0) or 0))
+        try:
+            receipt_amount = float(receipt.get('amount', 0) or 0)
+        except (ValueError, TypeError):
+            receipt_amount = 0.0
+        try:
+            payment_amount = float(payment.get('amount', 0) or 0)
+        except (ValueError, TypeError):
+            payment_amount = 0.0
+
+        # §15 — mismatch warning
+        mismatch_note = ""
+        if abs(receipt_amount - payment_amount) > 0.01:
+            mismatch_note = (
+                f"\n⚠️ WARNING: Receipt (₹{receipt_amount:,.2f}) "
+                f"differs from payment (₹{payment_amount:,.2f})")
+
+        amount_in_words = number_to_words_indian(int(receipt_amount))
         tid = payment.get('traveler_id', '')
         traveler_info = self.traveler_details.get(
             tid, {'batch_price': 0, 'batch_name': 'No Batch'})
         batch_price = traveler_info['batch_price']
-        total_paid = sum(
-            float(p.get('amount', 0) or 0) for p in self.payments
-            if p.get('traveler_id') == tid)
-        package_pending = batch_price - total_paid
+
+        # §1 — completed-only
+        traveler_payments = [
+            p for p in self.payments if p.get('traveler_id') == tid]
+        total_paid = _completed_amount(traveler_payments)
+        package_pending = max(0.0, batch_price - total_paid)
 
         inv_id = payment.get('invoice_id', '')
         inv_pending = 0
@@ -809,23 +1011,27 @@ class PaymentsTab:
         if inv_id and inv_id in self.invoices:
             inv = self.invoices[inv_id]
             inv_no = inv.get('invoice_no', 'N/A')
-            if inv.get('status') == 'pending':
-                inv_pending = float(
-                    inv.get('rounded_total',
-                            inv.get('total_amount', 0)) or 0)
+            if str(inv.get('status', '')).lower() == 'pending':
+                try:
+                    inv_pending = float(
+                        inv.get('rounded_total',
+                                inv.get('total_amount', 0)) or 0)
+                except (ValueError, TypeError):
+                    inv_pending = 0
 
         details = (
             f"Company:  {company_name}\n"
             f"Receipt No:  {receipt.get('receipt_no', '')}\n"
             f"Date:  {str(receipt.get('receipt_date', ''))[:10]}\n"
             f"Received From:  {traveler_name}\n"
-            f"Amount:  ₹{float(receipt.get('amount', 0) or 0):,.2f}\n"
+            f"Amount:  ₹{receipt_amount:,.2f}\n"
             f"Amount in Words:  {amount_in_words}\n"
             f"Method:  {payment.get('payment_method', 'N/A')}\n"
             f"Transaction ID:  {payment.get('transaction_id', 'N/A')}\n"
             f"Invoice No:  {inv_no}\n"
-            f"Status:  {payment.get('status', 'completed')}\n"
-            f"\nPAYMENT SUMMARY\n"
+            f"Status:  {payment.get('status', 'completed')}"
+            f"{mismatch_note}\n"
+            f"\nPAYMENT SUMMARY (completed only)\n"
             f"  Total Package:  ₹{batch_price:,.2f}\n"
             f"  Total Paid:  ₹{total_paid:,.2f}\n"
             f"  Package Pending:  ₹{package_pending:,.2f}  (without GST)\n"
@@ -839,12 +1045,10 @@ class PaymentsTab:
                 content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
                 width=520, height=440, padding=10),
-            actions=[
-                ft.Button(content=ft.Text("Close"),
-                          on_click=lambda e: self.page.pop_dialog(),
-                          bgcolor=ft.Colors.BLUE_700,
-                          color=ft.Colors.WHITE),
-            ],
+            actions=[ft.Button(content=ft.Text("Close"),
+                               on_click=lambda e: self.page.pop_dialog(),
+                               bgcolor=ft.Colors.BLUE_700,
+                               color=ft.Colors.WHITE)],
         )
         self.page.show_dialog(dialog)
 
@@ -878,8 +1082,8 @@ class PaymentsTab:
                     company_name = str(
                         self.db.company_settings.iloc[0].get(
                             'company_name', company_name))
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"[PAYMENTS] company settings read failed: {ex}")
 
             tid = payment.get('traveler_id', '')
             traveler = self.db.get_traveler_by_id(tid)
@@ -888,14 +1092,18 @@ class PaymentsTab:
                 f"{traveler.get('last_name', '')}").strip() or "Unknown"
             bid = payment.get('batch_id', '')
             batch = self.db.get_batch_by_id(bid) if bid else None
-            batch_price = float(batch.get('price', 0) or 0) if batch else 0
+            try:
+                batch_price = float(batch.get('price', 0) or 0) if batch else 0
+            except (ValueError, TypeError):
+                batch_price = 0
             batch_name = (batch.get('batch_name', 'No Batch')
                           if batch else 'No Batch')
 
-            total_paid = sum(
-                float(p.get('amount', 0) or 0) for p in self.payments
-                if p.get('traveler_id') == tid)
-            package_pending = batch_price - total_paid
+            # §1 — completed-only
+            traveler_payments = [
+                p for p in self.payments if p.get('traveler_id') == tid]
+            total_paid = _completed_amount(traveler_payments)
+            package_pending = max(0.0, batch_price - total_paid)
 
             inv_id = payment.get('invoice_id', '')
             inv_pending = 0
@@ -903,13 +1111,19 @@ class PaymentsTab:
             if inv_id and inv_id in self.invoices:
                 inv = self.invoices[inv_id]
                 inv_no = inv.get('invoice_no', 'N/A')
-                if inv.get('status') == 'pending':
-                    inv_pending = float(
-                        inv.get('rounded_total',
-                                inv.get('total_amount', 0)) or 0)
+                if str(inv.get('status', '')).lower() == 'pending':
+                    try:
+                        inv_pending = float(
+                            inv.get('rounded_total',
+                                    inv.get('total_amount', 0)) or 0)
+                    except (ValueError, TypeError):
+                        inv_pending = 0
 
-            amount_in_words = number_to_words_indian(
-                int(receipt.get('amount', 0) or 0))
+            try:
+                receipt_amount = float(receipt.get('amount', 0) or 0)
+            except (ValueError, TypeError):
+                receipt_amount = 0
+            amount_in_words = number_to_words_indian(int(receipt_amount))
 
             base = get_app_base_path()
             receipts_dir = Path(base) / "receipts"
@@ -952,14 +1166,14 @@ class PaymentsTab:
                 ["Date:", str(receipt.get('receipt_date', ''))[:10]],
                 ["Received from:", traveler_name],
                 ["Batch:", batch_name],
-                ["Amount:", f"₹{float(receipt.get('amount', 0) or 0):,.2f}"],
+                ["Amount:", f"₹{receipt_amount:,.2f}"],
                 ["Amount in Words:", amount_in_words],
                 ["Payment Method:", payment.get('payment_method', 'N/A')],
                 ["Transaction ID:", payment.get('transaction_id', 'N/A')],
                 ["Invoice No:", inv_no],
                 ["Status:", payment.get('status', 'completed')],
                 ["", ""],
-                ["📊 PAYMENT SUMMARY", ""],
+                ["📊 PAYMENT SUMMARY (completed only)", ""],
                 ["Total Package:", f"₹{batch_price:,.2f}"],
                 ["Total Paid:", f"₹{total_paid:,.2f}"],
                 ["Package Pending:",
@@ -999,8 +1213,8 @@ class PaymentsTab:
             if url:
                 try:
                     self.page.launch_url(url)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[PAYMENTS] launch_url failed: {ex}")
         except Exception as ex:
             import traceback
             traceback.print_exc()
@@ -1018,6 +1232,14 @@ class PaymentsTab:
         self.export_single_receipt_pdf(payment)
 
     def generate_receipt_for_payment(self, payment):
+        # §5 / §6 — only completed payments generate receipts
+        if str(payment.get('status', '')).lower() != 'completed':
+            self._snack(
+                f"⚠️ Cannot generate receipt for a "
+                f"'{payment.get('status', 'unknown')}' payment. "
+                f"Only completed payments have receipts.")
+            return
+
         receipts = self.db.get_receipts(payment.get('id'))
         if receipts:
             self._snack(f"ℹ️ Receipt exists: "
@@ -1029,43 +1251,59 @@ class PaymentsTab:
                 self.db.log_activity(
                     self.current_user['id'], "generate_receipt",
                     f"Generated receipt for payment {payment.get('id')}")
-            except Exception:
-                pass
+            except Exception as log_ex:
+                print(f"[PAYMENTS] activity log failed: {log_ex}")
             self.refresh()
             self._snack("✅ Receipt generated")
         except Exception as ex:
+            import traceback
+            traceback.print_exc()
             self._snack(f"❌ {ex}")
 
     def update_summary_stats(self):
-        total = sum(float(p.get('amount', 0) or 0) for p in self.payments)
-        completed = sum(float(p.get('amount', 0) or 0)
-                        for p in self.payments
-                        if p.get('status') == 'completed')
-        pending = sum(float(p.get('amount', 0) or 0)
-                      for p in self.payments
-                      if p.get('status') == 'pending')
-        receipt_count = len(self.receipts)
+        # §1 — all = recorded (for context), completed/pending for finance
+        total_recorded = 0.0
+        for p in self.payments:
+            try:
+                total_recorded += float(p.get('amount', 0) or 0)
+            except (ValueError, TypeError):
+                pass
 
-        traveler_paid = {}
+        completed = _completed_amount(self.payments)
+        pending = _pending_amount(self.payments)
+        receipt_count = sum(len(v) for v in self.receipts.values())
+
+        # §1 — completed-only balances
+        traveler_completed = {}
         for p in self.payments:
             tid = p.get('traveler_id')
-            if tid:
-                traveler_paid[tid] = (traveler_paid.get(tid, 0)
-                                      + float(p.get('amount', 0) or 0))
+            if tid and str(p.get('status', '')).lower() == 'completed':
+                try:
+                    traveler_completed[tid] = (
+                        traveler_completed.get(tid, 0)
+                        + float(p.get('amount', 0) or 0))
+                except (ValueError, TypeError):
+                    pass
 
-        total_package_pending = 0
+        total_package_pending = 0.0
         for tid, info in self.traveler_details.items():
             bp = info['batch_price']
-            paid = traveler_paid.get(tid, 0)
-            if bp - paid > 0:
-                total_package_pending += (bp - paid)
+            if bp <= 0:
+                continue
+            paid = traveler_completed.get(tid, 0)
+            delta = bp - paid
+            if delta > 0:
+                total_package_pending += delta
 
-        total_invoice_pending = 0
+        total_invoice_pending = 0.0
         for inv in self.invoices.values():
-            if inv.get('status') == 'pending':
-                total_invoice_pending += float(
-                    inv.get('rounded_total',
-                            inv.get('total_amount', 0)) or 0)
+            if str(inv.get('status', '')).lower() == 'pending':
+                try:
+                    total_invoice_pending += float(
+                        inv.get('rounded_total',
+                                inv.get('total_amount', 0)) or 0)
+                except (ValueError, TypeError):
+                    pass
 
         def _short(v):
             try:
@@ -1080,16 +1318,13 @@ class PaymentsTab:
                 return f"₹{n/1000:.1f}K"
             return f"₹{n:,.0f}"
 
-        self.stat_labels['total'].value = _short(total)
+        self.stat_labels['total'].value = _short(total_recorded)
         self.stat_labels['completed'].value = _short(completed)
         self.stat_labels['pending'].value = _short(pending)
         self.stat_labels['receipts'].value = str(receipt_count)
-        self.stat_labels['package_pending'].value = _short(
-            total_package_pending)
-        self.stat_labels['invoice_pending'].value = _short(
-            total_invoice_pending)
+        self.stat_labels['package_pending'].value = _short(total_package_pending)
+        self.stat_labels['invoice_pending'].value = _short(total_invoice_pending)
 
-    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -1098,12 +1333,11 @@ class PaymentsTab:
 
 
 # =================================================================================
-# 13.1 — CLASS: PaymentDialog  (v1.8 — typing guard + leaf-only updates)
+# CLASS: PaymentDialog  (v1.9 — record new payment)
 # =================================================================================
 class PaymentDialog:
 
-    def __init__(self, page, db, current_user, traveler=None,
-                 on_save=None):
+    def __init__(self, page, db, current_user, traveler=None, on_save=None):
         self.page = page
         self.db = db
         self.current_user = current_user
@@ -1121,6 +1355,7 @@ class PaymentDialog:
         self.remaining_label = None
         self.method_dropdown = None
         self.trans_field = None
+        self.status_dropdown = None
         self.generate_invoice_check = None
         self.notes_field = None
         self.save_btn = None
@@ -1128,15 +1363,14 @@ class PaymentDialog:
 
         self._current_traveler_id = None
         self._batch_price = 0.0
-        self._total_paid = 0.0
-        # v1.8 — typing guard
+        self._total_paid_completed = 0.0
         self._typing_until = 0.0
+        self._closed = False
 
         self.setup_ui()
         if traveler:
             self.select_traveler(traveler.get('id'))
 
-    # v1.8 — field helper
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -1156,13 +1390,13 @@ class PaymentDialog:
         field.on_change = _on_change
         return field
 
-    # v1.8 — leaf-only update for traveler info row
     def _update_traveler_labels(self):
         for c in (self.batch_label, self.total_amount_label,
                   self.total_paid_label, self.pending_amount_label):
+            if c is None:
+                continue
             try:
-                if c is not None:
-                    c.update()
+                c.update()
             except Exception:
                 pass
 
@@ -1176,13 +1410,13 @@ class PaymentDialog:
                 label = f"{name} ({passport})" if passport else name
                 traveler_options.append(
                     ft.dropdown.Option(key=str(t['id']), text=label[:60]))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-DIALOG] traveler list load failed: {ex}")
 
         self.traveler_dropdown = ft.Dropdown(
             label="Traveler *",
-            options=traveler_options or [ft.dropdown.Option(
-                key="", text="No travelers available")],
+            options=traveler_options or [
+                ft.dropdown.Option(key="", text="No travelers available")],
             value="", height=48, text_size=12)
         self.traveler_dropdown.on_change = self.on_traveler_change
 
@@ -1200,12 +1434,10 @@ class PaymentDialog:
 
         def info_row(label, control):
             return ft.Row([
-                ft.Text(label, width=150,
-                        weight=ft.FontWeight.BOLD, size=11),
+                ft.Text(label, width=150, weight=ft.FontWeight.BOLD, size=11),
                 control,
             ], spacing=8)
 
-        # v1.8 — amount_field with explicit on_change + guard
         self.amount_field = self._field(
             label="💵 Payment Amount (₹) *",
             value="0", height=48, text_size=13)
@@ -1244,9 +1476,17 @@ class PaymentDialog:
             hint_text="Leave blank to auto-generate",
             height=48, text_size=12)
 
+        # §5 — status selector (default: completed)
+        self.status_dropdown = ft.Dropdown(
+            label="Payment Status",
+            options=[
+                ft.dropdown.Option(key="completed", text="Completed"),
+                ft.dropdown.Option(key="pending", text="Pending"),
+            ],
+            value="completed", height=48, text_size=12)
+
         self.generate_invoice_check = ft.Checkbox(
-            label="Generate Invoice (GST/TCS applied)",
-            value=False)
+            label="Generate Invoice (GST/TCS applied)", value=False)
 
         self.notes_field = self._field(
             label="Notes", multiline=True,
@@ -1263,33 +1503,37 @@ class PaymentDialog:
                 self.traveler_dropdown,
                 info_row("Batch:", self.batch_label),
                 info_row("💰 Total Package:", self.total_amount_label),
-                info_row("✅ Total Paid:", self.total_paid_label),
+                info_row("✅ Completed Paid:", self.total_paid_label),
                 info_row("⚠️ Pending:", self.pending_amount_label),
                 ft.Divider(height=10),
                 self.amount_field,
                 info_row("📊 Remaining:", self.remaining_label),
                 self.method_dropdown,
                 self.trans_field,
+                self.status_dropdown,
                 self.generate_invoice_check,
                 self.notes_field,
             ],
-            spacing=12,
-            scroll=ft.ScrollMode.AUTO,
-        )
+            spacing=12, scroll=ft.ScrollMode.AUTO)
+
+        # §17 — responsive
+        page_w = getattr(self.page, "width", None) or 900
+        page_h = getattr(self.page, "height", None) or 700
+        dialog_w = min(540, max(320, int(page_w) - 32))
+        dialog_h = min(680, max(280, int(page_h) - 120))
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("💰 Record Payment",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=540, height=640, padding=10),
+            content=ft.Container(content=content, width=dialog_w,
+                                 height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self._close()),
                 self.save_btn,
             ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
+            actions_alignment=ft.MainAxisAlignment.END)
 
     def select_traveler(self, traveler_id):
         try:
@@ -1302,7 +1546,6 @@ class PaymentDialog:
         self._typing_until = time.time() + TYPING_GUARD_SECONDS
         self.update_traveler_info()
 
-    # v1.8 — leaf-only updates
     def update_traveler_info(self):
         tid = self.traveler_dropdown.value
         if not tid:
@@ -1311,14 +1554,15 @@ class PaymentDialog:
             self.total_paid_label.value = "₹0"
             self.pending_amount_label.value = "₹0"
             self._batch_price = 0
-            self._total_paid = 0
+            self._total_paid_completed = 0
             self._current_traveler_id = None
-            self._update_traveler_labels()  # v1.8
+            self._update_traveler_labels()
             return
 
         try:
             traveler = self.db.get_traveler_by_id(tid)
-        except Exception:
+        except Exception as ex:
+            print(f"[PAY-DIALOG] traveler lookup failed: {ex}")
             traveler = None
 
         if not traveler:
@@ -1330,12 +1574,14 @@ class PaymentDialog:
         batch_id = traveler.get('batch_id')
 
         if not batch_id:
-            self.batch_label.value = "No batch assigned"
+            self.batch_label.value = "⚠️ No batch assigned"
             self.total_amount_label.value = "₹0"
             self.total_paid_label.value = "₹0"
             self.pending_amount_label.value = "₹0"
             self._batch_price = 0
-            self._total_paid = 0
+            self._total_paid_completed = 0
+            self.save_btn.disabled = True
+            self.amount_field.disabled = True
             self._update_traveler_labels()
             return
 
@@ -1345,29 +1591,31 @@ class PaymentDialog:
                 if b.get('id') == batch_id:
                     batch = b
                     break
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-DIALOG] batch lookup failed: {ex}")
 
         if not batch:
             self.batch_label.value = "Batch not found"
             self._update_traveler_labels()
             return
 
-        batch_price = float(batch.get('price', 0) or 0)
+        try:
+            batch_price = float(batch.get('price', 0) or 0)
+        except (ValueError, TypeError):
+            batch_price = 0.0
         batch_name = batch.get('batch_name', 'Unknown')
         self._batch_price = batch_price
 
+        # §1 — completed-only for paid total
         try:
             payments = self.db.get_payments(traveler_id=tid)
-            total_paid = sum(float(p.get('amount', 0) or 0)
-                             for p in payments)
-        except Exception:
-            total_paid = 0
-        self._total_paid = total_paid
+            total_paid = _completed_amount(payments)
+        except Exception as ex:
+            print(f"[PAY-DIALOG] payments lookup failed: {ex}")
+            total_paid = 0.0
+        self._total_paid_completed = total_paid
 
-        pending = batch_price - total_paid
-        if pending < 0:
-            pending = 0
+        pending = max(0.0, batch_price - total_paid)
 
         self.batch_label.value = f"{batch_name} (₹{batch_price:,.0f})"
         self.total_amount_label.value = f"₹{batch_price:,.2f}"
@@ -1386,30 +1634,21 @@ class PaymentDialog:
             self.amount_field.value = f"{pending:.2f}"
 
         self.on_amount_changed(None)
-        self._update_traveler_labels()  # v1.8
+        self._update_traveler_labels()
 
-    # v1.8 — leaf-only update for amount change
     def on_amount_changed(self, e):
-        pending = self._batch_price - self._total_paid
-        if pending < 0:
-            pending = 0
+        pending = max(0.0, self._batch_price - self._total_paid_completed)
 
         try:
             amount = float(self.amount_field.value or 0)
         except (ValueError, TypeError):
             amount = 0.0
 
-        remaining = pending - amount
-        if remaining < 0:
-            remaining = 0
-
+        remaining = max(0.0, pending - amount)
         self.remaining_label.value = f"₹{remaining:,.2f}"
-        if remaining == 0:
-            self.remaining_label.color = "#27ae60"
-        else:
-            self.remaining_label.color = "#3498db"
+        self.remaining_label.color = ("#27ae60" if remaining == 0
+                                      else "#3498db")
 
-        # v1.8 — leaf-only updates
         try:
             self.remaining_label.update()
         except Exception:
@@ -1426,109 +1665,188 @@ class PaymentDialog:
                 self._snack("⚠️ Please select a traveler")
                 return
 
+            # §12 — block traveler without batch
             try:
-                amount = float(self.amount_field.value or 0)
-            except (ValueError, TypeError):
-                amount = 0
-            if amount <= 0:
-                self._snack("⚠️ Please enter a valid amount")
+                traveler = self.db.get_traveler_by_id(tid)
+            except Exception as ex:
+                print(f"[PAY-DIALOG] traveler lookup failed: {ex}")
+                self._snack(f"❌ Traveler lookup failed: {ex}")
+                return
+            if not traveler:
+                self._snack("❌ Traveler not found")
+                return
+            batch_id = traveler.get('batch_id')
+            if not batch_id:
+                self._snack("⚠️ Traveler has no assigned batch")
                 return
 
-            traveler = self.db.get_traveler_by_id(tid)
-            batch_id = traveler.get('batch_id') if traveler else None
+            # §9 — strict amount parsing
+            try:
+                amount = _parse_amount(self.amount_field.value)
+            except ValueError as ve:
+                self._snack(f"⚠️ {ve}")
+                return
 
+            # Batch price lookup
             batch_price = 0.0
-            if batch_id:
-                try:
-                    for b in self.db.get_batches():
-                        if b.get('id') == batch_id:
-                            batch_price = float(b.get('price', 0) or 0)
-                            break
-                except Exception:
-                    pass
+            try:
+                for b in self.db.get_batches():
+                    if b.get('id') == batch_id:
+                        batch_price = float(b.get('price', 0) or 0)
+                        break
+            except Exception as ex:
+                print(f"[PAY-DIALOG] batch lookup failed: {ex}")
 
+            # §1 / §11 — pending based on completed-only
             try:
                 payments = self.db.get_payments(traveler_id=tid)
-                total_paid = sum(float(p.get('amount', 0) or 0)
-                                 for p in payments)
-            except Exception:
-                total_paid = 0
+                total_paid_completed = _completed_amount(payments)
+            except Exception as ex:
+                print(f"[PAY-DIALOG] payments lookup failed: {ex}")
+                total_paid_completed = 0.0
 
-            pending_before = batch_price - total_paid
+            pending_before = max(0.0, batch_price - total_paid_completed)
             if amount > pending_before + 0.01:
                 self._snack(
                     f"⚠️ Payment (₹{amount:,.2f}) exceeds pending "
                     f"(₹{pending_before:,.2f})")
                 return
 
-            invoice_id = ''
-            if self.generate_invoice_check.value and batch_id:
-                tax = self.settings_manager.get_tax_settings()
+            # §10 — transaction ID uniqueness
+            trans_id = (self.trans_field.value or '').strip()
+            if not trans_id:
+                trans_id = str(uuid.uuid4())
+            else:
                 try:
-                    gst_rate = float(tax.get('gst_percentage', 18))
-                    tcs_rate = float(tax.get('tcs_percentage', 0.1))
+                    if not _check_unique_trans_id(
+                            trans_id, self.db.get_payments()):
+                        self._snack(
+                            f"⚠️ Transaction ID '{trans_id}' already exists")
+                        return
+                except Exception as ex:
+                    print(f"[PAY-DIALOG] trans-id check failed: {ex}")
+
+            # §5 — status from dropdown
+            status = self.status_dropdown.value or "completed"
+
+            # §3 — generate invoice BEFORE payment (so we can rollback)
+            invoice_id = ''
+            if self.generate_invoice_check.value:
+                try:
+                    tax = self.settings_manager.get_tax_settings()
+                    try:
+                        gst_rate = float(tax.get('gst_percentage', 18))
+                    except (ValueError, TypeError):
+                        gst_rate = 18.0
+                    try:
+                        tcs_rate = float(tax.get('tcs_percentage', 0.1))
+                    except (ValueError, TypeError):
+                        tcs_rate = 0.1
                 except Exception:
                     gst_rate = 18.0
                     tcs_rate = 0.1
+
                 try:
                     invoice_id = self.db.generate_invoice(
                         tid, batch_id, amount, gst_rate, tcs_rate)
+                    print(f"[PAY-DIALOG] invoice created: {invoice_id}")
                 except Exception as inv_ex:
-                    print(f"[INVOICE] failed: {inv_ex}")
+                    # §4 — abort if invoice creation fails
+                    print(f"[PAY-DIALOG] invoice creation failed: {inv_ex}")
+                    import traceback
+                    traceback.print_exc()
+                    self._snack(
+                        f"❌ Invoice creation failed: {inv_ex}\n"
+                        f"Payment was NOT recorded.")
+                    return
 
-            trans_id = (self.trans_field.value or '').strip()
-            if not trans_id:
-                trans_id = str(uuid.uuid4())[:8]
-
+            # §3 — create payment; rollback invoice on failure
             self.payment_data = {
                 'traveler_id': tid,
                 'batch_id': batch_id,
                 'amount': amount,
                 'payment_method': self.method_dropdown.value or 'Cash',
-                'status': 'completed',
+                'status': status,
                 'transaction_id': trans_id,
                 'invoice_id': invoice_id,
                 'notes': (self.notes_field.value or '').strip(),
             }
 
-            pid = self.db.add_payment(self.payment_data)
+            try:
+                pid = self.db.add_payment(self.payment_data)
+                print(f"[PAY-DIALOG] payment created: {pid}")
+            except Exception as pay_ex:
+                print(f"[PAY-DIALOG] payment creation failed: {pay_ex}")
+                import traceback
+                traceback.print_exc()
+                if invoice_id:
+                    try:
+                        self.db.delete_invoice(invoice_id)
+                        print(f"[PAY-DIALOG] rolled back invoice: "
+                              f"{invoice_id}")
+                    except Exception as rb_ex:
+                        print(f"[PAY-DIALOG] invoice rollback failed: "
+                              f"{rb_ex}")
+                self._snack(f"❌ Payment creation failed: {pay_ex}")
+                return
+
             try:
                 self.db.log_activity(
                     self.current_user['id'], "add_payment",
-                    f"Recorded payment of ₹{amount:,.2f}")
-            except Exception:
-                pass
+                    f"Recorded payment of ₹{amount:,.2f} "
+                    f"(status: {status})")
+            except Exception as log_ex:
+                print(f"[PAY-DIALOG] activity log failed: {log_ex}")
 
-            new_total = total_paid + amount
-            new_pending = batch_price - new_total
-            if new_pending < 0:
-                new_pending = 0
+            new_total = total_paid_completed + (
+                amount if status == 'completed' else 0.0)
+            new_pending = max(0.0, batch_price - new_total)
 
-            print(f"[PAYMENT] Recorded: ₹{amount:,.2f}, "
-                  f"Total: ₹{new_total:,.2f}, Pending: ₹{new_pending:,.2f}")
+            print(f"[PAY-DIALOG] Recorded: ₹{amount:,.2f}, "
+                  f"Status: {status}, "
+                  f"Completed-paid total: ₹{new_total:,.2f}, "
+                  f"Pending: ₹{new_pending:,.2f}")
 
             self._typing_until = 0.0
-            self.page.pop_dialog()
+            self._close()
             self._snack("✅ Payment recorded successfully!")
 
             if self.on_save:
-                self.on_save()
+                try:
+                    self.on_save()
+                except Exception as cb_ex:
+                    print(f"[PAY-DIALOG] on_save callback failed: {cb_ex}")
         except Exception as ex:
             import traceback
             traceback.print_exc()
             self._snack(f"❌ {ex}")
 
     def _close(self):
+        if self._closed:
+            return
+        self._closed = True
         self._typing_until = 0.0
         try:
             self.page.pop_dialog()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[PAY-DIALOG] pop_dialog failed: {ex}")
 
     def show(self):
-        self.page.show_dialog(self.dialog)
+        try:
+            print("[PAY-DIALOG] opening payment dialog")
+            self.page.show_dialog(self.dialog)
+            print("[PAY-DIALOG] payment dialog opened")
+        except Exception as ex:
+            import traceback
+            print(f"[PAY-DIALOG] dialog failed: {ex}")
+            traceback.print_exc()
+            try:
+                self.page.show_dialog(ft.SnackBar(
+                    content=ft.Text(f"Unable to open payment form: {ex}")))
+            except Exception:
+                pass
+            self._closed = True
 
-    # v1.8 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -1537,5 +1855,5 @@ class PaymentDialog:
 
 
 # =================================================================================
-# SECTION 12 + 13 END (FLET 1.0.0 VERSION) — v1.8
+# SECTION 12 + 13 END (FLET 1.0.0 VERSION) — v1.9
 # =================================================================================
