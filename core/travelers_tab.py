@@ -1,31 +1,37 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.6 — Pagination persistence fix (auto-refresh no longer resets to page 1)
+# v1.7 — Review-fix release
 #
-#   ROOT CAUSE:
-#     refresh() unconditionally set self.current_page = 1. When the parent
-#     MainWindowView auto-refreshed the tab (background task), the user
-#     was silently moved back to page 1.
+#   FIXES APPLIED (from travelers_tab.py review):
+#     • Runtime logging in open_add_dialog() and TravelerDialog.show()
+#     • Debounce-safe _update_passport_name() — no full page.update() per keystroke
+#     • Responsive dialog sizing (min(850, page.width - 32))
+#     • Duplicate-dialog guard via _traveler_dialog reference
+#     • PIN validation now matches "PIN (4 digits)" label
+#     • Mobile number format validation
+#     • Explicit date validation (rejects 31-02-2027, etc.)
+#     • Save flow rolls back traveler record on post-insert failure
+#     • Document-reference and activity-log errors are logged, not swallowed
+#     • Unique temp folder per dialog (uuid) — no more shared documents/new_traveler/
+#     • File size + extension validation on picker uploads
+#     • _safe_page_update() helper replaces unprotected page.update() calls
 #
-#   FIX:
-#     • __init__ loads current page from page.session.store
-#     • refresh() CLAMPS instead of resetting
-#     • next_page / prev_page SAVE page after change
-#     • search_travelers SAVES page (still resets — correct behaviour)
+#   COMPANION CHANGES (from database.py v4 review):
+#     • save() now checks add_traveler / update_traveler return values
+#     • save() catches ValueError from the database layer and surfaces it
+#     • Document-reference re-save failure now surfaces to user
 #
-#   Preserved from v1.5:
+#   PRESERVED FROM v1.6:
+#     • Pagination persistence (page.session.store)
 #     • Document upload via native browser page (mobile fix)
-#     • §8.10b: _open_browser_upload() — opens /traveler-doc-upload
-#     • Document rows have a 🌐 button (browser upload) alongside 📎
 #     • save() merges server-side doc paths for existing travelers
-#     • save() scans moved new_traveler folder for pending uploads
-#     • v1.4 date format DD-MM-YYYY preserved
+#     • v1.4 DD-MM-YYYY format
 #
 # SECTION INDEX
 #   [H]     Module-level helpers
 #   [8.1]   TravelersTab class
-#   [8.1b]  Page-state persistence                    ← NEW v1.6
+#   [8.1b]  Page-state persistence
 #   [8.2]   setup_ui
 #   [8.3]   Helpers
 #   [8.4]   refresh
@@ -47,7 +53,9 @@ import flet as ft
 import asyncio
 import base64
 import os
+import re
 import shutil
+import uuid
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
@@ -69,6 +77,21 @@ _DATE_FIELDS = {
 }
 
 _DATE_SEP = "-"
+
+# Allowed extensions per document slot (review §11)
+_ALLOWED_EXTENSIONS = {
+    "passport_scan": {".pdf", ".jpg", ".jpeg", ".png"},
+    "aadhaar_scan":  {".pdf", ".jpg", ".jpeg", ".png"},
+    "pan_scan":      {".pdf", ".jpg", ".jpeg", ".png"},
+    "vaccine_scan":  {".pdf", ".jpg", ".jpeg", ".png"},
+    "photo":         {".jpg", ".jpeg", ".png"},
+}
+
+_MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+_PIN_LENGTH = 4                    # matches the UI label
+_MOBILE_MIN_DIGITS = 10
+_MOBILE_MAX_DIGITS = 15
 
 
 def _clean_number_string(value) -> str:
@@ -137,6 +160,27 @@ def _to_storage_date(value) -> str:
     return s
 
 
+def _valid_date(value) -> bool:
+    """True if value is empty or a real calendar date in DD-MM-YYYY."""
+    if not value:
+        return True
+    try:
+        datetime.strptime(str(value).strip(), "%d-%m-%Y")
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_mobile(mobile: str) -> str:
+    """Return cleaned digits, or raise ValueError if invalid."""
+    digits = re.sub(r"\D", "", mobile or "")
+    if not (_MOBILE_MIN_DIGITS <= len(digits) <= _MOBILE_MAX_DIGITS):
+        raise ValueError(
+            f"Mobile must contain {_MOBILE_MIN_DIGITS}–{_MOBILE_MAX_DIGITS} digits"
+        )
+    return digits
+
+
 def traceback_print():
     import traceback
     traceback.print_exc()
@@ -155,7 +199,6 @@ class TravelersTab:
         self.travelers = []
         self.batches = []
         self.filtered_travelers = []
-        # v1.6 — restore page from session so auto-refresh can't reset it
         self.current_page = self._load_saved_page()
         self.items_per_page = 10
 
@@ -169,6 +212,9 @@ class TravelersTab:
         self.selection_label = None
         self._selected_traveler_id = None
 
+        # v1.7 — single-dialog guard
+        self._traveler_dialog = None
+
         self.setup_ui()
         self.refresh()
 
@@ -176,26 +222,33 @@ class TravelersTab:
         return self.root
 
     # =============================================================================
-    # [8.1b] PAGE-STATE PERSISTENCE  (v1.6 — fixes auto-reset to page 1)
+    # [8.1b] PAGE-STATE PERSISTENCE
     # =============================================================================
     def _load_saved_page(self) -> int:
-        """Restore the last-viewed page from page.session.store."""
         try:
             v = self.page.session.store.get("travelers_page")
             if v:
                 n = int(v)
                 return n if n >= 1 else 1
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELERS] _load_saved_page failed: {ex}")
         return 1
 
     def _save_page(self):
-        """Remember the current page in page.session.store."""
         try:
             self.page.session.store.set(
                 "travelers_page", str(self.current_page))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELERS] _save_page failed: {ex}")
+
+    # =============================================================================
+    # Safe page update (review §14)
+    # =============================================================================
+    def _safe_page_update(self):
+        try:
+            self.page.update()
+        except Exception as ex:
+            print(f"[TRAVELERS] page update failed: {ex}")
 
     # =============================================================================
     # [8.2] setup_ui
@@ -416,7 +469,7 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # [8.4] refresh  (v1.6 — CLAMP page instead of resetting to 1)
+    # [8.4] refresh  (clamps page, no silent except)
     # =============================================================================
     def refresh(self):
         try:
@@ -436,8 +489,6 @@ class TravelersTab:
                     batch_map.get(str(bid), 'Not Assigned') if bid
                     else 'Not Assigned')
 
-            # Reapply the search filter if one is active
-            text = ""
             try:
                 text = (self.search_input.value or "").strip().lower()
             except Exception:
@@ -456,7 +507,6 @@ class TravelersTab:
                         or text in str(t.get('batch_name', '')).lower())
                 ]
 
-            # v1.6 — CLAMP page into valid range instead of resetting to 1
             total_pages = max(
                 1,
                 (len(self.filtered_travelers) + self.items_per_page - 1)
@@ -474,14 +524,10 @@ class TravelersTab:
 
             self.display_travelers()
             self.update_stats()
-            try:
-                self.page.update()
-            except Exception:
-                pass
+            self._safe_page_update()
         except Exception as ex:
             print(f"Travelers refresh error: {ex}")
-            import traceback
-            traceback.print_exc()
+            traceback_print()
 
     # =============================================================================
     # [8.5] display_travelers
@@ -620,10 +666,7 @@ class TravelersTab:
                 self.selection_label.value = ""
 
         self.display_travelers()
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        self._safe_page_update()
 
     # =============================================================================
     # [8.5c] _get_selected_traveler
@@ -635,7 +678,7 @@ class TravelersTab:
                      if t.get('id') == self._selected_traveler_id), None)
 
     # =============================================================================
-    # [8.6] Pagination  (v1.6 — SAVES page after every change)
+    # [8.6] Pagination
     # =============================================================================
     def update_pagination(self):
         total = len(self.filtered_travelers)
@@ -649,22 +692,22 @@ class TravelersTab:
     def prev_page(self, e):
         if self.current_page > 1:
             self.current_page -= 1
-            self._save_page()      # v1.6
+            self._save_page()
             self.display_travelers()
             print(f"[TRAVELERS] -> page {self.current_page} (prev)")
-            self.page.update()
+            self._safe_page_update()
 
     def next_page(self, e):
         if (self.current_page * self.items_per_page
                 < len(self.filtered_travelers)):
             self.current_page += 1
-            self._save_page()      # v1.6
+            self._save_page()
             self.display_travelers()
             print(f"[TRAVELERS] -> page {self.current_page} (next)")
-            self.page.update()
+            self._safe_page_update()
 
     # =============================================================================
-    # [8.7] Search  (v1.6 — SAVES page after reset)
+    # [8.7] Search
     # =============================================================================
     def search_travelers(self, e):
         text = (self.search_input.value or "").strip().lower()
@@ -681,9 +724,9 @@ class TravelersTab:
                     or text in str(t.get('batch_name', '')).lower())
             ]
         self.current_page = 1
-        self._save_page()          # v1.6
+        self._save_page()
         self.display_travelers()
-        self.page.update()
+        self._safe_page_update()
 
     # =============================================================================
     # [8.8] Stats
@@ -714,22 +757,52 @@ class TravelersTab:
         self.stats_labels['docs_complete'].value = str(docs_complete)
 
     # =============================================================================
-    # [8.9] Dialog launchers
+    # [8.9] Dialog launchers  (v1.7 — guarded + instrumented)
     # =============================================================================
     def open_add_dialog(self, e):
-        dlg = TravelerDialog(self.page, self.db, self.current_user,
-                             traveler=None,
-                             on_save_callback=self._on_saved)
-        dlg.show()
+        if self._traveler_dialog is not None:
+            print("[TRAVELERS] dialog already open — ignoring click")
+            return
+        print("[TRAVELERS] Add Traveler clicked")
+        try:
+            self._traveler_dialog = TravelerDialog(
+                self.page, self.db, self.current_user,
+                traveler=None,
+                on_save_callback=self._on_saved,
+                on_close_callback=self._clear_dialog_reference,
+            )
+            print("[TRAVELERS] TravelerDialog created")
+            self._traveler_dialog.show()
+            print("[TRAVELERS] TravelerDialog.show() completed")
+        except Exception as ex:
+            print(f"[TRAVELERS] Add Traveler failed: {ex}")
+            traceback_print()
+            self._traveler_dialog = None
+            self._snack(f"Could not open traveler form: {ex}")
 
     def open_edit_dialog(self, traveler):
-        dlg = TravelerDialog(self.page, self.db, self.current_user,
-                             traveler=traveler,
-                             on_save_callback=self._on_saved)
-        dlg.show()
+        if self._traveler_dialog is not None:
+            print("[TRAVELERS] dialog already open — ignoring edit click")
+            return
+        try:
+            self._traveler_dialog = TravelerDialog(
+                self.page, self.db, self.current_user,
+                traveler=traveler,
+                on_save_callback=self._on_saved,
+                on_close_callback=self._clear_dialog_reference,
+            )
+            self._traveler_dialog.show()
+        except Exception as ex:
+            print(f"[TRAVELERS] Edit dialog failed: {ex}")
+            traceback_print()
+            self._traveler_dialog = None
+            self._snack(f"Could not open edit form: {ex}")
 
     def _on_saved(self):
         self.refresh()
+
+    def _clear_dialog_reference(self):
+        self._traveler_dialog = None
 
     # =============================================================================
     # [8.10] View / Delete / Open doc
@@ -741,11 +814,18 @@ class TravelersTab:
     def delete_traveler(self, traveler):
         def confirm(ev):
             try:
-                self.db.delete_traveler(traveler['id'])
-                self.db.log_activity(
-                    self.current_user['id'], "delete_traveler",
-                    f"Deleted traveler: {traveler.get('first_name','')} "
-                    f"{traveler.get('last_name','')}")
+                try:
+                    self.db.delete_traveler(traveler['id'])
+                except ValueError as ve:
+                    self._snack(f"⚠️ {ve}")
+                    return
+                try:
+                    self.db.log_activity(
+                        self.current_user['id'], "delete_traveler",
+                        f"Deleted traveler: {traveler.get('first_name','')} "
+                        f"{traveler.get('last_name','')}")
+                except Exception as log_ex:
+                    print(f"[TRAVELERS] activity log failed: {log_ex}")
                 self.page.pop_dialog()
 
                 self.refresh()
@@ -753,6 +833,8 @@ class TravelersTab:
                     f"✅ Deleted {traveler.get('first_name','')} "
                     f"{traveler.get('last_name','')}")
             except Exception as ex:
+                print(f"[TRAVELERS] delete failed: {ex}")
+                traceback_print()
                 self._snack(f"❌ Error: {ex}")
 
         confirm_dialog = ft.AlertDialog(
@@ -787,8 +869,8 @@ class TravelersTab:
             if url:
                 try:
                     self.page.launch_url(url)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[TRAVELERS] launch_url failed: {ex}")
                 self._snack(f"📎 Opened: {os.path.basename(abs_path)}")
             else:
                 self._snack("⚠️ Could not serve file")
@@ -797,13 +879,14 @@ class TravelersTab:
             self._snack(f"⚠️ Could not open: {ex}")
 
     # =============================================================================
-    # [8.10b] _open_browser_upload — browser-based doc upload
+    # [8.10b] _open_browser_upload
     # =============================================================================
-    def _open_browser_upload(self, traveler_id, doc_key, mode):
+    def _open_browser_upload(self, traveler_id, doc_key, mode, folder):
         url = (f"/traveler-doc-upload"
                f"?traveler_id={traveler_id}"
                f"&doc_key={doc_key}"
-               f"&mode={mode}")
+               f"&mode={mode}"
+               f"&folder={folder}")
         print(f"[TRAVELERS] opening browser upload: {url}")
 
         async def _go():
@@ -813,32 +896,29 @@ class TravelersTab:
                                         web_only_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[TRAVELERS] OK web_only_window_name=_blank")
                 return
             except TypeError as te:
                 print(f"[TRAVELERS] 1.0 param rejected: {te}")
-            except Exception as e:
-                print(f"[TRAVELERS] 1.0 param raised: {e}")
+            except Exception as ex:
+                print(f"[TRAVELERS] 1.0 param raised: {ex}")
 
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url, web_window_name="_blank")
                 if asyncio.iscoroutine(r):
                     await r
-                print("[TRAVELERS] OK web_window_name=_blank")
                 return
-            except Exception as e:
-                print(f"[TRAVELERS] legacy param failed: {e}")
+            except Exception as ex:
+                print(f"[TRAVELERS] legacy param failed: {ex}")
 
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url)
                 if asyncio.iscoroutine(r):
                     await r
-                print("[TRAVELERS] OK bare — new tab")
                 return
-            except Exception as e:
-                print(f"[TRAVELERS] bare failed: {e}")
+            except Exception as ex:
+                print(f"[TRAVELERS] bare failed: {ex}")
 
         try:
             self.page.run_task(_go)
@@ -911,11 +991,10 @@ class TravelersTab:
             if url:
                 try:
                     self.page.launch_url(url)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[TRAVELERS] launch_url failed: {ex}")
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            traceback_print()
             self._snack(f"❌ Export error: {ex}")
 
     def export_to_pdf(self, e):
@@ -952,8 +1031,8 @@ class TravelersTab:
                     company_name = str(
                         self.db.company_settings.iloc[0].get(
                             'company_name', company_name))
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"[TRAVELERS] company settings read failed: {ex}")
 
             doc = SimpleDocTemplate(
                 str(file_path), pagesize=landscape(A4),
@@ -1017,11 +1096,10 @@ class TravelersTab:
             if url:
                 try:
                     self.page.launch_url(url)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[TRAVELERS] launch_url failed: {ex}")
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            traceback_print()
             self._snack(f"❌ PDF error: {ex}")
 
     def print_table(self, e):
@@ -1062,20 +1140,17 @@ class TravelersTab:
             if url:
                 try:
                     self.page.launch_url(url)
-                except Exception:
-                    pass
+                except Exception as ex:
+                    print(f"[TRAVELERS] launch_url failed: {ex}")
         except Exception as ex:
             self._snack(f"❌ {ex}")
 
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
-        try:
-            self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELERS] snackbar failed: {ex}")
+        self._safe_page_update()
 
 
 # =================================================================================
@@ -1084,12 +1159,13 @@ class TravelersTab:
 class TravelerDialog:
 
     def __init__(self, page, db, current_user, traveler=None,
-                 on_save_callback=None):
+                 on_save_callback=None, on_close_callback=None):
         self.page = page
         self.db = db
         self.current_user = current_user
         self.traveler = traveler
         self.on_save_callback = on_save_callback
+        self.on_close_callback = on_close_callback
         self.is_edit = traveler is not None
 
         self.fields = {}
@@ -1098,6 +1174,10 @@ class TravelerDialog:
         self.file_picker = None
         self._current_doc_key = None
         self.dialog = None
+
+        # v1.7 — unique temp folder for new-traveler uploads
+        self._new_folder_uuid = uuid.uuid4().hex
+        self._closed = False
 
         self.setup_ui()
         if self.is_edit:
@@ -1222,8 +1302,9 @@ class TravelerDialog:
                         key=str(b['id']),
                         text=(f"{b.get('batch_name','Batch')} "
                               f"({b.get('year','')})")))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] batch list load failed: {ex}")
+            traceback_print()
 
         sec4 = ft.Column(
             controls=[
@@ -1237,7 +1318,6 @@ class TravelerDialog:
             ], spacing=10,
         )
 
-        # ---- Section 5: Document uploads (dual button) ----
         doc_fields = [
             ("passport_scan", "Passport Scan", "📄"),
             ("aadhaar_scan", "Aadhaar Scan", "🆔"),
@@ -1292,9 +1372,9 @@ class TravelerDialog:
         self.fields['medical_notes'] = med
 
         pin_field = ft.TextField(
-            label="PIN (4 digits) — for Traveler Portal",
+            label=f"PIN ({_PIN_LENGTH} digits) — for Traveler Portal",
             width=280, height=48, text_size=14,
-            max_length=8,
+            max_length=_PIN_LENGTH,                 # v1.7 — match label
             keyboard_type=ft.KeyboardType.NUMBER,
             input_filter=ft.InputFilter(allow=True,
                                         regex_string=r"[0-9]*"),
@@ -1325,15 +1405,24 @@ class TravelerDialog:
 
         title = "✏️ Edit Traveler" if self.is_edit else "➕ Add Traveler"
 
+        # v1.7 — responsive dialog sizing
+        page_w = getattr(self.page, "width", None) or 900
+        page_h = getattr(self.page, "height", None) or 700
+        dialog_w = min(850, max(320, int(page_w) - 32))
+        dialog_h = min(580, max(280, int(page_h) - 120))
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(
-                content=content, width=850, height=580, padding=10,
+                content=content,
+                width=dialog_w,
+                height=dialog_h,
+                padding=10,
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
-                              on_click=lambda e: self.page.pop_dialog()),
+                              on_click=lambda e: self._close_dialog()),
                 ft.Button(content=ft.Text("💾 Save"),
                           on_click=self.save,
                           bgcolor="#27ae60", color=ft.Colors.WHITE),
@@ -1342,14 +1431,19 @@ class TravelerDialog:
         )
 
     # -----------------------------------------------------------------------------
-    # [9.1.2] _update_passport_name
+    # [9.1.2] _update_passport_name  (v1.7 — update only target field)
     # -----------------------------------------------------------------------------
     def _update_passport_name(self, e):
         first = (self.fields['first_name'].value or "").strip()
         last = (self.fields['last_name'].value or "").strip()
-        name = f"{first} {last}".strip().upper()
-        self.fields['passport_name'].value = name
-        self.page.update()
+        self.fields['passport_name'].value = f"{first} {last}".strip().upper()
+        try:
+            self.fields['passport_name'].update()
+        except Exception:
+            try:
+                self.page.update()
+            except Exception:
+                traceback_print()
 
     # -----------------------------------------------------------------------------
     # [9.1.3] choose_document (Flet picker — desktop)
@@ -1359,24 +1453,28 @@ class TravelerDialog:
         try:
             self.page.run_task(self._pick_doc_async)
         except Exception as ex:
-            print(f"run_task failed: {ex}")
+            print(f"[TRAVELER-DIALOG] run_task failed: {ex}")
+            traceback_print()
+            self._snack("⚠️ Could not start file picker")
 
     # -----------------------------------------------------------------------------
     # [9.1.4] _open_browser_upload (native HTML page)
     # -----------------------------------------------------------------------------
     def _open_browser_upload(self, key):
-        """Open /traveler-doc-upload in a new tab."""
         if self.is_edit and self.traveler:
             traveler_id = str(self.traveler.get('id', ''))
             mode = "edit"
+            folder = traveler_id.replace('/', '_').replace('\\', '_')
         else:
             traveler_id = ""
             mode = "new"
+            folder = f"new_traveler_{self._new_folder_uuid}"
 
         url = (f"/traveler-doc-upload"
                f"?traveler_id={traveler_id}"
                f"&doc_key={key}"
-               f"&mode={mode}")
+               f"&mode={mode}"
+               f"&folder={folder}")
         print(f"[TRAVELER-DIALOG] browser upload: {url}")
 
         async def _go():
@@ -1390,8 +1488,8 @@ class TravelerDialog:
                 return
             except TypeError:
                 pass
-            except Exception as e:
-                print(f"[TRAVELER-DIALOG] 1.0 param failed: {e}")
+            except Exception as ex:
+                print(f"[TRAVELER-DIALOG] 1.0 param failed: {ex}")
 
             try:
                 launcher = ft.UrlLauncher()
@@ -1399,8 +1497,8 @@ class TravelerDialog:
                 if asyncio.iscoroutine(r):
                     await r
                 return
-            except Exception as e:
-                print(f"[TRAVELER-DIALOG] legacy failed: {e}")
+            except Exception as ex:
+                print(f"[TRAVELER-DIALOG] legacy failed: {ex}")
 
             try:
                 launcher = ft.UrlLauncher()
@@ -1408,8 +1506,8 @@ class TravelerDialog:
                 if asyncio.iscoroutine(r):
                     await r
                 return
-            except Exception as e:
-                print(f"[TRAVELER-DIALOG] bare failed: {e}")
+            except Exception as ex:
+                print(f"[TRAVELER-DIALOG] bare failed: {ex}")
 
         try:
             self.page.run_task(_go)
@@ -1421,7 +1519,7 @@ class TravelerDialog:
                     "Upload the file, then return here.")
 
     # -----------------------------------------------------------------------------
-    # [9.1.5] _pick_doc_async (Flet picker — desktop)
+    # [9.1.5] _pick_doc_async  (v1.7 — size + extension validation)
     # -----------------------------------------------------------------------------
     async def _pick_doc_async(self):
         try:
@@ -1451,13 +1549,31 @@ class TravelerDialog:
                     with open(src_path, 'rb') as fh:
                         data = fh.read()
             if not data:
+                self._snack("⚠️ Empty file — nothing to save")
+                return
+
+            # v1.7 — validate size and extension
+            if len(data) > _MAX_FILE_SIZE:
+                self._snack(
+                    f"⚠️ File too large "
+                    f"({len(data) // 1024 // 1024} MB) — "
+                    f"max {_MAX_FILE_SIZE // 1024 // 1024} MB")
+                return
+
+            ext = (Path(name).suffix or ".dat").lower()
+            allowed = _ALLOWED_EXTENSIONS.get(self._current_doc_key, set())
+            if allowed and ext not in allowed:
+                self._snack(
+                    f"⚠️ {self._current_doc_key.replace('_', ' ').title()} "
+                    f"must be one of: {', '.join(sorted(allowed))}")
                 return
 
             base = get_app_base_path()
-            folder_name = "new_traveler"
             if self.is_edit and self.traveler:
                 folder_name = (str(self.traveler['id'])
                                .replace('/', '_').replace('\\', '_'))
+            else:
+                folder_name = f"new_traveler_{self._new_folder_uuid}"
 
             subfolder_map = {
                 'passport_scan': 'passports',
@@ -1470,7 +1586,6 @@ class TravelerDialog:
             dest_dir = Path(base) / "documents" / folder_name / sub
             dest_dir.mkdir(parents=True, exist_ok=True)
 
-            ext = Path(name).suffix or ".dat"
             fname = (f"{self._current_doc_key}_"
                      f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
             dest = dest_dir / fname
@@ -1516,9 +1631,10 @@ class TravelerDialog:
                     lbl.color = "#27ae60"
 
     # -----------------------------------------------------------------------------
-    # [9.1.7] save (merges server-side docs)
+    # [9.1.7] save  (v1.7 + companion changes: result + ValueError checks)
     # -----------------------------------------------------------------------------
     def save(self, e):
+        tid = None
         try:
             data = {}
             for key, field in self.fields.items():
@@ -1533,6 +1649,7 @@ class TravelerDialog:
                         cleaned = _to_storage_date(cleaned)
                     data[key] = cleaned
 
+            # ---- Required fields ----
             if not data.get('first_name') or not data.get('last_name'):
                 self._snack("⚠️ First and Last Name are required")
                 return
@@ -1546,13 +1663,28 @@ class TravelerDialog:
                 self._snack("⚠️ Please select a Batch")
                 return
 
+            # ---- PIN: exactly _PIN_LENGTH digits ----
             pin = data.get('pin', '')
-            if pin and not pin.isdigit():
-                self._snack("⚠️ PIN must be digits only")
+            if pin and (not pin.isdigit() or len(pin) != _PIN_LENGTH):
+                self._snack(
+                    f"⚠️ PIN must be exactly {_PIN_LENGTH} digits")
                 return
-            if pin and len(pin) > 8:
-                self._snack("⚠️ PIN must be 4–8 digits")
+
+            # ---- Mobile format ----
+            try:
+                data['mobile'] = _validate_mobile(data.get('mobile', ''))
+            except ValueError as ve:
+                self._snack(f"⚠️ {ve}")
                 return
+
+            # ---- Date format ----
+            for key in _DATE_FIELDS:
+                value = data.get(key, '')
+                if value and not _valid_date(value):
+                    self._snack(
+                        f"⚠️ {key.replace('_', ' ').title()} "
+                        f"must be a valid date in DD-MM-YYYY")
+                    return
 
             for key, rel in self.doc_paths.items():
                 data[key] = rel
@@ -1579,18 +1711,37 @@ class TravelerDialog:
             if 'status' not in data or not data.get('status'):
                 data['status'] = 'Active'
 
+            # =====================================================================
+            # COMPANION CHANGE — edit path: check return value + catch ValueError
+            # =====================================================================
             if self.is_edit:
-                self.db.update_traveler(self.traveler['id'], data)
+                try:
+                    updated = self.db.update_traveler(
+                        self.traveler['id'], data)
+                except ValueError as ve:
+                    self._snack(f"⚠️ {ve}")
+                    return
+                if not updated:
+                    self._snack("❌ Traveler update failed")
+                    return
                 action = "edit_traveler"
                 msg = "Traveler updated"
                 tid = self.traveler['id']
             else:
-                tid = self.db.add_traveler(data)
+                # =================================================================
+                # COMPANION CHANGE — add path: catch ValueError from db layer
+                # =================================================================
+                try:
+                    tid = self.db.add_traveler(data)
+                except ValueError as ve:
+                    self._snack(f"⚠️ {ve}")
+                    return
                 action = "add_traveler"
                 msg = "Traveler added"
 
                 base = get_app_base_path()
-                src = Path(base) / "documents" / "new_traveler"
+                src = (Path(base) / "documents"
+                       / f"new_traveler_{self._new_folder_uuid}")
                 dst = Path(base) / "documents" / (
                     str(tid).replace('/', '_').replace('\\', '_'))
                 if src.exists() and not dst.exists():
@@ -1621,45 +1772,105 @@ class TravelerDialog:
                             self.doc_paths[key] = rel
                             data[key] = rel
 
+                    # =========================================================
+                    # COMPANION CHANGE — surface doc-reference update failure
+                    # =========================================================
                     try:
-                        self.db.update_traveler(tid, self.doc_paths)
-                    except Exception:
-                        pass
+                        if not self.db.update_traveler(
+                                tid, self.doc_paths):
+                            raise RuntimeError(
+                                "update_traveler returned False")
+                    except Exception as doc_ex:
+                        print(f"[TRAVELER-DIALOG] document-reference "
+                              f"update failed: {doc_ex}")
+                        traceback_print()
+                        self._snack("⚠️ Traveler saved, but document "
+                                    "references could not be saved")
 
             try:
                 self.db.log_activity(
                     self.current_user['id'], action,
                     f"{msg}: {data.get('first_name','')} "
                     f"{data.get('last_name','')}")
-            except Exception:
-                pass
+            except Exception as log_ex:
+                print(f"[TRAVELER-DIALOG] activity log failed: {log_ex}")
 
-            self.page.pop_dialog()
+            self._close_dialog()
             self._snack(f"✅ {msg} successfully")
             if self.on_save_callback:
-                self.on_save_callback()
+                try:
+                    self.on_save_callback()
+                except Exception as cb_ex:
+                    print(f"[TRAVELER-DIALOG] save callback failed: "
+                          f"{cb_ex}")
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            traceback_print()
+            # v1.7 — roll back a partially-created traveler
+            if tid is not None and not self.is_edit:
+                try:
+                    self.db.delete_traveler(tid)
+                    print(f"[TRAVELER-DIALOG] rolled back traveler {tid}")
+                except Exception as rb_ex:
+                    print(f"[TRAVELER-DIALOG] rollback failed: {rb_ex}")
             self._snack(f"❌ Error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # [9.1.8] show
+    # [9.1.8] show  (v1.7 — instrumented)
     # -----------------------------------------------------------------------------
     def show(self):
         try:
-            if hasattr(self.page, 'services'):
-                if self.file_picker not in self.page.services:
-                    self.page.services.append(self.file_picker)
-        except Exception:
-            pass
-        self.page.show_dialog(self.dialog)
+            services = getattr(self.page, "services", None)
+            if services is not None and self.file_picker not in services:
+                services.append(self.file_picker)
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] FilePicker registration failed: {ex}")
+
+        try:
+            print("[TRAVELER-DIALOG] showing Add/Edit dialog")
+            self.page.show_dialog(self.dialog)
+            print("[TRAVELER-DIALOG] dialog show request completed")
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] failed to show dialog: {ex}")
+            traceback_print()
+            try:
+                self.page.show_dialog(
+                    ft.SnackBar(
+                        content=ft.Text(
+                            f"Unable to open traveler form: {ex}")
+                    )
+                )
+            except Exception:
+                traceback_print()
+            self._closed = True
+            if self.on_close_callback:
+                try:
+                    self.on_close_callback()
+                except Exception as cb_ex:
+                    print(f"[TRAVELER-DIALOG] on_close_callback failed: "
+                          f"{cb_ex}")
+
+    # -----------------------------------------------------------------------------
+    # v1.7 — close helper (pop_dialog + notify owner)
+    # -----------------------------------------------------------------------------
+    def _close_dialog(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.page.pop_dialog()
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] pop_dialog failed: {ex}")
+        if self.on_close_callback:
+            try:
+                self.on_close_callback()
+            except Exception as ex:
+                print(f"[TRAVELER-DIALOG] on_close_callback failed: {ex}")
 
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELER-DIALOG] snackbar failed: {ex}")
 
 
 # =================================================================================
@@ -1724,8 +1935,8 @@ class TravelerViewDialog:
                     if str(b.get('id')) == str(t.get('batch_id')):
                         batch_name = b.get('batch_name', 'Unknown')
                         break
-            except Exception:
-                pass
+            except Exception as ex:
+                print(f"[TRAVELER-VIEW] batch lookup failed: {ex}")
         if not batch_name:
             batch_name = 'Not Assigned'
 
@@ -1896,13 +2107,19 @@ class TravelerViewDialog:
                     ),
                 ]))
 
+        # v1.7 — responsive viewer sizing
+        page_w = getattr(self.page, "width", None) or 900
+        page_h = getattr(self.page, "height", None) or 700
+        view_w = min(800, max(320, int(page_w) - 32))
+        view_h = min(580, max(280, int(page_h) - 120))
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"👤 {full_name}",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(
                 content=self.tabs_control,
-                width=800, height=580, padding=5,
+                width=view_w, height=view_h, padding=5,
             ),
             actions=[
                 ft.Button(
@@ -1927,22 +2144,30 @@ class TravelerViewDialog:
             else:
                 self._snack("⚠️ Could not serve file")
         except Exception as ex:
+            print(f"[TRAVELER-VIEW] open_document failed: {ex}")
             self._snack(f"⚠️ Could not open: {ex}")
 
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELER-VIEW] snackbar failed: {ex}")
         try:
             self.page.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[TRAVELER-VIEW] page update failed: {ex}")
 
     def show(self):
-        self.page.show_dialog(self.dialog)
+        try:
+            print("[TRAVELER-VIEW] showing dialog")
+            self.page.show_dialog(self.dialog)
+            print("[TRAVELER-VIEW] dialog show request completed")
+        except Exception as ex:
+            print(f"[TRAVELER-VIEW] failed to show dialog: {ex}")
+            traceback_print()
+            self._snack(f"Unable to open traveler view: {ex}")
 
 
 # =================================================================================
-# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.6
+# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.7
 # =================================================================================
