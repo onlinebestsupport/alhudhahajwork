@@ -1695,6 +1695,23 @@ def _build_app() -> FastAPI:
 
     return app
 
+    # -----------------------------------------------------------------------------
+    # 21.5.13 — /sitemap.xml  (helps search engines index the site)
+    # -----------------------------------------------------------------------------
+    @app.get("/sitemap.xml")
+    async def sitemap_xml():
+        sitemap_path = os.path.join(static_dir, "sitemap.xml")
+        if os.path.exists(sitemap_path):
+            return FileResponse(
+                sitemap_path,
+                media_type="application/xml",
+                headers={"Cache-Control": "public, max-age=86400"})
+        raise HTTPException(status_code=404,
+                            detail="Sitemap not found")
+
+    _boot_log("sitemap.xml route registered")
+
+    return app
 
 # =================================================================================
 # 21.6 — ENTRY POINT

@@ -2,13 +2,16 @@
 # Alhudha Haj Travel System
 
 User-agent: *
-# Block sensitive/admin paths
 Disallow: /admin
 Disallow: /api/admin
 Disallow: /traveler
 Disallow: /traveler-doc-upload
 Disallow: /gallery-upload
+Disallow: /backup-import
 Disallow: /download
+Allow: /
+
+Sitemap: https://alhudhahaj.work/sitemap.xml
 
 # Allow public pages
 Allow: /

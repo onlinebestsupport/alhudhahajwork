@@ -6,11 +6,40 @@
     <title>Alhudha Haj Travel - Your Journey to the Holy Land</title>
     <link rel="icon" href="/static/logo.png">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+
+    <!-- =========================================================================
+         [SEO.1] Standard Meta
+         ========================================================================= -->
+    <meta name="description" content="Alhudha Haj Travel — Trusted Hajj and Umrah packages since 1998. Premium accommodation, VIP transport, expert guides. Book your pilgrimage today.">
+    <meta name="keywords" content="Hajj, Umrah, Haj Travel, Umrah Packages, Pilgrimage, Alhudha, Islamic Travel">
+    <meta name="author" content="Alhudha Haj Travel">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://alhudhahaj.work/">
+
+    <!-- =========================================================================
+         [SEO.2] Open Graph (WhatsApp/Facebook/Telegram previews)
+         ========================================================================= -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://alhudhahaj.work/">
+    <meta property="og:title" content="Alhudha Haj Travel — Your Journey to the Holy Land">
+    <meta property="og:description" content="Trusted Hajj and Umrah packages with premium accommodation and expert guides.">
+    <meta property="og:image" content="https://alhudhahaj.work/static/logo.png">
+    <meta property="og:site_name" content="Alhudha Haj Travel">
+
+    <!-- =========================================================================
+         [SEO.3] Twitter Card
+         ========================================================================= -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Alhudha Haj Travel — Your Journey to the Holy Land">
+    <meta name="twitter:description" content="Trusted Hajj and Umrah packages since 1998.">
+    <meta name="twitter:image" content="https://alhudhahaj.work/static/logo.png">
+
     <style>
         /* =========================================================================
            [CSS.0] RESET & VARIABLES
            ========================================================================= */
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         :root {
             --primary-color: #1e3c72;
             --primary-dark: #0f2b4f;
@@ -27,16 +56,14 @@
             --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.08);
             --hover-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
         }
+
         body {
             font-family: 'Inter', sans-serif;
             overflow-x: hidden;
             background: #ffffff;
         }
 
-        /* =========================================================================
-           [CSS.0b] EMOJI FALLBACK
-           Browsers render emoji natively — no font files needed.
-           ========================================================================= */
+        /* Emoji fallback — works on all browsers without external fonts */
         .emoji {
             font-family: "Apple Color Emoji", "Segoe UI Emoji",
                          "Noto Color Emoji", "Android Emoji", sans-serif;
@@ -213,7 +240,7 @@
            ========================================================================= */
         .hero {
             background: linear-gradient(135deg, rgba(30, 60, 114, 0.95), rgba(20, 40, 80, 0.95)),
-                        url('https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=1950&q=80');
+                        url('https://images.unsplash.com/photo-1591604129939-f1efa4d9f7fa?auto=format&fit=crop&w=1950&q=80');
             background-size: cover; background-position: center;
             color: white; padding: 110px 0; text-align: center;
         }
@@ -324,7 +351,10 @@
             text-align: center; padding: 60px 20px;
             color: var(--gray-color); grid-column: 1 / -1;
         }
-        .loading-spinner .emoji { font-size: 2rem; animation: spin 1s linear infinite; display: inline-block; }
+        .loading-spinner .emoji {
+            font-size: 2rem; animation: spin 1s linear infinite;
+            display: inline-block;
+        }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
         /* =========================================================================
@@ -744,7 +774,8 @@
                     <div class="stats-grid" id="statsGrid"></div>
                 </div>
                 <div class="about-image">
-                    <img src="https://images.unsplash.com/photo-1542816417-5cef58c1e8e0?auto=format&fit=crop&w=800&q=80" alt="About Alhudha">
+                    <img src="https://images.unsplash.com/photo-1591604129939-f1efa4d9f7fa?auto=format&fit=crop&w=800&q=80"
+                         alt="Pilgrims at a sacred Islamic landmark">
                 </div>
             </div>
         </div>
@@ -836,123 +867,57 @@
         let GALLERY = { photos: [], videos: [], enabled: false };
 
         // =====================================================================
-        // [JS.0b] EMOJI MAPS  (v2.32 — replaces Font Awesome)
+        // [JS.0b] EMOJI MAPS
         // =====================================================================
-
-        // Feature-card icons: FA class → emoji
-        // The admin may still have legacy fa-* values in config —
-        // we map them to emojis here so they render on all browsers
-        // without needing any font files.
         const FA_TO_EMOJI = {
-            // Worship
-            "fa-mosque": "🕌",
-            "fa-kaaba": "🕋",
-            "fa-book-quran": "📖",
-            "fa-hands-praying": "🤲",
-            "fa-star-and-crescent": "☪️",
+            "fa-mosque": "🕌", "fa-kaaba": "🕋", "fa-book-quran": "📖",
+            "fa-hands-praying": "🤲", "fa-star-and-crescent": "☪️",
             "fa-dove": "🕊️",
-            // Travel
-            "fa-plane": "✈️",
-            "fa-bus": "🚌",
-            "fa-car": "🚗",
-            "fa-suitcase-rolling": "🧳",
-            "fa-passport": "🛂",
-            "fa-globe": "🌍",
-            "fa-map-marked-alt": "🗺️",
-            "fa-route": "🛣️",
-            "fa-compass": "🧭",
-            // Stay
-            "fa-hotel": "🏨",
-            "fa-bed": "🛏️",
-            "fa-utensils": "🍽️",
-            "fa-mug-hot": "☕",
-            "fa-wifi": "📶",
-            // People
-            "fa-users": "👥",
-            "fa-user-tie": "👔",
-            "fa-user-shield": "🛡️",
-            "fa-people-group": "👨‍👩‍👧‍👦",
-            "fa-user-check": "✅",
+            "fa-plane": "✈️", "fa-bus": "🚌", "fa-car": "🚗",
+            "fa-suitcase-rolling": "🧳", "fa-passport": "🛂",
+            "fa-globe": "🌍", "fa-map-marked-alt": "🗺️",
+            "fa-route": "🛣️", "fa-compass": "🧭",
+            "fa-hotel": "🏨", "fa-bed": "🛏️", "fa-utensils": "🍽️",
+            "fa-mug-hot": "☕", "fa-wifi": "📶",
+            "fa-users": "👥", "fa-user-tie": "👔", "fa-user-shield": "🛡️",
+            "fa-people-group": "👨‍👩‍👧‍👦", "fa-user-check": "✅",
             "fa-user-group": "👫",
-            // Services
-            "fa-headset": "🎧",
-            "fa-shield-halved": "🛡️",
-            "fa-clock": "🕐",
-            "fa-calendar-check": "📅",
-            "fa-hand-holding-dollar": "💰",
-            "fa-credit-card": "💳",
-            "fa-file-contract": "📄",
-            "fa-stethoscope": "🩺",
-            "fa-language": "🌐",
-            // Contact
-            "fa-phone": "📞",
-            "fa-envelope": "✉️",
-            "fa-comments": "💬",
-            "fa-location-dot": "📍",
-            "fa-address-book": "📒",
+            "fa-headset": "🎧", "fa-shield-halved": "🛡️", "fa-clock": "🕐",
+            "fa-calendar-check": "📅", "fa-hand-holding-dollar": "💰",
+            "fa-credit-card": "💳", "fa-file-contract": "📄",
+            "fa-stethoscope": "🩺", "fa-language": "🌐",
+            "fa-phone": "📞", "fa-envelope": "✉️", "fa-comments": "💬",
+            "fa-location-dot": "📍", "fa-address-book": "📒",
             "fa-whatsapp": "💬",
-            // Quality
-            "fa-star": "⭐",
-            "fa-heart": "❤️",
-            "fa-check-circle": "✅",
-            "fa-award": "🏆",
-            "fa-certificate": "📜",
-            "fa-thumbs-up": "👍",
-            "fa-circle-info": "ℹ️",
-            "fa-lightbulb": "💡",
-            "fa-bolt": "⚡",
-            // Extras / defaults
-            "fa-check": "✔️",
-            "fa-link": "🔗",
-            "fa-arrow-right": "➡️",
+            "fa-star": "⭐", "fa-heart": "❤️", "fa-check-circle": "✅",
+            "fa-award": "🏆", "fa-certificate": "📜", "fa-thumbs-up": "👍",
+            "fa-circle-info": "ℹ️", "fa-lightbulb": "💡", "fa-bolt": "⚡",
+            "fa-check": "✔️", "fa-link": "🔗", "fa-arrow-right": "➡️",
             "fa-chevron-right": "▸",
         };
 
-        // Social platform keys → emoji
         const SOCIAL_PLATFORM_EMOJI = {
-            facebook:  "📘",
-            instagram: "📷",
-            twitter:   "🐦",
-            telegram:  "✈️",
-            whatsapp:  "💬",
-            youtube:   "▶️",
-            linkedin:  "💼",
-            tiktok:    "🎵",
-            snapchat:  "👻",
-            pinterest: "📌",
-            email:     "✉️",
-            website:   "🌐"
+            facebook:  "📘", instagram: "📷", twitter: "🐦",
+            telegram:  "✈️", whatsapp:  "💬", youtube: "▶️",
+            linkedin:  "💼", tiktok:    "🎵", snapchat: "👻",
+            pinterest: "📌", email:     "✉️", website:  "🌐"
         };
         const SOCIAL_PLATFORM_LABELS = {
-            facebook:  "Facebook",
-            instagram: "Instagram",
-            twitter:   "Twitter / X",
-            telegram:  "Telegram",
-            whatsapp:  "WhatsApp",
-            youtube:   "YouTube",
-            linkedin:  "LinkedIn",
-            tiktok:    "TikTok",
-            snapchat:  "Snapchat",
-            pinterest: "Pinterest",
-            email:     "Email",
-            website:   "Website"
+            facebook:  "Facebook", instagram: "Instagram",
+            twitter:   "Twitter / X", telegram:  "Telegram",
+            whatsapp:  "WhatsApp", youtube:   "YouTube",
+            linkedin:  "LinkedIn", tiktok:    "TikTok",
+            snapchat:  "Snapchat", pinterest: "Pinterest",
+            email:     "Email", website:   "Website"
         };
 
-        // Convert any icon value → emoji for rendering
         function iconToEmoji(value) {
             const v = String(value || "").trim();
             if (!v) return "⭐";
-            // If it's already a FA class, look it up
             if (v.startsWith("fa-")) {
                 return FA_TO_EMOJI[v] || "⭐";
             }
-            // Otherwise assume it's an emoji or plain text — return as-is
             return v;
-        }
-
-        // Render an icon as inline emoji HTML
-        function iconHTML(value) {
-            return `<span class="emoji">${escapeHTML(iconToEmoji(value))}</span>`;
         }
 
         // =====================================================================
@@ -964,21 +929,62 @@
                 return '₹' + n.toLocaleString('en-IN');
             } catch (e) { return '₹' + amount; }
         }
+
+        // [FIX-v2.33] DD-MM-YYYY date parsing (Indian format first)
+        // Previously "07-05-2027" was parsed as July 5 by JS `new Date()`.
+        // Now we explicitly match DD-MM-YYYY / DD/MM/YYYY first.
         function formatDate(d) {
             if (!d) return '';
             try {
-                const dt = new Date(d);
-                if (isNaN(dt.getTime())) return d;
+                const s = String(d).trim();
+                if (!s) return '';
+
+                let dt = null;
+                let m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})/);
+                if (m) {
+                    const day = parseInt(m[1], 10);
+                    const month = parseInt(m[2], 10) - 1;   // 0-based
+                    let year = parseInt(m[3], 10);
+                    if (year < 100) year += 2000;
+                    if (month >= 0 && month <= 11 &&
+                        day >= 1 && day <= 31) {
+                        dt = new Date(year, month, day);
+                    }
+                }
+
+                if (!dt || isNaN(dt.getTime())) {
+                    m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+                    if (m) {
+                        const year = parseInt(m[1], 10);
+                        const month = parseInt(m[2], 10) - 1;
+                        const day = parseInt(m[3], 10);
+                        if (month >= 0 && month <= 11 &&
+                            day >= 1 && day <= 31) {
+                            dt = new Date(year, month, day);
+                        }
+                    }
+                }
+
+                if (!dt || isNaN(dt.getTime())) {
+                    dt = new Date(s);
+                }
+
+                if (!dt || isNaN(dt.getTime())) return s;
+
                 return dt.toLocaleDateString('en-IN', {
                     day: '2-digit', month: 'short', year: 'numeric'
                 });
-            } catch (e) { return d; }
+            } catch (e) {
+                return d;
+            }
         }
+
         function safeText(s, fallback) {
             if (s === null || s === undefined) return fallback || '';
             const str = String(s).trim();
             return str || (fallback || '');
         }
+
         function escapeHTML(s) {
             if (s === null || s === undefined) return '';
             return String(s)
@@ -988,13 +994,13 @@
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#39;');
         }
+
         function whatsappURL(number, message) {
             const clean = String(number || '').replace(/\D/g, '');
             const base = `https://wa.me/${clean}`;
             return message ? `${base}?text=${encodeURIComponent(message)}` : base;
         }
 
-        // ---- Social links helpers ----
         function normalizeSocialLinks(s) {
             if (!s) return [];
             if (Array.isArray(s.links) && s.links.length > 0) {
@@ -1151,7 +1157,7 @@
         }
 
         // =====================================================================
-        // [JS.6] FEATURES  (v2.32 — emoji icons)
+        // [JS.6] FEATURES (emoji icons)
         // =====================================================================
         function renderFeatures(features) {
             const grid = document.getElementById('featuresGrid');
@@ -1200,7 +1206,8 @@
             const emailAddr = (CONFIG.contact || {}).email || 'info@alhudha.com';
             grid.innerHTML = batches.map(b => {
                 const name = safeText(b.name, 'Package');
-                const desc = safeText(b.description, 'Complete Haj/Umrah package');
+                const desc = safeText(b.description,
+                                      'Complete Hajj/Umrah package');
                 const price = Number(b.price) || 0;
                 const dep = b.departure_date ? formatDate(b.departure_date) : 'TBA';
                 const ret = b.return_date ? formatDate(b.return_date) : '';
@@ -1293,7 +1300,7 @@
                     <div class="gallery-item"
                          onclick="openLightbox('photo', ${idx})">
                         <img src="${escapeHTML(p.url)}" loading="lazy"
-                             alt="${escapeHTML(p.caption || '')}">
+                             alt="${escapeHTML(p.caption || 'Pilgrims visiting a sacred Islamic landmark')}">
                         ${p.caption
                             ? `<div class="caption">${escapeHTML(p.caption)}</div>`
                             : ''}
@@ -1342,7 +1349,7 @@
             if (kind === 'photo' && GALLERY.photos[idx]) {
                 url = GALLERY.photos[idx].url;
                 caption = GALLERY.photos[idx].caption || '';
-                content.innerHTML = `<img src="${escapeHTML(url)}" alt="">`;
+                content.innerHTML = `<img src="${escapeHTML(url)}" alt="${escapeHTML(caption || 'Pilgrim photo')}">`;
             } else if (kind === 'video' && GALLERY.videos[idx]) {
                 url = GALLERY.videos[idx].url;
                 caption = GALLERY.videos[idx].caption || '';
