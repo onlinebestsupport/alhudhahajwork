@@ -1,7 +1,7 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.8 — Document Management & UI Fixes
+# v1.8 — Document Management & Auth Fix
 #
 #   FIXES APPLIED (from v1.7):
 #     • Added Delete button for each document slot in TravelerDialog
@@ -10,6 +10,8 @@
 #     • Auto-links the most recently uploaded file to the DB on Save.
 #     • Added _refresh_doc_status() to handle folder scanning and UI sync.
 #     • Added _delete_document_folder() to safely remove files.
+#     • Passes session token to the HTML upload page to fix the 
+#       {"detail":"Unauthorized"} error.
 #     • Preserved all v1.7 logging, validation, and safety checks.
 #
 # SECTION INDEX
@@ -30,6 +32,16 @@
 #   [8.10b] Browser upload
 #   [8.11]  Exports
 #   [9.1]   TravelerDialog (Add/Edit)
+#   [9.1.1] setup_ui
+#   [9.1.2] _update_passport_name
+#   [9.1.2b] _refresh_doc_status
+#   [9.1.2c] _delete_document
+#   [9.1.3] choose_document
+#   [9.1.4] _open_browser_upload
+#   [9.1.5] _pick_doc_async
+#   [9.1.6] load_traveler
+#   [9.1.7] save
+#   [9.1.8] show
 #   [10.1]  TravelerViewDialog
 # =================================================================================
 
@@ -1571,11 +1583,21 @@ class TravelerDialog:
             mode = "new"
             folder = f"new_traveler_{self._new_folder_uuid}"
 
+        # v1.8 — Grab token from Flet session to fix Unauthorized error
+        token = ""
+        try:
+            token = (self.page.session.store.get("token") or 
+                     self.page.session.store.get("api_key") or 
+                     self.page.session.store.get("access_token") or "")
+        except Exception:
+            pass
+
         url = (f"/traveler-doc-upload"
                f"?traveler_id={traveler_id}"
                f"&doc_key={key}"
                f"&mode={mode}"
-               f"&folder={folder}")
+               f"&folder={folder}"
+               f"&token={token}")
         print(f"[TRAVELER-DIALOG] browser upload: {url}")
 
         async def _go():
