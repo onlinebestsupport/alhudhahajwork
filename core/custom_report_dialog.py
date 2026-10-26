@@ -2797,8 +2797,41 @@ class CustomReportDialog:
         spacing = 10 if pw < 700 else 14
         for col in selected:
             lbl = col['label']
-            w = 100 if lbl == 'Photo' else max(col_min,
-                                               len(lbl) * col_pad)
+
+
+    # =============================================================================
+    # 17.3.22 — display_preview
+    # =============================================================================
+    def display_preview(self, selected, report_data):
+        try:
+            self.preview_table.columns.clear()
+            self.preview_table.rows.clear()
+        except Exception as e:
+            print(f"[CR] preview cleanup warn: {e}")
+
+        if not selected or not report_data:
+            return
+
+        # --- NEW: Limit preview to 50 rows to prevent browser lag ---
+        MAX_PREVIEW_ROWS = 50
+        display_data = report_data[:MAX_PREVIEW_ROWS]
+        
+        if len(report_data) > MAX_PREVIEW_ROWS:
+            self._set_status(
+                "ℹ️", 
+                f"Preview limited to {MAX_PREVIEW_ROWS} of {len(report_data)} rows. Use Export to see all.", 
+                "#2563eb"
+            )
+
+        pw = self.page.width or 1000
+        col_min = 100 if pw < 700 else 130
+        col_pad = 8 if pw < 700 else 10
+
+        total_w = 0
+        spacing = 10 if pw < 700 else 14
+        for col in selected:
+            lbl = col['label']
+            w = 100 if lbl == 'Photo' else max(col_min, len(lbl) * col_pad)
             total_w += w
             self.preview_table.columns.append(
                 ft.DataColumn(ft.Container(
@@ -2813,13 +2846,13 @@ class CustomReportDialog:
         total_w = max(total_w, 900)
         self._preview_inner.width = total_w
 
-        for row in report_data:
+        # --- CHANGED: Use display_data instead of report_data ---
+        for row in display_data:
             cells = []
             for col in selected:
                 lbl = col['label']
                 if lbl == 'Photo':
-                    pp = (row.get('__photo_path__', '')
-                          or row.get('Photo', ''))
+                    pp = (row.get('__photo_path__', '') or row.get('Photo', ''))
                     if pp and not os.path.isabs(pp):
                         pp = os.path.join(self.get_app_base_path(), pp)
                     uri = _photo_data_uri(pp)
