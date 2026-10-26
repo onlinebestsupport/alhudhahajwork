@@ -1,11 +1,12 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.9 — Document Management & API Key Auth Fix
+# v1.9 — Document Management & Dialog Close Fix
 #
 #   FIXES APPLIED (from v1.8):
-#     • Passes the ADMIN_API_KEY (or session token) to the HTML upload page
-#       to fix the {"detail":"Unauthorized"} error.
+#     • Fixed dialog remaining visible after Save/Cancel by using
+#       explicit self.dialog.open = False instead of page.pop_dialog()
+#     • Fixed Delete Traveler confirmation dialog close logic
 #     • Multi-file support: Scans the actual folder and shows file count
 #       and total size (e.g. "✅ 2 files (1.2 MB)") instead of just one name.
 #     • Auto-links the most recently uploaded file to the DB on Save.
@@ -41,6 +42,7 @@
 #   [9.1.6] load_traveler
 #   [9.1.7] save
 #   [9.1.8] show
+#   [9.1.9] _close_dialog
 #   [10.1]  TravelerViewDialog
 # =================================================================================
 
@@ -821,7 +823,16 @@ class TravelersTab:
                         f"{traveler.get('last_name','')}")
                 except Exception as log_ex:
                     print(f"[TRAVELERS] activity log failed: {log_ex}")
-                self.page.pop_dialog()
+                
+                # Close dialog explicitly
+                try:
+                    if hasattr(self.page, "close"):
+                        self.page.close(confirm_dialog)
+                    else:
+                        confirm_dialog.open = False
+                        self.page.update()
+                except Exception:
+                    self.page.pop_dialog()
 
                 self.refresh()
                 self._snack(
@@ -1960,16 +1971,27 @@ class TravelerDialog:
                           f"{cb_ex}")
 
     # -----------------------------------------------------------------------------
-    # Close helper
+    # [9.1.9] _close_dialog (Fix: explicit dialog close)
     # -----------------------------------------------------------------------------
     def _close_dialog(self):
         if self._closed:
             return
         self._closed = True
+        
         try:
-            self.page.pop_dialog()
+            # Flet 1.0 recommended way to close a specific dialog
+            if hasattr(self.page, "close"):
+                self.page.close(self.dialog)
+            else:
+                self.dialog.open = False
+                self.dialog.update()
         except Exception as ex:
-            print(f"[TRAVELER-DIALOG] pop_dialog failed: {ex}")
+            print(f"[TRAVELER-DIALOG] close failed: {ex}")
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                pass
+                
         if self.on_close_callback:
             try:
                 self.on_close_callback()
@@ -2233,7 +2255,7 @@ class TravelerViewDialog:
             actions=[
                 ft.Button(
                     content=ft.Text("Close"),
-                    on_click=lambda e: self.page.pop_dialog(),
+                    on_click=lambda e: self._close_dialog(),
                     bgcolor=ft.Colors.BLUE_700,
                     color=ft.Colors.WHITE,
                 ),
@@ -2255,6 +2277,20 @@ class TravelerViewDialog:
         except Exception as ex:
             print(f"[TRAVELER-VIEW] open_document failed: {ex}")
             self._snack(f"⚠️ Could not open: {ex}")
+            
+    def _close_dialog(self):
+        try:
+            if hasattr(self.page, "close"):
+                self.page.close(self.dialog)
+            else:
+                self.dialog.open = False
+                self.dialog.update()
+        except Exception as ex:
+            print(f"[TRAVELER-VIEW] close failed: {ex}")
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                pass
 
     def _snack(self, msg):
         try:
