@@ -1,17 +1,16 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.8 — Document Management & Auth Fix
+# v1.9 — Document Management & API Key Auth Fix
 #
-#   FIXES APPLIED (from v1.7):
-#     • Added Delete button for each document slot in TravelerDialog
+#   FIXES APPLIED (from v1.8):
+#     • Passes the ADMIN_API_KEY (or session token) to the HTML upload page
+#       to fix the {"detail":"Unauthorized"} error.
 #     • Multi-file support: Scans the actual folder and shows file count
 #       and total size (e.g. "✅ 2 files (1.2 MB)") instead of just one name.
 #     • Auto-links the most recently uploaded file to the DB on Save.
 #     • Added _refresh_doc_status() to handle folder scanning and UI sync.
 #     • Added _delete_document_folder() to safely remove files.
-#     • Passes session token to the HTML upload page to fix the 
-#       {"detail":"Unauthorized"} error.
 #     • Preserved all v1.7 logging, validation, and safety checks.
 #
 # SECTION INDEX
@@ -1583,12 +1582,18 @@ class TravelerDialog:
             mode = "new"
             folder = f"new_traveler_{self._new_folder_uuid}"
 
-        # v1.8 — Grab token from Flet session to fix Unauthorized error
+        # v1.9 — Grab API Key to fix Unauthorized error
         token = ""
         try:
-            token = (self.page.session.store.get("token") or 
-                     self.page.session.store.get("api_key") or 
-                     self.page.session.store.get("access_token") or "")
+            import os
+            # Try environment variable first (Railway uses this)
+            token = os.environ.get("ADMIN_API_KEY", "")
+            
+            # Fallback to session store if empty
+            if not token:
+                token = (self.page.session.store.get("token") or 
+                         self.page.session.store.get("api_key") or 
+                         self.page.session.store.get("access_token") or "")
         except Exception:
             pass
 
@@ -2273,5 +2278,5 @@ class TravelerViewDialog:
 
 
 # =================================================================================
-# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.8
+# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.9
 # =================================================================================
