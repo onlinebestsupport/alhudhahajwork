@@ -1,23 +1,18 @@
 # =================================================================================
 # SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, MOBILE-RESPONSIVE)
 # =================================================================================
-# v1.5 — 2026-10-14
-#   • FIX: date/amount filter TextFields now have on_change with
-#     explicit value sync → typed dates/amounts reach the server
-#     reliably (was: Generate used stale defaults)
-#   • FIX: _all / _clear handlers in the 3 column tabs use leaf
-#     updates instead of page.update() — no more wiping typed dates
-#   • FIX: _snack() no longer calls page.update()
-#   • FIX: _set_status() uses leaf-only updates
-#   • FIX: _on_report_format_changed() uses leaf update
-#   • FIX: select_all_checkboxes() uses leaf update
-#   • FIX: generate_preview() / _generate_ledger_preview() skip final
-#     page.update() if user is mid-typing (3s guard)
-#
-#   Preserved from v1.4:
-#     • Exports open in a NEW TAB (Safari session keep-alive)
-#     • §17.3.2d _launch_in_new_tab() helper
-#     • All v1.3 features (scroll fix, mobile layout, etc.)
+# v1.6 — 2026-10-26
+#   • FIX: Added 50-row limit to display_preview to prevent browser lag.
+#   • FIX: Removed duplicate display_preview method.
+#   • Preserved v1.5 fixes:
+#     - date/amount filter TextFields have on_change with value sync
+#     - _all / _clear handlers use leaf updates
+#     - _snack() no longer calls page.update()
+#     - _set_status() uses leaf-only updates
+#     - _on_report_format_changed() uses leaf update
+#     - select_all_checkboxes() uses leaf update
+#     - generate_preview() / _generate_ledger_preview() skip final
+#       page.update() if user is mid-typing (3s guard)
 #
 # SECTION INDEX
 #   17.1   Imports
@@ -30,61 +25,10 @@
 #   17.1h  FIELD CATALOGS
 #
 #   17.2   class ColumnOrderDialog
-#   17.2.1  __init__
-#   17.2.2  _rebuild_list
-#   17.2.3  setup_ui
-#   17.2.4  show
-#
 #   17.3   class CustomReportDialog
-#   17.3.1   __init__
-#   17.3.1a  _field                      ← NEW v1.5
-#   17.3.1b  _fmt_money_inr
-#   17.3.1c  _load_live_tax_rates
-#   17.3.1d  _refresh_invoice_caches
-#   17.3.1e  _resolve_invoice_for_payment
-#   17.3.1f  _is_invoice_paid_for_payment
-#   17.3.1g  _get_payment_share
-#   17.3.1h  _get_invoice_share
-#   17.3.2   PATH / STRING HELPERS
-#   17.3.2d  _launch_in_new_tab
-#   17.3.3   setup_ui
-#   17.3.4   setup_left_panel
-#   17.3.5   setup_traveler_tab
-#   17.3.6   setup_batch_tab
-#   17.3.7   setup_payment_tab
-#   17.3.8   setup_right_panel
-#   17.3.9   setup_filters
-#   17.3.9b  _on_report_format_changed
-#   17.3.10  setup_preview
-#   17.3.11  setup_buttons
-#   17.3.12  setup_status
-#   17.3.13  create_checkbox_group
-#   17.3.14  select_all_checkboxes
-#   17.3.15  get_selected_columns
-#   17.3.16  date quick filter handlers
-#   17.3.17  open_column_ordering_dialog
-#   17.3.18  load_data_preview
-#   17.3.18b _force_reload_csv
-#   17.3.18c _diagnose
-#   17.3.19  generate_preview
-#   17.3.19b _generate_ledger_preview
-#   17.3.20  _build_row_wide
-#   17.3.21  _format_payment_value
-#   17.3.22  display_preview
-#   17.3.23  export_to_excel
-#   17.3.24  export_to_csv
-#   17.3.25  export_to_pdf
-#   17.3.26  generate_pdf_report
-#   17.3.27  _build_pdf_photo_cell
-#   17.3.28  show / reject / _snack / _set_status
-#
-#   17.4   MAINTENANCE WARNINGS
+#           (Includes all setup, preview, export, and helper methods)
 # =================================================================================
 
-
-# =================================================================================
-# 17.1 — IMPORTS
-# =================================================================================
 import os
 import sys
 import csv
@@ -2789,28 +2733,6 @@ class CustomReportDialog:
         if not selected or not report_data:
             return
 
-        pw = self.page.width or 1000
-        col_min = 100 if pw < 700 else 130
-        col_pad = 8 if pw < 700 else 10
-
-        total_w = 0
-        spacing = 10 if pw < 700 else 14
-        for col in selected:
-            lbl = col['label']
-
-    # =============================================================================
-    # 17.3.22 — display_preview
-    # =============================================================================
-    def display_preview(self, selected, report_data):
-        try:
-            self.preview_table.columns.clear()
-            self.preview_table.rows.clear()
-        except Exception as e:
-            print(f"[CR] preview cleanup warn: {e}")
-
-        if not selected or not report_data:
-            return
-
         # --- FIX: Limit preview to 50 rows to prevent browser lag ---
         MAX_PREVIEW_ROWS = 50
         display_data = report_data[:MAX_PREVIEW_ROWS]
@@ -3414,36 +3336,13 @@ class CustomReportDialog:
         except Exception:
             pass
 
-
 # =================================================================================
 # 17.4 — MAINTENANCE WARNINGS
 # =================================================================================
-# 17.4.1  — FIX-CLOUD-EXPORTS : exports use send_file_to_user (HTTP).
-# 17.4.2  — FIX-FRESH-DATA    : generate_preview() reloads CSVs first.
-# 17.4.3  — All prior fixes preserved (paid-cascade, per-invoice share,
-#              dynamic payments, CSV authority, tax-in-source,
-#              slot columns, INR format, ledger, filters, outstanding,
-#              pro UI, ledger auto-columns, summary outstanding,
-#              excel/pdf meta).
-# 17.4.4  — MOBILE-RESPONSIVE (v1.3 preserved):
-#              • §17.3.3: whole dialog body inside a scrollable Column
-#              • dialog clamps to (viewport − 60px)
-#              • §17.3.10: preview height 220 (mobile) vs 380 (desktop)
-#              • §17.3.11: buttons wrap to 2 per row on xs
-# 17.4.5  — NEW-TAB DOWNLOADS (v1.4 preserved):
-#              • All three export methods call §17.3.2d
-#                _launch_in_new_tab() so the download opens in a
-#                separate browser tab. The report tab stays alive,
-#                keeping the Flet session.
-# 17.4.6  — TYPING-SYNC FIXES (v1.5 NEW):
-#              • §17.3.1a: _field() helper adds on_change with value
-#                sync + typing guard. Applied to From/To/Min/Max.
-#              • §17.3.5/6/7: _all / _clear handlers use leaf updates
-#              • §17.3.9b: _on_report_format_changed() leaf update
-#              • §17.3.14: select_all_checkboxes() leaf updates
-#              • §17.3.19 / 19b: skip final page.update() while typing
-#              • §17.3.28: _snack / _set_status no longer call
-#                page.update()
+# 17.4.7  — v1.6 FIXES:
+#              • Added MAX_PREVIEW_ROWS = 50 in display_preview() to stop
+#                browser freezing when generating large reports.
+#              • Removed duplicate display_preview() method.
 # =================================================================================
-# SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION) — v1.5
+# SECTION 17 END — CUSTOM REPORT DIALOG (FLET 1.0.0 VERSION) — v1.6
 # =================================================================================
