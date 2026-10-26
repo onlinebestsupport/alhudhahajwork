@@ -1,10 +1,15 @@
 # =================================================================================
 # SECTION 16 — REPORTS TAB (FLET 1.0, Mobile-Responsive)
 # =================================================================================
-# v1.3 — Typing-safety fixes
+# v1.4 — Single Traveler Table clipping fix
 #
 #   FIXES:
-#     • _std_from / _std_to now have on_change with explicit value sync
+#     • Fixed the "Payment Received" table clipping issue in the Single
+#       Traveler view. Changed the wrapper from ft.Row to ft.Column and
+#       increased the height from 170px to 220px so all payments show.
+#
+#   Preserved from v1.3:
+#     • _std_from / _std_to have on_change with explicit value sync
 #     • Added _typing_until guard + _field() helper
 #     • _goto_tab() uses self.tabs.update() (leaf) instead of page_ref.update()
 #     • _safe_update() skips while typing
@@ -854,14 +859,16 @@ class ReportsTab(ft.Column):
             ],
             rows=[], heading_row_color="#f1f5f9", column_spacing=10)
 
+        # FIXED: Changed ft.Row to ft.Column and increased height from 170 to 220
+        # so all payments show up and scroll vertically instead of getting clipped.
         pay_card = ft.Container(
             content=ft.Column([
                 ft.Text("💵  Payment Received", size=12,
                         weight=ft.FontWeight.BOLD, color="#059669"),
                 ft.Container(
-                    content=ft.Row([self._single_payment_table],
-                                   scroll=ft.ScrollMode.ADAPTIVE),
-                    height=170, padding=4, bgcolor=ft.Colors.WHITE,
+                    content=ft.Column([self._single_payment_table],
+                                      scroll=ft.ScrollMode.AUTO),
+                    height=220, padding=4, bgcolor=ft.Colors.WHITE,
                     border=ft.Border.all(1, ft.Colors.GREY_200),
                     border_radius=10),
             ], spacing=8),
@@ -1437,5 +1444,5 @@ class ReportsTab(ft.Column):
 
 
 # =================================================================================
-# SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION) — v1.3
+# SECTION 16 END — REPORTS TAB (FLET 1.0.0 VERSION) — v1.4
 # =================================================================================
