@@ -138,25 +138,15 @@ var params = new URLSearchParams(window.location.search);
 var travelerId = params.get('traveler_id') || '';
 var docKey = params.get('doc_key') || 'photo';
 var mode = params.get('mode') || 'new';
-var token = params.get('token') || ''; // <-- API KEY / TOKEN from URL
+var token = params.get('token') || '';
 var folder = params.get('folder') || '';
 
 var DOC_INFO = {
-  'passport_scan': {label: 'Passport Scan',
-                    accept: 'image/*,application/pdf',
-                    hint: 'JPG, PNG, PDF · max 15 MB'},
-  'aadhaar_scan':  {label: 'Aadhaar Scan',
-                    accept: 'image/*,application/pdf',
-                    hint: 'JPG, PNG, PDF · max 15 MB'},
-  'pan_scan':      {label: 'PAN Scan',
-                    accept: 'image/*,application/pdf',
-                    hint: 'JPG, PNG, PDF · max 15 MB'},
-  'vaccine_scan':  {label: 'Vaccine Certificate',
-                    accept: 'image/*,application/pdf',
-                    hint: 'JPG, PNG, PDF · max 15 MB'},
-  'photo':         {label: 'Photo',
-                    accept: 'image/*',
-                    hint: 'JPG, PNG · max 15 MB'}
+  'passport_scan': {label: 'Passport Scan', accept: 'image/*,application/pdf'},
+  'aadhaar_scan':  {label: 'Aadhaar Scan', accept: 'image/*,application/pdf'},
+  'pan_scan':      {label: 'PAN Scan', accept: 'image/*,application/pdf'},
+  'vaccine_scan':  {label: 'Vaccine Certificate', accept: 'image/*,application/pdf'},
+  'photo':         {label: 'Photo', accept: 'image/*'}
 };
 
 var info = DOC_INFO[docKey] || DOC_INFO['photo'];
@@ -228,9 +218,8 @@ async function startUpload() {
     fd.append('doc_key', docKey);
     fd.append('traveler_id', travelerId);
     fd.append('mode', mode);
-    fd.append('folder', folder);
+    fd.append('folder', folder); // Crucial for saving in the right place
 
-    // Send as both Bearer token and X-API-Key to satisfy any backend setup
     var headers = {};
     if (token) {
         headers['Authorization'] = 'Bearer ' + token;
@@ -240,7 +229,7 @@ async function startUpload() {
     var res = await fetch('/api/admin/traveler/upload-doc', {
       method: 'POST',
       headers: headers,
-      credentials: 'include', // Pass cookies if backend relies on them
+      credentials: 'include',
       body: fd,
     });
 
@@ -250,7 +239,7 @@ async function startUpload() {
       setStatus('error', '❌');
       
       if (res.status === 401 || res.status === 403) {
-          showToast('Auth Error: Invalid or missing API Key.', 'error');
+          showToast('Auth Error: Invalid API Key.', 'error');
       } else {
           showToast('Upload failed: ' + errText.substring(0, 80), 'error');
       }
@@ -265,16 +254,12 @@ async function startUpload() {
     $('progress-bar').style.width = '100%';
     showToast('✅ Uploaded successfully', 'success');
 
+    // === FIXED: Define the box variable properly ===
     var box = $('result-box');
     box.innerHTML =
       '<strong>✅ ' + info.label + ' uploaded</strong><br>' +
       'File: <code>' + escapeHtml(data.filename || '') + '</code><br>' +
-      (mode === 'edit'
-        ? 'This document is now linked to ' + escapeHtml(travelerId) +
-          '.<br><br>Close this tab and click <b>Reload</b> in the ' +
-          'Traveler dialog to see it.'
-        : 'File saved to the pending folder.<br><br>Close this tab and ' +
-          'click <b>Save</b> on the Add Traveler form to link it.');
+      'Return to the Admin app and click <b>🔄 Sync Files</b> to link it.';
     box.classList.add('show');
 
     $('upload-btn').disabled = true;
@@ -305,7 +290,7 @@ function finishAndClose() {
 (function() {
   $('title').textContent = '📤 Upload ' + info.label;
   $('subtitle').textContent = 'Select a file to upload';
-  $('hint').textContent = info.hint;
+  $('hint').textContent = 'JPG, PNG, PDF · max 15 MB';
   $('file-input').setAttribute('accept', info.accept);
 
   if (mode === 'edit' && travelerId) {
