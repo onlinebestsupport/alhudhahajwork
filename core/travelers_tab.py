@@ -1,18 +1,19 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.9 — Document Management & Dialog Close Fix
+# v2.0 — Robust Document Sync & Auto-Discovery
 #
-#   FIXES APPLIED (from v1.8):
-#     • Fixed dialog remaining visible after Save/Cancel by using
-#       explicit self.dialog.open = False instead of page.pop_dialog()
-#     • Fixed Delete Traveler confirmation dialog close logic
-#     • Multi-file support: Scans the actual folder and shows file count
-#       and total size (e.g. "✅ 2 files (1.2 MB)") instead of just one name.
-#     • Auto-links the most recently uploaded file to the DB on Save.
-#     • Added _refresh_doc_status() to handle folder scanning and UI sync.
-#     • Added _delete_document_folder() to safely remove files.
-#     • Preserved all v1.7 logging, validation, and safety checks.
+#   FIXES APPLIED (from v1.9):
+#     • _refresh_doc_status now recursively scans the traveler's folder
+#       for matching filenames. This fixes the issue where browser 
+#       uploads were saved by the backend in slightly different subfolders.
+#     • Added "🔄 Sync Files" button to manually refresh the UI after
+#       uploading on a mobile browser.
+#     • save() automatically runs _sync_all_docs() to ensure no files
+#       are missed before saving to the CSV database.
+#     • _delete_document safely deletes only the specific files, without
+#       accidentally wiping other documents.
+#     • Preserved all v1.7/v1.8 logging, validation, and UI enhancements.
 #
 # SECTION INDEX
 #   [H]     Module-level helpers
@@ -36,6 +37,7 @@
 #   [9.1.2] _update_passport_name
 #   [9.1.2b] _refresh_doc_status
 #   [9.1.2c] _delete_document
+#   [9.1.2d] _sync_all_docs
 #   [9.1.3] choose_document
 #   [9.1.4] _open_browser_upload
 #   [9.1.5] _pick_doc_async
@@ -824,7 +826,6 @@ class TravelersTab:
                 except Exception as log_ex:
                     print(f"[TRAVELERS] activity log failed: {log_ex}")
                 
-                # Close dialog explicitly
                 try:
                     if hasattr(self.page, "close"):
                         self.page.close(confirm_dialog)
@@ -1332,6 +1333,13 @@ class TravelerDialog:
             ("photo", "Photo", "📸"),
         ]
 
+        btn_sync = ft.Button(
+            content=ft.Text("🔄 Sync Files", size=11),
+            on_click=lambda e: self._sync_all_docs(),
+            height=34, bgcolor="#3498db", color=ft.Colors.WHITE,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+        )
+
         doc_rows = []
         for key, lbl, icon in doc_fields:
             status_lbl = ft.Text("No file", size=11, color="#95a5a6")
@@ -1375,9 +1383,12 @@ class TravelerDialog:
         sec5 = ft.Column(
             controls=[
                 section_header("5. DOCUMENT UPLOADS"),
-                ft.Text("📎 = desktop picker · 🌐 = browser upload "
-                        "(works on mobile)",
-                        size=9, color="#64748b", italic=True),
+                ft.Row([
+                    ft.Text("📎 = picker · 🌐 = browser upload", 
+                            size=9, color="#64748b", italic=True),
+                    ft.Container(expand=True),
+                    btn_sync
+                ]),
             ] + doc_rows,
             spacing=10,
         )
@@ -1474,26 +1485,28 @@ class TravelerDialog:
         else:
             folder_name = f"new_traveler_{self._new_folder_uuid}"
             
-        subfolder_map = {
-            'passport_scan': 'passports',
-            'aadhaar_scan': 'aadhaar',
-            'pan_scan': 'pan',
-            'vaccine_scan': 'vaccine',
-            'photo': 'photos',
-        }
-        sub = subfolder_map.get(key, 'other')
-        
         base = get_app_base_path()
-        dest_dir = Path(base) / "documents" / folder_name / sub
+        base_dir = Path(base) / "documents" / folder_name
         
-        if not dest_dir.exists():
+        if not base_dir.exists():
             lbl.value = "No file"
             lbl.color = "#95a5a6"
             if key in self.doc_paths:
                 del self.doc_paths[key]
             return
             
-        files = [f for f in dest_dir.iterdir() if f.is_file()]
+        # Determine search keyword (e.g., 'aadhaar_scan' -> 'aadhaar')
+        keyword = key.split('_')[0]
+        if key == 'pan_scan':
+            keyword = 'pan'
+            
+        files = []
+        for f in base_dir.rglob("*"):
+            if f.is_file():
+                # Match if keyword is in the folder name or the filename
+                if keyword in f.parent.name.lower() or keyword in f.name.lower():
+                    files.append(f)
+                    
         if not files:
             lbl.value = "No file"
             lbl.color = "#95a5a6"
@@ -1513,7 +1526,6 @@ class TravelerDialog:
             self.doc_paths[key] = rel.replace(os.sep, "/")
         else:
             lbl.value = f"✅ {len(files)} files ({size_str})"
-            # Link the most recently uploaded file to the database
             latest = max(files, key=lambda f: f.stat().st_mtime)
             rel = os.path.relpath(str(latest), base)
             self.doc_paths[key] = rel.replace(os.sep, "/")
@@ -1522,7 +1534,6 @@ class TravelerDialog:
 
     # -----------------------------------------------------------------------------
     # [9.1.2c] _delete_document
-    #   Deletes the files in the document folder after confirmation.
     # -----------------------------------------------------------------------------
     def _delete_document(self, key):
         def do_delete(e):
@@ -1536,21 +1547,28 @@ class TravelerDialog:
             else:
                 folder_name = f"new_traveler_{self._new_folder_uuid}"
                 
-            subfolder_map = {
-                'passport_scan': 'passports',
-                'aadhaar_scan': 'aadhaar',
-                'pan_scan': 'pan',
-                'vaccine_scan': 'vaccine',
-                'photo': 'photos',
-            }
-            sub = subfolder_map.get(key, 'other')
             base = get_app_base_path()
-            dest_dir = Path(base) / "documents" / folder_name / sub
+            base_dir = Path(base) / "documents" / folder_name
             
+            keyword = key.split('_')[0]
+            if key == 'pan_scan':
+                keyword = 'pan'
+                
             try:
-                if dest_dir.exists():
-                    shutil.rmtree(dest_dir)
-                    print(f"[TRAVELER-DIALOG] Deleted folder: {dest_dir}")
+                if base_dir.exists():
+                    deleted_count = 0
+                    for f in base_dir.rglob("*"):
+                        if f.is_file() and (keyword in f.parent.name.lower() or keyword in f.name.lower()):
+                            f.unlink()
+                            deleted_count += 1
+                    
+                    # Cleanup empty directories
+                    for d in base_dir.rglob("*"):
+                        if d.is_dir() and not any(d.iterdir()):
+                            d.rmdir()
+                            
+                    print(f"[TRAVELER-DIALOG] Deleted {deleted_count} files for {key}")
+                    
                 self._refresh_doc_status(key)
                 self.page.update()
                 self._snack(f"🗑️ Deleted {key.replace('_', ' ').title()}")
@@ -1567,6 +1585,17 @@ class TravelerDialog:
             ]
         )
         self.page.show_dialog(dlg)
+
+    # -----------------------------------------------------------------------------
+    # [9.1.2d] _sync_all_docs
+    # -----------------------------------------------------------------------------
+    def _sync_all_docs(self):
+        for key in ['passport_scan', 'aadhaar_scan', 'pan_scan', 'vaccine_scan', 'photo']:
+            self._refresh_doc_status(key)
+        try:
+            self.page.update()
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------------------
     # [9.1.3] choose_document (Flet picker — desktop)
@@ -1597,10 +1626,7 @@ class TravelerDialog:
         token = ""
         try:
             import os
-            # Try environment variable first (Railway uses this)
             token = os.environ.get("ADMIN_API_KEY", "")
-            
-            # Fallback to session store if empty
             if not token:
                 token = (self.page.session.store.get("token") or 
                          self.page.session.store.get("api_key") or 
@@ -1654,8 +1680,7 @@ class TravelerDialog:
             print(f"[TRAVELER-DIALOG] run_task failed: {ex}")
             self._snack("⚠️ Could not open browser upload")
 
-        self._snack("🌐 Opened upload page in a new tab. "
-                    "Upload the file, then return here.")
+        self._snack("🌐 Opened upload page. Close the new tab and click '🔄 Sync Files' when done.")
 
     # -----------------------------------------------------------------------------
     # [9.1.5] _pick_doc_async
@@ -1754,12 +1779,7 @@ class TravelerDialog:
             else:
                 field.value = str(val) if val is not None else ''
                 
-        for key in ['passport_scan', 'aadhaar_scan', 'pan_scan',
-                    'vaccine_scan', 'photo']:
-            if traveler.get(key):
-                self.doc_paths[key] = traveler[key]
-            # v1.8 - Scan actual folder to show full count/size
-            self._refresh_doc_status(key)
+        self._sync_all_docs()
 
     # -----------------------------------------------------------------------------
     # [9.1.7] save
@@ -1817,6 +1837,9 @@ class TravelerDialog:
                         f"must be a valid date in DD-MM-YYYY")
                     return
 
+            # Automatically scan disk for any files uploaded via mobile
+            self._sync_all_docs()
+
             for key, rel in self.doc_paths.items():
                 data[key] = rel
 
@@ -1872,30 +1895,10 @@ class TravelerDialog:
                 if src.exists() and not dst.exists():
                     shutil.move(str(src), str(dst))
 
-                    subfolder_map = {
-                        'passport_scan': 'passports',
-                        'aadhaar_scan': 'aadhaar',
-                        'pan_scan': 'pan',
-                        'vaccine_scan': 'vaccine',
-                        'photo': 'photos',
-                    }
-                    for key, sub in subfolder_map.items():
-                        if key in self.doc_paths and self.doc_paths[key]:
-                            continue
-                        subpath = dst / sub
-                        if not subpath.exists():
-                            continue
-                        matches = sorted(
-                            subpath.glob(f"{key}_*"),
-                            key=lambda p: p.stat().st_mtime,
-                            reverse=True)
-                        if matches:
-                            newest = matches[0]
-                            folder_name = str(tid).replace('/', '_')
-                            rel = (f"documents/{folder_name}/"
-                                   f"{sub}/{newest.name}")
-                            self.doc_paths[key] = rel
-                            data[key] = rel
+                    # Re-scan folder after moving it to the final ID
+                    self._sync_all_docs()
+                    for key, rel in self.doc_paths.items():
+                        data[key] = rel
 
                     try:
                         if not self.db.update_traveler(
@@ -1971,7 +1974,7 @@ class TravelerDialog:
                           f"{cb_ex}")
 
     # -----------------------------------------------------------------------------
-    # [9.1.9] _close_dialog (Fix: explicit dialog close)
+    # [9.1.9] _close_dialog
     # -----------------------------------------------------------------------------
     def _close_dialog(self):
         if self._closed:
@@ -1979,7 +1982,6 @@ class TravelerDialog:
         self._closed = True
         
         try:
-            # Flet 1.0 recommended way to close a specific dialog
             if hasattr(self.page, "close"):
                 self.page.close(self.dialog)
             else:
@@ -2314,5 +2316,5 @@ class TravelerViewDialog:
 
 
 # =================================================================================
-# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.9
+# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v2.0
 # =================================================================================
