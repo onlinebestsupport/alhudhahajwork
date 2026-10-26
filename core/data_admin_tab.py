@@ -11,6 +11,9 @@
 #          • Full documents ZIP download
 #          • ZIP import with pre-flight backup
 #          • Manual backup creation
+#   v1.4 — Unlimited UI lists
+#          • CSV Preview now shows ALL rows (using ListView for performance)
+#          • Traveler Documents list now shows ALL folders (no 20-item cap)
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -32,18 +35,18 @@
 #       §3.14 _download_csv             single file download
 #       §3.15 export_all_zip            bundle all CSVs into a ZIP
 #       §3.16 create_backup             trigger db.create_backup()
-#       §3.17 _preview_csv              show first 20 rows
+#       §3.17 _preview_csv              show full CSV with scrollbar
 #       §3.18 _upload_csv               single-file replace (picker)
 #       §3.19 _do_upload                apply single-file upload
 #       §3.20 _show_status              write to bottom status label
 #       §3.21 _snack                    transient notification
 #       §3.22 _safe_update              safe wrapper around root.update()
-#       §3.23 _build_documents_section  Documents management UI   ← NEW
-#       §3.24 _documents_refresh        scan + update stats/lists ← NEW
-#       §3.25 _documents_export_zip     full documents ZIP export ← NEW
-#       §3.26 _documents_download_one   per-traveler ZIP download ← NEW
-#       §3.27 _documents_import_zip     ZIP restore with backup   ← NEW
-#       §3.28 _documents_create_backup  timestamped backup        ← NEW
+#       §3.23 _build_documents_section  Documents management UI
+#       §3.24 _documents_refresh        scan + update stats/lists (no limits)
+#       §3.25 _documents_export_zip     full documents ZIP export
+#       §3.26 _documents_download_one   per-traveler ZIP download
+#       §3.27 _documents_import_zip     ZIP restore with backup
+#       §3.28 _documents_create_backup  timestamped backup
 #   §4  Aliases (DataAdminView = DataAdminTab)
 # =================================================================================
 
@@ -159,7 +162,7 @@ class DataAdminTab:
         self.status_label = None        # bottom-line status
         self.root = None                # top-level Container
 
-        # ---- Documents section handles (v1.3) ----
+        # ---- Documents section handles ----
         self.docs_stats_labels = {}     # {"folders": Text, "files": Text, "size": Text}
         self.docs_folders_container = None
         self.docs_backups_container = None
@@ -376,7 +379,7 @@ class DataAdminTab:
         # ---- §3.6.4  CSV cards container ----
         self.cards_container = ft.Column(spacing=8)
 
-        # ---- §3.6.5  Documents section (NEW v1.3) ----
+        # ---- §3.6.5  Documents section ----
         documents_section = self._build_documents_section()
 
         # ---- §3.6.6  Status label ----
@@ -490,7 +493,7 @@ class DataAdminTab:
             self.stats_labels["size"].value = _human_size(total_size)
             self.stats_labels["backups"].value = str(backup_count)
 
-            # ---- Documents (NEW) ----
+            # ---- Documents ----
             self._documents_refresh()
 
             self._show_status(
@@ -1041,7 +1044,7 @@ class DataAdminTab:
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.17  _preview_csv
+    # §3.17  _preview_csv — Loads FULL CSV with a ListView scrollbar
     # =============================================================================
     def _preview_csv(self, name):
         try:
@@ -1049,37 +1052,48 @@ class DataAdminTab:
             if not path.exists():
                 self._snack(f"⚠️ {name} not found")
                 return
-            df = pd.read_csv(path, nrows=20)
-            full_df = pd.read_csv(path, usecols=[0])
-            total_rows = len(full_df)
+            
+            # Read the entire CSV, no row limit
+            df = pd.read_csv(path)
+            total_rows = len(df)
 
-            lines = []
-            lines.append(" | ".join(str(c)[:15] for c in df.columns))
-            lines.append("─" * 80)
+            # Build a list of text rows for the ListView
+            header_text = " | ".join(str(c) for c in df.columns)
+            lines = [header_text, "─" * 80]
+            
             for _, row in df.iterrows():
-                lines.append(" | ".join(str(v)[:15] for v in row.values))
-            preview = "\n".join(lines)
+                # Truncate each cell to 30 chars for neatness, pad to 30
+                row_str = " | ".join(str(v)[:30].ljust(30) for v in row.values)
+                lines.append(row_str)
 
             narrow = self._is_narrow()
+
+            # Use a ListView for performance with many rows
+            preview_list = ft.ListView(
+                controls=[
+                    ft.Text(line, size=10, font_family="Consolas", 
+                            selectable=True, no_wrap=True)
+                    for line in lines
+                ],
+                spacing=0,
+                expand=True
+            )
+
             dialog = ft.AlertDialog(
                 modal=True,
-                title=ft.Text(f"👁️ {name} — first 20 rows",
+                title=ft.Text(f"👁️ {name} — Full Preview ({total_rows} rows)",
                               weight=ft.FontWeight.BOLD,
                               size=13 if narrow else 14),
                 content=ft.Container(
-                    content=ft.Column([
-                        ft.Text(preview, size=10,
-                                font_family="Consolas", selectable=True),
-                        ft.Container(height=6),
-                        ft.Text(f"Total: {total_rows} rows × "
-                                f"{len(df.columns)} columns",
-                                size=10, italic=True,
-                                color=ft.Colors.GREY_600),
-                    ], scroll=ft.ScrollMode.AUTO),
-                    width=None if narrow else 800,
-                    height=None if narrow else 500,
+                    content=preview_list,
+                    width=None if narrow else 900,
+                    height=None if narrow else 600,
                     expand=narrow,
-                    padding=10),
+                    padding=10,
+                    bgcolor=ft.Colors.WHITE,
+                    border=ft.Border.all(1, ft.Colors.GREY_300),
+                    border_radius=8
+                ),
                 actions=[
                     ft.TextButton(
                         content=ft.Text("Close"),
@@ -1088,6 +1102,7 @@ class DataAdminTab:
             self.page_ref.show_dialog(dialog)
         except Exception as ex:
             print(f"[DATA-ADMIN] preview error: {ex}")
+            traceback.print_exc()
             self._snack(f"❌ {ex}", ft.Colors.RED_500)
 
     # =============================================================================
@@ -1261,7 +1276,7 @@ class DataAdminTab:
             pass
 
     # =============================================================================
-    # §3.23  _build_documents_section — NEW v1.3
+    # §3.23  _build_documents_section
     #   Documents management UI: stats, actions, per-folder list, backups
     # =============================================================================
     def _build_documents_section(self):
@@ -1354,8 +1369,9 @@ class DataAdminTab:
             border=ft.Border.all(1, "#e2e8f0"))
 
     # =============================================================================
-    # §3.24  _documents_refresh — NEW v1.3
+    # §3.24  _documents_refresh
     #   Scan /app/data/documents, update stats + folder list + backups
+    #   (Lists ALL folders, no limit)
     # =============================================================================
     def _documents_refresh(self):
         try:
@@ -1391,7 +1407,7 @@ class DataAdminTab:
             except Exception:
                 pass
 
-            # ---- Rebuild folder list ----
+            # ---- Rebuild folder list (No 20-item cap) ----
             if self.docs_folders_container is not None:
                 self.docs_folders_container.controls.clear()
 
@@ -1401,15 +1417,9 @@ class DataAdminTab:
                                 size=10, color=ft.Colors.GREY_600,
                                 italic=True))
                 else:
-                    for f in folders[:20]:
+                    for f in folders:
                         self.docs_folders_container.controls.append(
                             self._documents_folder_row(f))
-
-                    if len(folders) > 20:
-                        self.docs_folders_container.controls.append(
-                            ft.Text(f"… and {len(folders) - 20} more",
-                                    size=10, color=ft.Colors.GREY_600,
-                                    italic=True))
 
             # ---- Recent backups ----
             if self.docs_backups_container is not None:
@@ -1455,7 +1465,7 @@ class DataAdminTab:
             traceback.print_exc()
 
     # =============================================================================
-    # §3.25  _documents_folder_row — NEW v1.3
+    # §3.25  _documents_folder_row
     #   One row per traveler folder with a download button
     # =============================================================================
     def _documents_folder_row(self, folder):
@@ -1498,7 +1508,7 @@ class DataAdminTab:
             border_radius=8)
 
     # =============================================================================
-    # §3.26  _documents_export_zip — NEW v1.3
+    # §3.26  _documents_export_zip
     #   Download the entire documents tree as a single ZIP
     # =============================================================================
     def _documents_export_zip(self, e=None):
@@ -1542,7 +1552,7 @@ class DataAdminTab:
             self._snack(f"❌ Export failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.27  _documents_download_one — NEW v1.3
+    # §3.27  _documents_download_one
     #   Download a single traveler folder as a ZIP
     # =============================================================================
     def _documents_download_one(self, folder_name):
@@ -1589,7 +1599,7 @@ class DataAdminTab:
             self._snack(f"❌ Download failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.28  _documents_import_zip — NEW v1.3
+    # §3.28  _documents_import_zip
     #   Restore a documents ZIP. Extracts to a temp dir first, shows a
     #   preview dialog, then (on confirm) creates a backup and merges.
     # =============================================================================
@@ -1787,7 +1797,7 @@ class DataAdminTab:
             self._snack(f"❌ Apply failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.29  _documents_create_backup — NEW v1.3
+    # §3.29  _documents_create_backup
     #   Create a timestamped backup of the documents tree
     # =============================================================================
     def _documents_create_backup(self, e=None):
