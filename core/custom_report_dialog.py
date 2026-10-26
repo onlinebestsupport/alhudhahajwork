@@ -2798,7 +2798,6 @@ class CustomReportDialog:
         for col in selected:
             lbl = col['label']
 
-
     # =============================================================================
     # 17.3.22 — display_preview
     # =============================================================================
@@ -2812,14 +2811,14 @@ class CustomReportDialog:
         if not selected or not report_data:
             return
 
-        # --- NEW: Limit preview to 50 rows to prevent browser lag ---
+        # --- FIX: Limit preview to 50 rows to prevent browser lag ---
         MAX_PREVIEW_ROWS = 50
         display_data = report_data[:MAX_PREVIEW_ROWS]
         
         if len(report_data) > MAX_PREVIEW_ROWS:
             self._set_status(
                 "ℹ️", 
-                f"Preview limited to {MAX_PREVIEW_ROWS} of {len(report_data)} rows. Use Export to see all.", 
+                f"Preview limited to {MAX_PREVIEW_ROWS} of {len(report_data)} rows. Use Export for full data.", 
                 "#2563eb"
             )
 
@@ -2846,7 +2845,7 @@ class CustomReportDialog:
         total_w = max(total_w, 900)
         self._preview_inner.width = total_w
 
-        # --- CHANGED: Use display_data instead of report_data ---
+        # --- FIX: Use display_data instead of report_data ---
         for row in display_data:
             cells = []
             for col in selected:
