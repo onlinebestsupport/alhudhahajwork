@@ -1,36 +1,19 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.29 — Disabled Page.update() monkey patch (FIX for disappearing text)
+# v2.30 — Fixed traveler document upload folder path
 #
 #   ROOT CAUSE:
-#     The v2.28 patch wrapped Page.update() to swallow "destroyed session"
-#     RuntimeErrors. In Flet 1.0.4 the framework handles this natively.
-#     The patch forced extra serialization on every update, which pushed
-#     STALE TextField values back to the browser and wiped in-progress
-#     typing (the "text disappears while typing" bug).
+#     The v2.29 FastAPI route for /api/admin/traveler/upload-doc was ignoring
+#     the `folder` parameter sent by the Flet app. It was hardcoding the path
+#     to "new_traveler" or stripping underscores from the traveler ID.
+#     This caused the browser upload to succeed, but the file was saved in a
+#     different directory than the Flet app was scanning.
 #
 #   FIX:
-#     • §21.1.5 — Page.update() patch is now DISABLED.
-#     • Flet runs unpatched. If "destroyed session" errors reappear,
-#       we'll add a narrow guard at the call site — not globally.
-#
-#   Everything else from v2.28 is preserved unchanged:
-#     • §21.1.4  JSON sanitizer
-#     • §21.5.2  FastAPI + security headers
-#     • §21.5.2b Scanner blocker
-#     • §21.5.5  /api/frontpage
-#     • §21.5.6  /api/batches
-#     • §21.5.6b /api/admin/frontpage/diagnose
-#     • §21.5.6c /api/admin/frontpage/why-empty
-#     • §21.5.7  Captcha endpoints
-#     • §21.5.8  Traveler portal
-#     • §21.5.8b Gallery upload / media / delete
-#     • §21.5.8c Traveler document upload
-#     • §21.5.9  Mount Flet admin
-#     • §21.5.10 Mount /static
-#     • §21.5.11 Root route
-#     • §21.5.12 robots.txt
+#     • §21.5.8c — Added `folder: str = Form("new_traveler")` to the POST route.
+#     • The route now sanitizes and uses this exact folder name, ensuring the
+#       file lands exactly where the Flet UI expects it.
 # =================================================================================
 
 
@@ -205,15 +188,6 @@ def _json_safe(obj):
 # =================================================================================
 # 21.1.5 — PAGE.UPDATE() MONKEY PATCH  (DISABLED in v2.29)
 # =================================================================================
-# The v2.28 patch wrapped Page.update() to swallow "destroyed session"
-# RuntimeErrors. In Flet 1.0.4 the framework handles this natively — and
-# keeping the patch was forcing extra serialization on every update, which
-# pushed STALE TextField values back to the browser and wiped in-progress
-# typing.
-#
-# We now run Flet unpatched. If "destroyed session" errors reappear in the
-# log, we'll add a narrow guard at the call site where it's actually
-# needed (not globally).
 _PATCH_INSTALLED = False
 _boot_log("Page.update() patch DISABLED (Flet 1.0.4 native)")
 
@@ -1515,6 +1489,7 @@ def _build_app() -> FastAPI:
         doc_key: str = Form(...),
         traveler_id: str = Form(""),
         mode: str = Form("new"),
+        folder: str = Form("new_traveler"), # <--- ADDED FOLDER PARAMETER
         _: None = Depends(require_admin),
     ):
         if not upload_limiter.check("docs"):
@@ -1541,16 +1516,12 @@ def _build_app() -> FastAPI:
             "photo": "photos",
         }
         sub = subfolder_map[doc_key]
-        is_edit = (mode == "edit" and traveler_id)
-        if is_edit:
-            folder = "".join(c for c in traveler_id
-                             if c.isalnum() or c in "-_")
-            if not folder:
-                raise HTTPException(status_code=400,
-                                    detail="Invalid traveler ID")
-        else:
-            folder = "new_traveler"
-
+        
+        # --- FIXED: Use the exact folder sent from Flet ---
+        safe_folder = "".join(c for c in folder if c.isalnum() or c in "-_")
+        if not safe_folder:
+            safe_folder = "new_traveler"
+            
         try:
             data = await file.read()
         except Exception:
@@ -1582,7 +1553,7 @@ def _build_app() -> FastAPI:
 
         fname = (f"{doc_key}_"
                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
-        target_dir = Path("/app/data/documents") / folder / sub
+        target_dir = Path("/app/data/documents") / safe_folder / sub
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
 
@@ -1599,9 +1570,11 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=500,
                                 detail="Failed to save file")
 
-        rel = f"documents/{folder}/{sub}/{fname}"
+        rel = f"documents/{safe_folder}/{sub}/{fname}"
         print(f"[TRAVELER-DOC] Saved: {rel} ({len(data)} bytes)")
 
+        # Update CSV if editing an existing traveler
+        is_edit = (mode == "edit" and traveler_id)
         if is_edit:
             try:
                 csv_path = Path("/app/data/travelers.csv")
