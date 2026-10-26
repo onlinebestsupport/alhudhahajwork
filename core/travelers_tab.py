@@ -1,32 +1,16 @@
 # =================================================================================
 # SECTION 8 + 9 + 10 (FLET 1.0.0 VERSION) — TRAVELERS TAB + DIALOGS
 # =================================================================================
-# v1.7 — Review-fix release
+# v1.8 — Document Management & UI Fixes
 #
-#   FIXES APPLIED (from travelers_tab.py review):
-#     • Runtime logging in open_add_dialog() and TravelerDialog.show()
-#     • Debounce-safe _update_passport_name() — no full page.update() per keystroke
-#     • Responsive dialog sizing (min(850, page.width - 32))
-#     • Duplicate-dialog guard via _traveler_dialog reference
-#     • PIN validation now matches "PIN (4 digits)" label
-#     • Mobile number format validation
-#     • Explicit date validation (rejects 31-02-2027, etc.)
-#     • Save flow rolls back traveler record on post-insert failure
-#     • Document-reference and activity-log errors are logged, not swallowed
-#     • Unique temp folder per dialog (uuid) — no more shared documents/new_traveler/
-#     • File size + extension validation on picker uploads
-#     • _safe_page_update() helper replaces unprotected page.update() calls
-#
-#   COMPANION CHANGES (from database.py v4 review):
-#     • save() now checks add_traveler / update_traveler return values
-#     • save() catches ValueError from the database layer and surfaces it
-#     • Document-reference re-save failure now surfaces to user
-#
-#   PRESERVED FROM v1.6:
-#     • Pagination persistence (page.session.store)
-#     • Document upload via native browser page (mobile fix)
-#     • save() merges server-side doc paths for existing travelers
-#     • v1.4 DD-MM-YYYY format
+#   FIXES APPLIED (from v1.7):
+#     • Added Delete button for each document slot in TravelerDialog
+#     • Multi-file support: Scans the actual folder and shows file count
+#       and total size (e.g. "✅ 2 files (1.2 MB)") instead of just one name.
+#     • Auto-links the most recently uploaded file to the DB on Save.
+#     • Added _refresh_doc_status() to handle folder scanning and UI sync.
+#     • Added _delete_document_folder() to safely remove files.
+#     • Preserved all v1.7 logging, validation, and safety checks.
 #
 # SECTION INDEX
 #   [H]     Module-level helpers
@@ -78,7 +62,7 @@ _DATE_FIELDS = {
 
 _DATE_SEP = "-"
 
-# Allowed extensions per document slot (review §11)
+# Allowed extensions per document slot
 _ALLOWED_EXTENSIONS = {
     "passport_scan": {".pdf", ".jpg", ".jpeg", ".png"},
     "aadhaar_scan":  {".pdf", ".jpg", ".jpeg", ".png"},
@@ -469,7 +453,7 @@ class TravelersTab:
         return None
 
     # =============================================================================
-    # [8.4] refresh  (clamps page, no silent except)
+    # [8.4] refresh
     # =============================================================================
     def refresh(self):
         try:
@@ -757,7 +741,7 @@ class TravelersTab:
         self.stats_labels['docs_complete'].value = str(docs_complete)
 
     # =============================================================================
-    # [8.9] Dialog launchers  (v1.7 — guarded + instrumented)
+    # [8.9] Dialog launchers
     # =============================================================================
     def open_add_dialog(self, e):
         if self._traveler_dialog is not None:
@@ -1347,12 +1331,21 @@ class TravelerDialog:
                 style=ft.ButtonStyle(
                     shape=ft.RoundedRectangleBorder(radius=8)),
             )
+            
+            btn_delete = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                icon_color="#e74c3c",
+                icon_size=20,
+                tooltip="Delete document",
+                on_click=lambda e, k=key: self._delete_document(k)
+            )
 
             doc_rows.append(
                 ft.Row([
                     ft.Text(f"{icon} {lbl}", size=11, width=150),
                     btn_flet,
                     btn_browser,
+                    btn_delete,
                     status_lbl,
                 ], spacing=6, wrap=True,
                     vertical_alignment=ft.CrossAxisAlignment.CENTER))
@@ -1374,7 +1367,7 @@ class TravelerDialog:
         pin_field = ft.TextField(
             label=f"PIN ({_PIN_LENGTH} digits) — for Traveler Portal",
             width=280, height=48, text_size=14,
-            max_length=_PIN_LENGTH,                 # v1.7 — match label
+            max_length=_PIN_LENGTH,
             keyboard_type=ft.KeyboardType.NUMBER,
             input_filter=ft.InputFilter(allow=True,
                                         regex_string=r"[0-9]*"),
@@ -1405,7 +1398,6 @@ class TravelerDialog:
 
         title = "✏️ Edit Traveler" if self.is_edit else "➕ Add Traveler"
 
-        # v1.7 — responsive dialog sizing
         page_w = getattr(self.page, "width", None) or 900
         page_h = getattr(self.page, "height", None) or 700
         dialog_w = min(850, max(320, int(page_w) - 32))
@@ -1431,7 +1423,7 @@ class TravelerDialog:
         )
 
     # -----------------------------------------------------------------------------
-    # [9.1.2] _update_passport_name  (v1.7 — update only target field)
+    # [9.1.2] _update_passport_name
     # -----------------------------------------------------------------------------
     def _update_passport_name(self, e):
         first = (self.fields['first_name'].value or "").strip()
@@ -1444,6 +1436,115 @@ class TravelerDialog:
                 self.page.update()
             except Exception:
                 traceback_print()
+                
+    # -----------------------------------------------------------------------------
+    # [9.1.2b] _refresh_doc_status
+    #   Scans the folder for this specific document, counts files, 
+    #   calculates size, and updates the label.
+    # -----------------------------------------------------------------------------
+    def _refresh_doc_status(self, key):
+        lbl = self.doc_status_labels.get(key)
+        if not lbl:
+            return
+            
+        if self.is_edit and self.traveler:
+            folder_name = str(self.traveler['id']).replace('/', '_').replace('\\', '_')
+        else:
+            folder_name = f"new_traveler_{self._new_folder_uuid}"
+            
+        subfolder_map = {
+            'passport_scan': 'passports',
+            'aadhaar_scan': 'aadhaar',
+            'pan_scan': 'pan',
+            'vaccine_scan': 'vaccine',
+            'photo': 'photos',
+        }
+        sub = subfolder_map.get(key, 'other')
+        
+        base = get_app_base_path()
+        dest_dir = Path(base) / "documents" / folder_name / sub
+        
+        if not dest_dir.exists():
+            lbl.value = "No file"
+            lbl.color = "#95a5a6"
+            if key in self.doc_paths:
+                del self.doc_paths[key]
+            return
+            
+        files = [f for f in dest_dir.iterdir() if f.is_file()]
+        if not files:
+            lbl.value = "No file"
+            lbl.color = "#95a5a6"
+            if key in self.doc_paths:
+                del self.doc_paths[key]
+            return
+            
+        total_size = sum(f.stat().st_size for f in files)
+        if total_size > 1024 * 1024:
+            size_str = f"{total_size / 1024 / 1024:.2f} MB"
+        else:
+            size_str = f"{total_size / 1024:.1f} KB"
+            
+        if len(files) == 1:
+            lbl.value = f"✅ 1 file ({size_str})"
+            rel = os.path.relpath(str(files[0]), base)
+            self.doc_paths[key] = rel.replace(os.sep, "/")
+        else:
+            lbl.value = f"✅ {len(files)} files ({size_str})"
+            # Link the most recently uploaded file to the database
+            latest = max(files, key=lambda f: f.stat().st_mtime)
+            rel = os.path.relpath(str(latest), base)
+            self.doc_paths[key] = rel.replace(os.sep, "/")
+            
+        lbl.color = "#27ae60"
+
+    # -----------------------------------------------------------------------------
+    # [9.1.2c] _delete_document
+    #   Deletes the files in the document folder after confirmation.
+    # -----------------------------------------------------------------------------
+    def _delete_document(self, key):
+        def do_delete(e):
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                pass
+                
+            if self.is_edit and self.traveler:
+                folder_name = str(self.traveler['id']).replace('/', '_').replace('\\', '_')
+            else:
+                folder_name = f"new_traveler_{self._new_folder_uuid}"
+                
+            subfolder_map = {
+                'passport_scan': 'passports',
+                'aadhaar_scan': 'aadhaar',
+                'pan_scan': 'pan',
+                'vaccine_scan': 'vaccine',
+                'photo': 'photos',
+            }
+            sub = subfolder_map.get(key, 'other')
+            base = get_app_base_path()
+            dest_dir = Path(base) / "documents" / folder_name / sub
+            
+            try:
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
+                    print(f"[TRAVELER-DIALOG] Deleted folder: {dest_dir}")
+                self._refresh_doc_status(key)
+                self.page.update()
+                self._snack(f"🗑️ Deleted {key.replace('_', ' ').title()}")
+            except Exception as ex:
+                print(f"[TRAVELER-DIALOG] Delete failed: {ex}")
+                self._snack(f"❌ Could not delete: {ex}")
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Delete Document?"),
+            content=ft.Text(f"Are you sure you want to delete all files for {key.replace('_', ' ').title()}?\n\nThis cannot be undone."),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"), on_click=lambda e: self.page.pop_dialog()),
+                ft.Button(content=ft.Text("Delete"), on_click=do_delete, bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE)
+            ]
+        )
+        self.page.show_dialog(dlg)
 
     # -----------------------------------------------------------------------------
     # [9.1.3] choose_document (Flet picker — desktop)
@@ -1519,7 +1620,7 @@ class TravelerDialog:
                     "Upload the file, then return here.")
 
     # -----------------------------------------------------------------------------
-    # [9.1.5] _pick_doc_async  (v1.7 — size + extension validation)
+    # [9.1.5] _pick_doc_async
     # -----------------------------------------------------------------------------
     async def _pick_doc_async(self):
         try:
@@ -1552,7 +1653,6 @@ class TravelerDialog:
                 self._snack("⚠️ Empty file — nothing to save")
                 return
 
-            # v1.7 — validate size and extension
             if len(data) > _MAX_FILE_SIZE:
                 self._snack(
                     f"⚠️ File too large "
@@ -1592,14 +1692,9 @@ class TravelerDialog:
             with open(dest, "wb") as fh:
                 fh.write(data)
 
-            rel = os.path.relpath(str(dest), base)
-            self.doc_paths[self._current_doc_key] = rel.replace(os.sep, "/")
-
-            lbl = self.doc_status_labels.get(self._current_doc_key)
-            if lbl:
-                lbl.value = f"✅ {name}"
-                lbl.color = "#27ae60"
+            self._refresh_doc_status(self._current_doc_key)
             self.page.update()
+            
         except Exception as ex:
             print(f"[TRAVELER-DIALOG] pick failed: {ex}")
             traceback_print()
@@ -1620,18 +1715,16 @@ class TravelerDialog:
                 field.value = str(val) if val else None
             else:
                 field.value = str(val) if val is not None else ''
+                
         for key in ['passport_scan', 'aadhaar_scan', 'pan_scan',
                     'vaccine_scan', 'photo']:
             if traveler.get(key):
                 self.doc_paths[key] = traveler[key]
-                lbl = self.doc_status_labels.get(key)
-                if lbl:
-                    lbl.value = (f"✅ "
-                                 f"{os.path.basename(str(traveler[key]))}")
-                    lbl.color = "#27ae60"
+            # v1.8 - Scan actual folder to show full count/size
+            self._refresh_doc_status(key)
 
     # -----------------------------------------------------------------------------
-    # [9.1.7] save  (v1.7 + companion changes: result + ValueError checks)
+    # [9.1.7] save
     # -----------------------------------------------------------------------------
     def save(self, e):
         tid = None
@@ -1663,21 +1756,21 @@ class TravelerDialog:
                 self._snack("⚠️ Please select a Batch")
                 return
 
-            # ---- PIN: exactly _PIN_LENGTH digits ----
+            # ---- PIN ----
             pin = data.get('pin', '')
             if pin and (not pin.isdigit() or len(pin) != _PIN_LENGTH):
                 self._snack(
                     f"⚠️ PIN must be exactly {_PIN_LENGTH} digits")
                 return
 
-            # ---- Mobile format ----
+            # ---- Mobile ----
             try:
                 data['mobile'] = _validate_mobile(data.get('mobile', ''))
             except ValueError as ve:
                 self._snack(f"⚠️ {ve}")
                 return
 
-            # ---- Date format ----
+            # ---- Date ----
             for key in _DATE_FIELDS:
                 value = data.get(key, '')
                 if value and not _valid_date(value):
@@ -1711,9 +1804,6 @@ class TravelerDialog:
             if 'status' not in data or not data.get('status'):
                 data['status'] = 'Active'
 
-            # =====================================================================
-            # COMPANION CHANGE — edit path: check return value + catch ValueError
-            # =====================================================================
             if self.is_edit:
                 try:
                     updated = self.db.update_traveler(
@@ -1728,9 +1818,6 @@ class TravelerDialog:
                 msg = "Traveler updated"
                 tid = self.traveler['id']
             else:
-                # =================================================================
-                # COMPANION CHANGE — add path: catch ValueError from db layer
-                # =================================================================
                 try:
                     tid = self.db.add_traveler(data)
                 except ValueError as ve:
@@ -1772,9 +1859,6 @@ class TravelerDialog:
                             self.doc_paths[key] = rel
                             data[key] = rel
 
-                    # =========================================================
-                    # COMPANION CHANGE — surface doc-reference update failure
-                    # =========================================================
                     try:
                         if not self.db.update_traveler(
                                 tid, self.doc_paths):
@@ -1805,7 +1889,6 @@ class TravelerDialog:
                           f"{cb_ex}")
         except Exception as ex:
             traceback_print()
-            # v1.7 — roll back a partially-created traveler
             if tid is not None and not self.is_edit:
                 try:
                     self.db.delete_traveler(tid)
@@ -1815,7 +1898,7 @@ class TravelerDialog:
             self._snack(f"❌ Error: {ex}")
 
     # -----------------------------------------------------------------------------
-    # [9.1.8] show  (v1.7 — instrumented)
+    # [9.1.8] show
     # -----------------------------------------------------------------------------
     def show(self):
         try:
@@ -1850,7 +1933,7 @@ class TravelerDialog:
                           f"{cb_ex}")
 
     # -----------------------------------------------------------------------------
-    # v1.7 — close helper (pop_dialog + notify owner)
+    # Close helper
     # -----------------------------------------------------------------------------
     def _close_dialog(self):
         if self._closed:
@@ -2107,7 +2190,6 @@ class TravelerViewDialog:
                     ),
                 ]))
 
-        # v1.7 — responsive viewer sizing
         page_w = getattr(self.page, "width", None) or 900
         page_h = getattr(self.page, "height", None) or 700
         view_w = min(800, max(320, int(page_w) - 32))
@@ -2169,5 +2251,5 @@ class TravelerViewDialog:
 
 
 # =================================================================================
-# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.7
+# SECTION 8 + 9 + 10 END (FLET 1.0.0 VERSION) — v1.8
 # =================================================================================
