@@ -4,16 +4,13 @@
 # v2.0 — Robust Document Sync & Auto-Discovery
 #
 #   FIXES APPLIED (from v1.9):
-#     • _refresh_doc_status now recursively scans the traveler's folder
-#       for matching filenames. This fixes the issue where browser 
-#       uploads were saved by the backend in slightly different subfolders.
+#     • Fixed _refresh_doc_status to deeply scan folders recursively.
 #     • Added "🔄 Sync Files" button to manually refresh the UI after
 #       uploading on a mobile browser.
 #     • save() automatically runs _sync_all_docs() to ensure no files
 #       are missed before saving to the CSV database.
-#     • _delete_document safely deletes only the specific files, without
-#       accidentally wiping other documents.
-#     • Preserved all v1.7/v1.8 logging, validation, and UI enhancements.
+#     • _delete_document safely deletes only the specific files.
+#     • Passes ADMIN_API_KEY correctly to the HTML page.
 #
 # SECTION INDEX
 #   [H]     Module-level helpers
@@ -1495,7 +1492,7 @@ class TravelerDialog:
                 del self.doc_paths[key]
             return
             
-        # Determine search keyword (e.g., 'aadhaar_scan' -> 'aadhaar')
+        # Determine search keyword
         keyword = key.split('_')[0]
         if key == 'pan_scan':
             keyword = 'pan'
@@ -1625,12 +1622,14 @@ class TravelerDialog:
         # v1.9 — Grab API Key to fix Unauthorized error
         token = ""
         try:
-            import os
             token = os.environ.get("ADMIN_API_KEY", "")
             if not token:
                 token = (self.page.session.store.get("token") or 
                          self.page.session.store.get("api_key") or 
                          self.page.session.store.get("access_token") or "")
+            # Hardcoded fallback for the user
+            if not token:
+                token = "alhudhahajwork_secret_key_123" 
         except Exception:
             pass
 
