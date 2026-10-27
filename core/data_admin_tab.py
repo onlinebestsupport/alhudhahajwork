@@ -2,11 +2,12 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.4 — Fixed inline Web View using correct ft.OpenUrl syntax.
-#          Fixed HTML5 folder upload launch to prevent popup blocks.
+#   v2.5 — Fixed folder upload and inline web view to use native client-side
+#          ft.OpenUrl actions. This bypasses browser popup blockers and ensures
+#          tabs open synchronously.
 #
+#   v2.4 — Fixed inline Web View using correct ft.OpenUrl syntax.
 #   v2.3 — Directed HTML5 folder upload to specific Traveler IDs.
-#          Added explicit "Create" button for missing folders.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -46,7 +47,6 @@
 #       §3.32 _documents_view_folder
 #       §3.33 _documents_delete_backup
 #       §3.34 _documents_delete_folder
-#       §3.35 _documents_upload_folder
 #   §4  Aliases
 # =================================================================================
 
@@ -1313,8 +1313,16 @@ class DataAdminTab:
                     shape=ft.RoundedRectangleBorder(radius=8)))
 
         actions_row = ft.Row([
-            _act_btn("Upload Folder (Web)", ft.Icons.DRIVE_FOLDER_UPLOAD,
-                     "#0284c7", self._documents_upload_folder),
+            # v2.5 — Use ft.OpenUrl to open the Upload page synchronously
+            ft.Button(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.DRIVE_FOLDER_UPLOAD, size=14, color=ft.Colors.WHITE),
+                    ft.Text("Upload Folder (Web)", size=11, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                ], spacing=5, tight=True),
+                action=ft.OpenUrl("/upload-folder-page", target="_blank"),
+                height=38, bgcolor="#0284c7",
+                style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8))
+            ),
             _act_btn("Download All (ZIP)", ft.Icons.DOWNLOAD,
                      "#0891b2", self._documents_export_zip),
             _act_btn("Import ZIP (Restore)", ft.Icons.UPLOAD_FILE,
@@ -1530,11 +1538,9 @@ class DataAdminTab:
         has_folder = folder.get("has_folder", True)
         traveler_name = folder.get("traveler_name", "")
 
-        # v2.3 — All upload buttons route through the HTML5 folder upload page,
-        # passing the traveler_id so files land in the correct destination.
+        upload_url = f"/upload-folder-page?traveler_id={urllib.parse.quote(name)}"
+
         def _view(e, _name=name): self._documents_view_folder(_name)
-        def _upload_folder(e, _name=name):
-            self._documents_upload_folder(_name)
         def _dl(e, _name=name): self._documents_download_one(_name)
         def _del(e, _name=name): self._documents_delete_folder(_name)
 
@@ -1563,15 +1569,13 @@ class DataAdminTab:
                 ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
             ], spacing=4, expand=True)
 
-            # v2.3 — "Create" button now opens the HTML5 folder upload page
-            # pre-targeted to this traveler_id, so uploading a folder will
-            # create /app/data/documents/<traveler_id>/... directly.
+            # Use ft.OpenUrl directly on the button
             btn_upload = ft.TextButton(
                 content=ft.Row([
                     ft.Icon(ft.Icons.CREATE_NEW_FOLDER, size=14, color="#059669"),
                     ft.Text("Create", size=11, color="#059669", weight=ft.FontWeight.BOLD),
                 ], spacing=4, tight=True),
-                on_click=_upload_folder)
+                action=ft.OpenUrl(upload_url, target="_blank"))
             btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#d1d5db", disabled=True)
             btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#d1d5db", disabled=True)
             btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#d1d5db", disabled=True)
@@ -1585,14 +1589,13 @@ class DataAdminTab:
                 ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
             ], spacing=4, expand=True)
 
-            # v2.3 — Upload icon opens the HTML5 folder upload page targeted
-            # to this traveler_id.
+            # Use ft.OpenUrl directly on the button
             btn_upload = ft.IconButton(
                 icon=ft.Icons.UPLOAD,
                 icon_color="#059669",
                 icon_size=16,
                 tooltip="Upload Folder",
-                on_click=_upload_folder)
+                action=ft.OpenUrl(upload_url, target="_blank"))
             btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#3498db", icon_size=16, on_click=_view)
             btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#0891b2", icon_size=16, on_click=_dl)
             btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#dc2626", icon_size=16, on_click=_del)
@@ -2035,7 +2038,7 @@ class DataAdminTab:
                             icon_color="#3498db",
                             icon_size=16,
                             tooltip="View in Web",
-                            # v2.4 — FIXED: Use target="_blank" instead of unsupported web_only_window_name
+                            # v2.5 — Native client-side open
                             action=ft.OpenUrl(view_url, target="_blank")
                         ),
                         ft.IconButton(
@@ -2142,58 +2145,6 @@ class DataAdminTab:
             ]
         )
         self.page_ref.show_dialog(dlg)
-
-    # =============================================================================
-    # §3.35  _documents_upload_folder
-    # =============================================================================
-    def _documents_upload_folder(self, e=None, folder_name=None):
-        """
-        v2.3 — Opens the HTML5 folder upload page.
-
-        If `folder_name` is provided (or `e` is a string, which is the
-        pattern used by `_documents_folder_row` when calling this as a
-        click handler), the URL is pre-targeted with `?traveler_id=<id>`
-        so the server writes extracted files directly into
-        `/app/data/documents/<traveler_id>/...`.
-
-        If no folder name is given, the legacy generic upload page is
-        opened and the uploaded directory's own root name is used.
-        """
-        if folder_name is None and isinstance(e, str):
-            folder_name = e
-            e = None
-
-        if folder_name:
-            safe_name = str(folder_name)
-            url = f"/upload-folder-page?traveler_id={urllib.parse.quote(safe_name)}"
-        else:
-            url = "/upload-folder-page"
-
-        print(f"[DATA-ADMIN] Opening folder upload page: {url}")
-
-        try:
-            # Launch synchronously to bypass browser popup blockers
-            self.page_ref.launch_url(url, web_window_name="_blank")
-        except TypeError:
-            # Fallback for older Flet versions
-            try:
-                self.page_ref.launch_url(url)
-            except Exception as ex:
-                print(f"[DATA-ADMIN] launch error: {ex}")
-        except Exception as ex:
-            print(f"[DATA-ADMIN] launch error: {ex}")
-            self._snack(f"⚠️ Could not open upload page: {ex}",
-                        ft.Colors.RED_500)
-
-        if folder_name:
-            self._snack(
-                f"🌐 Opened folder upload page for {folder_name}. "
-                f"Refresh this list when done.",
-                ft.Colors.BLUE_600)
-        else:
-            self._snack(
-                "🌐 Opened folder upload page. Refresh this list when done.",
-                ft.Colors.BLUE_600)
 
 
 # =================================================================================
