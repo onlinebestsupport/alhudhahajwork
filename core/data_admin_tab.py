@@ -2,10 +2,8 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.4 — Fixed inline Web View popup blocker issue.
-#          Uses native ft.OpenUrl action for immediate execution.
-#          All v2.3 features (HTML5 Folder target, selective ZIP restore,
-#          alphabetized missing folders, subfolder counts) are preserved.
+#   v2.4 — Fixed inline Web View using correct ft.OpenUrl syntax.
+#          Fixed HTML5 folder upload launch to prevent popup blocks.
 #
 #   v2.3 — Directed HTML5 folder upload to specific Traveler IDs.
 #          Added explicit "Create" button for missing folders.
