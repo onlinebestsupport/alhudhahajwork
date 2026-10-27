@@ -11,6 +11,8 @@
 #          Download backup files from the Recent Backups list.
 #   v1.6 — Added Delete button for backup files to free up space.
 #   v1.7 — Added Delete button for Traveler Folders.
+#   v1.8 — Added strict folder validation: unlinked/mismatched folders are
+#          flagged, cannot be uploaded to, and display traveler names.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -1373,19 +1375,33 @@ class DataAdminTab:
         try:
             self.documents_dir.mkdir(parents=True, exist_ok=True)
 
+            # --- VERIFY FOLDERS AGAINST DB ---
+            travelers = self.db.get_travelers()
+            valid_folders = {}
+            for t in travelers:
+                tid = t.get("id", "")
+                if tid:
+                    clean_name = tid.replace('/', '_').replace('\\', '_')
+                    valid_folders[clean_name] = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
+
             folders = []
             try:
                 for item in sorted(self.documents_dir.iterdir()):
                     if not item.is_dir():
                         continue
+                    
+                    is_linked = item.name in valid_folders
+                    t_name = valid_folders.get(item.name, "")
+                    
                     size, count = _dir_size(item)
                     folders.append({
                         "name": item.name,
                         "path": item,
                         "size": size,
                         "files": count,
-                        "mtime": datetime.fromtimestamp(
-                            item.stat().st_mtime),
+                        "mtime": datetime.fromtimestamp(item.stat().st_mtime),
+                        "is_linked": is_linked,
+                        "traveler_name": t_name
                     })
             except Exception as e:
                 print(f"[DATA-ADMIN] documents iter failed: {e}")
@@ -1486,30 +1502,51 @@ class DataAdminTab:
         size = folder["size"]
         files = folder["files"]
         mtime = folder["mtime"]
+        is_linked = folder.get("is_linked", True)
+        traveler_name = folder.get("traveler_name", "")
 
         def _view(e, _name=name): self._documents_view_folder(_name)
         def _upload(e, _name=name): self._documents_upload_to_folder(_name)
         def _dl(e, _name=name): self._documents_download_one(_name)
         def _del(e, _name=name): self._documents_delete_folder(_name)
 
+        if is_linked:
+            name_control = ft.Row([
+                ft.Icon(ft.Icons.FOLDER, size=14, color="#f59e0b"),
+                ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
+            ], spacing=4, expand=True)
+            
+            btn_upload = ft.IconButton(
+                icon=ft.Icons.UPLOAD,
+                icon_color="#059669",
+                icon_size=16,
+                tooltip="Upload File",
+                on_click=_upload)
+        else:
+            name_control = ft.Row([
+                ft.Icon(ft.Icons.FOLDER_OFF, size=14, color="#dc2626"),
+                ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#dc2626", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text("(Unlinked / Mismatch)", size=9, color="#dc2626", weight=ft.FontWeight.BOLD)
+            ], spacing=4, expand=True)
+            
+            btn_upload = ft.IconButton(
+                icon=ft.Icons.UPLOAD,
+                icon_color="#d1d5db",
+                icon_size=16,
+                tooltip="Upload disabled (Unlinked folder)",
+                disabled=True)
+
         return ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.FOLDER, size=14, color="#f59e0b"),
-                ft.Text(name, size=10,
-                        weight=ft.FontWeight.BOLD,
-                        color="#0f172a",
-                        expand=True,
-                        max_lines=1,
-                        overflow=ft.TextOverflow.ELLIPSIS),
-                ft.Text(f"{files} file{'s' if files != 1 else ''}",
-                        size=9, color=ft.Colors.GREY_600),
+                name_control,
+                ft.Text(f"{files} file{'s' if files != 1 else ''}", size=9, color=ft.Colors.GREY_600),
                 ft.Container(
-                    content=ft.Text(_human_size(size), size=9,
-                                    color=ft.Colors.GREY_700),
+                    content=ft.Text(_human_size(size), size=9, color=ft.Colors.GREY_700),
                     padding=ft.Padding.symmetric(horizontal=5, vertical=2),
-                    bgcolor="#f1f5f9", border_radius=6),
-                ft.Text(mtime.strftime("%d-%m-%Y"),
-                        size=9, color=ft.Colors.GREY_500),
+                    bgcolor="#f1f5f9" if is_linked else "#fee2e2", 
+                    border_radius=6),
+                ft.Text(mtime.strftime("%d-%m-%Y"), size=9, color=ft.Colors.GREY_500),
                 ft.Row([
                     ft.IconButton(
                         icon=ft.Icons.VISIBILITY,
@@ -1517,12 +1554,7 @@ class DataAdminTab:
                         icon_size=16,
                         tooltip="View Files",
                         on_click=_view),
-                    ft.IconButton(
-                        icon=ft.Icons.UPLOAD,
-                        icon_color="#059669",
-                        icon_size=16,
-                        tooltip="Upload File",
-                        on_click=_upload),
+                    btn_upload,
                     ft.IconButton(
                         icon=ft.Icons.DOWNLOAD,
                         icon_color="#0891b2",
@@ -1536,10 +1568,10 @@ class DataAdminTab:
                         tooltip="Delete Folder",
                         on_click=_del),
                 ], spacing=0)
-            ], spacing=6,
-               vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=6, bgcolor="#f8fafc",
-            border=ft.Border.all(1, "#e2e8f0"),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=6, 
+            bgcolor="#f8fafc" if is_linked else "#fef2f2",
+            border=ft.Border.all(1, "#e2e8f0" if is_linked else "#fecaca"),
             border_radius=8)
 
     # =============================================================================
@@ -1933,6 +1965,13 @@ class DataAdminTab:
     # §3.32  _documents_upload_to_folder
     # =============================================================================
     def _documents_upload_to_folder(self, folder_name):
+        # --- VERIFY FOLDER IS LINKED ---
+        travelers = self.db.get_travelers()
+        valid_folders = [t.get("id", "").replace('/', '_').replace('\\', '_') for t in travelers]
+        if folder_name not in valid_folders:
+            self._snack(f"❌ Cannot upload: '{folder_name}' is an unlinked or mismatched folder.", ft.Colors.RED_500)
+            return
+
         async def _pick():
             try:
                 files = await self.file_picker.pick_files(
