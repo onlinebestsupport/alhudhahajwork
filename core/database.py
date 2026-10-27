@@ -1,7 +1,8 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# v5.1 — Payment/invoice consistency release (builds on v5 seat-consistency)
+# v5.2 — CRITICAL FIX: Backups are now correctly saved inside the persistent 
+#         data directory (/app/data/backups) instead of the ephemeral parent.
 #
 #   v5.1 NEW:
 #     • add_payment(): validates traveler exists + has batch_id;
@@ -15,16 +16,6 @@
 #     • _recalculate_batch_seats() — available_seats = total - booked
 #     • update_batch rejects total_seats < booked; recalculates inline
 #     • delete_batch blocks invoices + payments (was travelers-only)
-#
-#   v4 (preserved):
-#     • Atomic + fcntl-locked CSV writes (tempfile + fsync + os.replace)
-#     • Locked ID generation
-#     • Transactional add/update/delete_traveler with rollback
-#     • Duplicate passport detection; batch existence/capacity validation
-#     • Werkzeug password hashing; legacy SHA-256 auto-upgraded on login
-#     • Env-var-only default admin (HAJ_ADMIN_PASSWORD)
-#     • Safe ZIP restore; consistent backup dir
-#     • Case-insensitive batch status
 # =================================================================================
 
 import os
@@ -162,12 +153,12 @@ class HajDatabase:
                 f"Data folder is not writable: {self.data_dir}\nError: {e}")
 
     def _ensure_dirs(self):
-        base = (self.data_dir.parent if self.data_dir.name == "data"
-                else self.data_dir)
-        self._backup_dir = base / "backups"
-        for f in ["invoices", "receipts", "documents", "logos"]:
-            (base / f).mkdir(parents=True, exist_ok=True)
-        self._backup_dir.mkdir(parents=True, exist_ok=True)
+        # FIXED: Store backups inside the persistent data directory
+        self._backup_dir = self.data_dir / "backups"
+        
+        # Create all subfolders safely within /app/data
+        for f in ["invoices", "receipts", "documents", "logos", "backups"]:
+            (self.data_dir / f).mkdir(parents=True, exist_ok=True)
 
     class _FileLock:
         def __init__(self, path: Path, thread_lock):
@@ -1658,5 +1649,5 @@ class HajDatabase:
 
 
 # =================================================================================
-# SECTION 2 END (FLET VERSION) — v5.1
+# SECTION 2 END (FLET VERSION) — v5.2
 # =================================================================================
