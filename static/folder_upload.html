@@ -22,7 +22,7 @@
 <body>
   <div class="card">
     <h2>📁 Upload Traveler Folder</h2>
-    <p>Select a folder from your computer (e.g., <code>HAJ_TRV_2027_036</code>). It will upload the folder and all files inside it.</p>
+    <p id="target-info">Select a folder to upload.</p>
     
     <input type="file" id="folder-input" webkitdirectory directory multiple>
     <button id="upload-btn" onclick="upload()">Upload Folder</button>
@@ -31,6 +31,13 @@
   </div>
 
   <script>
+    const params = new URLSearchParams(window.location.search);
+    const travelerId = params.get('traveler_id') || '';
+    
+    if (travelerId) {
+      document.getElementById('target-info').innerHTML = `<b>Target Traveler:</b> ${travelerId}<br>Select the folder containing this traveler's files.`;
+    }
+
     async function upload() {
       const input = document.getElementById('folder-input');
       const btn = document.getElementById('upload-btn');
@@ -46,6 +53,8 @@
       status.innerText = '⏳ Uploading... Please wait.';
       
       const fd = new FormData();
+      if (travelerId) fd.append('traveler_id', travelerId);
+      
       for (const file of input.files) {
         fd.append('files', file);
         fd.append('paths', file.webkitRelativePath);
