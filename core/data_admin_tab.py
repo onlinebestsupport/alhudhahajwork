@@ -9,6 +9,7 @@
 #   v1.4 — Unlimited UI lists (CSV preview, Traveler folders)
 #   v1.5 — Document Actions: View files in folder, Upload directly to folder,
 #          Download backup files from the Recent Backups list.
+#   v1.6 — Added Delete button for backup files to free up space.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -44,8 +45,9 @@
 #       §3.28 _documents_import_zip     ZIP restore with backup
 #       §3.29 _apply_documents_zip      apply ZIP restore
 #       §3.30 _documents_create_backup  timestamped backup
-#       §3.31 _documents_view_folder    NEW: View files inside a folder
-#       §3.32 _documents_upload_to_folder NEW: Upload file to folder
+#       §3.31 _documents_view_folder    View files inside a folder
+#       §3.32 _documents_upload_to_folder Upload file to folder
+#       §3.33 _documents_delete_backup  Delete a backup file
 #   §4  Aliases (DataAdminView = DataAdminTab)
 # =================================================================================
 
@@ -1439,6 +1441,9 @@ class DataAdminTab:
                                 except Exception:
                                     pass
                                     
+                        def _del_backup(e, _p=b):
+                            self._documents_delete_backup(_p)
+                                    
                         self.docs_backups_container.controls.append(
                             ft.Row([
                                 ft.Icon(ft.Icons.ARCHIVE, size=12,
@@ -1460,6 +1465,12 @@ class DataAdminTab:
                                     icon_size=16,
                                     tooltip="Download Backup",
                                     on_click=_dl_backup),
+                                ft.IconButton(
+                                    icon=ft.Icons.DELETE_OUTLINE,
+                                    icon_color="#dc2626",
+                                    icon_size=16,
+                                    tooltip="Delete Backup",
+                                    on_click=_del_backup),
                             ], spacing=6))
         except Exception as ex:
             print(f"[DATA-ADMIN] documents refresh failed: {ex}")
@@ -1934,7 +1945,6 @@ class DataAdminTab:
                     self._snack("⚠️ Empty file", ft.Colors.RED_500)
                     return
 
-                # Save to an 'uploads' subfolder inside the traveler's folder
                 dest_dir = self.documents_dir / folder_name / "uploads"
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest_path = dest_dir / f.name
@@ -1955,6 +1965,43 @@ class DataAdminTab:
             self.page_ref.run_task(_pick)
         except Exception as ex:
             self._snack(f"⚠️ Could not start file picker: {ex}", ft.Colors.RED_500)
+
+    # =============================================================================
+    # §3.33  _documents_delete_backup
+    # =============================================================================
+    def _documents_delete_backup(self, backup_path: Path):
+        def do_delete(e):
+            try:
+                self.page_ref.pop_dialog()
+            except Exception:
+                pass
+                
+            try:
+                if backup_path.exists():
+                    backup_path.unlink()
+                    self._snack(f"🗑️ Deleted backup: {backup_path.name}", ft.Colors.GREEN_700)
+                else:
+                    self._snack("⚠️ Backup file not found", ft.Colors.ORANGE_700)
+            except Exception as ex:
+                print(f"[DATA-ADMIN] delete backup error: {ex}")
+                self._snack(f"❌ Delete failed: {ex}", ft.Colors.RED_500)
+                
+            self._documents_refresh()
+            self._safe_update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER, color="#dc2626"),
+                ft.Text("Delete Backup?", weight=ft.FontWeight.BOLD),
+            ], spacing=8),
+            content=ft.Text(f"Are you sure you want to delete {backup_path.name}?\n\nThis cannot be undone.", size=12),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"), on_click=lambda e: self.page_ref.pop_dialog()),
+                ft.Button(content=ft.Text("Delete"), on_click=do_delete, bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE)
+            ]
+        )
+        self.page_ref.show_dialog(dlg)
 
 
 # =================================================================================
