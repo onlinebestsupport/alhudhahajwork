@@ -2,10 +2,11 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.1 — Fixed missing folder display (iterates DB), added subfolder counts,
-#          separated View and Download buttons for individual files.
-#          All v2.0 features (Async-safe, HTML5 Folder Upload, CSV management)
-#          are fully preserved.
+#   v2.0 — Async-safe operations, HTML5 Folder Upload, Selective ZIP Import,
+#          Missing Folders display, Web-safe file viewing, and restored
+#          CSV management functions.
+#   v2.1 — Fixed missing folder sorting (alphabetical), added subfolder count
+#          display, separated View and Download buttons for individual files.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -1383,7 +1384,7 @@ class DataAdminTab:
 
             folders = []
             try:
-                for item in sorted(self.documents_dir.iterdir()):
+                for item in self.documents_dir.iterdir():
                     if not item.is_dir():
                         continue
                     
@@ -1423,6 +1424,9 @@ class DataAdminTab:
                         "traveler_name": name,
                         "has_folder": False
                     })
+
+            # SORT SO MISSING FOLDERS ARE MIXED IN ALPHABETICALLY
+            folders.sort(key=lambda x: x["name"])
 
             total_size, total_files = _dir_size(self.documents_dir)
 
@@ -1555,11 +1559,8 @@ class DataAdminTab:
                 ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
             ], spacing=4, expand=True)
             
-            btn_upload = ft.IconButton(
-                icon=ft.Icons.UPLOAD,
-                icon_color="#059669",
-                icon_size=16,
-                tooltip="Create & Upload File",
+            btn_upload = ft.TextButton(
+                content=ft.Row([ft.Icon(ft.Icons.UPLOAD, size=14, color="#059669"), ft.Text("Create", size=11, color="#059669", weight=ft.FontWeight.BOLD)], spacing=4, tight=True),
                 on_click=_upload)
             btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#d1d5db", disabled=True)
             btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#d1d5db", disabled=True)
@@ -2120,7 +2121,7 @@ class DataAdminTab:
         self.page_ref.show_dialog(dlg)
 
     # =============================================================================
-    # §3.35  _documents_upload_folder
+    # §3.35  _documents_upload_folder (HTML5 Folder Upload)
     # =============================================================================
     def _documents_upload_folder(self, e=None):
         url = "/upload-folder-page"
