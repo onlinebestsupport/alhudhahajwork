@@ -5,19 +5,14 @@
 #   v1.0 — Initial release (list CSVs, download, upload, export ZIP, preview)
 #   v1.1 — Added Reset Activity Log button
 #   v1.2 — Added "Import All" multi-file uploader (bulk import from local system)
-#   v1.3 — Added Documents management section (§3.23–§3.28)
-#          • Stats: traveler folders, file count, total size
-#          • Per-traveler ZIP download
-#          • Full documents ZIP download
-#          • ZIP import with pre-flight backup
-#          • Manual backup creation
-#   v1.4 — Unlimited UI lists
-#          • CSV Preview now shows ALL rows (using ListView for performance)
-#          • Traveler Documents list now shows ALL folders (no 20-item cap)
+#   v1.3 — Added Documents management section
+#   v1.4 — Unlimited UI lists (CSV preview, Traveler folders)
+#   v1.5 — Document Actions: View files in folder, Upload directly to folder,
+#          Download backup files from the Recent Backups list.
 #
 # SECTION MAP
 #   §1  Module header & imports
-#   §2  Module-level helpers  (_safe_str, _human_size)
+#   §2  Module-level helpers  (_safe_str, _human_size, _dir_size)
 #   §3  class DataAdminTab
 #       §3.1  __init__                  constructor / role gate
 #       §3.2  build                     Flet entry point
@@ -42,11 +37,15 @@
 #       §3.21 _snack                    transient notification
 #       §3.22 _safe_update              safe wrapper around root.update()
 #       §3.23 _build_documents_section  Documents management UI
-#       §3.24 _documents_refresh        scan + update stats/lists (no limits)
-#       §3.25 _documents_export_zip     full documents ZIP export
-#       §3.26 _documents_download_one   per-traveler ZIP download
-#       §3.27 _documents_import_zip     ZIP restore with backup
-#       §3.28 _documents_create_backup  timestamped backup
+#       §3.24 _documents_refresh        scan + update stats/lists + backups
+#       §3.25 _documents_folder_row     one row per traveler folder
+#       §3.26 _documents_export_zip     full documents ZIP export
+#       §3.27 _documents_download_one   per-traveler ZIP download
+#       §3.28 _documents_import_zip     ZIP restore with backup
+#       §3.29 _apply_documents_zip      apply ZIP restore
+#       §3.30 _documents_create_backup  timestamped backup
+#       §3.31 _documents_view_folder    NEW: View files inside a folder
+#       §3.32 _documents_upload_to_folder NEW: Upload file to folder
 #   §4  Aliases (DataAdminView = DataAdminTab)
 # =================================================================================
 
@@ -1053,22 +1052,18 @@ class DataAdminTab:
                 self._snack(f"⚠️ {name} not found")
                 return
             
-            # Read the entire CSV, no row limit
             df = pd.read_csv(path)
             total_rows = len(df)
 
-            # Build a list of text rows for the ListView
             header_text = " | ".join(str(c) for c in df.columns)
             lines = [header_text, "─" * 80]
             
             for _, row in df.iterrows():
-                # Truncate each cell to 30 chars for neatness, pad to 30
                 row_str = " | ".join(str(v)[:30].ljust(30) for v in row.values)
                 lines.append(row_str)
 
             narrow = self._is_narrow()
 
-            # Use a ListView for performance with many rows
             preview_list = ft.ListView(
                 controls=[
                     ft.Text(line, size=10, font_family="Consolas", 
@@ -1277,7 +1272,6 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.23  _build_documents_section
-    #   Documents management UI: stats, actions, per-folder list, backups
     # =============================================================================
     def _build_documents_section(self):
         narrow = self._is_narrow()
@@ -1370,15 +1364,11 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.24  _documents_refresh
-    #   Scan /app/data/documents, update stats + folder list + backups
-    #   (Lists ALL folders, no limit)
     # =============================================================================
     def _documents_refresh(self):
         try:
-            # ---- Ensure directory exists ----
             self.documents_dir.mkdir(parents=True, exist_ok=True)
 
-            # ---- Collect folders ----
             folders = []
             try:
                 for item in sorted(self.documents_dir.iterdir()):
@@ -1396,10 +1386,8 @@ class DataAdminTab:
             except Exception as e:
                 print(f"[DATA-ADMIN] documents iter failed: {e}")
 
-            # ---- Totals ----
             total_size, total_files = _dir_size(self.documents_dir)
 
-            # ---- Update stat chips ----
             try:
                 self.docs_stats_labels["folders"].value = str(len(folders))
                 self.docs_stats_labels["files"].value = str(total_files)
@@ -1407,7 +1395,6 @@ class DataAdminTab:
             except Exception:
                 pass
 
-            # ---- Rebuild folder list (No 20-item cap) ----
             if self.docs_folders_container is not None:
                 self.docs_folders_container.controls.clear()
 
@@ -1421,7 +1408,6 @@ class DataAdminTab:
                         self.docs_folders_container.controls.append(
                             self._documents_folder_row(f))
 
-            # ---- Recent backups ----
             if self.docs_backups_container is not None:
                 self.docs_backups_container.controls.clear()
 
@@ -1442,8 +1428,17 @@ class DataAdminTab:
                                 size=10, color=ft.Colors.GREY_600,
                                 italic=True))
                 else:
-                    for mtime, b in backups[:5]:
+                    for mtime, b in backups[:10]: # Show up to 10 backups
                         size_str = _human_size(b.stat().st_size)
+                        
+                        def _dl_backup(e, _p=b):
+                            url = send_file_to_user(self.page_ref, str(_p), _p.name)
+                            if url:
+                                try:
+                                    self.page_ref.launch_url(url)
+                                except Exception:
+                                    pass
+                                    
                         self.docs_backups_container.controls.append(
                             ft.Row([
                                 ft.Icon(ft.Icons.ARCHIVE, size=12,
@@ -1459,6 +1454,12 @@ class DataAdminTab:
                                         .strftime("%d-%m-%Y %H:%M"),
                                         size=9,
                                         color=ft.Colors.GREY_600),
+                                ft.IconButton(
+                                    icon=ft.Icons.DOWNLOAD,
+                                    icon_color="#0891b2",
+                                    icon_size=16,
+                                    tooltip="Download Backup",
+                                    on_click=_dl_backup),
                             ], spacing=6))
         except Exception as ex:
             print(f"[DATA-ADMIN] documents refresh failed: {ex}")
@@ -1466,7 +1467,6 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.25  _documents_folder_row
-    #   One row per traveler folder with a download button
     # =============================================================================
     def _documents_folder_row(self, folder):
         name = folder["name"]
@@ -1474,8 +1474,9 @@ class DataAdminTab:
         files = folder["files"]
         mtime = folder["mtime"]
 
-        def _dl(e, _name=name):
-            self._documents_download_one(_name)
+        def _view(e, _name=name): self._documents_view_folder(_name)
+        def _upload(e, _name=name): self._documents_upload_to_folder(_name)
+        def _dl(e, _name=name): self._documents_download_one(_name)
 
         return ft.Container(
             content=ft.Row([
@@ -1495,12 +1496,26 @@ class DataAdminTab:
                     bgcolor="#f1f5f9", border_radius=6),
                 ft.Text(mtime.strftime("%d-%m-%Y"),
                         size=9, color=ft.Colors.GREY_500),
-                ft.IconButton(
-                    icon=ft.Icons.DOWNLOAD,
-                    icon_color="#0891b2",
-                    icon_size=16,
-                    tooltip="Download as ZIP",
-                    on_click=_dl),
+                ft.Row([
+                    ft.IconButton(
+                        icon=ft.Icons.VISIBILITY,
+                        icon_color="#3498db",
+                        icon_size=16,
+                        tooltip="View Files",
+                        on_click=_view),
+                    ft.IconButton(
+                        icon=ft.Icons.UPLOAD,
+                        icon_color="#059669",
+                        icon_size=16,
+                        tooltip="Upload File",
+                        on_click=_upload),
+                    ft.IconButton(
+                        icon=ft.Icons.DOWNLOAD,
+                        icon_color="#0891b2",
+                        icon_size=16,
+                        tooltip="Download ZIP",
+                        on_click=_dl),
+                ], spacing=0)
             ], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=6, bgcolor="#f8fafc",
@@ -1509,7 +1524,6 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.26  _documents_export_zip
-    #   Download the entire documents tree as a single ZIP
     # =============================================================================
     def _documents_export_zip(self, e=None):
         try:
@@ -1553,7 +1567,6 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.27  _documents_download_one
-    #   Download a single traveler folder as a ZIP
     # =============================================================================
     def _documents_download_one(self, folder_name):
         try:
@@ -1600,8 +1613,6 @@ class DataAdminTab:
 
     # =============================================================================
     # §3.28  _documents_import_zip
-    #   Restore a documents ZIP. Extracts to a temp dir first, shows a
-    #   preview dialog, then (on confirm) creates a backup and merges.
     # =============================================================================
     def _documents_import_zip(self, e=None):
         async def _pick():
@@ -1637,7 +1648,6 @@ class DataAdminTab:
                 self._snack("⚠️ Empty ZIP", ft.Colors.RED_500)
                 return
 
-            # ---- Stage 1: inspect the ZIP (no writes) ----
             try:
                 zf = zipfile.ZipFile(io.BytesIO(data))
             except Exception as e:
@@ -1646,7 +1656,6 @@ class DataAdminTab:
                 return
 
             names = zf.namelist()
-            # Basic safety: reject absolute paths and ../
             unsafe = [n for n in names
                       if n.startswith("/") or ".." in Path(n).parts]
             if unsafe:
@@ -1655,7 +1664,6 @@ class DataAdminTab:
                     f"({len(unsafe)} entries)", ft.Colors.RED_500)
                 return
 
-            # Count top-level folders
             top = set()
             for n in names:
                 parts = Path(n).parts
@@ -1668,7 +1676,6 @@ class DataAdminTab:
             file_count = sum(
                 1 for info in zf.infolist() if not info.is_dir())
 
-            # ---- Stage 2: preview + confirm ----
             def do_import(ev):
                 try:
                     self.page_ref.pop_dialog()
@@ -1742,12 +1749,11 @@ class DataAdminTab:
             traceback.print_exc()
             self._snack(f"❌ Import failed: {ex}", ft.Colors.RED_500)
 
-    # -----------------------------------------------------------------------------
-    # §3.28.1  _apply_documents_zip — backup then merge
-    # -----------------------------------------------------------------------------
+    # =============================================================================
+    # §3.29  _apply_documents_zip
+    # =============================================================================
     def _apply_documents_zip(self, data: bytes):
         try:
-            # ---- Step 1: backup current documents ----
             backup_name = None
             if self.documents_dir.exists():
                 try:
@@ -1766,14 +1772,12 @@ class DataAdminTab:
                 except Exception as e:
                     print(f"[DATA-ADMIN] pre-import backup failed: {e}")
 
-            # ---- Step 2: extract the new ZIP into documents_dir ----
             self.documents_dir.mkdir(parents=True, exist_ok=True)
             extracted = 0
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 for info in z.infolist():
                     if info.is_dir():
                         continue
-                    # Safety again
                     parts = Path(info.filename).parts
                     if not parts or ".." in parts:
                         continue
@@ -1783,7 +1787,6 @@ class DataAdminTab:
                         shutil.copyfileobj(src, dst)
                     extracted += 1
 
-            # ---- Step 3: refresh ----
             self._documents_refresh()
             self._safe_update()
 
@@ -1797,8 +1800,7 @@ class DataAdminTab:
             self._snack(f"❌ Apply failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.29  _documents_create_backup
-    #   Create a timestamped backup of the documents tree
+    # §3.30  _documents_create_backup
     # =============================================================================
     def _documents_create_backup(self, e=None):
         try:
@@ -1835,6 +1837,124 @@ class DataAdminTab:
             print(f"[DATA-ADMIN] documents backup error: {ex}")
             traceback.print_exc()
             self._snack(f"❌ Backup failed: {ex}", ft.Colors.RED_500)
+
+    # =============================================================================
+    # §3.31  _documents_view_folder
+    # =============================================================================
+    def _documents_view_folder(self, folder_name):
+        try:
+            folder_path = self.documents_dir / folder_name
+            if not folder_path.exists() or not folder_path.is_dir():
+                self._snack(f"⚠️ '{folder_name}' not found", ft.Colors.RED_500)
+                return
+
+            files_list = []
+            for f in folder_path.rglob("*"):
+                if f.is_file():
+                    rel_path = f.relative_to(folder_path)
+                    files_list.append({
+                        "rel": str(rel_path),
+                        "abs": f,
+                        "size": f.stat().st_size
+                    })
+            
+            files_list.sort(key=lambda x: x["rel"])
+
+            if not files_list:
+                self._snack(f"📂 Folder '{folder_name}' is empty.", ft.Colors.BLUE_700)
+                return
+
+            rows = []
+            for item in files_list:
+                def _dl_file(e, _path=item["abs"]):
+                    url = send_file_to_user(self.page_ref, str(_path), _path.name)
+                    if url:
+                        try:
+                            self.page_ref.launch_url(url)
+                        except Exception:
+                            pass
+
+                rows.append(
+                    ft.Row([
+                        ft.Icon(ft.Icons.INSERT_DRIVE_FILE, size=16, color="#3498db"),
+                        ft.Text(item["rel"], size=11, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(_human_size(item["size"]), size=10, color=ft.Colors.GREY_600),
+                        ft.IconButton(
+                            icon=ft.Icons.DOWNLOAD,
+                            icon_color="#0891b2",
+                            icon_size=16,
+                            tooltip="Download File",
+                            on_click=_dl_file
+                        )
+                    ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                )
+
+            dlg = ft.AlertDialog(
+                modal=True,
+                title=ft.Row([
+                    ft.Icon(ft.Icons.FOLDER_OPEN, color="#f59e0b"),
+                    ft.Text(f"Files in {folder_name}", weight=ft.FontWeight.BOLD),
+                ], spacing=8),
+                content=ft.Container(
+                    content=ft.Column(rows, spacing=4, scroll=ft.ScrollMode.AUTO),
+                    width=500, height=400, padding=4
+                ),
+                actions=[
+                    ft.TextButton(content=ft.Text("Close"), on_click=lambda e: self.page_ref.pop_dialog())
+                ]
+            )
+            self.page_ref.show_dialog(dlg)
+
+        except Exception as ex:
+            print(f"[DATA-ADMIN] view folder error: {ex}")
+            self._snack(f"❌ Could not view folder: {ex}", ft.Colors.RED_500)
+
+    # =============================================================================
+    # §3.32  _documents_upload_to_folder
+    # =============================================================================
+    def _documents_upload_to_folder(self, folder_name):
+        async def _pick():
+            try:
+                files = await self.file_picker.pick_files(
+                    allow_multiple=False,
+                    with_data=True
+                )
+                if not files:
+                    return
+                
+                f = files[0]
+                data = getattr(f, 'bytes', None)
+                if not data:
+                    src = getattr(f, 'path', None)
+                    if src and os.path.exists(src):
+                        with open(src, 'rb') as fh:
+                            data = fh.read()
+                            
+                if not data:
+                    self._snack("⚠️ Empty file", ft.Colors.RED_500)
+                    return
+
+                # Save to an 'uploads' subfolder inside the traveler's folder
+                dest_dir = self.documents_dir / folder_name / "uploads"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest_path = dest_dir / f.name
+                
+                with open(dest_path, "wb") as fh:
+                    fh.write(data)
+                
+                self._documents_refresh()
+                self._safe_update()
+                self._snack(f"✅ Uploaded {f.name} to {folder_name}", ft.Colors.GREEN_700)
+
+            except Exception as ex:
+                print(f"[DATA-ADMIN] upload to folder error: {ex}")
+                traceback.print_exc()
+                self._snack(f"❌ Upload failed: {ex}", ft.Colors.RED_500)
+
+        try:
+            self.page_ref.run_task(_pick)
+        except Exception as ex:
+            self._snack(f"⚠️ Could not start file picker: {ex}", ft.Colors.RED_500)
 
 
 # =================================================================================
