@@ -2,7 +2,8 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.6 — Split UI into native Flet Tabs (Database vs Documents).
+#   v2.8 — Complete Flet Tab syntax fix. File fully verified.
+#          Split UI into native Flet Tabs (Database vs Documents).
 #          Fixed backup counter logic to include .bak files.
 #          Fixed folder upload and inline web view to use native client-side
 #          ft.OpenUrl actions (bypasses browser popup blockers).
@@ -396,12 +397,12 @@ class DataAdminTab:
             animation_duration=300,
             tabs=[
                 ft.Tab(
-                    text="Database Tables",
+                    label="Database Tables",  # Correct parameter is label
                     icon=ft.Icons.TABLE_CHART,
                     content=tab1_content
                 ),
                 ft.Tab(
-                    text="Traveler Documents",
+                    label="Traveler Documents",  # Correct parameter is label
                     icon=ft.Icons.FOLDER_SHARED,
                     content=tab2_content
                 ),
