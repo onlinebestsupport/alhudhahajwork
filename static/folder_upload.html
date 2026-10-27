@@ -2,21 +2,27 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Upload Folder — Alhudha Admin</title>
 <style>
-  body { font-family: -apple-system, sans-serif; background: #f1f5f9; padding: 20px; color: #0f172a; }
-  .card { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-  h2 { margin-top: 0; color: #1e40af; }
-  input[type="file"] { display: block; width: 100%; padding: 10px; border: 2px dashed #cbd5e1; border-radius: 8px; margin-bottom: 20px; }
-  button { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
-  button:disabled { background: #94a3b8; }
-  #status { margin-top: 20px; font-weight: bold; text-align: center; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; background: #f1f5f9; padding: 16px; color: #0f172a; min-height: 100vh; margin: 0; }
+  .card { max-width: 520px; margin: 0 auto; background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); }
+  h2 { margin-top: 0; color: #1e3a8a; font-size: 20px; }
+  p { font-size: 13px; color: #64748b; margin-bottom: 20px; line-height: 1.5; }
+  input[type="file"] { display: block; width: 100%; padding: 12px; border: 2px dashed #cbd5e1; border-radius: 10px; margin-bottom: 20px; background: #f8fafc; cursor: pointer; }
+  input[type="file"]:active { border-color: #2563eb; background: #eff6ff; }
+  button { width: 100%; padding: 14px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: bold; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+  #status { margin-top: 20px; font-weight: bold; text-align: center; font-size: 14px; padding: 10px; border-radius: 8px; }
+  .success { background: #d1fae5; color: #065f46; }
+  .error { background: #fee2e2; color: #991b1b; }
+  .info { background: #e0f2fe; color: #0369a1; }
 </style>
 </head>
 <body>
   <div class="card">
     <h2>📁 Upload Traveler Folder</h2>
-    <p style="font-size:12px; color:#64748b;">Select a folder from your computer (e.g., HAJ_TRV_2027_036). It will upload the folder and all files inside it.</p>
+    <p>Select a folder from your computer (e.g., <code>HAJ_TRV_2027_036</code>). It will upload the folder and all files inside it.</p>
     
     <input type="file" id="folder-input" webkitdirectory directory multiple>
     <button id="upload-btn" onclick="upload()">Upload Folder</button>
@@ -36,8 +42,8 @@
       }
       
       btn.disabled = true;
-      status.innerText = 'Uploading... Please wait.';
-      status.style.color = '#2563eb';
+      status.className = 'info';
+      status.innerText = '⏳ Uploading... Please wait.';
       
       const fd = new FormData();
       for (const file of input.files) {
@@ -52,17 +58,18 @@
         });
         
         if (res.ok) {
-          status.innerText = '✅ Upload successful! You can close this tab and click Refresh in the Admin app.';
-          status.style.color = '#059669';
+          const data = await res.json();
+          status.className = 'success';
+          status.innerText = `✅ Upload successful! Uploaded ${data.count} files to ${data.folder}. You can close this tab.`;
         } else {
           const err = await res.text();
+          status.className = 'error';
           status.innerText = '❌ Upload failed: ' + err;
-          status.style.color = '#dc2626';
           btn.disabled = false;
         }
       } catch (e) {
+        status.className = 'error';
         status.innerText = '❌ Network error: ' + e.message;
-        status.style.color = '#dc2626';
         btn.disabled = false;
       }
     }
