@@ -2,6 +2,7 @@
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
 # v2.32 — Folder upload can now target a specific traveler
+#         and fixed inline document viewing headers.
 #
 #   CHANGES:
 #     • §21.5.8d — /api/admin/traveler/upload-folder-html now accepts an
@@ -11,10 +12,11 @@
 #       a folder named after the uploaded directory. When omitted (generic
 #       top-level upload button), the legacy behaviour is preserved and the
 #       root folder name from the uploaded directory is used.
+#     • §21.5.8e — Fixed /api/admin/view-doc to use `content_disposition_type="inline"`
+#       ensuring PDFs and images render directly in the browser tab.
 #
 #   PREVIOUS (v2.31):
-#     • §21.5.8e — Added /api/admin/view-doc to serve files inline (opens PDFs
-#       and images directly in the browser instead of forcing a download).
+#     • §21.5.8e — Added /api/admin/view-doc to serve files inline.
 # =================================================================================
 
 
@@ -1704,11 +1706,11 @@ def _build_app() -> FastAPI:
         import mimetypes as _mimetypes
         media_type, _ = _mimetypes.guess_type(str(safe_path))
 
-        # Return without Content-Disposition: attachment so it opens in the browser
+        # Use content_disposition_type="inline" to force browser render (FIXED)
         return FileResponse(
             str(safe_path),
             media_type=media_type or "application/octet-stream",
-            headers={"Content-Disposition": "inline"}
+            content_disposition_type="inline"
         )
 
     # -----------------------------------------------------------------------------
