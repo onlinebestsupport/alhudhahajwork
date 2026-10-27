@@ -2,11 +2,9 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.8 — Complete Flet Tab syntax fix. File fully verified.
-#          Split UI into native Flet Tabs (Database vs Documents).
-#          Fixed backup counter logic to include .bak files.
-#          Fixed folder upload and inline web view to use native client-side
-#          ft.OpenUrl actions (bypasses browser popup blockers).
+#   v2.9 — Replaced crashing ft.Tabs with custom Flet button navigation.
+#          This bypasses Flet version bugs on Railway where `ft.Tab` 
+#          throws unexpected keyword argument errors.
 # =================================================================================
 
 
@@ -214,7 +212,7 @@ class DataAdminTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # §3.6  setup_ui (Restructured with Flet Tabs)
+    # §3.6  setup_ui (Custom Tab Implementation to avoid Flet bugs)
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -390,24 +388,37 @@ class DataAdminTab:
         )
 
         # =====================================================================
-        # ASSEMBLE TABS & ROOT
+        # CUSTOM TAB NAVIGATION (Replaces crashing ft.Tabs)
         # =====================================================================
-        tabs = ft.Tabs(
-            selected_index=0,
-            animation_duration=300,
-            tabs=[
-                ft.Tab(
-                    label="Database Tables",  # Correct parameter is label
-                    icon=ft.Icons.TABLE_CHART,
-                    content=tab1_content
-                ),
-                ft.Tab(
-                    label="Traveler Documents",  # Correct parameter is label
-                    icon=ft.Icons.FOLDER_SHARED,
-                    content=tab2_content
-                ),
-            ],
-            expand=True
+        self.tab_content_container = ft.Container(content=tab1_content, expand=True)
+
+        # Define tab switching logic
+        def _switch_tab(index):
+            if index == 0:
+                self.tab_content_container.content = tab1_content
+                btn_db.style = ft.ButtonStyle(bgcolor="#e2e8f0", color="#0f172a")
+                btn_docs.style = ft.ButtonStyle(color=ft.Colors.GREY_600)
+            else:
+                self.tab_content_container.content = tab2_content
+                btn_docs.style = ft.ButtonStyle(bgcolor="#e2e8f0", color="#0f172a")
+                btn_db.style = ft.ButtonStyle(color=ft.Colors.GREY_600)
+            self._safe_update()
+
+        # Tab Buttons
+        btn_db = ft.TextButton(
+            content=ft.Row([ft.Icon(ft.Icons.TABLE_CHART), ft.Text("Database Tables")]),
+            on_click=lambda e: _switch_tab(0),
+            style=ft.ButtonStyle(bgcolor="#e2e8f0", color="#0f172a", shape=ft.RoundedRectangleBorder(radius=8))
+        )
+        btn_docs = ft.TextButton(
+            content=ft.Row([ft.Icon(ft.Icons.FOLDER_SHARED), ft.Text("Traveler Documents")]),
+            on_click=lambda e: _switch_tab(1),
+            style=ft.ButtonStyle(color=ft.Colors.GREY_600, shape=ft.RoundedRectangleBorder(radius=8))
+        )
+
+        tab_nav = ft.Row(
+            controls=[btn_db, btn_docs],
+            spacing=10
         )
 
         # ---- Status label ----
@@ -419,7 +430,9 @@ class DataAdminTab:
                 controls=[
                     header,
                     ft.Container(height=4),
-                    tabs,
+                    tab_nav,
+                    ft.Divider(height=1, color="#e2e8f0"),
+                    self.tab_content_container,
                     self.status_label,
                 ],
                 spacing=10, expand=True,
