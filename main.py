@@ -1606,6 +1606,54 @@ def _build_app() -> FastAPI:
         }
 
     # -----------------------------------------------------------------------------
+    # 21.5.8d — Folder Upload (HTML5 Directory Picker)
+    # -----------------------------------------------------------------------------
+    folder_upload_html = os.path.join(static_dir, "folder_upload.html")
+
+    @app.get("/upload-folder-page")
+    async def upload_folder_page():
+        if os.path.exists(folder_upload_html):
+            return FileResponse(folder_upload_html, media_type="text/html")
+        raise HTTPException(status_code=404, detail="Page not found")
+
+    @app.post("/api/admin/traveler/upload-folder-html")
+    async def upload_folder_html(
+        files: List[UploadFile] = File(...),
+        paths: List[str] = Form(...)
+    ):
+        if not files: 
+            raise HTTPException(status_code=400, detail="No files provided")
+            
+        # Determine root folder from the first path
+        root_folder = "uploaded_folder"
+        if paths:
+            parts = Path(paths[0]).parts
+            if parts: root_folder = parts[0]
+            
+        safe_root = "".join(c for c in root_folder if c.isalnum() or c in "-_")
+        target_base = Path("/app/data/documents") / safe_root
+        
+        extracted = 0
+        for file, path in zip(files, paths):
+            parts = Path(path).parts
+            if len(parts) < 2: continue # Skip files in the absolute root
+            
+            # relative path inside the root folder
+            rel_path = Path(*parts[1:])
+            dest = target_base / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                data = await file.read()
+                dest.write_bytes(data)
+                extracted += 1
+            except Exception as e:
+                print(f"[FOLDER-UPLOAD] Error writing {dest}: {e}")
+                
+        print(f"[FOLDER-UPLOAD] Uploaded {extracted} files to {safe_root}")
+        return {"success": True, "folder": safe_root, "count": extracted}
+
+    # -----------------------------------------------------------------------------
     # 21.5.9 — Mount Flet admin at /admin
     # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
