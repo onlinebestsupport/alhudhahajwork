@@ -2,9 +2,9 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.9 — Replaced crashing ft.Tabs with custom Flet button navigation.
-#          This bypasses Flet version bugs on Railway where `ft.Tab` 
-#          throws unexpected keyword argument errors.
+#   v3.0 — Fixed backup counter to only count system .zip backups, 
+#          matching the main Backup tab. 
+#          Replaced crashing ft.Tabs with custom Flet button navigation.
 # =================================================================================
 
 
@@ -502,8 +502,9 @@ class DataAdminTab:
             try:
                 backup_dir = self.data_dir / "backups"
                 if backup_dir.exists():
-                    # Count both .zip and .bak files to accurately reflect physical backups
-                    backup_count = len(list(backup_dir.glob("*.zip"))) + len(list(backup_dir.glob("*.bak")))
+                    # Only count full system backups (.zip) to match the Backup tab
+                    # Ignore .bak files which are individual CSV table saves
+                    backup_count = len(list(backup_dir.glob("backup_*.zip")))
             except Exception:
                 pass
 
