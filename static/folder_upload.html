@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Upload Folder — Alhudha Admin</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #f1f5f9; padding: 20px; color: #0f172a; }
+  .card { max-width: 500px; margin: 0 auto; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+  h2 { margin-top: 0; color: #1e40af; }
+  input[type="file"] { display: block; width: 100%; padding: 10px; border: 2px dashed #cbd5e1; border-radius: 8px; margin-bottom: 20px; }
+  button { width: 100%; padding: 12px; background: #2563eb; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
+  button:disabled { background: #94a3b8; }
+  #status { margin-top: 20px; font-weight: bold; text-align: center; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h2>📁 Upload Traveler Folder</h2>
+    <p style="font-size:12px; color:#64748b;">Select a folder from your computer (e.g., HAJ_TRV_2027_036). It will upload the folder and all files inside it.</p>
+    
+    <input type="file" id="folder-input" webkitdirectory directory multiple>
+    <button id="upload-btn" onclick="upload()">Upload Folder</button>
+    
+    <div id="status"></div>
+  </div>
+
+  <script>
+    async function upload() {
+      const input = document.getElementById('folder-input');
+      const btn = document.getElementById('upload-btn');
+      const status = document.getElementById('status');
+      
+      if (!input.files.length) { 
+        alert('Please select a folder first.'); 
+        return; 
+      }
+      
+      btn.disabled = true;
+      status.innerText = 'Uploading... Please wait.';
+      status.style.color = '#2563eb';
+      
+      const fd = new FormData();
+      for (const file of input.files) {
+        fd.append('files', file);
+        fd.append('paths', file.webkitRelativePath);
+      }
+      
+      try {
+        const res = await fetch('/api/admin/traveler/upload-folder-html', {
+          method: 'POST',
+          body: fd
+        });
+        
+        if (res.ok) {
+          status.innerText = '✅ Upload successful! You can close this tab and click Refresh in the Admin app.';
+          status.style.color = '#059669';
+        } else {
+          const err = await res.text();
+          status.innerText = '❌ Upload failed: ' + err;
+          status.style.color = '#dc2626';
+          btn.disabled = false;
+        }
+      } catch (e) {
+        status.innerText = '❌ Network error: ' + e.message;
+        status.style.color = '#dc2626';
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
