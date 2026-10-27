@@ -10,6 +10,7 @@
 #   v1.5 — Document Actions: View files in folder, Upload directly to folder,
 #          Download backup files from the Recent Backups list.
 #   v1.6 — Added Delete button for backup files to free up space.
+#   v1.7 — Added Delete button for Traveler Folders.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -48,6 +49,7 @@
 #       §3.31 _documents_view_folder    View files inside a folder
 #       §3.32 _documents_upload_to_folder Upload file to folder
 #       §3.33 _documents_delete_backup  Delete a backup file
+#       §3.34 _documents_delete_folder  Delete an entire traveler folder
 #   §4  Aliases (DataAdminView = DataAdminTab)
 # =================================================================================
 
@@ -1488,6 +1490,7 @@ class DataAdminTab:
         def _view(e, _name=name): self._documents_view_folder(_name)
         def _upload(e, _name=name): self._documents_upload_to_folder(_name)
         def _dl(e, _name=name): self._documents_download_one(_name)
+        def _del(e, _name=name): self._documents_delete_folder(_name)
 
         return ft.Container(
             content=ft.Row([
@@ -1526,6 +1529,12 @@ class DataAdminTab:
                         icon_size=16,
                         tooltip="Download ZIP",
                         on_click=_dl),
+                    ft.IconButton(
+                        icon=ft.Icons.DELETE_OUTLINE,
+                        icon_color="#dc2626",
+                        icon_size=16,
+                        tooltip="Delete Folder",
+                        on_click=_del),
                 ], spacing=0)
             ], spacing=6,
                vertical_alignment=ft.CrossAxisAlignment.CENTER),
@@ -1996,6 +2005,44 @@ class DataAdminTab:
                 ft.Text("Delete Backup?", weight=ft.FontWeight.BOLD),
             ], spacing=8),
             content=ft.Text(f"Are you sure you want to delete {backup_path.name}?\n\nThis cannot be undone.", size=12),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"), on_click=lambda e: self.page_ref.pop_dialog()),
+                ft.Button(content=ft.Text("Delete"), on_click=do_delete, bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE)
+            ]
+        )
+        self.page_ref.show_dialog(dlg)
+
+    # =============================================================================
+    # §3.34  _documents_delete_folder
+    # =============================================================================
+    def _documents_delete_folder(self, folder_name):
+        def do_delete(e):
+            try:
+                self.page_ref.pop_dialog()
+            except Exception:
+                pass
+
+            folder_path = self.documents_dir / folder_name
+            try:
+                if folder_path.exists() and folder_path.is_dir():
+                    shutil.rmtree(folder_path)
+                    self._snack(f"🗑️ Deleted folder: {folder_name}", ft.Colors.GREEN_700)
+                else:
+                    self._snack("⚠️ Folder not found", ft.Colors.ORANGE_700)
+            except Exception as ex:
+                print(f"[DATA-ADMIN] delete folder error: {ex}")
+                self._snack(f"❌ Delete failed: {ex}", ft.Colors.RED_500)
+
+            self._documents_refresh()
+            self._safe_update()
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_AMBER, color="#dc2626"),
+                ft.Text("Delete Folder?", weight=ft.FontWeight.BOLD),
+            ], spacing=8),
+            content=ft.Text(f"Are you sure you want to delete the entire folder '{folder_name}'?\n\nAll files inside this folder will be permanently deleted. This action cannot be undone.", size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"), on_click=lambda e: self.page_ref.pop_dialog()),
                 ft.Button(content=ft.Text("Delete"), on_click=do_delete, bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE)
