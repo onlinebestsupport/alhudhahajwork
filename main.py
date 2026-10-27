@@ -41,7 +41,7 @@ import mimetypes
 import secrets
 from datetime import datetime
 from pathlib import Path
-
+from typing import List
 from core.helpers import get_app_base_path
 from core.database import HajDatabase
 from core.login_view import LoginView
