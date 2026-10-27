@@ -2,11 +2,9 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.0 — Async-safe operations, HTML5 Folder Upload, Selective ZIP Import,
-#          Missing Folders display, Web-safe file viewing, and restored
-#          CSV management functions.
-#   v2.1 — Fixed missing folder sorting (alphabetical), added subfolder count
-#          display, separated View and Download buttons for individual files.
+#   v2.2 — Fixed inline Web View (uses new /api/admin/view-doc route).
+#          All v2.1 features (Alphabetical missing folders, subfolder counts,
+#          CSV management, HTML5 folder upload) are fully preserved.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -61,6 +59,7 @@ import shutil
 import traceback
 import zipfile
 import asyncio
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 
@@ -1948,12 +1947,15 @@ class DataAdminTab:
 
             rows = []
             for item in files_list:
+                # --- NEW INLINE VIEW LOGIC ---
                 def _view_file(e, _path=item["abs"]):
-                    url = send_file_to_user(self.page_ref, str(_path), _path.name)
-                    if url:
-                        self.page_ref.launch_url(url, web_only_window_name="_blank")
+                    # Use the new /api/admin/view-doc route to render inline
+                    encoded_path = urllib.parse.quote(str(_path))
+                    url = f"/api/admin/view-doc?path={encoded_path}"
+                    self.page_ref.launch_url(url, web_only_window_name="_blank")
                 
                 def _dl_file(e, _path=item["abs"]):
+                    # Use the standard download route
                     url = send_file_to_user(self.page_ref, str(_path), _path.name)
                     if url:
                         self.page_ref.launch_url(url)
@@ -2121,7 +2123,7 @@ class DataAdminTab:
         self.page_ref.show_dialog(dlg)
 
     # =============================================================================
-    # §3.35  _documents_upload_folder (HTML5 Folder Upload)
+    # §3.35  _documents_upload_folder
     # =============================================================================
     def _documents_upload_folder(self, e=None):
         url = "/upload-folder-page"
