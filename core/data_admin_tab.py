@@ -2,9 +2,10 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.0 — Async-safe operations, HTML5 Folder Upload, Selective ZIP Import,
-#          Missing Folders display, Web-safe file viewing, and restored
-#          CSV management functions.
+#   v2.1 — Fixed missing folder display (iterates DB), added subfolder counts,
+#          separated View and Download buttons for individual files.
+#          All v2.0 features (Async-safe, HTML5 Folder Upload, CSV management)
+#          are fully preserved.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -1390,22 +1391,43 @@ class DataAdminTab:
                     t_name = valid_folders.get(item.name, "")
                     
                     size, count = _dir_size(item)
+                    
+                    # Count subfolders
+                    sub_count = sum(1 for d in item.iterdir() if d.is_dir())
+
                     folders.append({
                         "name": item.name,
                         "path": item,
                         "size": size,
                         "files": count,
+                        "subfolders": sub_count,
                         "mtime": datetime.fromtimestamp(item.stat().st_mtime),
                         "is_linked": is_linked,
-                        "traveler_name": t_name
+                        "traveler_name": t_name,
+                        "has_folder": True
                     })
             except Exception as e:
                 print(f"[DATA-ADMIN] documents iter failed: {e}")
 
+            # Find travelers without folders
+            for tid, name in valid_folders.items():
+                if not (self.documents_dir / tid).exists():
+                    folders.append({
+                        "name": tid,
+                        "path": self.documents_dir / tid,
+                        "size": 0,
+                        "files": 0,
+                        "subfolders": 0,
+                        "mtime": datetime.now(),
+                        "is_linked": True,
+                        "traveler_name": name,
+                        "has_folder": False
+                    })
+
             total_size, total_files = _dir_size(self.documents_dir)
 
             try:
-                self.docs_stats_labels["folders"].value = str(len(folders))
+                self.docs_stats_labels["folders"].value = str(len([f for f in folders if f["has_folder"]]))
                 self.docs_stats_labels["files"].value = str(total_files)
                 self.docs_stats_labels["size"].value = _human_size(total_size)
             except Exception:
@@ -1497,8 +1519,10 @@ class DataAdminTab:
         name = folder["name"]
         size = folder["size"]
         files = folder["files"]
+        subfolders = folder.get("subfolders", 0)
         mtime = folder["mtime"]
         is_linked = folder.get("is_linked", True)
+        has_folder = folder.get("has_folder", True)
         traveler_name = folder.get("traveler_name", "")
 
         def _view(e, _name=name): self._documents_view_folder(_name)
@@ -1506,20 +1530,7 @@ class DataAdminTab:
         def _dl(e, _name=name): self._documents_download_one(_name)
         def _del(e, _name=name): self._documents_delete_folder(_name)
 
-        if is_linked:
-            name_control = ft.Row([
-                ft.Icon(ft.Icons.FOLDER, size=14, color="#f59e0b"),
-                ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
-            ], spacing=4, expand=True)
-            
-            btn_upload = ft.IconButton(
-                icon=ft.Icons.UPLOAD,
-                icon_color="#059669",
-                icon_size=16,
-                tooltip="Upload File",
-                on_click=_upload)
-        else:
+        if not is_linked:
             name_control = ft.Row([
                 ft.Icon(ft.Icons.FOLDER_OFF, size=14, color="#dc2626"),
                 ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#dc2626", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
@@ -1532,42 +1543,64 @@ class DataAdminTab:
                 icon_size=16,
                 tooltip="Upload disabled (Unlinked folder)",
                 disabled=True)
+            btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#3498db", icon_size=16, on_click=_view)
+            btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#0891b2", icon_size=16, on_click=_dl)
+            btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#dc2626", icon_size=16, on_click=_del)
+            stat_text = ft.Text(f"{files} files", size=9, color=ft.Colors.GREY_600)
+            bg_color = "#fef2f2"
+        elif not has_folder:
+            name_control = ft.Row([
+                ft.Icon(ft.Icons.FOLDER_OPEN, size=14, color="#d1d5db"),
+                ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
+            ], spacing=4, expand=True)
+            
+            btn_upload = ft.IconButton(
+                icon=ft.Icons.UPLOAD,
+                icon_color="#059669",
+                icon_size=16,
+                tooltip="Create & Upload File",
+                on_click=_upload)
+            btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#d1d5db", disabled=True)
+            btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#d1d5db", disabled=True)
+            btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#d1d5db", disabled=True)
+            
+            stat_text = ft.Text("❌ Document folder not created", size=9, color="#dc2626", weight=ft.FontWeight.BOLD)
+            bg_color = "#f8fafc"
+        else:
+            name_control = ft.Row([
+                ft.Icon(ft.Icons.FOLDER, size=14, color="#f59e0b"),
+                ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
+                ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
+            ], spacing=4, expand=True)
+            
+            btn_upload = ft.IconButton(
+                icon=ft.Icons.UPLOAD,
+                icon_color="#059669",
+                icon_size=16,
+                tooltip="Upload File",
+                on_click=_upload)
+            btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#3498db", icon_size=16, on_click=_view)
+            btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#0891b2", icon_size=16, on_click=_dl)
+            btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#dc2626", icon_size=16, on_click=_del)
+            
+            stat_text = ft.Text(f"{subfolders} subfolders, {files} files", size=9, color=ft.Colors.GREY_600)
+            bg_color = "#f8fafc"
 
         return ft.Container(
             content=ft.Row([
-                name_control,
-                ft.Text(f"{files} file{'s' if files != 1 else ''}", size=9, color=ft.Colors.GREY_600),
+                name_control, stat_text,
                 ft.Container(
                     content=ft.Text(_human_size(size), size=9, color=ft.Colors.GREY_700),
                     padding=ft.Padding.symmetric(horizontal=5, vertical=2),
-                    bgcolor="#f1f5f9" if is_linked else "#fee2e2", 
+                    bgcolor="#f1f5f9" if is_linked and has_folder else "#fee2e2", 
                     border_radius=6),
                 ft.Text(mtime.strftime("%d-%m-%Y"), size=9, color=ft.Colors.GREY_500),
-                ft.Row([
-                    ft.IconButton(
-                        icon=ft.Icons.VISIBILITY,
-                        icon_color="#3498db",
-                        icon_size=16,
-                        tooltip="View Files",
-                        on_click=_view),
-                    btn_upload,
-                    ft.IconButton(
-                        icon=ft.Icons.DOWNLOAD,
-                        icon_color="#0891b2",
-                        icon_size=16,
-                        tooltip="Download ZIP",
-                        on_click=_dl),
-                    ft.IconButton(
-                        icon=ft.Icons.DELETE_OUTLINE,
-                        icon_color="#dc2626",
-                        icon_size=16,
-                        tooltip="Delete Folder",
-                        on_click=_del),
-                ], spacing=0)
+                ft.Row([btn_view, btn_upload, btn_dl, btn_del], spacing=0)
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             padding=6, 
-            bgcolor="#f8fafc" if is_linked else "#fef2f2",
-            border=ft.Border.all(1, "#e2e8f0" if is_linked else "#fecaca"),
+            bgcolor=bg_color,
+            border=ft.Border.all(1, "#e2e8f0" if is_linked and has_folder else "#fecaca"),
             border_radius=8)
 
     # =============================================================================
@@ -1914,19 +1947,28 @@ class DataAdminTab:
 
             rows = []
             for item in files_list:
+                def _view_file(e, _path=item["abs"]):
+                    url = send_file_to_user(self.page_ref, str(_path), _path.name)
+                    if url:
+                        self.page_ref.launch_url(url, web_only_window_name="_blank")
+                
                 def _dl_file(e, _path=item["abs"]):
                     url = send_file_to_user(self.page_ref, str(_path), _path.name)
                     if url:
-                        try:
-                            self.page_ref.launch_url(url)
-                        except Exception:
-                            pass
+                        self.page_ref.launch_url(url)
 
                 rows.append(
                     ft.Row([
                         ft.Icon(ft.Icons.INSERT_DRIVE_FILE, size=16, color="#3498db"),
                         ft.Text(item["rel"], size=11, expand=True, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                         ft.Text(_human_size(item["size"]), size=10, color=ft.Colors.GREY_600),
+                        ft.IconButton(
+                            icon=ft.Icons.VISIBILITY,
+                            icon_color="#3498db",
+                            icon_size=16,
+                            tooltip="View in Web",
+                            on_click=_view_file
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.DOWNLOAD,
                             icon_color="#0891b2",
@@ -1945,7 +1987,7 @@ class DataAdminTab:
                 ], spacing=8),
                 content=ft.Container(
                     content=ft.Column(rows, spacing=4, scroll=ft.ScrollMode.AUTO),
-                    width=500, height=400, padding=4
+                    width=600, height=450, padding=4
                 ),
                 actions=[
                     ft.TextButton(content=ft.Text("Close"), on_click=lambda e: self.page_ref.pop_dialog())
@@ -1971,38 +2013,30 @@ class DataAdminTab:
         async def _pick():
             try:
                 files = await self.file_picker.pick_files(
-                    allow_multiple=False,
+                    allow_multiple=True,
                     with_data=True
                 )
                 if not files:
                     return
                 
-                f = files[0]
-                data = getattr(f, 'bytes', None)
-                if not data:
-                    src = getattr(f, 'path', None)
-                    if src and os.path.exists(src):
-                        with open(src, 'rb') as fh:
-                            data = fh.read()
-                            
-                if not data:
-                    self._snack("⚠️ Empty file", ft.Colors.RED_500)
-                    return
-
+                self._show_status(f"⏳ Uploading {len(files)} file(s)...", ft.Colors.BLUE_600)
+                self._safe_update()
+                await asyncio.sleep(0.1)
+                
                 dest_dir = self.documents_dir / folder_name / "uploads"
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                dest_path = dest_dir / f.name
                 
-                with open(dest_path, "wb") as fh:
-                    fh.write(data)
-                
+                for f in files:
+                    data = getattr(f, 'bytes', None) or open(getattr(f, 'path', None), 'rb').read()
+                    with open(dest_dir / f.name, "wb") as fh:
+                        fh.write(data)
+                    await asyncio.sleep(0.01) # Yield to event loop
+                    
                 self._documents_refresh()
-                self._safe_update()
-                self._snack(f"✅ Uploaded {f.name} to {folder_name}", ft.Colors.GREEN_700)
-
+                self._show_status(f"✅ Uploaded {len(files)} file(s) to {folder_name}", ft.Colors.GREEN_700)
+                self._snack(f"✅ Uploaded {len(files)} file(s) to {folder_name}", ft.Colors.GREEN_700)
             except Exception as ex:
-                print(f"[DATA-ADMIN] upload to folder error: {ex}")
-                traceback.print_exc()
+                self._show_status("Ready.", ft.Colors.GREY_700)
                 self._snack(f"❌ Upload failed: {ex}", ft.Colors.RED_500)
 
         try:
@@ -2086,7 +2120,7 @@ class DataAdminTab:
         self.page_ref.show_dialog(dlg)
 
     # =============================================================================
-    # §3.35  _documents_upload_folder (HTML5 Folder Upload)
+    # §3.35  _documents_upload_folder
     # =============================================================================
     def _documents_upload_folder(self, e=None):
         url = "/upload-folder-page"
