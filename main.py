@@ -1,19 +1,11 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.30 — Fixed traveler document upload folder path
+# v2.31 — Added inline document viewing route for Data Admin
 #
-#   ROOT CAUSE:
-#     The v2.29 FastAPI route for /api/admin/traveler/upload-doc was ignoring
-#     the `folder` parameter sent by the Flet app. It was hardcoding the path
-#     to "new_traveler" or stripping underscores from the traveler ID.
-#     This caused the browser upload to succeed, but the file was saved in a
-#     different directory than the Flet app was scanning.
-#
-#   FIX:
-#     • §21.5.8c — Added `folder: str = Form("new_traveler")` to the POST route.
-#     • The route now sanitizes and uses this exact folder name, ensuring the
-#       file lands exactly where the Flet UI expects it.
+#   FIXES:
+#     • §21.5.8e — Added /api/admin/view-doc to serve files inline (opens PDFs 
+#       and images directly in the browser instead of forcing a download).
 # =================================================================================
 
 
@@ -1652,6 +1644,27 @@ def _build_app() -> FastAPI:
                 
         print(f"[FOLDER-UPLOAD] Uploaded {extracted} files to {safe_root}")
         return {"success": True, "folder": safe_root, "count": extracted}
+
+    # -----------------------------------------------------------------------------
+    # 21.5.8e — View Document Inline (for Data Admin)
+    # -----------------------------------------------------------------------------
+    @app.get("/api/admin/view-doc")
+    async def view_doc(path: str):
+        safe_path = Path(path).resolve()
+        if not str(safe_path).startswith("/app/data/documents"):
+            raise HTTPException(status_code=403, detail="Unauthorized path")
+        if not safe_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        import mimetypes
+        media_type, _ = mimetypes.guess_type(str(safe_path))
+        
+        # Return without Content-Disposition: attachment so it opens in the browser
+        return FileResponse(
+            str(safe_path),
+            media_type=media_type or "application/octet-stream",
+            headers={"Content-Disposition": "inline"}
+        )
 
     # -----------------------------------------------------------------------------
     # 21.5.9 — Mount Flet admin at /admin
