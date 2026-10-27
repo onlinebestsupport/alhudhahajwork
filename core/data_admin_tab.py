@@ -2,6 +2,11 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
+#   v2.3 — Directed HTML5 folder upload to specific Traveler IDs.
+#          Added explicit "Create" button for missing folders.
+#          Import ZIP now allows selective folder restoration via checkboxes.
+#          Inline Web View for files (uses /api/admin/view-doc route).
+#
 #   v2.2 — Fixed inline Web View (uses new /api/admin/view-doc route).
 #          All v2.1 features (Alphabetical missing folders, subfolder counts,
 #          CSV management, HTML5 folder upload) are fully preserved.
@@ -38,10 +43,10 @@
 #       §3.26 _documents_export_zip
 #       §3.27 _documents_download_one
 #       §3.28 _documents_import_zip
-#       §3.29 _apply_documents_zip
-#       §3.30 _documents_create_backup
-#       §3.31 _documents_view_folder
-#       §3.32 _documents_upload_to_folder
+#       §3.29 _do_import_documents_zip
+#       §3.30 _apply_documents_zip
+#       §3.31 _documents_create_backup
+#       §3.32 _documents_view_folder
 #       §3.33 _documents_delete_backup
 #       §3.34 _documents_delete_folder
 #       §3.35 _documents_upload_folder
@@ -1052,13 +1057,13 @@ class DataAdminTab:
             if not path.exists():
                 self._snack(f"⚠️ {name} not found")
                 return
-            
+
             df = pd.read_csv(path)
             total_rows = len(df)
 
             header_text = " | ".join(str(c) for c in df.columns)
             lines = [header_text, "─" * 80]
-            
+
             for _, row in df.iterrows():
                 row_str = " | ".join(str(v)[:30].ljust(30) for v in row.values)
                 lines.append(row_str)
@@ -1067,7 +1072,7 @@ class DataAdminTab:
 
             preview_list = ft.ListView(
                 controls=[
-                    ft.Text(line, size=10, font_family="Consolas", 
+                    ft.Text(line, size=10, font_family="Consolas",
                             selectable=True, no_wrap=True)
                     for line in lines
                 ],
@@ -1386,12 +1391,12 @@ class DataAdminTab:
                 for item in self.documents_dir.iterdir():
                     if not item.is_dir():
                         continue
-                    
+
                     is_linked = item.name in valid_folders
                     t_name = valid_folders.get(item.name, "")
-                    
+
                     size, count = _dir_size(item)
-                    
+
                     # Count subfolders
                     sub_count = sum(1 for d in item.iterdir() if d.is_dir())
 
@@ -1471,7 +1476,7 @@ class DataAdminTab:
                 else:
                     for mtime, b in backups[:10]: # Show up to 10 backups
                         size_str = _human_size(b.stat().st_size)
-                        
+
                         def _dl_backup(e, _p=b):
                             url = send_file_to_user(self.page_ref, str(_p), _p.name)
                             if url:
@@ -1479,10 +1484,10 @@ class DataAdminTab:
                                     self.page_ref.launch_url(url)
                                 except Exception:
                                     pass
-                                    
+
                         def _del_backup(e, _p=b):
                             self._documents_delete_backup(_p)
-                                    
+
                         self.docs_backups_container.controls.append(
                             ft.Row([
                                 ft.Icon(ft.Icons.ARCHIVE, size=12,
@@ -1528,8 +1533,11 @@ class DataAdminTab:
         has_folder = folder.get("has_folder", True)
         traveler_name = folder.get("traveler_name", "")
 
+        # v2.3 — All upload buttons route through the HTML5 folder upload page,
+        # passing the traveler_id so files land in the correct destination.
         def _view(e, _name=name): self._documents_view_folder(_name)
-        def _upload(e, _name=name): self._documents_upload_to_folder(_name)
+        def _upload_folder(e, _name=name):
+            self._documents_upload_folder(_name)
         def _dl(e, _name=name): self._documents_download_one(_name)
         def _del(e, _name=name): self._documents_delete_folder(_name)
 
@@ -1539,7 +1547,7 @@ class DataAdminTab:
                 ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#dc2626", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ft.Text("(Unlinked / Mismatch)", size=9, color="#dc2626", weight=ft.FontWeight.BOLD)
             ], spacing=4, expand=True)
-            
+
             btn_upload = ft.IconButton(
                 icon=ft.Icons.UPLOAD,
                 icon_color="#d1d5db",
@@ -1557,14 +1565,20 @@ class DataAdminTab:
                 ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
             ], spacing=4, expand=True)
-            
+
+            # v2.3 — "Create" button now opens the HTML5 folder upload page
+            # pre-targeted to this traveler_id, so uploading a folder will
+            # create /app/data/documents/<traveler_id>/... directly.
             btn_upload = ft.TextButton(
-                content=ft.Row([ft.Icon(ft.Icons.UPLOAD, size=14, color="#059669"), ft.Text("Create", size=11, color="#059669", weight=ft.FontWeight.BOLD)], spacing=4, tight=True),
-                on_click=_upload)
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CREATE_NEW_FOLDER, size=14, color="#059669"),
+                    ft.Text("Create", size=11, color="#059669", weight=ft.FontWeight.BOLD),
+                ], spacing=4, tight=True),
+                on_click=_upload_folder)
             btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#d1d5db", disabled=True)
             btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#d1d5db", disabled=True)
             btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#d1d5db", disabled=True)
-            
+
             stat_text = ft.Text("❌ Document folder not created", size=9, color="#dc2626", weight=ft.FontWeight.BOLD)
             bg_color = "#f8fafc"
         else:
@@ -1573,17 +1587,19 @@ class DataAdminTab:
                 ft.Text(name, size=10, weight=ft.FontWeight.BOLD, color="#0f172a", max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
                 ft.Text(f"({traveler_name})", size=9, color=ft.Colors.GREY_600, italic=True)
             ], spacing=4, expand=True)
-            
+
+            # v2.3 — Upload icon opens the HTML5 folder upload page targeted
+            # to this traveler_id.
             btn_upload = ft.IconButton(
                 icon=ft.Icons.UPLOAD,
                 icon_color="#059669",
                 icon_size=16,
-                tooltip="Upload File",
-                on_click=_upload)
+                tooltip="Upload Folder",
+                on_click=_upload_folder)
             btn_view = ft.IconButton(icon=ft.Icons.VISIBILITY, icon_color="#3498db", icon_size=16, on_click=_view)
             btn_dl = ft.IconButton(icon=ft.Icons.DOWNLOAD, icon_color="#0891b2", icon_size=16, on_click=_dl)
             btn_del = ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color="#dc2626", icon_size=16, on_click=_del)
-            
+
             stat_text = ft.Text(f"{subfolders} subfolders, {files} files", size=9, color=ft.Colors.GREY_600)
             bg_color = "#f8fafc"
 
@@ -1593,12 +1609,12 @@ class DataAdminTab:
                 ft.Container(
                     content=ft.Text(_human_size(size), size=9, color=ft.Colors.GREY_700),
                     padding=ft.Padding.symmetric(horizontal=5, vertical=2),
-                    bgcolor="#f1f5f9" if is_linked and has_folder else "#fee2e2", 
+                    bgcolor="#f1f5f9" if is_linked and has_folder else "#fee2e2",
                     border_radius=6),
                 ft.Text(mtime.strftime("%d-%m-%Y"), size=9, color=ft.Colors.GREY_500),
                 ft.Row([btn_view, btn_upload, btn_dl, btn_del], spacing=0)
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=6, 
+            padding=6,
             bgcolor=bg_color,
             border=ft.Border.all(1, "#e2e8f0" if is_linked and has_folder else "#fecaca"),
             border_radius=8)
@@ -1698,17 +1714,22 @@ class DataAdminTab:
     def _documents_import_zip(self, e=None):
         async def _pick():
             try:
+                self._show_status("⏳ Reading ZIP file...", ft.Colors.BLUE_600)
+                self._safe_update()
+
                 files = await self.file_picker.pick_files(
                     allow_multiple=False,
                     with_data=True,
                     allowed_extensions=["zip"],
                 )
                 if not files:
+                    self._show_status("Ready.", ft.Colors.GREY_700)
                     return
-                self._do_import_documents_zip(files[0])
+                await self._do_import_documents_zip(files[0])
             except Exception as ex:
                 print(f"[DATA-ADMIN] documents picker error: {ex}")
                 traceback.print_exc()
+                self._show_status("Ready.", ft.Colors.GREY_700)
                 self._snack(f"❌ Picker error: {ex}", ft.Colors.RED_500)
 
         try:
@@ -1716,7 +1737,10 @@ class DataAdminTab:
         except Exception as ex:
             self._snack(f"⚠️ {ex}", ft.Colors.RED_500)
 
-    def _do_import_documents_zip(self, file_obj):
+    # =============================================================================
+    # §3.29  _do_import_documents_zip
+    # =============================================================================
+    async def _do_import_documents_zip(self, file_obj):
         try:
             data = getattr(file_obj, "bytes", None)
             fname = getattr(file_obj, "name", "documents.zip")
@@ -1726,30 +1750,32 @@ class DataAdminTab:
                     with open(src, "rb") as fh:
                         data = fh.read()
             if not data:
+                self._show_status("Ready.", ft.Colors.GREY_700)
                 self._snack("⚠️ Empty ZIP", ft.Colors.RED_500)
                 return
 
             try:
                 zf = zipfile.ZipFile(io.BytesIO(data))
             except Exception as e:
+                self._show_status("Ready.", ft.Colors.GREY_700)
                 self._snack(f"❌ Not a valid ZIP: {e}",
                             ft.Colors.RED_500)
                 return
 
+            # --- SAFETY CHECK: reject path traversal / absolute paths ---
             names = zf.namelist()
             unsafe = [n for n in names
                       if n.startswith("/") or ".." in Path(n).parts]
             if unsafe:
+                self._show_status("Ready.", ft.Colors.GREY_700)
                 self._snack(
                     f"❌ ZIP contains unsafe paths "
                     f"({len(unsafe)} entries)", ft.Colors.RED_500)
                 return
 
-            top = set()
-            for n in names:
-                parts = Path(n).parts
-                if parts:
-                    top.add(parts[0])
+            # --- Enumerate top-level folders for selective restore ---
+            top_folders = sorted(list(set(
+                Path(n).parts[0] for n in names if Path(n).parts)))
 
             total_size = sum(
                 (info.file_size for info in zf.infolist()
@@ -1757,12 +1783,30 @@ class DataAdminTab:
             file_count = sum(
                 1 for info in zf.infolist() if not info.is_dir())
 
+            folder_cbs = {}
+            rows = []
+            for tf in top_folders:
+                cb = ft.Checkbox(label=tf, value=True)
+                folder_cbs[tf] = cb
+                rows.append(cb)
+
             def do_import(ev):
                 try:
                     self.page_ref.pop_dialog()
                 except Exception:
                     pass
-                self._apply_documents_zip(data)
+                selected = [name for name, cb in folder_cbs.items()
+                            if cb.value]
+                if not selected:
+                    self._snack("⚠️ No folders selected",
+                                ft.Colors.ORANGE_700)
+                    return
+                try:
+                    self.page_ref.run_task(
+                        self._apply_documents_zip, data, selected)
+                except Exception as ex:
+                    self._snack(f"❌ Import start failed: {ex}",
+                                ft.Colors.RED_500)
 
             def cancel(ev):
                 try:
@@ -1775,41 +1819,37 @@ class DataAdminTab:
                 title=ft.Row([
                     ft.Icon(ft.Icons.UPLOAD_FILE, size=22,
                             color="#7c3aed"),
-                    ft.Text("Import Documents ZIP — Confirm",
+                    ft.Text("Select Folders to Import",
                             weight=ft.FontWeight.BOLD, size=15),
                 ], spacing=8),
-                content=ft.Column([
-                    ft.Text(f"ZIP: {fname}", size=11,
-                            weight=ft.FontWeight.BOLD),
-                    ft.Text(f"Contains {len(top)} top-level folder(s), "
-                            f"{file_count} file(s), "
-                            f"{_human_size(total_size)}",
-                            size=11),
-                    ft.Container(height=6),
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Text("Top-level folders found:",
-                                    size=10,
-                                    weight=ft.FontWeight.BOLD,
-                                    color="#7c3aed"),
-                            *[ft.Text(f"  • {t}", size=10)
-                              for t in sorted(top)[:10]],
-                        ], spacing=2),
-                        padding=8, bgcolor="#f3e8ff",
-                        border_radius=6),
-                    ft.Container(height=6),
-                    ft.Container(
-                        content=ft.Text(
-                            "⚠️ Before applying, a full timestamped "
-                            "backup of the CURRENT documents will be "
-                            "saved to /app/data/.\n\n"
-                            "Files with matching paths will be "
-                            "OVERWRITTEN. New files will be ADDED. "
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Text(f"ZIP: {fname}", size=11,
+                                weight=ft.FontWeight.BOLD),
+                        ft.Text(f"Found {len(top_folders)} folder(s), "
+                                f"{file_count} file(s), "
+                                f"{_human_size(total_size)}",
+                                size=11),
+                        ft.Container(height=6),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Top-level folders to import:",
+                                        size=10,
+                                        weight=ft.FontWeight.BOLD,
+                                        color="#7c3aed"),
+                                *rows,
+                            ], spacing=2, scroll=ft.ScrollMode.AUTO),
+                            padding=8, bgcolor="#f3e8ff",
+                            border_radius=6),
+                        ft.Container(height=6),
+                        ft.Text(
+                            "Uncheck any folder you do NOT want to "
+                            "restore. Files with matching paths will "
+                            "be OVERWRITTEN; new files will be ADDED. "
                             "Nothing is deleted.",
                             size=10, color="#991b1b"),
-                        padding=8, bgcolor="#fee2e2",
-                        border_radius=6),
-                ], spacing=6, tight=True),
+                    ], spacing=6, tight=True),
+                    width=440, height=460, padding=4),
                 actions=[
                     ft.TextButton(content=ft.Text("Cancel"),
                                   on_click=cancel),
@@ -1817,24 +1857,32 @@ class DataAdminTab:
                         content=ft.Row([
                             ft.Icon(ft.Icons.CLOUD_UPLOAD, size=16,
                                     color=ft.Colors.WHITE),
-                            ft.Text("Backup & Import",
+                            ft.Text("Import Selected",
                                     color=ft.Colors.WHITE,
                                     weight=ft.FontWeight.BOLD),
                         ], spacing=6, tight=True),
                         on_click=do_import,
                         bgcolor="#7c3aed"),
                 ])
+            self._show_status("Ready.", ft.Colors.GREY_700)
             self.page_ref.show_dialog(dlg)
         except Exception as ex:
             print(f"[DATA-ADMIN] documents import error: {ex}")
             traceback.print_exc()
-            self._snack(f"❌ Import failed: {ex}", ft.Colors.RED_500)
+            self._show_status("Ready.", ft.Colors.GREY_700)
+            self._snack(f"❌ Invalid ZIP: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.29  _apply_documents_zip
+    # §3.30  _apply_documents_zip  (async, selective restore)
     # =============================================================================
-    def _apply_documents_zip(self, data: bytes):
+    async def _apply_documents_zip(self, data: bytes, selected_folders: list):
+        self._show_status("⏳ Importing selected folders...",
+                          ft.Colors.BLUE_600)
+        self._safe_update()
+        await asyncio.sleep(0.1)
+
         try:
+            # --- SAFETY: pre-import backup of the whole documents dir ---
             backup_name = None
             if self.documents_dir.exists():
                 try:
@@ -1855,33 +1903,53 @@ class DataAdminTab:
 
             self.documents_dir.mkdir(parents=True, exist_ok=True)
             extracted = 0
+
             with zipfile.ZipFile(io.BytesIO(data)) as z:
                 for info in z.infolist():
                     if info.is_dir():
                         continue
+
                     parts = Path(info.filename).parts
-                    if not parts or ".." in parts:
+                    if not parts:
                         continue
+                    # Skip anything outside a selected top-level folder
+                    if parts[0] not in selected_folders:
+                        continue
+                    # Skip path traversal
+                    if ".." in parts:
+                        continue
+
                     dest = self.documents_dir / info.filename
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(info) as src, open(dest, "wb") as dst:
                         shutil.copyfileobj(src, dst)
                     extracted += 1
 
+                    # Yield occasionally so the UI stays responsive
+                    if extracted % 10 == 0:
+                        await asyncio.sleep(0.01)
+
             self._documents_refresh()
             self._safe_update()
 
-            msg = f"✅ Imported {extracted} file(s)"
+            msg = f"✅ Imported {extracted} file(s) into " \
+                  f"{len(selected_folders)} folder(s)"
             if backup_name:
                 msg += f"\n💾 Pre-import backup: {backup_name}"
+            self._show_status(
+                f"✅ Imported {extracted} file(s) into "
+                f"{len(selected_folders)} folder(s).",
+                ft.Colors.GREEN_700)
             self._snack(msg, ft.Colors.GREEN_700)
         except Exception as ex:
             print(f"[DATA-ADMIN] apply documents zip error: {ex}")
             traceback.print_exc()
-            self._snack(f"❌ Apply failed: {ex}", ft.Colors.RED_500)
+            self._show_status(f"❌ Import failed: {ex}",
+                              ft.Colors.RED_500)
+            self._snack(f"❌ Import failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.30  _documents_create_backup
+    # §3.31  _documents_create_backup
     # =============================================================================
     def _documents_create_backup(self, e=None):
         try:
@@ -1920,7 +1988,7 @@ class DataAdminTab:
             self._snack(f"❌ Backup failed: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.31  _documents_view_folder
+    # §3.32  _documents_view_folder
     # =============================================================================
     def _documents_view_folder(self, folder_name):
         try:
@@ -1938,7 +2006,7 @@ class DataAdminTab:
                         "abs": f,
                         "size": f.stat().st_size
                     })
-            
+
             files_list.sort(key=lambda x: x["rel"])
 
             if not files_list:
@@ -1947,18 +2015,24 @@ class DataAdminTab:
 
             rows = []
             for item in files_list:
-                # --- NEW INLINE VIEW LOGIC ---
+                # --- v2.2 INLINE VIEW LOGIC (uses /api/admin/view-doc) ---
                 def _view_file(e, _path=item["abs"]):
-                    # Use the new /api/admin/view-doc route to render inline
                     encoded_path = urllib.parse.quote(str(_path))
                     url = f"/api/admin/view-doc?path={encoded_path}"
-                    self.page_ref.launch_url(url, web_only_window_name="_blank")
-                
+                    try:
+                        self.page_ref.launch_url(
+                            url, web_only_window_name="_blank")
+                    except Exception as ex:
+                        print(f"[DATA-ADMIN] inline view failed: {ex}")
+
                 def _dl_file(e, _path=item["abs"]):
-                    # Use the standard download route
-                    url = send_file_to_user(self.page_ref, str(_path), _path.name)
+                    url = send_file_to_user(
+                        self.page_ref, str(_path), _path.name)
                     if url:
-                        self.page_ref.launch_url(url)
+                        try:
+                            self.page_ref.launch_url(url)
+                        except Exception:
+                            pass
 
                 rows.append(
                     ft.Row([
@@ -2003,51 +2077,6 @@ class DataAdminTab:
             self._snack(f"❌ Could not view folder: {ex}", ft.Colors.RED_500)
 
     # =============================================================================
-    # §3.32  _documents_upload_to_folder
-    # =============================================================================
-    def _documents_upload_to_folder(self, folder_name):
-        # --- VERIFY FOLDER IS LINKED ---
-        travelers = self.db.get_travelers()
-        valid_folders = [t.get("id", "").replace('/', '_').replace('\\', '_') for t in travelers]
-        if folder_name not in valid_folders:
-            self._snack(f"❌ Cannot upload: '{folder_name}' is an unlinked or mismatched folder.", ft.Colors.RED_500)
-            return
-
-        async def _pick():
-            try:
-                files = await self.file_picker.pick_files(
-                    allow_multiple=True,
-                    with_data=True
-                )
-                if not files:
-                    return
-                
-                self._show_status(f"⏳ Uploading {len(files)} file(s)...", ft.Colors.BLUE_600)
-                self._safe_update()
-                await asyncio.sleep(0.1)
-                
-                dest_dir = self.documents_dir / folder_name / "uploads"
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                
-                for f in files:
-                    data = getattr(f, 'bytes', None) or open(getattr(f, 'path', None), 'rb').read()
-                    with open(dest_dir / f.name, "wb") as fh:
-                        fh.write(data)
-                    await asyncio.sleep(0.01) # Yield to event loop
-                    
-                self._documents_refresh()
-                self._show_status(f"✅ Uploaded {len(files)} file(s) to {folder_name}", ft.Colors.GREEN_700)
-                self._snack(f"✅ Uploaded {len(files)} file(s) to {folder_name}", ft.Colors.GREEN_700)
-            except Exception as ex:
-                self._show_status("Ready.", ft.Colors.GREY_700)
-                self._snack(f"❌ Upload failed: {ex}", ft.Colors.RED_500)
-
-        try:
-            self.page_ref.run_task(_pick)
-        except Exception as ex:
-            self._snack(f"⚠️ Could not start file picker: {ex}", ft.Colors.RED_500)
-
-    # =============================================================================
     # §3.33  _documents_delete_backup
     # =============================================================================
     def _documents_delete_backup(self, backup_path: Path):
@@ -2056,7 +2085,7 @@ class DataAdminTab:
                 self.page_ref.pop_dialog()
             except Exception:
                 pass
-                
+
             try:
                 if backup_path.exists():
                     backup_path.unlink()
@@ -2066,7 +2095,7 @@ class DataAdminTab:
             except Exception as ex:
                 print(f"[DATA-ADMIN] delete backup error: {ex}")
                 self._snack(f"❌ Delete failed: {ex}", ft.Colors.RED_500)
-                
+
             self._documents_refresh()
             self._safe_update()
 
@@ -2125,24 +2154,59 @@ class DataAdminTab:
     # =============================================================================
     # §3.35  _documents_upload_folder
     # =============================================================================
-    def _documents_upload_folder(self, e=None):
-        url = "/upload-folder-page"
+    def _documents_upload_folder(self, e=None, folder_name=None):
+        """
+        v2.3 — Opens the HTML5 folder upload page.
+
+        If `folder_name` is provided (or `e` is a string, which is the
+        pattern used by `_documents_folder_row` when calling this as a
+        click handler), the URL is pre-targeted with `?traveler_id=<id>`
+        so the server writes extracted files directly into
+        `/app/data/documents/<traveler_id>/...`.
+
+        If no folder name is given, the legacy generic upload page is
+        opened and the uploaded directory's own root name is used.
+        """
+        # Flet click handlers pass an event object as the first arg;
+        # when called directly with a folder name we support either:
+        #   self._documents_upload_folder(None, "HAJ_123")  or
+        #   self._documents_upload_folder("HAJ_123")         (via `e`)
+        if folder_name is None and isinstance(e, str):
+            folder_name = e
+            e = None
+
+        if folder_name:
+            safe_name = str(folder_name)
+            url = f"/upload-folder-page?traveler_id={urllib.parse.quote(safe_name)}"
+        else:
+            url = "/upload-folder-page"
+
         print(f"[DATA-ADMIN] Opening folder upload page: {url}")
-        
+
         async def _go():
             try:
                 launcher = ft.UrlLauncher()
                 r = launcher.launch_url(url, web_only_window_name="_blank")
-                if asyncio.iscoroutine(r): await r
+                if asyncio.iscoroutine(r):
+                    await r
             except Exception as ex:
                 print(f"[DATA-ADMIN] launch error: {ex}")
-                
+
         try:
             self.page_ref.run_task(_go)
         except Exception as ex:
-            self._snack(f"⚠️ Could not open upload page: {ex}", ft.Colors.RED_500)
+            self._snack(f"⚠️ Could not open upload page: {ex}",
+                        ft.Colors.RED_500)
 
-        self._snack("🌐 Opened folder upload page. Refresh this list when done.", ft.Colors.BLUE_600)
+        if folder_name:
+            self._snack(
+                f"🌐 Opened folder upload page for {folder_name}. "
+                f"Refresh this list when done.",
+                ft.Colors.BLUE_600)
+        else:
+            self._snack(
+                "🌐 Opened folder upload page. Refresh this list when done.",
+                ft.Colors.BLUE_600)
 
 
 # =================================================================================
