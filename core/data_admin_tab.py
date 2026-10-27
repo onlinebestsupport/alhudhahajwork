@@ -2,52 +2,10 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v2.5 — Fixed folder upload and inline web view to use native client-side
-#          ft.OpenUrl actions. This bypasses browser popup blockers and ensures
-#          tabs open synchronously.
-#
-#   v2.4 — Fixed inline Web View using correct ft.OpenUrl syntax.
-#   v2.3 — Directed HTML5 folder upload to specific Traveler IDs.
-#
-# SECTION MAP
-#   §1  Module header & imports
-#   §2  Module-level helpers
-#   §3  class DataAdminTab
-#       §3.1  __init__
-#       §3.2  build
-#       §3.3  _is_narrow
-#       §3.4  _access_denied_ui
-#       §3.5  _error_ui
-#       §3.6  setup_ui
-#       §3.7  _register_picker
-#       §3.8  refresh
-#       §3.9  _build_table_card
-#       §3.10 reset_activity_log_confirm
-#       §3.11 import_all_files
-#       §3.12 _do_bulk_import
-#       §3.13 _execute_bulk_import
-#       §3.14 _download_csv
-#       §3.15 export_all_zip
-#       §3.16 create_backup
-#       §3.17 _preview_csv
-#       §3.18 _upload_csv
-#       §3.19 _do_upload
-#       §3.20 _show_status
-#       §3.21 _snack
-#       §3.22 _safe_update
-#       §3.23 _build_documents_section
-#       §3.24 _documents_refresh
-#       §3.25 _documents_folder_row
-#       §3.26 _documents_export_zip
-#       §3.27 _documents_download_one
-#       §3.28 _documents_import_zip
-#       §3.29 _do_import_documents_zip
-#       §3.30 _apply_documents_zip
-#       §3.31 _documents_create_backup
-#       §3.32 _documents_view_folder
-#       §3.33 _documents_delete_backup
-#       §3.34 _documents_delete_folder
-#   §4  Aliases
+#   v2.6 — Split UI into native Flet Tabs (Database vs Documents).
+#          Fixed backup counter logic to include .bak files.
+#          Fixed folder upload and inline web view to use native client-side
+#          ft.OpenUrl actions (bypasses browser popup blockers).
 # =================================================================================
 
 
@@ -255,7 +213,7 @@ class DataAdminTab:
             alignment=ft.Alignment.CENTER, expand=True)
 
     # =============================================================================
-    # §3.6  setup_ui
+    # §3.6  setup_ui (Restructured with Flet Tabs)
     # =============================================================================
     def setup_ui(self):
         narrow = self._is_narrow()
@@ -292,7 +250,11 @@ class DataAdminTab:
                 colors=["#7f1d1d", "#b91c1c", "#dc2626"]),
             border_radius=12)
 
-        # ---- §3.6.2  Stats cards row ----
+        # =====================================================================
+        # TAB 1: DATABASE TABLES (CSV)
+        # =====================================================================
+        
+        # ---- Stats cards row ----
         stat_specs = [
             ("tables",  "📄", "Tables",     "#2563eb"),
             ("rows",    "📊", "Total Rows", "#059669"),
@@ -319,9 +281,9 @@ class DataAdminTab:
                 padding=10, bgcolor=color, border_radius=10, height=64,
                 col={"xs": 6, "sm": 6, "md": 3}))
 
-        stats_row = ft.ResponsiveRow(stat_cards, spacing=6, run_spacing=6)
+        csv_stats_row = ft.ResponsiveRow(stat_cards, spacing=6, run_spacing=6)
 
-        # ---- §3.6.3  Toolbar ----
+        # ---- Toolbar ----
         def _btn(label, icon, color, handler, expand=False):
             return ft.Button(
                 content=ft.Row([
@@ -345,7 +307,7 @@ class DataAdminTab:
             "#7c3aed", self.import_all_files, expand=narrow)
 
         if narrow:
-            toolbar_inner = ft.Column([
+            csv_toolbar_inner = ft.Column([
                 import_all_btn,
                 _btn("Export All (ZIP)", ft.Icons.DOWNLOAD,
                      "#0891b2", self.export_all_zip, expand=True),
@@ -356,7 +318,7 @@ class DataAdminTab:
                 reset_log_btn,
             ], spacing=8)
         else:
-            toolbar_inner = ft.Column([
+            csv_toolbar_inner = ft.Column([
                 ft.Row([
                     import_all_btn,
                     _btn("Export All (ZIP)", ft.Icons.DOWNLOAD,
@@ -371,60 +333,100 @@ class DataAdminTab:
                 ], spacing=8),
             ], spacing=8)
 
-        toolbar = ft.Container(
-            content=toolbar_inner,
+        csv_toolbar = ft.Container(
+            content=csv_toolbar_inner,
             padding=10,
             bgcolor=ft.Colors.WHITE,
             border_radius=12,
             border=ft.Border.all(1, "#e2e8f0"))
 
-        # ---- §3.6.4  CSV cards container ----
+        # ---- Container for CSV cards ----
         self.cards_container = ft.Column(spacing=8)
 
-        # ---- §3.6.5  Documents section ----
+        # ---- Tab 1 Assembly ----
+        tab1_content = ft.Column(
+            controls=[
+                csv_stats_row,
+                csv_toolbar,
+                ft.Container(
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Text("📋", size=14),
+                            ft.Text("Database Tables",
+                                    size=13,
+                                    weight=ft.FontWeight.BOLD,
+                                    color="#1e40af"),
+                        ], spacing=6),
+                        ft.Text(
+                            "Each card below represents one CSV "
+                            "file in /app/data. Download to view "
+                            "in Excel, or upload to replace.",
+                            size=10, color=ft.Colors.GREY_600,
+                            italic=True),
+                        self.cards_container,
+                    ], spacing=8),
+                    padding=12, bgcolor=ft.Colors.WHITE,
+                    border_radius=12,
+                    border=ft.Border.all(1, "#e2e8f0")),
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True
+        )
+
+        # =====================================================================
+        # TAB 2: TRAVELER DOCUMENTS
+        # =====================================================================
         documents_section = self._build_documents_section()
 
-        # ---- §3.6.6  Status label ----
+        tab2_content = ft.Column(
+            controls=[
+                documents_section
+            ],
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+            expand=True
+        )
+
+        # =====================================================================
+        # ASSEMBLE TABS & ROOT
+        # =====================================================================
+        tabs = ft.Tabs(
+            selected_index=0,
+            animation_duration=300,
+            tabs=[
+                ft.Tab(
+                    text="Database Tables",
+                    icon=ft.Icons.TABLE_CHART,
+                    content=tab1_content
+                ),
+                ft.Tab(
+                    text="Traveler Documents",
+                    icon=ft.Icons.FOLDER_SHARED,
+                    content=tab2_content
+                ),
+            ],
+            expand=True
+        )
+
+        # ---- Status label ----
         self.status_label = ft.Text("Ready.", size=10,
                                     color=ft.Colors.GREY_600, italic=True)
 
-        # ---- §3.6.7  Assemble root ----
         self.root = ft.Container(
             content=ft.Column(
                 controls=[
                     header,
                     ft.Container(height=4),
-                    stats_row,
-                    toolbar,
-                    ft.Container(
-                        content=ft.Column([
-                            ft.Row([
-                                ft.Text("📋", size=14),
-                                ft.Text("Database Tables",
-                                        size=13,
-                                        weight=ft.FontWeight.BOLD,
-                                        color="#1e40af"),
-                            ], spacing=6),
-                            ft.Text(
-                                "Each card below represents one CSV "
-                                "file in /app/data. Download to view "
-                                "in Excel, or upload to replace.",
-                                size=10, color=ft.Colors.GREY_600,
-                                italic=True),
-                            self.cards_container,
-                        ], spacing=8),
-                        padding=12, bgcolor=ft.Colors.WHITE,
-                        border_radius=12,
-                        border=ft.Border.all(1, "#e2e8f0")),
-                    documents_section,
+                    tabs,
                     self.status_label,
                 ],
-                spacing=10, scroll=ft.ScrollMode.AUTO,
+                spacing=10, expand=True,
             ),
             padding=10, bgcolor="#f0f2f5", expand=True,
         )
 
-        # ---- §3.6.8  Register picker ----
+        # ---- Register picker ----
         self._register_picker()
 
     # -----------------------------------------------------------------------------
@@ -486,7 +488,8 @@ class DataAdminTab:
             try:
                 backup_dir = self.data_dir / "backups"
                 if backup_dir.exists():
-                    backup_count = len(list(backup_dir.glob("*.zip")))
+                    # Count both .zip and .bak files to accurately reflect physical backups
+                    backup_count = len(list(backup_dir.glob("*.zip"))) + len(list(backup_dir.glob("*.bak")))
             except Exception:
                 pass
 
@@ -1277,8 +1280,6 @@ class DataAdminTab:
     # §3.23  _build_documents_section
     # =============================================================================
     def _build_documents_section(self):
-        narrow = self._is_narrow()
-
         # ---- Header row with live stats ----
         def stat_chip(key, icon, color):
             value = ft.Text("—", size=12,
@@ -1313,7 +1314,7 @@ class DataAdminTab:
                     shape=ft.RoundedRectangleBorder(radius=8)))
 
         actions_row = ft.Row([
-            # v2.5 — Use ft.OpenUrl to open the Upload page synchronously
+            # Use ft.OpenUrl to open the Upload page synchronously
             ft.Button(
                 content=ft.Row([
                     ft.Icon(ft.Icons.DRIVE_FOLDER_UPLOAD, size=14, color=ft.Colors.WHITE),
@@ -2038,7 +2039,7 @@ class DataAdminTab:
                             icon_color="#3498db",
                             icon_size=16,
                             tooltip="View in Web",
-                            # v2.5 — Native client-side open
+                            # Use native client-side open to bypass popup blockers
                             action=ft.OpenUrl(view_url, target="_blank")
                         ),
                         ft.IconButton(
