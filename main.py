@@ -1,10 +1,19 @@
 # =================================================================================
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
-# v2.31 — Added inline document viewing route for Data Admin
+# v2.32 — Folder upload can now target a specific traveler
 #
-#   FIXES:
-#     • §21.5.8e — Added /api/admin/view-doc to serve files inline (opens PDFs 
+#   CHANGES:
+#     • §21.5.8d — /api/admin/traveler/upload-folder-html now accepts an
+#       optional `traveler_id` Form field. When supplied (upload launched from
+#       a specific traveler row in the Data Admin UI), all extracted files are
+#       written directly into /app/data/documents/<traveler_id>/... instead of
+#       a folder named after the uploaded directory. When omitted (generic
+#       top-level upload button), the legacy behaviour is preserved and the
+#       root folder name from the uploaded directory is used.
+#
+#   PREVIOUS (v2.31):
+#     • §21.5.8e — Added /api/admin/view-doc to serve files inline (opens PDFs
 #       and images directly in the browser instead of forcing a download).
 # =================================================================================
 
@@ -1481,7 +1490,7 @@ def _build_app() -> FastAPI:
         doc_key: str = Form(...),
         traveler_id: str = Form(""),
         mode: str = Form("new"),
-        folder: str = Form("new_traveler"), # <--- ADDED FOLDER PARAMETER
+        folder: str = Form("new_traveler"),  # <--- ADDED FOLDER PARAMETER
         _: None = Depends(require_admin),
     ):
         if not upload_limiter.check("docs"):
@@ -1508,12 +1517,12 @@ def _build_app() -> FastAPI:
             "photo": "photos",
         }
         sub = subfolder_map[doc_key]
-        
+
         # --- FIXED: Use the exact folder sent from Flet ---
         safe_folder = "".join(c for c in folder if c.isalnum() or c in "-_")
         if not safe_folder:
             safe_folder = "new_traveler"
-            
+
         try:
             data = await file.read()
         except Exception:
@@ -1611,37 +1620,73 @@ def _build_app() -> FastAPI:
     @app.post("/api/admin/traveler/upload-folder-html")
     async def upload_folder_html(
         files: List[UploadFile] = File(...),
-        paths: List[str] = Form(...)
+        paths: List[str] = Form(...),
+        traveler_id: str = Form(""),   # <--- NEW PARAM (v2.32)
     ):
-        if not files: 
+        if not files:
             raise HTTPException(status_code=400, detail="No files provided")
-            
-        # Determine root folder from the first path
+
+        # ----- Branch 1: upload launched from a specific traveler row -----
+        # All extracted files land in /app/data/documents/<traveler_id>/...
+        if traveler_id:
+            safe_root = "".join(
+                c for c in traveler_id if c.isalnum() or c in "-_")
+            if not safe_root:
+                raise HTTPException(
+                    status_code=400, detail="Invalid traveler_id")
+            target_base = Path("/app/data/documents") / safe_root
+
+            extracted = 0
+            for file, path in zip(files, paths):
+                parts = Path(path).parts
+                if len(parts) < 2:
+                    continue  # Skip files in the absolute root
+
+                # Strip the root folder name (e.g. 'HAJ_TRV_2027_038')
+                rel_path = Path(*parts[1:])
+                dest = target_base / rel_path
+                dest.parent.mkdir(parents=True, exist_ok=True)
+
+                try:
+                    data = await file.read()
+                    dest.write_bytes(data)
+                    extracted += 1
+                except Exception as e:
+                    print(f"[FOLDER-UPLOAD] Error writing {dest}: {e}")
+
+            print(f"[FOLDER-UPLOAD] Uploaded {extracted} files to "
+                  f"specific folder {safe_root}")
+            return {"success": True, "folder": safe_root, "count": extracted}
+
+        # ----- Branch 2: generic top-level upload -----
+        # Uses the folder's own name as the root directory (legacy behaviour)
         root_folder = "uploaded_folder"
         if paths:
             parts = Path(paths[0]).parts
-            if parts: root_folder = parts[0]
-            
-        safe_root = "".join(c for c in root_folder if c.isalnum() or c in "-_")
+            if parts:
+                root_folder = parts[0]
+
+        safe_root = "".join(
+            c for c in root_folder if c.isalnum() or c in "-_")
         target_base = Path("/app/data/documents") / safe_root
-        
+
         extracted = 0
         for file, path in zip(files, paths):
             parts = Path(path).parts
-            if len(parts) < 2: continue # Skip files in the absolute root
-            
-            # relative path inside the root folder
+            if len(parts) < 2:
+                continue
+
             rel_path = Path(*parts[1:])
             dest = target_base / rel_path
             dest.parent.mkdir(parents=True, exist_ok=True)
-            
+
             try:
                 data = await file.read()
                 dest.write_bytes(data)
                 extracted += 1
             except Exception as e:
                 print(f"[FOLDER-UPLOAD] Error writing {dest}: {e}")
-                
+
         print(f"[FOLDER-UPLOAD] Uploaded {extracted} files to {safe_root}")
         return {"success": True, "folder": safe_root, "count": extracted}
 
@@ -1655,10 +1700,10 @@ def _build_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="Unauthorized path")
         if not safe_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
-        
-        import mimetypes
-        media_type, _ = mimetypes.guess_type(str(safe_path))
-        
+
+        import mimetypes as _mimetypes
+        media_type, _ = _mimetypes.guess_type(str(safe_path))
+
         # Return without Content-Disposition: attachment so it opens in the browser
         return FileResponse(
             str(safe_path),
@@ -1754,6 +1799,8 @@ def _build_app() -> FastAPI:
     _boot_log("sitemap.xml route registered")
 
     return app
+
+
 # =================================================================================
 # 21.6 — ENTRY POINT
 # =================================================================================
