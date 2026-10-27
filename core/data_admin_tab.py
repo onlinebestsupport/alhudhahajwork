@@ -2,9 +2,8 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v3.0 — Fixed backup counter to only count system .zip backups, 
-#          matching the main Backup tab. 
-#          Replaced crashing ft.Tabs with custom Flet button navigation.
+#   v3.1 — Synced backup counter to scan both standard and legacy folders.
+#          Now counts all *.zip files exactly like BackupView.
 # =================================================================================
 
 
@@ -500,11 +499,14 @@ class DataAdminTab:
 
             backup_count = 0
             try:
-                backup_dir = self.data_dir / "backups"
-                if backup_dir.exists():
-                    # Only count full system backups (.zip) to match the Backup tab
-                    # Ignore .bak files which are individual CSV table saves
-                    backup_count = len(list(backup_dir.glob("backup_*.zip")))
+                # Scan both standard and legacy directories, just like BackupView
+                scan_dirs = [
+                    self.data_dir / "backups",
+                    self.data_dir.parent / "backups"
+                ]
+                for d in scan_dirs:
+                    if d.exists():
+                        backup_count += len(list(d.glob("*.zip")))
             except Exception:
                 pass
 
