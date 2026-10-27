@@ -2,49 +2,50 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
-#   v1.9 — Added "Upload Folder (No ZIP)" feature for direct folder import.
-#          Async-safe copying to prevent WebSocket timeouts (re-login issues).
+#   v2.0 — Async-safe operations, HTML5 Folder Upload, Selective ZIP Import,
+#          Missing Folders display, Web-safe file viewing, and restored
+#          CSV management functions.
 #
 # SECTION MAP
 #   §1  Module header & imports
-#   §2  Module-level helpers  (_safe_str, _human_size, _dir_size)
+#   §2  Module-level helpers
 #   §3  class DataAdminTab
-#       §3.1  __init__                  constructor / role gate
-#       §3.2  build                     Flet entry point
-#       §3.3  _is_narrow                responsive breakpoint check
-#       §3.4  _access_denied_ui         super_admin gate UI
-#       §3.5  _error_ui                 failure fallback UI
-#       §3.6  setup_ui                  full layout
-#       §3.7  _register_picker          FilePicker registration
-#       §3.8  refresh                   scan CSVs + documents, rebuild
-#       §3.9  _build_table_card         one card per CSV
-#       §3.10 reset_activity_log_confirm  clear activity_log.csv
-#       §3.11 import_all_files          multi-select CSV picker
-#       §3.12 _do_bulk_import           preview + confirm dialog
-#       §3.13 _execute_bulk_import      apply bulk plan
-#       §3.14 _download_csv             single file download
-#       §3.15 export_all_zip            bundle all CSVs into a ZIP
-#       §3.16 create_backup             trigger db.create_backup()
-#       §3.17 _preview_csv              show full CSV with scrollbar
-#       §3.18 _upload_csv               single-file replace (picker)
-#       §3.19 _do_upload                apply single-file upload
-#       §3.20 _show_status              write to bottom status label
-#       §3.21 _snack                    transient notification
-#       §3.22 _safe_update              safe wrapper around root.update()
-#       §3.23 _build_documents_section  Documents management UI
-#       §3.24 _documents_refresh        scan + update stats/lists + backups
-#       §3.25 _documents_folder_row     one row per traveler folder
-#       §3.26 _documents_export_zip     full documents ZIP export
-#       §3.27 _documents_download_one   per-traveler ZIP download
-#       §3.28 _documents_import_zip     ZIP restore with backup
-#       §3.29 _apply_documents_zip      apply ZIP restore
-#       §3.30 _documents_create_backup  timestamped backup
-#       §3.31 _documents_view_folder    View files inside a folder
-#       §3.32 _documents_upload_to_folder Upload file to folder
-#       §3.33 _documents_delete_backup  Delete a backup file
-#       §3.34 _documents_delete_folder  Delete an entire traveler folder
-#       §3.35 _documents_upload_folder  Direct folder upload (NEW)
-#   §4  Aliases (DataAdminView = DataAdminTab)
+#       §3.1  __init__
+#       §3.2  build
+#       §3.3  _is_narrow
+#       §3.4  _access_denied_ui
+#       §3.5  _error_ui
+#       §3.6  setup_ui
+#       §3.7  _register_picker
+#       §3.8  refresh
+#       §3.9  _build_table_card
+#       §3.10 reset_activity_log_confirm
+#       §3.11 import_all_files
+#       §3.12 _do_bulk_import
+#       §3.13 _execute_bulk_import
+#       §3.14 _download_csv
+#       §3.15 export_all_zip
+#       §3.16 create_backup
+#       §3.17 _preview_csv
+#       §3.18 _upload_csv
+#       §3.19 _do_upload
+#       §3.20 _show_status
+#       §3.21 _snack
+#       §3.22 _safe_update
+#       §3.23 _build_documents_section
+#       §3.24 _documents_refresh
+#       §3.25 _documents_folder_row
+#       §3.26 _documents_export_zip
+#       §3.27 _documents_download_one
+#       §3.28 _documents_import_zip
+#       §3.29 _apply_documents_zip
+#       §3.30 _documents_create_backup
+#       §3.31 _documents_view_folder
+#       §3.32 _documents_upload_to_folder
+#       §3.33 _documents_delete_backup
+#       §3.34 _documents_delete_folder
+#       §3.35 _documents_upload_folder
+#   §4  Aliases
 # =================================================================================
 
 
@@ -1309,7 +1310,7 @@ class DataAdminTab:
                     shape=ft.RoundedRectangleBorder(radius=8)))
 
         actions_row = ft.Row([
-            _act_btn("Upload Folder (No ZIP)", ft.Icons.DRIVE_FOLDER_UPLOAD,
+            _act_btn("Upload Folder (Web)", ft.Icons.DRIVE_FOLDER_UPLOAD,
                      "#0284c7", self._documents_upload_folder),
             _act_btn("Download All (ZIP)", ft.Icons.DOWNLOAD,
                      "#0891b2", self._documents_export_zip),
@@ -2085,65 +2086,26 @@ class DataAdminTab:
         self.page_ref.show_dialog(dlg)
 
     # =============================================================================
-    # §3.35  _documents_upload_folder (NEW)
+    # §3.35  _documents_upload_folder (HTML5 Folder Upload)
     # =============================================================================
     def _documents_upload_folder(self, e=None):
-        async def _pick():
+        url = "/upload-folder-page"
+        print(f"[DATA-ADMIN] Opening folder upload page: {url}")
+        
+        async def _go():
             try:
-                self._show_status("⏳ Waiting for folder selection...", ft.Colors.BLUE_600)
-                self._safe_update()
-                
-                folder_path = await self.file_picker.get_directory_path()
-                if not folder_path:
-                    self._show_status("Ready.", ft.Colors.GREY_700)
-                    return
-                
-                await self._process_folder_upload(folder_path)
+                launcher = ft.UrlLauncher()
+                r = launcher.launch_url(url, web_only_window_name="_blank")
+                if asyncio.iscoroutine(r): await r
             except Exception as ex:
-                print(f"[DATA-ADMIN] folder upload error: {ex}")
-                self._show_status("Ready.", ft.Colors.GREY_700)
-                self._snack(f"❌ Folder picker error: {ex}", ft.Colors.RED_500)
-        
-        try:
-            self.page_ref.run_task(_pick)
-        except Exception as ex:
-            self._snack(f"⚠️ Could not start folder picker: {ex}", ft.Colors.RED_500)
-
-    async def _process_folder_upload(self, source_dir_str):
-        source_dir = Path(source_dir_str)
-        folder_name = source_dir.name
-        
-        self._show_status(f"⏳ Copying folder '{folder_name}'...", ft.Colors.BLUE_600)
-        self._safe_update()
-        await asyncio.sleep(0.1)
-        
-        try:
-            dest_base = self.documents_dir / folder_name
-            dest_base.mkdir(parents=True, exist_ok=True)
-            
-            file_count = 0
-            for root, dirs, files in os.walk(source_dir):
-                rel_path = os.path.relpath(root, source_dir)
-                dest_dir = dest_base if rel_path == "." else dest_base / rel_path
-                dest_dir.mkdir(parents=True, exist_ok=True)
+                print(f"[DATA-ADMIN] launch error: {ex}")
                 
-                for file in files:
-                    src_file = Path(root) / file
-                    dest_file = dest_dir / file
-                    shutil.copy2(src_file, dest_file)
-                    file_count += 1
-                    
-                    # Prevent WebSocket timeout on large folders
-                    if file_count % 10 == 0:
-                        await asyncio.sleep(0.01)
-                        
-            self._documents_refresh()
-            self._show_status(f"✅ Uploaded folder '{folder_name}' ({file_count} files).", ft.Colors.GREEN_700)
-            self._snack(f"✅ Uploaded folder '{folder_name}' ({file_count} files).", ft.Colors.GREEN_700)
+        try:
+            self.page_ref.run_task(_go)
         except Exception as ex:
-            traceback.print_exc()
-            self._show_status(f"❌ Folder upload failed: {ex}", ft.Colors.RED_500)
-            self._snack(f"❌ Folder upload failed: {ex}", ft.Colors.RED_500)
+            self._snack(f"⚠️ Could not open upload page: {ex}", ft.Colors.RED_500)
+
+        self._snack("🌐 Opened folder upload page. Refresh this list when done.", ft.Colors.BLUE_600)
 
 
 # =================================================================================
