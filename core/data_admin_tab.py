@@ -2,14 +2,13 @@
 # core/data_admin_tab.py — Data Administration (SUPER_ADMIN ONLY)
 # =================================================================================
 # VERSION HISTORY
+#   v2.4 — Fixed inline Web View popup blocker issue.
+#          Uses native ft.OpenUrl action for immediate execution.
+#          All v2.3 features (HTML5 Folder target, selective ZIP restore,
+#          alphabetized missing folders, subfolder counts) are preserved.
+#
 #   v2.3 — Directed HTML5 folder upload to specific Traveler IDs.
 #          Added explicit "Create" button for missing folders.
-#          Import ZIP now allows selective folder restoration via checkboxes.
-#          Inline Web View for files (uses /api/admin/view-doc route).
-#
-#   v2.2 — Fixed inline Web View (uses new /api/admin/view-doc route).
-#          All v2.1 features (Alphabetical missing folders, subfolder counts,
-#          CSV management, HTML5 folder upload) are fully preserved.
 #
 # SECTION MAP
 #   §1  Module header & imports
@@ -2015,15 +2014,9 @@ class DataAdminTab:
 
             rows = []
             for item in files_list:
-                # --- v2.2 INLINE VIEW LOGIC (uses /api/admin/view-doc) ---
-                def _view_file(e, _path=item["abs"]):
-                    encoded_path = urllib.parse.quote(str(_path))
-                    url = f"/api/admin/view-doc?path={encoded_path}"
-                    try:
-                        self.page_ref.launch_url(
-                            url, web_only_window_name="_blank")
-                    except Exception as ex:
-                        print(f"[DATA-ADMIN] inline view failed: {ex}")
+                # Encode the path so it can be passed via URL safely
+                encoded_path = urllib.parse.quote(str(item["abs"]))
+                view_url = f"/api/admin/view-doc?path={encoded_path}"
 
                 def _dl_file(e, _path=item["abs"]):
                     url = send_file_to_user(
@@ -2044,7 +2037,8 @@ class DataAdminTab:
                             icon_color="#3498db",
                             icon_size=16,
                             tooltip="View in Web",
-                            on_click=_view_file
+                            # v2.4 — Use `action` to bypass popup blockers!
+                            action=ft.OpenUrl(view_url, web_only_window_name="_blank")
                         ),
                         ft.IconButton(
                             icon=ft.Icons.DOWNLOAD,
@@ -2157,20 +2151,7 @@ class DataAdminTab:
     def _documents_upload_folder(self, e=None, folder_name=None):
         """
         v2.3 — Opens the HTML5 folder upload page.
-
-        If `folder_name` is provided (or `e` is a string, which is the
-        pattern used by `_documents_folder_row` when calling this as a
-        click handler), the URL is pre-targeted with `?traveler_id=<id>`
-        so the server writes extracted files directly into
-        `/app/data/documents/<traveler_id>/...`.
-
-        If no folder name is given, the legacy generic upload page is
-        opened and the uploaded directory's own root name is used.
         """
-        # Flet click handlers pass an event object as the first arg;
-        # when called directly with a folder name we support either:
-        #   self._documents_upload_folder(None, "HAJ_123")  or
-        #   self._documents_upload_folder("HAJ_123")         (via `e`)
         if folder_name is None and isinstance(e, str):
             folder_name = e
             e = None
