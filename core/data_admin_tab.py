@@ -2035,8 +2035,8 @@ class DataAdminTab:
                             icon_color="#3498db",
                             icon_size=16,
                             tooltip="View in Web",
-                            # v2.4 — Use `action` to bypass popup blockers!
-                            action=ft.OpenUrl(view_url, web_only_window_name="_blank")
+                            # v2.4 — FIXED: Use target="_blank" instead of unsupported web_only_window_name
+                            action=ft.OpenUrl(view_url, target="_blank")
                         ),
                         ft.IconButton(
                             icon=ft.Icons.DOWNLOAD,
@@ -2149,6 +2149,15 @@ class DataAdminTab:
     def _documents_upload_folder(self, e=None, folder_name=None):
         """
         v2.3 — Opens the HTML5 folder upload page.
+
+        If `folder_name` is provided (or `e` is a string, which is the
+        pattern used by `_documents_folder_row` when calling this as a
+        click handler), the URL is pre-targeted with `?traveler_id=<id>`
+        so the server writes extracted files directly into
+        `/app/data/documents/<traveler_id>/...`.
+
+        If no folder name is given, the legacy generic upload page is
+        opened and the uploaded directory's own root name is used.
         """
         if folder_name is None and isinstance(e, str):
             folder_name = e
@@ -2162,18 +2171,17 @@ class DataAdminTab:
 
         print(f"[DATA-ADMIN] Opening folder upload page: {url}")
 
-        async def _go():
+        try:
+            # Launch synchronously to bypass browser popup blockers
+            self.page_ref.launch_url(url, web_window_name="_blank")
+        except TypeError:
+            # Fallback for older Flet versions
             try:
-                launcher = ft.UrlLauncher()
-                r = launcher.launch_url(url, web_only_window_name="_blank")
-                if asyncio.iscoroutine(r):
-                    await r
+                self.page_ref.launch_url(url)
             except Exception as ex:
                 print(f"[DATA-ADMIN] launch error: {ex}")
-
-        try:
-            self.page_ref.run_task(_go)
         except Exception as ex:
+            print(f"[DATA-ADMIN] launch error: {ex}")
             self._snack(f"⚠️ Could not open upload page: {ex}",
                         ft.Colors.RED_500)
 
