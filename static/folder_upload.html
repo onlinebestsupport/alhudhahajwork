@@ -13,6 +13,11 @@
   input[type="file"]:active { border-color: #2563eb; background: #eff6ff; }
   button { width: 100%; padding: 14px; background: #2563eb; color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: bold; cursor: pointer; -webkit-tap-highlight-color: transparent; }
   button:disabled { background: #94a3b8; cursor: not-allowed; }
+  
+  /* Added style for the close button */
+  #close-btn { background: #059669; display: none; margin-top: 12px; }
+  #close-btn:hover { background: #047857; }
+  
   #status { margin-top: 20px; font-weight: bold; text-align: center; font-size: 14px; padding: 10px; border-radius: 8px; }
   .success { background: #d1fae5; color: #065f46; }
   .error { background: #fee2e2; color: #991b1b; }
@@ -26,6 +31,9 @@
     
     <input type="file" id="folder-input" webkitdirectory directory multiple>
     <button id="upload-btn" onclick="upload()">Upload Folder</button>
+    
+    <!-- NEW: Close Button -->
+    <button id="close-btn" onclick="closeWindow()">Close Window</button>
     
     <div id="status"></div>
   </div>
@@ -42,6 +50,7 @@
       const input = document.getElementById('folder-input');
       const btn = document.getElementById('upload-btn');
       const status = document.getElementById('status');
+      const closeBtn = document.getElementById('close-btn');
       
       if (!input.files.length) { 
         alert('Please select a folder first.'); 
@@ -49,6 +58,7 @@
       }
       
       btn.disabled = true;
+      input.disabled = true;
       status.className = 'info';
       status.innerText = '⏳ Uploading... Please wait.';
       
@@ -69,18 +79,38 @@
         if (res.ok) {
           const data = await res.json();
           status.className = 'success';
-          status.innerText = `✅ Upload successful! Uploaded ${data.count} files to ${data.folder}. You can close this tab.`;
+          status.innerHTML = `✅ Upload successful!<br>Uploaded ${data.count} files to <b>${data.folder}</b>.`;
+          
+          // Hide the upload button and show the close button
+          btn.style.display = 'none';
+          closeBtn.style.display = 'block';
+          
         } else {
           const err = await res.text();
           status.className = 'error';
           status.innerText = '❌ Upload failed: ' + err;
           btn.disabled = false;
+          input.disabled = false;
         }
       } catch (e) {
         status.className = 'error';
         status.innerText = '❌ Network error: ' + e.message;
         btn.disabled = false;
+        input.disabled = false;
       }
+    }
+
+    // Function to close the tab
+    function closeWindow() {
+      // Try to close the current tab
+      window.close();
+      
+      // Fallback: If the browser blocks window.close() (because it wasn't opened via script),
+      // show a message so the user knows to close it manually.
+      setTimeout(() => {
+        const status = document.getElementById('status');
+        status.innerHTML = `✅ Upload successful!<br>Uploaded files successfully.<br><br><i>Please close this tab manually.</i>`;
+      }, 300);
     }
   </script>
 </body>
