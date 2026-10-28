@@ -1,13 +1,9 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.0 — Comprehensive Accounting Fixes based on Manus Review.
-#   • Fixed Unmark-Paid cascade (marks payment as refunded instead of deleting).
-#   • Added effective Overdue status filtering.
-#   • Locked financial fields (Amount, Discount, Tax) on Paid invoices.
-#   • Strict rejection of negative amounts/discounts.
-#   • Normalized discount percentage calculation.
-#   • Removed manual invoice date field (DB uses today's date).
+# v2.1 — Fixed auto-fill logic for Standard and Manual invoices.
+#   • Uses self.dialog.update() to force UI refresh inside AlertDialogs.
+#   • Extracts value from e.control.value to ensure proper event handling.
 # =================================================================================
 
 import flet as ft
@@ -1722,20 +1718,18 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        tid = self.traveler_dd.value
+        tid = getattr(e, "control", self.traveler_dd).value
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
             self.batch_label.value = "Not assigned"
             self.amount_field.value = "0"
             self.generate_btn.disabled = True
-            for c in (self.traveler_info, self.batch_label,
-                      self.amount_field, self.generate_btn):
-                try:
-                    c.update()
-                except Exception:
-                    pass
             self.recalculate(None)
+            try:
+                self.dialog.update()
+            except Exception:
+                pass
             return
             
         t = self.db.get_traveler_by_id(tid)
@@ -1743,7 +1737,7 @@ class InvoiceDialog:
             self.traveler_info.value = "⚠️ Not found"
             self.traveler_info.color = ft.Colors.RED_600
             try:
-                self.traveler_info.update()
+                self.dialog.update()
             except Exception:
                 pass
             return
@@ -1788,16 +1782,10 @@ class InvoiceDialog:
                 self.generate_btn.disabled = True
                 
         self.recalculate(None)
-        # Force UI updates for all affected elements
-        for c in (self.traveler_info, self.batch_label,
-                  self.amount_field, self.generate_btn,
-                  self.discount_amt_lbl, self.discount_pct_lbl,
-                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
-                  self.breakdown_lbl):
-            try:
-                c.update()
-            except Exception:
-                pass
+        try:
+            self.dialog.update()
+        except Exception:
+            pass
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -1806,7 +1794,7 @@ class InvoiceDialog:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
         try:
-            self.discount_value.update()
+            self.dialog.update()
         except Exception:
             pass
         self.recalculate(None)
@@ -2727,7 +2715,7 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        tid = self.traveler_dd.value
+        tid = getattr(e, "control", self.traveler_dd).value
         if not tid:
             self.cust_name.value = ""
             self.cust_phone.value = ""
@@ -2735,11 +2723,10 @@ class ManualInvoiceDialog:
             self.package_dd.value = ""
             self.dup_warning_lbl.value = ""
             self.gen_btn.disabled = False
-            for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-                try:
-                    c.update()
-                except Exception:
-                    pass
+            try:
+                self.dialog.update()
+            except Exception:
+                pass
             return
         
         traveler = self.db.get_traveler_by_id(tid)
@@ -2766,11 +2753,10 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
-        for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-            try:
-                c.update()
-            except Exception:
-                pass
+        try:
+            self.dialog.update()
+        except Exception:
+            pass
 
     def refresh_items(self):
         self.items_table.rows.clear()
@@ -2931,5 +2917,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.0
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.1
 # =================================================================================
