@@ -1,11 +1,12 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.5 — Definitive fix for Base Amount auto-fill.
-#   • Wrapped traveler change logic in an async task (asyncio.sleep 0.1s).
-#   • This forces the Flet client to finish the dropdown click before the 
-#     backend tries to update the TextField, preventing UI freeze/0 value.
-#   • Explicitly calls .update() on the amount_field and batch_label.
+# v2.6 — Definitive fix for Base Amount auto-fill (Flet Dropdown Race Condition).
+#   • Updated on_traveler_change to extract the selected ID directly from 
+#     `e.control.value` instead of relying on the control's internal state.
+#   • Passes the captured ID into the async task.
+#   • This guarantees the backend gets the correct ID without waiting for Flet 
+#     to fully commit the dropdown UI state.
 # =================================================================================
 
 import flet as ft
@@ -1738,15 +1739,14 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Fire the async task to let Flet process the UI event first
-        self.page.run_task(self._sync_traveler_ui)
+        # FIX: Capture the value directly from the event
+        selected_id = e.control.value
+        self.page.run_task(self._sync_traveler_ui, selected_id)
 
-    async def _sync_traveler_ui(self):
+    async def _sync_traveler_ui(self, tid):
         # Yield to the Flet event loop to allow the Dropdown to finish updating
         await asyncio.sleep(0.1)
 
-        control = getattr(self, "traveler_dd", None)
-        tid = getattr(control, "value", None)
         tid = str(tid or "").strip()
 
         print(f"[InvoiceDialog] selected traveler ID: {tid!r}")
@@ -2738,13 +2738,13 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        self.page.run_task(self._sync_traveler_ui)
+        # FIX: Capture the value directly from the event
+        selected_id = e.control.value
+        self.page.run_task(self._sync_traveler_ui, selected_id)
 
-    async def _sync_traveler_ui(self):
+    async def _sync_traveler_ui(self, tid):
         await asyncio.sleep(0.1)
 
-        control = getattr(self, "traveler_dd", None)
-        tid = getattr(control, "value", None)
         tid = str(tid or "").strip()
 
         print(f"[ManualInvoiceDialog] selected traveler ID: {tid!r}")
@@ -2970,5 +2970,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.5
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.6
 # =================================================================================
