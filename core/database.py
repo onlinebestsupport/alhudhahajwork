@@ -3,19 +3,6 @@
 # =================================================================================
 # v5.2 — CRITICAL FIX: Backups are now correctly saved inside the persistent 
 #         data directory (/app/data/backups) instead of the ephemeral parent.
-#
-#   v5.1 NEW:
-#     • add_payment(): validates traveler exists + has batch_id;
-#       only generates a receipt when status == "completed"
-#     • _generate_receipt(): idempotent (returns existing receipt if any)
-#     • _recalculate_invoice_status(invoice_id): derives status from
-#       sum of completed payments linked to the invoice
-#     • add_payment / update_payment / delete_payment call the recalc
-#
-#   v5 (preserved):
-#     • _recalculate_batch_seats() — available_seats = total - booked
-#     • update_batch rejects total_seats < booked; recalculates inline
-#     • delete_batch blocks invoices + payments (was travelers-only)
 # =================================================================================
 
 import os
