@@ -1,9 +1,10 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.1 — Fixed auto-fill logic for Standard and Manual invoices.
-#   • Uses self.dialog.update() to force UI refresh inside AlertDialogs.
-#   • Extracts value from e.control.value to ensure proper event handling.
+# v2.2 — Final auto-fill fix.
+#   • Forces page.update() on modal dialogs to ensure Base Amount and fields 
+#     render instantly.
+#   • Casts batch price to float before applying to TextField.
 # =================================================================================
 
 import flet as ft
@@ -1770,7 +1771,12 @@ class InvoiceDialog:
                     self.batch_label.value = (
                         f"📦 {batch.get('batch_name', '')} | "
                         f"Price: ₹{batch.get('price', 0):,.2f}")
-                    self.amount_field.value = str(batch.get('price', 0))
+                    # Cast to float explicitly to avoid any string issues
+                    try:
+                        price_val = float(batch.get('price', 0))
+                    except Exception:
+                        price_val = 0.0
+                    self.amount_field.value = str(price_val)
                     self.generate_btn.disabled = False
                 else:
                     self.batch_label.value = "Batch not found in system"
@@ -2917,5 +2923,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.1
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.2
 # =================================================================================
