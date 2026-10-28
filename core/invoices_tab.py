@@ -1,12 +1,10 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v3.0 — Absolute fix for Base Amount auto-fill.
-#   • Replaced Flet's async task approach with a synchronous, event-driven approach.
-#   • Reverted to reading `e.control.value` directly, with fallbacks to `e.data` 
-#     and `self.traveler_dd.value` just in case Flet fails to propagate the value.
-#   • Added extensive `print` statements to debug the exact Traveler ID and 
-#     Batch ID received by the backend.
+# v3.1 — Absolute fix for Base Amount auto-fill.
+#   • Replaced synchronous Flet Dropdown reads with a robust Retry mechanism.
+#   • If e.control.value is empty, we wait 100ms via page.run_task and read
+#     self.traveler_dd.value directly to bypass Flet's sync lag.
 # =================================================================================
 
 import flet as ft
@@ -1575,6 +1573,8 @@ class InvoiceDialog:
         traveler_opts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
             for t in self.db.get_travelers():
+                if not t.get('id'):
+                    continue
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
                 pp = t.get('passport_no', '')
@@ -1739,14 +1739,28 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Reliable extraction of the dropdown's selected value
+        # Use Retry mechanism to bypass Flet's delayed UI sync
         tid = e.control.value
-        if tid is None:
+        if not tid:
             tid = e.data
         if not tid:
             tid = self.traveler_dd.value
             
-        print(f"[DEBUG-INV] on_traveler_change fired. Raw tid: {tid!r}")
+        if not tid or str(tid).strip().lower() in ("none", ""):
+            # If it's truly empty, wait 100ms and try reading from the control directly
+            self.page.run_task(self._retry_traveler_change)
+            return
+            
+        self._apply_traveler_change(str(tid).strip())
+
+    async def _retry_traveler_change(self):
+        await asyncio.sleep(0.1)
+        tid = self.traveler_dd.value
+        if tid and str(tid).strip().lower() not in ("none", ""):
+            self._apply_traveler_change(str(tid).strip())
+
+    def _apply_traveler_change(self, tid):
+        print(f"[DEBUG-INV] Applying traveler change: {tid!r}")
         
         if not tid:
             self.traveler_info.value = "No traveler selected"
@@ -1760,7 +1774,7 @@ class InvoiceDialog:
 
         t = self.db.get_traveler_by_id(tid)
         if not t:
-            print(f"[DEBUG-INV] Traveler {tid} not found in DB.")
+            print(f"[DEBUG-INV] Traveler {tid} not found.")
             self.traveler_info.value = "⚠️ Traveler not found"
             self.traveler_info.color = ft.Colors.RED_600
             self.batch_label.value = "Batch not found"
@@ -1769,9 +1783,6 @@ class InvoiceDialog:
             self.recalculate(None)
             self._force_ui_update()
             return
-            
-        print(f"[DEBUG-INV] Found traveler: {t.get('first_name')} {t.get('last_name')}")
-        print(f"[DEBUG-INV] Raw batch_id from DB: {t.get('batch_id')!r}")
 
         existing_invoices = self.db.get_invoices(traveler_id=tid)
         name = (f"{t.get('first_name', '')} "
@@ -1793,8 +1804,6 @@ class InvoiceDialog:
             bid = str(t.get('batch_id') or '').strip()
             batch = self.db.get_batch_by_id(bid) if bid else None
 
-            print(f"[DEBUG-INV] Looked up batch ID: {bid!r} -> found: {batch is not None}")
-
             if batch:
                 price = _money(batch.get('price', 0) or 0)
                 self.batch_label.value = (
@@ -1802,7 +1811,6 @@ class InvoiceDialog:
                     f"Price: ₹{price:,.2f}")
                 self.amount_field.value = str(price)
                 self.generate_btn.disabled = price <= 0
-                print(f"[DEBUG-INV] Set amount to {price}")
             elif bid:
                 self.batch_label.value = f"Batch not found: {bid}"
                 self.amount_field.value = "0"
@@ -2590,6 +2598,8 @@ class ManualInvoiceDialog:
         topts = [ft.dropdown.Option(key="", text="Select Traveler")]
         try:
             for t in self.db.get_travelers():
+                if not t.get('id'):
+                    continue
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
                 topts.append(ft.dropdown.Option(
@@ -2744,13 +2754,26 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        # Reliable extraction of the dropdown's selected value
+        # Use Retry mechanism to bypass Flet's delayed UI sync
         tid = e.control.value
-        if tid is None:
+        if not tid:
             tid = e.data
         if not tid:
             tid = self.traveler_dd.value
+            
+        if not tid or str(tid).strip().lower() in ("none", ""):
+            self.page.run_task(self._retry_traveler_change)
+            return
+            
+        self._apply_traveler_change(str(tid).strip())
 
+    async def _retry_traveler_change(self):
+        await asyncio.sleep(0.1)
+        tid = self.traveler_dd.value
+        if tid and str(tid).strip().lower() not in ("none", ""):
+            self._apply_traveler_change(str(tid).strip())
+
+    def _apply_traveler_change(self, tid):
         if not tid:
             self.cust_name.value = ""
             self.cust_phone.value = ""
@@ -2972,5 +2995,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v3.0
+# SECTION 14 END (FLET 1.0.0 VERSION) — v3.1
 # =================================================================================
