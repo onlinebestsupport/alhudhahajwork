@@ -1,15 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.6 — Accounting & Logic Fixes (Manus Review Applied)
-#   • Added GST stat badge.
-#   • Fixed Invoice → Payment cascade (uses correct field names, dict payload).
-#   • Package Pending only counts COMPLETED payments and prevents negative balances.
-#   • Stats use rounded_total to match visible invoice totals.
-#   • Added visual "OVERDUE" status if past due date.
-#   • Strict validation for negative amounts and >100% discounts.
-#   • Manual Invoice: Fixed TCS calculation, added traveler/package mismatch check,
-#     disabled manual date (DB uses today's date).
+# v1.7 — Added duplicate invoice prevention logic.
+#   • InvoiceDialog: Blocks creating a new invoice if one already exists 
+#     for the traveler + batch.
+#   • ManualInvoiceDialog: Blocks creating a manual invoice if the selected 
+#     traveler already has an invoice for the selected package.
 # =================================================================================
 
 import flet as ft
@@ -435,7 +431,6 @@ class InvoicesTab:
             self.traveler_paid = {}
             for p in self.db.get_payments():
                 tid = p.get('traveler_id')
-                # Only count completed payments
                 status = str(p.get('status', '')).strip().lower()
                 if tid and status == 'completed':
                     self.traveler_paid[tid] = (
@@ -1742,23 +1737,37 @@ class InvoiceDialog:
             except Exception:
                 pass
             return
+        
+        # Check for existing invoice
+        existing_invoices = self.db.get_invoices(traveler_id=tid)
+        has_existing = any(str(inv.get('batch_id')) == str(t.get('batch_id')) for inv in existing_invoices)
+        
         name = (f"{t.get('first_name', '')} "
                 f"{t.get('last_name', '')}").strip()
-        self.traveler_info.value = (
-            f"✅ {name} | Passport: {t.get('passport_no', '')}")
-        bid = t.get('batch_id')
-        if bid:
-            batches = self.db.get_batches()
-            batch = next((b for b in batches if b.get('id') == bid), None)
-            if batch:
-                self.batch_label.value = (
-                    f"📦 {batch.get('batch_name', '')} | "
-                    f"Price: ₹{batch.get('price', 0):,.2f}")
-                self.amount_field.value = str(batch.get('price', 0))
-                self.generate_btn.disabled = False
-        else:
-            self.batch_label.value = "No batch assigned"
+        if has_existing:
+            self.traveler_info.value = (
+                f"⚠️ {name} already has an invoice for this package.")
+            self.traveler_info.color = ft.Colors.RED_600
+            self.batch_label.value = "Cannot create duplicate"
             self.generate_btn.disabled = True
+        else:
+            self.traveler_info.value = (
+                f"✅ {name} | Passport: {t.get('passport_no', '')}")
+            self.traveler_info.color = ft.Colors.GREY_600
+            bid = t.get('batch_id')
+            if bid:
+                batches = self.db.get_batches()
+                batch = next((b for b in batches if b.get('id') == bid), None)
+                if batch:
+                    self.batch_label.value = (
+                        f"📦 {batch.get('batch_name', '')} | "
+                        f"Price: ₹{batch.get('price', 0):,.2f}")
+                    self.amount_field.value = str(batch.get('price', 0))
+                    self.generate_btn.disabled = False
+            else:
+                self.batch_label.value = "No batch assigned"
+                self.generate_btn.disabled = True
+                
         self.recalculate(None)
         for c in (self.traveler_info, self.batch_label,
                   self.amount_field, self.generate_btn):
@@ -1847,6 +1856,19 @@ class InvoiceDialog:
         if not tid:
             self._snack("⚠️ Select a traveler")
             return
+            
+        traveler = self.db.get_traveler_by_id(tid)
+        bid = traveler.get('batch_id') if traveler else None
+        if not bid:
+            self._snack("⚠️ Traveler has no batch")
+            return
+            
+        # Fail-safe: Double check for existing invoice before saving
+        existing_invoices = self.db.get_invoices(traveler_id=tid)
+        if any(str(inv.get('batch_id')) == str(bid) for inv in existing_invoices):
+            self._snack("⚠️ This traveler already has an invoice for this package.")
+            return
+
         try:
             amount = float(self.amount_field.value or 0)
         except (ValueError, TypeError):
@@ -1864,12 +1886,6 @@ class InvoiceDialog:
         except Exception:
             gst = 18
             tcs = 0.1
-            
-        traveler = self.db.get_traveler_by_id(tid)
-        bid = traveler.get('batch_id') if traveler else None
-        if not bid:
-            self._snack("⚠️ Traveler has no batch")
-            return
 
         is_pct = self.discount_type_dd.value == "pct"
 
@@ -2772,6 +2788,12 @@ class ManualInvoiceDialog:
                     self._snack("⚠️ Selected package does not match the traveler's batch.")
                     return
 
+            # Fail-safe: Double check for existing invoice before saving
+            existing_invoices = self.db.get_invoices(traveler_id=tid)
+            if any(str(inv.get('batch_id')) == str(bid) for inv in existing_invoices):
+                self._snack("⚠️ This traveler already has an invoice for this package.")
+                return
+
         try:
             if not tid:
                 parts = name.split()
@@ -2827,5 +2849,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.6
+# SECTION 14 END (FLET 1.0.0 VERSION) — v1.7
 # =================================================================================
