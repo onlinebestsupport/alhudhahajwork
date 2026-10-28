@@ -1,9 +1,13 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v3.2 — Robust Flet Dropdown handling (Fixes Slash-in-Key Bug).
-#   • Replaced database IDs (which contain '/') with simple keys (t_0, t_1).
-#   • Maintained a `traveler_map` to resolve the key back to the real ID.
+# v4.0 — Definitive fix for Base Amount and Manual Create auto-fill.
+#   • Flet Dropdown options now use simple alphanumeric keys (t_0, t_1) 
+#     instead of database IDs containing slashes (HAJ/TRV/...).
+#   • Added `traveler_map` dictionaries to safely resolve the key back 
+#     to the real database ID.
+#   • Event handlers now read directly from the event to bypass Flet's
+#     sync lag, with a retry mechanism just in case.
 # =================================================================================
 
 import flet as ft
@@ -3015,5 +3019,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v3.2
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.0
 # =================================================================================
