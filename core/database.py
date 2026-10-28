@@ -1,11 +1,7 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# v5.3 — Consolidated: Decimal math + Atomic Writes + File Locking
-#   • Restored FileLock and atomic temp-file writes for CSV safety.
-#   • Kept Decimal financial helpers (_money, _rate) to prevent float errors.
-#   • Fixed backup path to always use /app/data/backups.
-#   • Auto-reconciles batch seats on boot.
+# v5.4 — Consolidated: Decimal math + Atomic Writes + Robust ID Lookups
 # =================================================================================
 
 import os
@@ -328,7 +324,7 @@ class HajDatabase:
                         df[col] = ''
                 for col in TRAVELER_COLUMNS:
                     df[col] = (df[col].astype(str).fillna('')
-                               .replace('nan', ''))
+                               .replace('nan', '').str.strip())
 
             elif filename == "batches.csv":
                 for col in ['total_seats', 'available_seats', 'price']:
@@ -346,7 +342,7 @@ class HajDatabase:
                             'return_date', 'status', 'description']:
                     if col in df.columns:
                         df[col] = (df[col].astype(str).fillna('')
-                                   .replace('nan', ''))
+                                   .replace('nan', '').str.strip())
 
             elif filename == "payments.csv":
                 if 'amount' in df.columns:
@@ -691,12 +687,18 @@ class HajDatabase:
         return self.travelers.to_dict('records')
 
     def get_batch_by_id(self, batch_id):
-        batch = self.batches[self.batches['id'] == batch_id]
-        return batch.iloc[0].to_dict() if not batch.empty else None
+        if not batch_id:
+            return None
+        target = str(batch_id).strip()
+        mask = self.batches['id'].astype(str).str.strip() == target
+        return self.batches[mask].iloc[0].to_dict() if mask.any() else None
 
     def get_traveler_by_id(self, traveler_id):
-        traveler = self.travelers[self.travelers['id'] == traveler_id]
-        return traveler.iloc[0].to_dict() if not traveler.empty else None
+        if not traveler_id:
+            return None
+        target = str(traveler_id).strip()
+        mask = self.travelers['id'].astype(str).str.strip() == target
+        return self.travelers[mask].iloc[0].to_dict() if mask.any() else None
 
     def _validate_traveler_data(self, data, *, is_update=False):
         if not is_update:
@@ -1653,5 +1655,5 @@ class HajDatabase:
 
 
 # =================================================================================
-# SECTION 2 END (FLET VERSION) — v5.3
+# SECTION 2 END (FLET VERSION) — v5.4
 # =================================================================================
