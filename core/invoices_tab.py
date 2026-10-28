@@ -1,11 +1,13 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v4.2 — Absolute final fix for Flet Dropdown UI sync.
-#   • Removed async tasks and delays (which caused events to be dropped).
-#   • Added Text-Fallback: If Flet sends the Display Name instead of the ID,
-#     the system will manually match the text to the database record.
-#   • Upgraded traveler_map to store both ID and Text for precise matching.
+# v4.3 — Definitive fix for Flet Mobile Web Dropdown bug.
+#   • Moved scrolling to AlertDialog (scrollable=True) and removed it 
+#     from inner Columns. This prevents the scroll container from 
+#     swallowing tap events on the Dropdown.
+#   • Removed label truncation to ensure text-fallback matching works.
+#   • Added robust value resolution (reads e.control.value, e.data, 
+#     and self.traveler_dd.value).
 # =================================================================================
 
 import flet as ft
@@ -1585,10 +1587,10 @@ class InvoiceDialog:
                 key = f"t_{i}"
                 self.traveler_map[key] = {
                     'id': str(t['id']).strip(),
-                    'text': label[:60]
+                    'text': label
                 }
                 traveler_opts.append(
-                    ft.dropdown.Option(key=key, text=label[:60]))
+                    ft.dropdown.Option(key=key, text=label))
         except Exception:
             pass
 
@@ -1716,7 +1718,6 @@ class InvoiceDialog:
                 self.notes_field,
             ],
             spacing=10,
-            scroll=ft.ScrollMode.AUTO,
         )
 
         self.dialog = ft.AlertDialog(
@@ -1731,6 +1732,7 @@ class InvoiceDialog:
                 self.generate_btn,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
+            scrollable=True,
         )
 
     def load_tax_rates(self):
@@ -1747,10 +1749,11 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Synchronous text fallback to bypass Flet mobile web bug
         val = e.control.value
         if not val:
             val = e.data
+        if not val:
+            val = self.traveler_dd.value
             
         tid = None
         if val:
@@ -1759,7 +1762,7 @@ class InvoiceDialog:
             else:
                 # Flet bug: sometimes sends text instead of key
                 for k, info in self.traveler_map.items():
-                    if info['text'] == str(val):
+                    if info['text'] == str(val) or info['id'] == str(val):
                         tid = info['id']
                         break
                         
@@ -1767,8 +1770,6 @@ class InvoiceDialog:
             self._apply_traveler_change(tid)
 
     def _apply_traveler_change(self, tid):
-        print(f"[DEBUG-INV] Applying traveler change: {tid!r}")
-        
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
@@ -1781,7 +1782,6 @@ class InvoiceDialog:
 
         t = self.db.get_traveler_by_id(tid)
         if not t:
-            print(f"[DEBUG-INV] Traveler {tid} not found.")
             self.traveler_info.value = "⚠️ Traveler not found"
             self.traveler_info.color = ft.Colors.RED_600
             self.batch_label.value = "Batch not found"
@@ -1832,20 +1832,9 @@ class InvoiceDialog:
 
     def _force_ui_update(self):
         try:
-            self.amount_field.update()
-            self.batch_label.update()
-            self.traveler_info.update()
-            self.generate_btn.update()
-        except Exception as ex:
-            print(f"[DEBUG-INV] Control update error: {ex}")
-        try:
             self.dialog.update()
         except Exception as ex:
             print(f"[DEBUG-INV] Dialog update error: {ex}")
-        try:
-            self.page.update()
-        except Exception as ex:
-            print(f"[DEBUG-INV] Page update error: {ex}")
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -2155,7 +2144,7 @@ class InvoiceModifyDialog:
                 self.taxable_lbl,
                 self.rounded_lbl,
                 self.notes_field,
-            ], spacing=10, scroll=ft.ScrollMode.AUTO)
+            ], spacing=10)
 
         self.dialog = ft.AlertDialog(
             modal=True,
@@ -2171,6 +2160,7 @@ class InvoiceModifyDialog:
                           bgcolor="#27ae60", color=ft.Colors.WHITE),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
+            scrollable=True,
         )
 
     def load_data(self):
@@ -2623,10 +2613,10 @@ class ManualInvoiceDialog:
                 key = f"t_{i}"
                 self.traveler_map[key] = {
                     'id': str(t['id']).strip(),
-                    'text': name[:50]
+                    'text': name
                 }
                 topts.append(ft.dropdown.Option(
-                    key=key, text=name[:50]))
+                    key=key, text=name))
         except Exception:
             pass
         self.traveler_dd = ft.Dropdown(
@@ -2760,7 +2750,7 @@ class ManualInvoiceDialog:
                 self.sub_lbl, self.disc_lbl,
                 self.taxable_lbl, self.total_lbl,
             ],
-            spacing=10, scroll=ft.ScrollMode.AUTO)
+            spacing=10)
 
         self.dialog = ft.AlertDialog(
             modal=True,
@@ -2774,22 +2764,23 @@ class ManualInvoiceDialog:
                 self.gen_btn,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
+            scrollable=True,
         )
 
     def on_traveler_change(self, e):
-        # Synchronous text fallback to bypass Flet mobile web bug
         val = e.control.value
         if not val:
             val = e.data
+        if not val:
+            val = self.traveler_dd.value
             
         tid = None
         if val:
             if str(val) in self.traveler_map:
                 tid = self.traveler_map[str(val)]['id']
             else:
-                # Flet bug: sometimes sends text instead of key
                 for k, info in self.traveler_map.items():
-                    if info['text'] == str(val):
+                    if info['text'] == str(val) or info['id'] == str(val):
                         tid = info['id']
                         break
                         
@@ -2832,17 +2823,7 @@ class ManualInvoiceDialog:
 
     def _force_ui_update(self):
         try:
-            self.cust_name.update()
-            self.cust_phone.update()
-            self.cust_email.update()
-            self.package_dd.update()
-            self.dup_warning_lbl.update()
-            self.gen_btn.update()
             self.dialog.update()
-        except Exception:
-            pass
-        try:
-            self.page.update()
         except Exception:
             pass
 
@@ -3027,5 +3008,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v4.2
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.3
 # =================================================================================
