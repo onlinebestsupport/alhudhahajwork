@@ -1,12 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.8 — Auto-fill traveler details & strict duplicate invoice prevention.
-#   • ManualInvoiceDialog: Auto-fills Name, Phone, Email on traveler selection.
-#   • ManualInvoiceDialog: Shows immediate red warning if invoice exists, 
-#     disables the generate button.
-#   • InvoiceDialog: Strictly blocks duplicate invoices (checks if ANY invoice 
-#     exists for the traveler).
+# v1.9 — Auto-fill logic fixed for both Standard and Manual Invoice dialogs.
+#   • InvoiceDialog: Now correctly auto-fills the Base Amount from the 
+#     traveler's assigned batch.
+#   • ManualInvoiceDialog: Now auto-fills Name, Phone, Email, AND selects the 
+#     assigned Package when a traveler is chosen.
 # =================================================================================
 
 import flet as ft
@@ -1720,18 +1719,23 @@ class InvoiceDialog:
         tid = self.traveler_dd.value
         if not tid:
             self.traveler_info.value = "No traveler selected"
+            self.traveler_info.color = ft.Colors.GREY_600
             self.batch_label.value = "Not assigned"
+            self.amount_field.value = "0"
             self.generate_btn.disabled = True
             for c in (self.traveler_info, self.batch_label,
-                      self.generate_btn):
+                      self.amount_field, self.generate_btn):
                 try:
                     c.update()
                 except Exception:
                     pass
+            self.recalculate(None)
             return
+            
         t = self.db.get_traveler_by_id(tid)
         if not t:
             self.traveler_info.value = "⚠️ Not found"
+            self.traveler_info.color = ft.Colors.RED_600
             try:
                 self.traveler_info.update()
             except Exception:
@@ -1751,6 +1755,7 @@ class InvoiceDialog:
                 f"⚠️ {name} already has invoice {inv_no}.")
             self.traveler_info.color = ft.Colors.RED_600
             self.batch_label.value = "Cannot create duplicate"
+            self.amount_field.value = "0"
             self.generate_btn.disabled = True
         else:
             self.traveler_info.value = (
@@ -1759,20 +1764,30 @@ class InvoiceDialog:
             bid = t.get('batch_id')
             if bid:
                 batches = self.db.get_batches()
-                batch = next((b for b in batches if b.get('id') == bid), None)
+                # Ensure strict string comparison
+                batch = next((b for b in batches if str(b.get('id')) == str(bid)), None)
                 if batch:
                     self.batch_label.value = (
                         f"📦 {batch.get('batch_name', '')} | "
                         f"Price: ₹{batch.get('price', 0):,.2f}")
                     self.amount_field.value = str(batch.get('price', 0))
                     self.generate_btn.disabled = False
+                else:
+                    self.batch_label.value = "Batch not found in system"
+                    self.amount_field.value = "0"
+                    self.generate_btn.disabled = True
             else:
                 self.batch_label.value = "No batch assigned"
+                self.amount_field.value = "0"
                 self.generate_btn.disabled = True
                 
         self.recalculate(None)
+        # Force UI updates for all affected elements
         for c in (self.traveler_info, self.batch_label,
-                  self.amount_field, self.generate_btn):
+                  self.amount_field, self.generate_btn,
+                  self.discount_amt_lbl, self.discount_pct_lbl,
+                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
+                  self.breakdown_lbl):
             try:
                 c.update()
             except Exception:
@@ -2706,16 +2721,14 @@ class ManualInvoiceDialog:
             self.cust_name.value = ""
             self.cust_phone.value = ""
             self.cust_email.value = ""
+            self.package_dd.value = ""
             self.dup_warning_lbl.value = ""
             self.gen_btn.disabled = False
-            try:
-                self.cust_name.update()
-                self.cust_phone.update()
-                self.cust_email.update()
-                self.dup_warning_lbl.update()
-                self.gen_btn.update()
-            except Exception:
-                pass
+            for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             return
         
         traveler = self.db.get_traveler_by_id(tid)
@@ -2724,6 +2737,13 @@ class ManualInvoiceDialog:
             self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
             self.cust_phone.value = traveler.get('mobile', '')
             self.cust_email.value = traveler.get('email', '')
+            
+            # Auto-select Batch
+            bid = traveler.get('batch_id')
+            if bid:
+                self.package_dd.value = str(bid)
+            else:
+                self.package_dd.value = ""
 
             # Duplicate Invoice Check
             existing_invoices = self.db.get_invoices(traveler_id=tid)
@@ -2735,16 +2755,11 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
-        try: self.cust_name.update()
-        except: pass
-        try: self.cust_phone.update()
-        except: pass
-        try: self.cust_email.update()
-        except: pass
-        try: self.dup_warning_lbl.update()
-        except: pass
-        try: self.gen_btn.update()
-        except: pass
+        for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def refresh_items(self):
         self.items_table.rows.clear()
@@ -2905,5 +2920,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.8
+# SECTION 14 END (FLET 1.0.0 VERSION) — v1.9
 # =================================================================================
