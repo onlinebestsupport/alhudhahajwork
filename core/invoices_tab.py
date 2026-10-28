@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.2 — Final auto-fill fix.
-#   • Forces page.update() on modal dialogs to ensure Base Amount and fields 
-#     render instantly.
-#   • Casts batch price to float before applying to TextField.
+# v2.0 — Comprehensive Accounting Fixes
+#   • Added _get_effective_status for accurate Overdue filtering.
+#   • Locked financial fields in InvoiceModifyDialog if status is Paid.
+#   • Fixed Unmark-Paid cascade (marks payment as refunded).
+#   • Removed disabled manual date field from ManualInvoiceDialog.
 # =================================================================================
 
 import flet as ft
@@ -15,6 +16,7 @@ import base64
 import io
 from pathlib import Path
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import pandas as pd
 
 from core.helpers import (
@@ -22,13 +24,33 @@ from core.helpers import (
     number_to_words_indian,
     format_currency_indian,
     send_file_to_user,
-    round_as_per_rules,
 )
 from core.settings_manager import SettingsManager
 from core.company_settings_dialog import CompanySettingsDialog
 
 
 TYPING_GUARD_SECONDS = 3.0
+
+
+def _money(value):
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0.00")
+
+
+def _rate(value):
+    try:
+        return Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0.0000")
+
+
+def _round_rule(value):
+    value = Decimal(str(value))
+    floor_value = value.to_integral_value(rounding="ROUND_FLOOR")
+    return (value.to_integral_value(rounding="ROUND_CEILING")
+            if value - floor_value >= Decimal("0.50") else floor_value)
 
 
 # =================================================================================
@@ -66,7 +88,7 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.0 — Helpers & Safe Updates
+    # 14.1.0 — Helpers
     # =============================================================================
     def _get_effective_status(self, inv):
         status = str(inv.get('status', 'pending')).lower()
@@ -104,11 +126,11 @@ class InvoicesTab:
     def setup_ui(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst_rate = float(tax.get('gst_percentage', 18))
-            tcs_rate = float(tax.get('tcs_percentage', 0.1))
+            gst_rate = _rate(tax.get('gst_percentage', 18))
+            tcs_rate = _rate(tax.get('tcs_percentage', 0.1))
         except Exception:
-            gst_rate = 18.0
-            tcs_rate = 0.1
+            gst_rate = Decimal('18')
+            tcs_rate = Decimal('0.1')
 
         self.tax_info_label = ft.Text(
             f"GST {gst_rate}%  |  TCS {tcs_rate}%",
@@ -352,16 +374,16 @@ class InvoicesTab:
     # =============================================================================
     # 14.1.2 — Helpers
     # =============================================================================
-    def safe_float(self, value, default=0.0):
+    def safe_float(self, value, default=Decimal("0")):
+        # Backward-compatible method name; all financial values are Decimal.
         if value is None:
             return default
-        if isinstance(value, float):
-            if value != value or str(value) == 'nan':
-                return default
-            return float(value)
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "none", "nat", "null"}:
+            return default
         try:
-            return float(value)
-        except (ValueError, TypeError):
+            return Decimal(text)
+        except (InvalidOperation, ValueError, TypeError):
             return default
 
     def safe_str(self, value, default=''):
@@ -394,11 +416,11 @@ class InvoicesTab:
     def update_tax_display(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst_rate = float(tax.get('gst_percentage', 18))
-            tcs_rate = float(tax.get('tcs_percentage', 0.1))
+            gst_rate = _rate(tax.get('gst_percentage', 18))
+            tcs_rate = _rate(tax.get('tcs_percentage', 0.1))
         except Exception:
-            gst_rate = 18.0
-            tcs_rate = 0.1
+            gst_rate = Decimal('18')
+            tcs_rate = Decimal('0.1')
         self.tax_info_label.value = (
             f"GST {gst_rate}%  |  TCS {tcs_rate}%")
         try:
@@ -424,10 +446,10 @@ class InvoicesTab:
                 tid = t.get('id')
                 if tid:
                     batch_id = t.get('batch_id')
-                    bp = 0
+                    bp = Decimal('0')
                     bn = 'N/A'
                     if batch_id and batch_id in self.batches:
-                        bp = float(self.batches[batch_id].get('price', 0) or 0)
+                        bp = _money(self.batches[batch_id].get('price', 0) or 0)
                         bn = self.batches[batch_id].get('batch_name', 'N/A')
                     self.traveler_details_cache[tid] = {
                         'name': (f"{t.get('first_name', '')} "
@@ -445,7 +467,7 @@ class InvoicesTab:
                 if tid and status == 'completed':
                     self.traveler_paid[tid] = (
                         self.traveler_paid.get(tid, 0)
-                        + float(p.get('amount', 0) or 0))
+                        + _money(p.get('amount', 0) or 0))
 
             print(f"[INVOICES] loaded {len(self.invoices)} invoices, "
                   f"{len(self.travelers)} travelers")
@@ -488,7 +510,6 @@ class InvoicesTab:
                 inv.get('rounded_total', total))
             due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
             
-            # Get effective status
             eff_status = self._get_effective_status(inv)
             display_status = eff_status.upper()
             status_color = ("#27ae60" if eff_status == "paid"
@@ -503,7 +524,7 @@ class InvoicesTab:
             paid = self.traveler_paid.get(tid, 0)
             
             # Prevent negative package pending
-            pkg_pending = max(0.0, bp - paid)
+            pkg_pending = max(Decimal('0.00'), bp - paid)
             
             if bp > 0:
                 if pkg_pending <= 0:
@@ -511,7 +532,7 @@ class InvoicesTab:
                     pkg_color = "#27ae60"
                 else:
                     pkg_txt = f"₹{pkg_pending:,.0f}"
-                    pkg_color = ("#e67e22" if pkg_pending < bp * 0.5
+                    pkg_color = ("#e67e22" if pkg_pending < bp * Decimal('0.5')
                                  else "#e74c3c")
             else:
                 pkg_txt = "N/A"
@@ -686,15 +707,15 @@ class InvoicesTab:
 
         def _short(v):
             try:
-                n = float(v)
+                n = Decimal(str(v))
             except Exception:
                 return "₹0"
             if n >= 10000000:
-                return f"₹{n/10000000:.2f}Cr"
+                return f"₹{n/Decimal('10000000'):.2f}Cr"
             if n >= 100000:
-                return f"₹{n/100000:.2f}L"
+                return f"₹{n/Decimal('100000'):.2f}L"
             if n >= 1000:
-                return f"₹{n/1000:.1f}K"
+                return f"₹{n/Decimal('1000'):.1f}K"
             return f"₹{n:,.0f}"
 
         self.stat_labels['total_invoices'].value = str(total_inv)
@@ -1708,29 +1729,31 @@ class InvoiceDialog:
     def load_tax_rates(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst = float(tax.get('gst_percentage', 18))
-            tcs = float(tax.get('tcs_percentage', 0.1))
+            gst = _rate(tax.get('gst_percentage', 18))
+            tcs = _rate(tax.get('tcs_percentage', 0.1))
         except Exception:
-            gst = 18.0
-            tcs = 0.1
+            gst = Decimal('18')
+            tcs = Decimal('0.1')
         self.gst_dd.value = (
             str(int(gst)) if int(gst) in [0, 5, 12, 18, 28] else "18")
         self.tcs_field.value = str(tcs)
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        tid = getattr(e, "control", self.traveler_dd).value
+        tid = self.traveler_dd.value
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
             self.batch_label.value = "Not assigned"
             self.amount_field.value = "0"
             self.generate_btn.disabled = True
+            for c in (self.traveler_info, self.batch_label,
+                      self.amount_field, self.generate_btn):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             self.recalculate(None)
-            try:
-                self.dialog.update()
-            except Exception:
-                pass
             return
             
         t = self.db.get_traveler_by_id(tid)
@@ -1738,7 +1761,7 @@ class InvoiceDialog:
             self.traveler_info.value = "⚠️ Not found"
             self.traveler_info.color = ft.Colors.RED_600
             try:
-                self.dialog.update()
+                self.traveler_info.update()
             except Exception:
                 pass
             return
@@ -1771,12 +1794,7 @@ class InvoiceDialog:
                     self.batch_label.value = (
                         f"📦 {batch.get('batch_name', '')} | "
                         f"Price: ₹{batch.get('price', 0):,.2f}")
-                    # Cast to float explicitly to avoid any string issues
-                    try:
-                        price_val = float(batch.get('price', 0))
-                    except Exception:
-                        price_val = 0.0
-                    self.amount_field.value = str(price_val)
+                    self.amount_field.value = str(batch.get('price', 0))
                     self.generate_btn.disabled = False
                 else:
                     self.batch_label.value = "Batch not found in system"
@@ -1788,10 +1806,16 @@ class InvoiceDialog:
                 self.generate_btn.disabled = True
                 
         self.recalculate(None)
-        try:
-            self.dialog.update()
-        except Exception:
-            pass
+        # Force UI updates for all affected elements
+        for c in (self.traveler_info, self.batch_label,
+                  self.amount_field, self.generate_btn,
+                  self.discount_amt_lbl, self.discount_pct_lbl,
+                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
+                  self.breakdown_lbl):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -1800,52 +1824,52 @@ class InvoiceDialog:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
         try:
-            self.dialog.update()
+            self.discount_value.update()
         except Exception:
             pass
         self.recalculate(None)
 
     def recalculate(self, e):
         try:
-            amount = float(self.amount_field.value or 0)
+            amount = _money(self.amount_field.value or 0)
         except (ValueError, TypeError):
-            amount = 0
+            amount = Decimal('0.00')
         try:
-            dval = float(self.discount_value.value or 0)
+            dval = _rate(self.discount_value.value or 0)
         except (ValueError, TypeError):
-            dval = 0
+            dval = Decimal('0.0000')
         try:
-            gst = float(self.gst_dd.value or 0)
+            gst = _rate(self.gst_dd.value or 0)
         except (ValueError, TypeError):
-            gst = 0
+            gst = Decimal('0.0000')
         try:
-            tcs = float(self.tcs_field.value or 0)
+            tcs = _rate(self.tcs_field.value or 0)
         except (ValueError, TypeError):
-            tcs = 0
+            tcs = Decimal('0.0000')
 
-        if amount < 0: amount = 0
-        if gst < 0: gst = 0
-        if tcs < 0: tcs = 0
-        if dval < 0: dval = 0
+        # Strict Validation for negatives
+        if amount < 0: amount = Decimal('0.00')
+        if gst < 0: gst = Decimal('0.0000')
+        if tcs < 0: tcs = Decimal('0.0000')
+        if dval < 0: dval = Decimal('0.0000')
 
-        # Normalize discount
         if self.discount_type_dd.value == "pct":
             disc_pct = dval
-            disc_amt = amount * (disc_pct / 100.0)
+            disc_amt = amount * disc_pct / Decimal('100')
         else:
             disc_amt = dval
-            disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
+            disc_pct = (disc_amt / amount * Decimal('100')) if amount > 0 else Decimal('0')
 
-        # Cap and recalculate percentage for consistency
-        disc_amt = min(disc_amt, amount)
-        disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
+        # Cap discount at 100%
+        if disc_pct > Decimal('100'): disc_pct = Decimal('100')
+        if disc_amt > amount: disc_amt = amount
 
         taxable = amount - disc_amt
-        gst_amt = taxable * (gst / 100.0)
+        gst_amt = taxable * gst / Decimal('100')
         taxable_with_gst = taxable + gst_amt
-        tcs_amt = taxable_with_gst * (tcs / 100.0)
+        tcs_amt = taxable_with_gst * tcs / Decimal('100')
         total = taxable_with_gst + tcs_amt
-        rounded = round_as_per_rules(total)
+        rounded = _round_rule(total)
 
         self._computed_discount_pct = disc_pct
         self._computed_discount_amount = disc_amt
@@ -1887,22 +1911,22 @@ class InvoiceDialog:
             return
 
         try:
-            amount = float(self.amount_field.value or 0)
+            amount = _money(self.amount_field.value or 0)
         except (ValueError, TypeError):
-            amount = 0
+            amount = Decimal('0.00')
         if amount <= 0:
             self._snack("⚠️ Amount must be greater than zero")
             return
             
         try:
-            gst = float(self.gst_dd.value or 18)
-            tcs = float(self.tcs_field.value or 0.1)
+            gst = _rate(self.gst_dd.value or 18)
+            tcs = _rate(self.tcs_field.value or 0.1)
             if gst < 0 or tcs < 0:
                 self._snack("⚠️ GST/TCS cannot be negative")
                 return
         except Exception:
-            gst = 18
-            tcs = 0.1
+            gst = Decimal('18')
+            tcs = Decimal('0.1')
 
         is_pct = self.discount_type_dd.value == "pct"
 
@@ -1915,7 +1939,7 @@ class InvoiceDialog:
             else:
                 inv_id = self.db.generate_invoice(
                     tid, bid, amount, gst, tcs,
-                    discount_percentage=0.0,
+                    discount_percentage=Decimal('0'),
                     discount_amount=self._computed_discount_amount)
             try:
                 self.db.log_activity(
@@ -2087,8 +2111,6 @@ class InvoiceModifyDialog:
             controls=[
                 ft.Text(f"Invoice: {self.invoice.get('invoice_no', '')}",
                         size=13, weight=ft.FontWeight.BOLD),
-                ft.Text("⚠️ Locked because this invoice is marked as PAID." if is_paid else "", 
-                        color=ft.Colors.RED_600, size=11, weight=ft.FontWeight.BOLD),
                 self.amount_field,
                 self.disc_type_dd,
                 self.disc_value,
@@ -2125,7 +2147,7 @@ class InvoiceModifyDialog:
         existing_pct = self._f(inv.get('discount_percentage', 0))
         existing_amt = self._f(inv.get('discount_amount', 0))
 
-        use_amt = (abs(existing_pct - round(existing_pct, 2)) > 0.001
+        use_amt = (abs(existing_pct - round(existing_pct, 2)) > Decimal('0.001')
                    and existing_amt > 0)
         if use_amt:
             self.disc_type_dd.value = "amt"
@@ -2140,55 +2162,52 @@ class InvoiceModifyDialog:
         self.notes_field.value = str(inv.get('notes', ''))
         self.recalc(None)
 
-    def _f(self, v, d=0.0):
+    def _f(self, v, d=Decimal('0')):
         try:
-            f = float(v)
-            if f != f:
-                return d
-            return f
-        except (ValueError, TypeError):
+            return Decimal(str(v))
+        except (InvalidOperation, ValueError, TypeError):
             return d
 
     def recalc(self, e=None):
         try:
-            amount = float(self.amount_field.value or 0)
+            amount = _money(self.amount_field.value or 0)
         except (ValueError, TypeError):
-            amount = 0
+            amount = Decimal('0.00')
         try:
-            dval = float(self.disc_value.value or 0)
+            dval = _rate(self.disc_value.value or 0)
         except (ValueError, TypeError):
-            dval = 0
+            dval = Decimal('0.0000')
         try:
-            gst = float(self.gst_dd.value or 0)
+            gst = _rate(self.gst_dd.value or 0)
         except (ValueError, TypeError):
-            gst = 0
+            gst = Decimal('0.0000')
         try:
-            tcs = float(self.tcs_field.value or 0)
+            tcs = _rate(self.tcs_field.value or 0)
         except (ValueError, TypeError):
-            tcs = 0
+            tcs = Decimal('0.0000')
 
         # Strict validation
-        if amount < 0: amount = 0
-        if gst < 0: gst = 0
-        if tcs < 0: tcs = 0
-        if dval < 0: dval = 0
+        if amount < 0: amount = Decimal('0.00')
+        if gst < 0: gst = Decimal('0.0000')
+        if tcs < 0: tcs = Decimal('0.0000')
+        if dval < 0: dval = Decimal('0.0000')
 
         if self.disc_type_dd.value == "pct":
             disc_pct = dval
-            disc_amt = amount * (disc_pct / 100.0)
+            disc_amt = amount * disc_pct / Decimal('100')
         else:
             disc_amt = dval
-            disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
+            disc_pct = (disc_amt / amount * Decimal('100')) if amount > 0 else Decimal('0')
 
-        disc_amt = min(disc_amt, amount)
-        disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
+        if disc_pct > Decimal('100'): disc_pct = Decimal('100')
+        if disc_amt > amount: disc_amt = amount
 
         taxable = amount - disc_amt
-        gst_amt = taxable * (gst / 100.0)
+        gst_amt = taxable * gst / Decimal('100')
         taxable_with_gst = taxable + gst_amt
-        tcs_amt = taxable_with_gst * (tcs / 100.0)
+        tcs_amt = taxable_with_gst * tcs / Decimal('100')
         total = taxable_with_gst + tcs_amt
-        rounded = round_as_per_rules(total)
+        rounded = _round_rule(total)
 
         self._computed = {
             'discount_pct': disc_pct, 'discount_amt': disc_amt,
@@ -2223,7 +2242,7 @@ class InvoiceModifyDialog:
             old_status = str(self.invoice.get('status', 'pending')).lower()
 
             update = {
-                'amount': float(self.amount_field.value or 0),
+                'amount': _money(self.amount_field.value or 0),
                 'discount_percentage': c['discount_pct'],
                 'discount_amount': c['discount_amt'],
                 'taxable_value': c['taxable'],
@@ -2292,22 +2311,22 @@ class InvoiceModifyDialog:
 
             if existing:
                 try:
-                    cur = float(existing.get('amount', 0) or 0)
+                    cur = _money(existing.get('amount', 0) or 0)
                 except Exception:
-                    cur = 0.0
-                if abs(cur - float(amount)) > 0.01:
+                    cur = Decimal('0.00')
+                if abs(cur - _money(amount)) > Decimal('0.01'):
                     if hasattr(self.db, "update_payment"):
                         self.db.update_payment(
                             existing['id'],
                             {
-                                "amount": float(amount),
+                                "amount": _money(amount),
                                 "notes": "Auto-synced via invoice status",
                                 "status": "completed"
                             })
                     else:
                         self.db.payments.loc[
                             self.db.payments['id'] == existing['id'],
-                            'amount'] = float(amount)
+                            'amount'] = _money(amount)
                         self.db.payments.loc[
                             self.db.payments['id'] == existing['id'],
                             'status'] = 'completed'
@@ -2325,7 +2344,7 @@ class InvoiceModifyDialog:
                     'traveler_id': traveler_id,
                     'batch_id': batch_id,
                     'invoice_id': invoice_id,
-                    'amount': float(amount),
+                    'amount': _money(amount),
                     'payment_date': datetime.now().strftime("%Y-%m-%d"),
                     'payment_method': 'Auto (invoice status)',
                     'notes': 'Auto-created when invoice marked paid',
@@ -2415,11 +2434,10 @@ class InvoiceDetailsDialog:
             return f"{s[8:10]}/{s[5:7]}/{s[0:4]}"
         return s[:10]
 
-    def _f(self, v, d=0.0):
+    def _f(self, v, d=Decimal('0')):
         try:
-            f = float(v)
-            return d if f != f else f
-        except (ValueError, TypeError):
+            return Decimal(str(v))
+        except (InvalidOperation, ValueError, TypeError):
             return d
 
     def setup_ui(self):
@@ -2642,7 +2660,7 @@ class ManualInvoiceDialog:
                         break
                 if not batch:
                     return
-                rate = float(batch.get('price', 0) or 0)
+                rate = _money(batch.get('price', 0) or 0)
                 self.item_rows.append({
                     'item': batch.get('batch_name', 'Package'),
                     'hsn': '998555',
@@ -2721,7 +2739,7 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        tid = getattr(e, "control", self.traveler_dd).value
+        tid = self.traveler_dd.value
         if not tid:
             self.cust_name.value = ""
             self.cust_phone.value = ""
@@ -2729,10 +2747,11 @@ class ManualInvoiceDialog:
             self.package_dd.value = ""
             self.dup_warning_lbl.value = ""
             self.gen_btn.disabled = False
-            try:
-                self.dialog.update()
-            except Exception:
-                pass
+            for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
+                try:
+                    c.update()
+                except Exception:
+                    pass
             return
         
         traveler = self.db.get_traveler_by_id(tid)
@@ -2759,33 +2778,48 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
+        for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
+            try:
+                c.update()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _money(value):
         try:
-            self.dialog.update()
-        except Exception:
-            pass
+            return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, TypeError):
+            return Decimal("0.00")
+
+    @staticmethod
+    def _round_rule(value):
+        value = Decimal(str(value))
+        floor_value = value.to_integral_value(rounding='ROUND_FLOOR')
+        return (value.to_integral_value(rounding='ROUND_CEILING')
+                if value - floor_value >= Decimal("0.50") else floor_value)
 
     def refresh_items(self):
         self.items_table.rows.clear()
         for i, item in enumerate(self.item_rows):
             rate = item['rate']
             qty = item['qty']
-            amount = rate * qty
-            disc_amt = amount * (item['discount_percent'] / 100)
+            amount = rate * Decimal(str(qty))
+            disc_amt = amount * (Decimal(str(item['discount_percent'])) / Decimal('100'))
             taxable = amount - disc_amt
             
             tax = self.settings_manager.get_tax_settings()
             try:
-                gst = float(tax.get('gst_percentage', 18))
+                gst = _rate(tax.get('gst_percentage', 18))
             except Exception:
-                gst = 18
+                gst = Decimal('18')
             try:
-                tcs = float(tax.get('tcs_percentage', 0.1))
+                tcs = _rate(tax.get('tcs_percentage', 0.1))
             except Exception:
-                tcs = 0.1
+                tcs = Decimal('0.1')
 
-            gst_amt = taxable * (gst / 100)
+            gst_amt = taxable * gst / Decimal('100')
             taxable_with_gst = taxable + gst_amt
-            tcs_amt = taxable_with_gst * (tcs / 100)
+            tcs_amt = taxable_with_gst * tcs / Decimal('100')
             total = taxable_with_gst + tcs_amt
 
             def rm(idx=i):
@@ -2813,21 +2847,21 @@ class ManualInvoiceDialog:
 
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst = float(tax.get('gst_percentage', 18))
-            tcs = float(tax.get('tcs_percentage', 0.1))
+            gst = _rate(tax.get('gst_percentage', 18))
+            tcs = _rate(tax.get('tcs_percentage', 0.1))
         except Exception:
-            gst = 18
-            tcs = 0.1
+            gst = Decimal('18')
+            tcs = Decimal('0.1')
 
-        sub = sum(i['rate'] * i['qty'] for i in self.item_rows)
-        disc = sum(i['rate'] * i['qty'] * (i['discount_percent'] / 100)
-                   for i in self.item_rows)
+        sub = sum((i['rate'] * Decimal(str(i['qty'])) for i in self.item_rows), Decimal('0.00'))
+        disc = sum((i['rate'] * Decimal(str(i['qty'])) * (Decimal(str(i['discount_percent'])) / Decimal('100'))
+                   for i in self.item_rows), Decimal('0.00'))
         taxable = sub - disc
-        gst_amt = taxable * (gst / 100)
+        gst_amt = taxable * gst / Decimal('100')
         taxable_with_gst = taxable + gst_amt
-        tcs_amt = taxable_with_gst * (tcs / 100)
+        tcs_amt = taxable_with_gst * tcs / Decimal('100')
         total = taxable_with_gst + tcs_amt
-        rounded = round_as_per_rules(total)
+        rounded = _round_rule(total)
 
         self.sub_lbl.value = f"Package Cost: ₹{sub:,.2f}"
         self.disc_lbl.value = f"Discount: ₹{disc:,.2f}"
@@ -2883,16 +2917,16 @@ class ManualInvoiceDialog:
                 tid = self.db.add_traveler(traveler_data)
 
             tax = self.settings_manager.get_tax_settings()
-            gst = float(tax.get('gst_percentage', 18))
-            tcs = float(tax.get('tcs_percentage', 0.1))
+            gst = _rate(tax.get('gst_percentage', 18))
+            tcs = _rate(tax.get('tcs_percentage', 0.1))
 
-            sub = sum(i['rate'] * i['qty'] for i in self.item_rows)
-            disc = sum(i['rate'] * i['qty'] * (i['discount_percent'] / 100)
-                       for i in self.item_rows)
+            sub = sum((i['rate'] * Decimal(str(i['qty'])) for i in self.item_rows), Decimal('0.00'))
+            disc = sum((i['rate'] * Decimal(str(i['qty'])) * (Decimal(str(i['discount_percent'])) / Decimal('100'))
+                       for i in self.item_rows), Decimal('0.00'))
 
             inv_id = self.db.generate_invoice(
                 tid, bid, sub, gst, tcs,
-                discount_percentage=0.0,
+                discount_percentage=Decimal('0'),
                 discount_amount=disc)
 
             try:
@@ -2923,5 +2957,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.2
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.0
 # =================================================================================
