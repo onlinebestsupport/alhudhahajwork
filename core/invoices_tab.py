@@ -1,11 +1,13 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.9 — Auto-fill logic fixed for both Standard and Manual Invoice dialogs.
-#   • InvoiceDialog: Now correctly auto-fills the Base Amount from the 
-#     traveler's assigned batch.
-#   • ManualInvoiceDialog: Now auto-fills Name, Phone, Email, AND selects the 
-#     assigned Package when a traveler is chosen.
+# v2.0 — Comprehensive Accounting Fixes based on Manus Review.
+#   • Fixed Unmark-Paid cascade (marks payment as refunded instead of deleting).
+#   • Added effective Overdue status filtering.
+#   • Locked financial fields (Amount, Discount, Tax) on Paid invoices.
+#   • Strict rejection of negative amounts/discounts.
+#   • Normalized discount percentage calculation.
+#   • Removed manual invoice date field (DB uses today's date).
 # =================================================================================
 
 import flet as ft
@@ -67,8 +69,20 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.0 — _safe_update / _update_table_only
+    # 14.1.0 — Helpers & Safe Updates
     # =============================================================================
+    def _get_effective_status(self, inv):
+        status = str(inv.get('status', 'pending')).lower()
+        due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
+        if status == 'pending' and due_date:
+            try:
+                due_dt = datetime.strptime(due_date, "%d/%m/%Y").date()
+                if datetime.now().date() > due_dt:
+                    return 'overdue'
+            except Exception:
+                pass
+        return status
+
     def _safe_update(self):
         if time.time() < self._typing_until:
             print("[INVOICES] _safe_update SKIPPED (typing)")
@@ -477,22 +491,13 @@ class InvoicesTab:
                 inv.get('rounded_total', total))
             due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
             
-            # Handle Effective Overdue Status
-            db_status = self.safe_str(inv.get('status', 'pending')).lower()
-            display_status = db_status.upper()
-            status_color = ("#27ae60" if db_status == "paid"
-                            else "#f39c12" if db_status == "pending"
-                            else "#e74c3c" if db_status == "overdue"
+            # Get effective status
+            eff_status = self._get_effective_status(inv)
+            display_status = eff_status.upper()
+            status_color = ("#27ae60" if eff_status == "paid"
+                            else "#f39c12" if eff_status == "pending"
+                            else "#e74c3c" if eff_status == "overdue"
                             else "#95a5a6")
-            
-            if db_status == "pending" and due_date:
-                try:
-                    due_dt = datetime.strptime(due_date, "%d/%m/%Y").date()
-                    if datetime.now().date() > due_dt:
-                        display_status = "OVERDUE"
-                        status_color = "#e74c3c"
-                except Exception:
-                    pass
 
             tid = inv.get('traveler_id', '')
             tdet = self.traveler_details_cache.get(
@@ -663,10 +668,10 @@ class InvoicesTab:
         
         pending = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                       for i in self.invoices
-                      if i.get('status') == 'pending')
+                      if self._get_effective_status(i) == 'pending')
         paid = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                    for i in self.invoices
-                   if i.get('status') == 'paid')
+                   if self._get_effective_status(i) == 'paid')
         discount = sum(self.safe_float(i.get('discount_amount', 0))
                        for i in self.invoices)
         gst = sum(self.safe_float(i.get('gst_amount', 0))
@@ -712,9 +717,10 @@ class InvoicesTab:
         search = (self.search_input.value or "").lower().strip() \
             if self.search_input else ""
         filtered = self.invoices
+        
         if status != "All":
-            filtered = [i for i in filtered
-                        if str(i.get('status', '')) == status]
+            filtered = [i for i in filtered if self._get_effective_status(i) == status]
+            
         if search:
             filtered = [
                 i for i in filtered
@@ -1823,12 +1829,12 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             tcs = 0
 
-        # Strict Validation for negatives
         if amount < 0: amount = 0
         if gst < 0: gst = 0
         if tcs < 0: tcs = 0
         if dval < 0: dval = 0
 
+        # Normalize discount
         if self.discount_type_dd.value == "pct":
             disc_pct = dval
             disc_amt = amount * (disc_pct / 100.0)
@@ -1836,9 +1842,9 @@ class InvoiceDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
-        # Cap discount at 100%
-        if disc_pct > 100: disc_pct = 100
-        if disc_amt > amount: disc_amt = amount
+        # Cap and recalculate percentage for consistency
+        disc_amt = min(disc_amt, amount)
+        disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
         taxable = amount - disc_amt
         gst_amt = taxable * (gst / 100.0)
@@ -1993,8 +1999,11 @@ class InvoiceModifyDialog:
         return field
 
     def setup_ui(self):
+        # Determine if fields should be locked
+        is_paid = str(self.invoice.get('status', '')).lower() == 'paid'
+
         self.amount_field = self._field(
-            label="Base Amount (₹)", height=48, text_size=12)
+            label="Base Amount (₹)", height=48, text_size=12, disabled=is_paid)
 
         def _amt_change(e, _f=self.amount_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2014,12 +2023,12 @@ class InvoiceModifyDialog:
             options=[
                 ft.dropdown.Option(key="pct", text="Percentage (%)"),
                 ft.dropdown.Option(key="amt", text="Fixed Amount (₹)"),
-            ], value="pct", height=48, text_size=12)
+            ], value="pct", height=48, text_size=12, disabled=is_paid)
         self.disc_type_dd.on_change = self.recalc
 
         self.disc_value = self._field(
             label="Discount Value", value="0",
-            height=48, text_size=12)
+            height=48, text_size=12, disabled=is_paid)
 
         def _dv_change(e, _f=self.disc_value):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2038,12 +2047,12 @@ class InvoiceModifyDialog:
             label="GST %",
             options=[ft.dropdown.Option(x) for x in
                      ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12)
+            value="18", height=48, text_size=12, disabled=is_paid)
         self.gst_dd.on_change = self.recalc
 
         self.tcs_field = self._field(
             label="TCS %", value="0.1",
-            height=48, text_size=12)
+            height=48, text_size=12, disabled=is_paid)
 
         def _tcs_change(e, _f=self.tcs_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2084,6 +2093,8 @@ class InvoiceModifyDialog:
             controls=[
                 ft.Text(f"Invoice: {self.invoice.get('invoice_no', '')}",
                         size=13, weight=ft.FontWeight.BOLD),
+                ft.Text("⚠️ Locked because this invoice is marked as PAID." if is_paid else "", 
+                        color=ft.Colors.RED_600, size=11, weight=ft.FontWeight.BOLD),
                 self.amount_field,
                 self.disc_type_dd,
                 self.disc_value,
@@ -2175,8 +2186,8 @@ class InvoiceModifyDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
-        if disc_pct > 100: disc_pct = 100
-        if disc_amt > amount: disc_amt = amount
+        disc_amt = min(disc_amt, amount)
+        disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
         taxable = amount - disc_amt
         gst_amt = taxable * (gst / 100.0)
@@ -2362,12 +2373,21 @@ class InvoiceModifyDialog:
             if not target:
                 return
 
-            if hasattr(self.db, "delete_payment"):
-                self.db.delete_payment(target['id'])
+            # FIX: Mark as refunded instead of deleting to avoid receipt deletion block
+            if hasattr(self.db, "update_payment"):
+                self.db.update_payment(
+                    target['id'],
+                    {
+                        "status": "refunded",
+                        "notes": "Auto-voided: Invoice marked unpaid"
+                    }
+                )
             else:
-                self.db.payments = self.db.payments[
-                    self.db.payments['id'] != target['id']]
+                self.db.payments.loc[
+                    self.db.payments['id'] == target['id'],
+                    'status'] = 'refunded'
                 self.db._save_df(self.db.payments, "payments.csv")
+                
         except Exception as ex:
             print(f"[cascade_unmark_paid] {ex}")
 
@@ -2515,7 +2535,6 @@ class ManualInvoiceDialog:
         self.cust_email = None
         self.traveler_dd = None
         self.package_dd = None
-        self.invoice_date = None
         self.items_table = None
         self.item_rows = []
 
@@ -2580,12 +2599,6 @@ class ManualInvoiceDialog:
         self.package_dd = ft.Dropdown(
             label="Package", options=bopts, value="",
             height=48, text_size=12)
-
-        self.invoice_date = self._field(
-            label="Invoice Date",
-            value=datetime.now().strftime("%Y-%m-%d"),
-            height=48, text_size=12, disabled=True,
-            tooltip="Database core uses today's date.")
 
         self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
@@ -2666,8 +2679,6 @@ class ManualInvoiceDialog:
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ft.ResponsiveRow(
                     controls=[
-                        ft.Container(content=self.invoice_date,
-                                     col={"xs": 12, "sm": 6, "md": 6}),
                         ft.Container(content=self.traveler_dd,
                                      col={"xs": 12, "sm": 6, "md": 6}),
                     ], spacing=8, run_spacing=8),
@@ -2920,5 +2931,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.9
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.0
 # =================================================================================
