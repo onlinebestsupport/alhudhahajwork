@@ -2,27 +2,8 @@
 # main.py — ALHUDHA HAJ TRAVEL SYSTEM — MAIN APPLICATION ENTRY POINT
 # =================================================================================
 # v2.32 — Folder upload can now target a specific traveler
-#         and fixed inline document viewing headers.
-#
-#   CHANGES:
-#     • §21.5.8d — /api/admin/traveler/upload-folder-html now accepts an
-#       optional `traveler_id` Form field. When supplied (upload launched from
-#       a specific traveler row in the Data Admin UI), all extracted files are
-#       written directly into /app/data/documents/<traveler_id>/... instead of
-#       a folder named after the uploaded directory. When omitted (generic
-#       top-level upload button), the legacy behaviour is preserved and the
-#       root folder name from the uploaded directory is used.
-#     • §21.5.8e — Fixed /api/admin/view-doc to use `content_disposition_type="inline"`
-#       ensuring PDFs and images render directly in the browser tab.
-#
-#   PREVIOUS (v2.31):
-#     • §21.5.8e — Added /api/admin/view-doc to serve files inline.
 # =================================================================================
 
-
-# =================================================================================
-# 21.1 — IMPORTS & CONFIGURATION
-# =================================================================================
 import flet as ft
 import flet.fastapi as flet_fastapi
 from fastapi import (FastAPI, HTTPException, Request, File,
@@ -105,7 +86,6 @@ except Exception as _sec_err:
     upload_limiter = _NoOpLimiter()
     api_limiter = _NoOpLimiter()
 
-
 # =================================================================================
 # 21.1.1 — Platform detection
 # =================================================================================
@@ -187,9 +167,8 @@ def _json_safe(obj):
     except Exception:
         return None
 
-
 # =================================================================================
-# 21.1.5 — PAGE.UPDATE() MONKEY PATCH  (DISABLED in v2.29)
+# 21.1.5 — PAGE.UPDATE() MONKEY PATCH  (DISABLED)
 # =================================================================================
 _PATCH_INSTALLED = False
 _boot_log("Page.update() patch DISABLED (Flet 1.0.4 native)")
@@ -278,7 +257,6 @@ def _install_signal_handlers():
         signal.signal(signal.SIGINT, _handler)
     except Exception as e:
         _boot_log(f"Could not install signal handlers: {e}")
-
 
 # =================================================================================
 # 21.2.5 — ADMIN SESSION HELPERS
