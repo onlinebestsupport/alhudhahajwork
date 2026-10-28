@@ -1,19 +1,15 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.4 — Typing-wipe fix (same pattern as users/batches/payments/receipts/reports)
-#   • Added import time
-#   • Added self._typing_until guard + _safe_update() helper to every class
-#   • update_tax_display() → leaf update on tax_info_label
-#   • refresh() → _safe_update() (skips if typing)
-#   • _select_invoice() → leaf updates only
-#   • apply_filters() → leaf update on table
-#   • _snack() no longer calls page.update()
-#   • InvoiceDialog / InvoiceModifyDialog / ManualInvoiceDialog:
-#       - TextFields now use _field() helper with value sync
-#       - recalculate() uses leaf-only updates
-#       - on_traveler_change / on_disc_type_change → leaf updates
-#   • All v1.3 features preserved
+# v1.6 — Accounting & Logic Fixes (Manus Review Applied)
+#   • Added GST stat badge.
+#   • Fixed Invoice → Payment cascade (uses correct field names, dict payload).
+#   • Package Pending only counts COMPLETED payments and prevents negative balances.
+#   • Stats use rounded_total to match visible invoice totals.
+#   • Added visual "OVERDUE" status if past due date.
+#   • Strict validation for negative amounts and >100% discounts.
+#   • Manual Invoice: Fixed TCS calculation, added traveler/package mismatch check,
+#     disabled manual date (DB uses today's date).
 # =================================================================================
 
 import flet as ft
@@ -66,7 +62,6 @@ class InvoicesTab:
         self.selection_label = None
 
         self._selected_invoice_id = None
-        # v1.4 — typing guard
         self._typing_until = 0.0
 
         self.setup_ui()
@@ -76,7 +71,7 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.0 — _safe_update / _update_table_only  (v1.4)
+    # 14.1.0 — _safe_update / _update_table_only
     # =============================================================================
     def _safe_update(self):
         if time.time() < self._typing_until:
@@ -162,11 +157,13 @@ class InvoicesTab:
             border_radius=12,
         )
 
+        # Added GST badge
         stat_configs = [
             ("total_invoices",   "📊 Invoices",   "#3498db"),
             ("pending",          "⏳ Pending",    "#f39c12"),
             ("paid",             "✅ Paid",       "#27ae60"),
             ("discount",         "🎁 Discount",   "#c2185b"),
+            ("gst",              "🏛️ GST",        "#e67e22"),
             ("tcs",              "💰 TCS",        "#9b59b6"),
             ("package_pending",  "📦 Pkg Pend",   "#e74c3c"),
         ]
@@ -197,8 +194,7 @@ class InvoicesTab:
 
         stats_row = ft.ResponsiveRow(
             controls=[
-                ft.Container(content=c,
-                             col={"xs": 6, "sm": 6, "md": 4, "lg": 2})
+                ft.Container(content=c, col={"xs": 6, "sm": 4, "md": 3, "lg": 3})
                 for c in stat_cards
             ],
             spacing=6, run_spacing=6,
@@ -228,7 +224,6 @@ class InvoicesTab:
             value="All", height=48, text_size=11)
         self.status_filter.on_change = self.apply_filters
 
-        # v1.4 — search_input with explicit on_change + guard
         self.search_input = ft.TextField(
             hint_text="🔍 Search invoice or traveler...",
             height=48, text_size=12,
@@ -400,7 +395,6 @@ class InvoicesTab:
             tcs_rate = 0.1
         self.tax_info_label.value = (
             f"GST {gst_rate}%  |  TCS {tcs_rate}%")
-        # v1.4 — leaf-only update
         try:
             self.tax_info_label.update()
         except Exception:
@@ -441,7 +435,9 @@ class InvoicesTab:
             self.traveler_paid = {}
             for p in self.db.get_payments():
                 tid = p.get('traveler_id')
-                if tid:
+                # Only count completed payments
+                status = str(p.get('status', '')).strip().lower()
+                if tid and status == 'completed':
                     self.traveler_paid[tid] = (
                         self.traveler_paid.get(tid, 0)
                         + float(p.get('amount', 0) or 0))
@@ -452,7 +448,6 @@ class InvoicesTab:
             self.display_invoices()
             self.update_summary_stats()
             self.update_tax_display()
-            # v1.4 — skip if user just typed
             self._safe_update()
         except Exception as ex:
             print(f"Invoices refresh error: {ex}")
@@ -487,18 +482,33 @@ class InvoicesTab:
             rounded = self.safe_float(
                 inv.get('rounded_total', total))
             due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
-            status = self.safe_str(inv.get('status', 'pending')).upper()
-            status_color = ("#27ae60" if status == "PAID"
-                            else "#f39c12" if status == "PENDING"
-                            else "#e74c3c" if status == "OVERDUE"
+            
+            # Handle Effective Overdue Status
+            db_status = self.safe_str(inv.get('status', 'pending')).lower()
+            display_status = db_status.upper()
+            status_color = ("#27ae60" if db_status == "paid"
+                            else "#f39c12" if db_status == "pending"
+                            else "#e74c3c" if db_status == "overdue"
                             else "#95a5a6")
+            
+            if db_status == "pending" and due_date:
+                try:
+                    due_dt = datetime.strptime(due_date, "%d/%m/%Y").date()
+                    if datetime.now().date() > due_dt:
+                        display_status = "OVERDUE"
+                        status_color = "#e74c3c"
+                except Exception:
+                    pass
 
             tid = inv.get('traveler_id', '')
             tdet = self.traveler_details_cache.get(
                 tid, {'batch_price': 0})
             bp = tdet.get('batch_price', 0)
             paid = self.traveler_paid.get(tid, 0)
-            pkg_pending = bp - paid
+            
+            # Prevent negative package pending
+            pkg_pending = max(0.0, bp - paid)
+            
             if bp > 0:
                 if pkg_pending <= 0:
                     pkg_txt = "✅ Paid"
@@ -608,7 +618,7 @@ class InvoicesTab:
                                             color="#003366",
                                             weight=ft.FontWeight.BOLD)),
                         ft.DataCell(ft.Text(due_date, size=10)),
-                        ft.DataCell(ft.Text(status, size=10,
+                        ft.DataCell(ft.Text(display_status, size=10,
                                             color=status_color,
                                             weight=ft.FontWeight.BOLD)),
                         ft.DataCell(ft.Text(pkg_txt, size=10,
@@ -643,7 +653,6 @@ class InvoicesTab:
                 self.selection_label.value = ""
 
         self.display_invoices()
-        # v1.4 — leaf-only updates
         self._update_table_only()
 
     def _get_selected_invoice(self):
@@ -657,14 +666,17 @@ class InvoicesTab:
     # =============================================================================
     def update_summary_stats(self):
         total_inv = len(self.invoices)
-        pending = sum(self.safe_float(i.get('total_amount', 0))
+        
+        pending = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                       for i in self.invoices
                       if i.get('status') == 'pending')
-        paid = sum(self.safe_float(i.get('total_amount', 0))
+        paid = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                    for i in self.invoices
                    if i.get('status') == 'paid')
         discount = sum(self.safe_float(i.get('discount_amount', 0))
                        for i in self.invoices)
+        gst = sum(self.safe_float(i.get('gst_amount', 0))
+                  for i in self.invoices)
         tcs = sum(self.safe_float(i.get('tcs_amount', 0))
                   for i in self.invoices)
 
@@ -693,11 +705,12 @@ class InvoicesTab:
         self.stat_labels['pending'].value = _short(pending)
         self.stat_labels['paid'].value = _short(paid)
         self.stat_labels['discount'].value = _short(discount)
+        self.stat_labels['gst'].value = _short(gst)
         self.stat_labels['tcs'].value = _short(tcs)
         self.stat_labels['package_pending'].value = _short(pkg_pending)
 
     # =============================================================================
-    # 14.1.6 — Filter  (v1.4 — leaf-only update)
+    # 14.1.6 — Filter
     # =============================================================================
     def _apply_filters_internal(self):
         status = (self.status_filter.value or "All") \
@@ -718,7 +731,6 @@ class InvoicesTab:
 
     def apply_filters(self, e=None):
         self._apply_filters_internal()
-        # v1.4 — leaf-only update (search field is not an ancestor)
         self._update_table_only()
 
     # =============================================================================
@@ -741,7 +753,7 @@ class InvoicesTab:
     def delete_invoice(self, invoice):
         try:
             payments = self.db.get_payments(invoice.get('traveler_id', ''))
-            has_pay = any(p.get('invoice_id') == invoice.get('id')
+            has_pay = any(str(p.get('invoice_id', '')) == str(invoice.get('id', ''))
                           for p in payments)
         except Exception:
             has_pay = False
@@ -800,7 +812,7 @@ class InvoicesTab:
         self.print_invoice(inv)
 
     # =============================================================================
-    # 14.1.8b — export_invoice_to_pdf (unchanged from v1.3)
+    # 14.1.8b — export_invoice_to_pdf
     # =============================================================================
     def export_invoice_to_pdf(self, invoice):
         try:
@@ -1478,7 +1490,6 @@ class InvoicesTab:
         self._snack("🖨️ Generating PDF — press Ctrl+P when it opens")
         self.export_invoice_to_pdf(invoice)
 
-    # v1.4 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -1487,7 +1498,7 @@ class InvoicesTab:
 
 
 # =================================================================================
-# 14.2 — CLASS: InvoiceDialog  (v1.4 — typing guard)
+# 14.2 — CLASS: InvoiceDialog
 # =================================================================================
 class InvoiceDialog:
 
@@ -1519,13 +1530,11 @@ class InvoiceDialog:
         self._computed_discount_pct = 0.0
         self._computed_discount_amount = 0.0
         self._computed_taxable_value = 0.0
-        # v1.4 — typing guard
         self._typing_until = 0.0
 
         self.setup_ui()
         self.load_tax_rates()
 
-    # v1.4 — TextField helper with explicit value sync
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -1570,7 +1579,6 @@ class InvoiceDialog:
             "Not assigned", size=12,
             weight=ft.FontWeight.BOLD, color="#2c3e50")
 
-        # v1.4 — use _field helper
         self.amount_field = self._field(
             label="💰 Base Amount (₹) *", value="0",
             height=48, text_size=12)
@@ -1719,7 +1727,6 @@ class InvoiceDialog:
             self.traveler_info.value = "No traveler selected"
             self.batch_label.value = "Not assigned"
             self.generate_btn.disabled = True
-            # v1.4 — leaf updates
             for c in (self.traveler_info, self.batch_label,
                       self.generate_btn):
                 try:
@@ -1753,7 +1760,6 @@ class InvoiceDialog:
             self.batch_label.value = "No batch assigned"
             self.generate_btn.disabled = True
         self.recalculate(None)
-        # v1.4 — leaf updates
         for c in (self.traveler_info, self.batch_label,
                   self.amount_field, self.generate_btn):
             try:
@@ -1767,14 +1773,12 @@ class InvoiceDialog:
         else:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
-        # v1.4 — leaf update
         try:
             self.discount_value.update()
         except Exception:
             pass
         self.recalculate(None)
 
-    # v1.4 — leaf-only updates
     def recalculate(self, e):
         try:
             amount = float(self.amount_field.value or 0)
@@ -1793,6 +1797,12 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             tcs = 0
 
+        # Strict Validation for negatives
+        if amount < 0: amount = 0
+        if gst < 0: gst = 0
+        if tcs < 0: tcs = 0
+        if dval < 0: dval = 0
+
         if self.discount_type_dd.value == "pct":
             disc_pct = dval
             disc_amt = amount * (disc_pct / 100.0)
@@ -1800,9 +1810,9 @@ class InvoiceDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
-        if disc_amt > amount:
-            disc_amt = amount
-            disc_pct = 100.0 if amount > 0 else 0
+        # Cap discount at 100%
+        if disc_pct > 100: disc_pct = 100
+        if disc_amt > amount: disc_amt = amount
 
         taxable = amount - disc_amt
         gst_amt = taxable * (gst / 100.0)
@@ -1823,7 +1833,7 @@ class InvoiceDialog:
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
         self.breakdown_lbl.value = (f"GST: ₹{gst_amt:,.2f} | "
                                     f"TCS: ₹{tcs_amt:,.2f}")
-        # v1.4 — leaf-only updates
+        
         for c in (self.discount_amt_lbl, self.discount_pct_lbl,
                   self.taxable_lbl, self.total_lbl, self.rounded_lbl,
                   self.breakdown_lbl):
@@ -1842,16 +1852,25 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             amount = 0
         if amount <= 0:
-            self._snack("⚠️ Invalid amount")
+            self._snack("⚠️ Amount must be greater than zero")
             return
+            
+        try:
+            gst = float(self.gst_dd.value or 18)
+            tcs = float(self.tcs_field.value or 0.1)
+            if gst < 0 or tcs < 0:
+                self._snack("⚠️ GST/TCS cannot be negative")
+                return
+        except Exception:
+            gst = 18
+            tcs = 0.1
+            
         traveler = self.db.get_traveler_by_id(tid)
         bid = traveler.get('batch_id') if traveler else None
         if not bid:
             self._snack("⚠️ Traveler has no batch")
             return
 
-        gst = float(self.gst_dd.value or 18)
-        tcs = float(self.tcs_field.value or 0.1)
         is_pct = self.discount_type_dd.value == "pct"
 
         try:
@@ -1884,7 +1903,6 @@ class InvoiceDialog:
     def show(self):
         self.page.show_dialog(self.dialog)
 
-    # v1.4 — no page.update()
     def _snack(self, msg):
         try:
             self.page.show_dialog(ft.SnackBar(content=ft.Text(msg)))
@@ -1893,7 +1911,7 @@ class InvoiceDialog:
 
 
 # =================================================================================
-# 14.3 — CLASS: InvoiceModifyDialog  (v1.4 — typing guard)
+# 14.3 — CLASS: InvoiceModifyDialog
 # =================================================================================
 class InvoiceModifyDialog:
 
@@ -1917,13 +1935,11 @@ class InvoiceModifyDialog:
         self.rounded_lbl = None
         self.dialog = None
         self._computed = {}
-        # v1.4 — typing guard
         self._typing_until = 0.0
 
         self.setup_ui()
         self.load_data()
 
-    # v1.4 — field helper
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -2095,7 +2111,6 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             return d
 
-    # v1.4 — leaf-only updates
     def recalc(self, e=None):
         try:
             amount = float(self.amount_field.value or 0)
@@ -2114,6 +2129,12 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             tcs = 0
 
+        # Strict validation
+        if amount < 0: amount = 0
+        if gst < 0: gst = 0
+        if tcs < 0: tcs = 0
+        if dval < 0: dval = 0
+
         if self.disc_type_dd.value == "pct":
             disc_pct = dval
             disc_amt = amount * (disc_pct / 100.0)
@@ -2121,9 +2142,8 @@ class InvoiceModifyDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * 100.0) if amount > 0 else 0
 
-        if disc_amt > amount:
-            disc_amt = amount
-            disc_pct = 100.0 if amount > 0 else 0
+        if disc_pct > 100: disc_pct = 100
+        if disc_amt > amount: disc_amt = amount
 
         taxable = amount - disc_amt
         gst_amt = taxable * (gst / 100.0)
@@ -2142,7 +2162,7 @@ class InvoiceModifyDialog:
         self.disc_pct_lbl.value = f"Effective Discount %: {disc_pct:.2f}%"
         self.taxable_lbl.value = f"Taxable Value: ₹{taxable:,.2f}"
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
-        # v1.4 — leaf-only updates
+        
         for c in (self.disc_amt_lbl, self.disc_pct_lbl,
                   self.taxable_lbl, self.rounded_lbl):
             try:
@@ -2157,6 +2177,10 @@ class InvoiceModifyDialog:
                 self.recalc(None)
                 c = self._computed
 
+            if c['taxable'] < 0 or c['total'] < 0:
+                self._snack("⚠️ Invalid invoice totals")
+                return
+            
             new_status = (self.status_dd.value or 'pending').lower()
             old_status = str(self.invoice.get('status', 'pending')).lower()
 
@@ -2215,6 +2239,9 @@ class InvoiceModifyDialog:
         if not traveler_id or amount is None or amount <= 0:
             return
         try:
+            traveler = self.db.get_traveler_by_id(traveler_id)
+            batch_id = traveler.get('batch_id', '') if traveler else ''
+
             existing = None
             try:
                 payments = self.db.get_payments(traveler_id) or []
@@ -2234,21 +2261,37 @@ class InvoiceModifyDialog:
                     if hasattr(self.db, "update_payment"):
                         self.db.update_payment(
                             existing['id'],
-                            amount=float(amount),
-                            notes="Auto-synced via invoice status")
+                            {
+                                "amount": float(amount),
+                                "notes": "Auto-synced via invoice status",
+                                "status": "completed"
+                            })
                     else:
                         self.db.payments.loc[
                             self.db.payments['id'] == existing['id'],
                             'amount'] = float(amount)
+                        self.db.payments.loc[
+                            self.db.payments['id'] == existing['id'],
+                            'status'] = 'completed'
+                        self.db._save_df(self.db.payments, "payments.csv")
+                else:
+                    if hasattr(self.db, "update_payment"):
+                        self.db.update_payment(existing['id'], {"status": "completed"})
+                    else:
+                        self.db.payments.loc[
+                            self.db.payments['id'] == existing['id'],
+                            'status'] = 'completed'
                         self.db._save_df(self.db.payments, "payments.csv")
             else:
                 payload = {
                     'traveler_id': traveler_id,
+                    'batch_id': batch_id,
                     'invoice_id': invoice_id,
                     'amount': float(amount),
                     'payment_date': datetime.now().strftime("%Y-%m-%d"),
-                    'method': 'Auto (invoice status)',
+                    'payment_method': 'Auto (invoice status)',
                     'notes': 'Auto-created when invoice marked paid',
+                    'status': 'completed'
                 }
                 if hasattr(self.db, "add_payment"):
                     try:
@@ -2279,7 +2322,7 @@ class InvoiceModifyDialog:
             target = None
             for p in payments:
                 if (str(p.get('invoice_id', '')) == str(invoice_id)
-                        and 'auto' in str(p.get('method', '')).lower()):
+                        and 'auto' in str(p.get('payment_method', '')).lower()):
                     target = p
                     break
 
@@ -2423,7 +2466,7 @@ class InvoiceDetailsDialog:
 
 
 # =================================================================================
-# 14.5 — CLASS: ManualInvoiceDialog  (v1.4 — typing guard)
+# 14.5 — CLASS: ManualInvoiceDialog
 # =================================================================================
 class ManualInvoiceDialog:
 
@@ -2449,11 +2492,9 @@ class ManualInvoiceDialog:
         self.total_lbl = None
 
         self.dialog = None
-        # v1.4 — typing guard
         self._typing_until = 0.0
         self.setup_ui()
 
-    # v1.4 — field helper
     def _field(self, **kwargs):
         if "content_padding" not in kwargs:
             kwargs["content_padding"] = ft.Padding.symmetric(
@@ -2503,7 +2544,8 @@ class ManualInvoiceDialog:
         self.invoice_date = self._field(
             label="Invoice Date",
             value=datetime.now().strftime("%Y-%m-%d"),
-            height=48, text_size=12)
+            height=48, text_size=12, disabled=True,
+            tooltip="Database core uses today's date.")
 
         self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
@@ -2632,7 +2674,6 @@ class ManualInvoiceDialog:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-    # v1.4 — leaf-only updates
     def refresh_items(self):
         self.items_table.rows.clear()
         for i, item in enumerate(self.item_rows):
@@ -2641,14 +2682,21 @@ class ManualInvoiceDialog:
             amount = rate * qty
             disc_amt = amount * (item['discount_percent'] / 100)
             taxable = amount - disc_amt
+            
             tax = self.settings_manager.get_tax_settings()
             try:
                 gst = float(tax.get('gst_percentage', 18))
             except Exception:
                 gst = 18
-            cgst = taxable * (gst / 200)
-            sgst = taxable * (gst / 200)
-            total = taxable + cgst + sgst
+            try:
+                tcs = float(tax.get('tcs_percentage', 0.1))
+            except Exception:
+                tcs = 0.1
+
+            gst_amt = taxable * (gst / 100)
+            taxable_with_gst = taxable + gst_amt
+            tcs_amt = taxable_with_gst * (tcs / 100)
+            total = taxable_with_gst + tcs_amt
 
             def rm(idx=i):
                 def handler(e):
@@ -2676,22 +2724,26 @@ class ManualInvoiceDialog:
         tax = self.settings_manager.get_tax_settings()
         try:
             gst = float(tax.get('gst_percentage', 18))
+            tcs = float(tax.get('tcs_percentage', 0.1))
         except Exception:
             gst = 18
+            tcs = 0.1
 
         sub = sum(i['rate'] * i['qty'] for i in self.item_rows)
         disc = sum(i['rate'] * i['qty'] * (i['discount_percent'] / 100)
                    for i in self.item_rows)
         taxable = sub - disc
         gst_amt = taxable * (gst / 100)
-        total = taxable + gst_amt
+        taxable_with_gst = taxable + gst_amt
+        tcs_amt = taxable_with_gst * (tcs / 100)
+        total = taxable_with_gst + tcs_amt
         rounded = round_as_per_rules(total)
 
         self.sub_lbl.value = f"Package Cost: ₹{sub:,.2f}"
         self.disc_lbl.value = f"Discount: ₹{disc:,.2f}"
         self.taxable_lbl.value = f"Taxable: ₹{taxable:,.2f}"
         self.total_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
-        # v1.4 — leaf updates
+        
         for c in (self.items_table, self.sub_lbl, self.disc_lbl,
                   self.taxable_lbl, self.total_lbl):
             try:
@@ -2711,6 +2763,14 @@ class ManualInvoiceDialog:
 
         tid = self.traveler_dd.value
         bid = self.package_dd.value
+
+        if tid:
+            traveler = self.db.get_traveler_by_id(tid)
+            if traveler and bid:
+                t_batch = str(traveler.get('batch_id', ''))
+                if t_batch and t_batch != str(bid):
+                    self._snack("⚠️ Selected package does not match the traveler's batch.")
+                    return
 
         try:
             if not tid:
@@ -2767,5 +2827,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.4
+# SECTION 14 END (FLET 1.0.0 VERSION) — v1.6
 # =================================================================================
