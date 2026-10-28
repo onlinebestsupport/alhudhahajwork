@@ -1,8 +1,11 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# v5.2 — CRITICAL FIX: Backups are now correctly saved inside the persistent 
-#         data directory (/app/data/backups) instead of the ephemeral parent.
+# v5.3 — Consolidated: Decimal math + Atomic Writes + File Locking
+#   • Restored FileLock and atomic temp-file writes for CSV safety.
+#   • Kept Decimal financial helpers (_money, _rate) to prevent float errors.
+#   • Fixed backup path to always use /app/data/backups.
+#   • Auto-reconciles batch seats on boot.
 # =================================================================================
 
 import os
@@ -13,6 +16,7 @@ import zipfile
 import math
 import tempfile
 import threading
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
@@ -118,7 +122,7 @@ class HajDatabase:
         self._initialize_defaults()
         self._ensure_permissions_column()
 
-        # v5 — reconcile stored seats with actual bookings on boot
+        # Reconcile stored seats with actual bookings on boot
         self._reconcile_all_batch_seats()
 
         print(f"[DB] Loaded: {len(self.users)} users, "
@@ -140,7 +144,7 @@ class HajDatabase:
                 f"Data folder is not writable: {self.data_dir}\nError: {e}")
 
     def _ensure_dirs(self):
-        # FIXED: Store backups inside the persistent data directory
+        # Store backups inside the persistent data directory
         self._backup_dir = self.data_dir / "backups"
         
         # Create all subfolders safely within /app/data
@@ -178,6 +182,29 @@ class HajDatabase:
 
     def _file_lock(self):
         return self._FileLock(self._lock_file, self._lock)
+
+    # =================================================================================
+    # DECIMAL FINANCIAL HELPERS
+    # =================================================================================
+    @staticmethod
+    def _to_decimal(value, default=Decimal("0")):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return default
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "none", "nat", "null"}:
+            return default
+        try:
+            return Decimal(text)
+        except (InvalidOperation, ValueError, TypeError):
+            return default
+
+    @classmethod
+    def _money(cls, value):
+        return cls._to_decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @classmethod
+    def _rate(cls, value):
+        return cls._to_decimal(value).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
     # =================================================================================
     # ID COUNTERS
@@ -237,19 +264,6 @@ class HajDatabase:
         if len(clean_name) == 2:
             return clean_name + 'X'
         return clean_name + 'XX'
-
-    def _get_next_batch_number(self, prefix, year):
-        max_num = 0
-        for batch in self.batches.to_dict('records'):
-            batch_id = batch.get('id', '')
-            if batch_id.startswith(f"{prefix}/BCH/{year}/"):
-                try:
-                    num = int(batch_id.split('/')[-1])
-                    if num > max_num:
-                        max_num = num
-                except Exception:
-                    pass
-        return max_num + 1
 
     def _get_next_sequence(self, prefix, category, year):
         max_num = 0
@@ -319,12 +333,14 @@ class HajDatabase:
             elif filename == "batches.csv":
                 for col in ['total_seats', 'available_seats', 'price']:
                     if col in df.columns:
-                        df[col] = pd.to_numeric(
-                            df[col], errors='coerce').fillna(0)
                         if col in ['total_seats', 'available_seats']:
-                            df[col] = df[col].astype(int)
+                            df[col] = pd.to_numeric(
+                                df[col], errors='coerce').fillna(0).astype(int)
                         elif col == 'price':
-                            df[col] = df[col].astype(float)
+                            df[col] = df[col].map(self._money)
+                    else:
+                        if col == 'price':
+                            df[col] = pd.Series([Decimal('0.00')] * len(df), index=df.index)
                 for col in ['id', 'batch_name', 'tour_type_id',
                             'tour_type_name', 'year', 'departure_date',
                             'return_date', 'status', 'description']:
@@ -334,8 +350,7 @@ class HajDatabase:
 
             elif filename == "payments.csv":
                 if 'amount' in df.columns:
-                    df['amount'] = pd.to_numeric(
-                        df['amount'], errors='coerce').fillna(0)
+                    df['amount'] = df['amount'].map(self._money)
                 for col in ['id', 'traveler_id', 'batch_id',
                             'payment_method', 'status', 'transaction_id',
                             'invoice_id', 'notes', 'payment_date']:
@@ -349,10 +364,15 @@ class HajDatabase:
                             'tcs_percentage', 'tcs_amount', 'total_amount',
                             'rounded_total']:
                     if col in df.columns:
-                        df[col] = pd.to_numeric(
-                            df[col], errors='coerce').fillna(0)
+                        if col in ['discount_percentage', 'gst_percentage', 'tcs_percentage']:
+                            df[col] = df[col].map(self._rate)
+                        else:
+                            df[col] = df[col].map(self._money)
                     else:
-                        df[col] = 0.0
+                        if col in ['discount_percentage', 'gst_percentage', 'tcs_percentage']:
+                            df[col] = pd.Series([Decimal('0.0000')] * len(df), index=df.index)
+                        else:
+                            df[col] = pd.Series([Decimal('0.00')] * len(df), index=df.index)
                 for col in ['id', 'invoice_no', 'traveler_id', 'batch_id',
                             'issue_date', 'due_date', 'status', 'notes']:
                     if col in df.columns:
@@ -361,8 +381,7 @@ class HajDatabase:
 
             elif filename == "receipts.csv":
                 if 'amount' in df.columns:
-                    df['amount'] = pd.to_numeric(
-                        df['amount'], errors='coerce').fillna(0)
+                    df['amount'] = df['amount'].map(self._money)
                 for col in ['id', 'receipt_no', 'payment_id', 'invoice_id',
                             'receipt_date', 'notes']:
                     if col in df.columns:
@@ -729,7 +748,6 @@ class HajDatabase:
         self._save_df(self.batches, "batches.csv")
 
     def _reconcile_all_batch_seats(self):
-        """One-shot boot-time reconciliation of stored available_seats."""
         try:
             for bid in self.batches['id'].tolist():
                 try:
@@ -934,7 +952,7 @@ class HajDatabase:
         if batch_data['total_seats'] <= 0:
             raise ValueError("total_seats must be greater than zero")
         batch_data['available_seats'] = batch_data['total_seats']
-        batch_data['price'] = float(batch_data.get('price', 0))
+        batch_data['price'] = self._money(batch_data.get('price', 0))
         batch_data['year'] = str(year)
         for key, value in batch_data.items():
             if value is None:
@@ -942,7 +960,7 @@ class HajDatabase:
             elif key in ['total_seats', 'available_seats']:
                 batch_data[key] = int(value)
             elif key == 'price':
-                batch_data[key] = float(value)
+                batch_data[key] = self._money(value)
             else:
                 batch_data[key] = str(value)
         self.batches = pd.concat(
@@ -980,9 +998,9 @@ class HajDatabase:
                     update_data[key] = 0
             elif key == 'price':
                 try:
-                    update_data[key] = float(value)
+                    update_data[key] = self._money(value)
                 except Exception:
-                    update_data[key] = 0.0
+                    update_data[key] = Decimal('0.00')
             elif key == 'year':
                 update_data[key] = str(value)
             else:
@@ -1027,18 +1045,8 @@ class HajDatabase:
             self.batches['id'].astype(str) != str(batch_id)]
         self._save_df(self.batches, "batches.csv")
 
-    def _update_batch_seats(self, batch_id, change):
-        """
-        DEPRECATED — kept only for backward compatibility.
-        Redirects to _recalculate_batch_seats so any incremental call
-        produces a value consistent with actual bookings.
-        """
-        print(f"[DB] _update_batch_seats({batch_id}, {change}) "
-              f"is deprecated — recalculating instead")
-        self._recalculate_batch_seats(batch_id)
-
     # =================================================================================
-    # PAYMENTS  (v5.1 — validation + idempotent receipts + invoice recalc)
+    # PAYMENTS
     # =================================================================================
     def get_payments(self, traveler_id=None):
         if traveler_id:
@@ -1048,7 +1056,6 @@ class HajDatabase:
         return self.payments.to_dict('records')
 
     def add_payment(self, payment_data):
-        # ---- v5.1 — validate traveler + batch ----
         traveler_id = str(payment_data.get('traveler_id', '') or '').strip()
         if not traveler_id:
             raise ValueError("Traveler is required for payment")
@@ -1079,13 +1086,13 @@ class HajDatabase:
                 or (isinstance(invoice_id, float) and str(invoice_id) == 'nan')):
             invoice_id = ''
         payment_data['invoice_id'] = invoice_id
-        payment_data['amount'] = float(payment_data.get('amount', 0))
+        payment_data['amount'] = self._money(payment_data.get('amount', 0))
 
         for key, value in payment_data.items():
             if value is None:
                 payment_data[key] = ''
             elif key == 'amount':
-                payment_data[key] = float(value)
+                payment_data[key] = self._money(value)
             else:
                 payment_data[key] = str(value)
 
@@ -1093,11 +1100,9 @@ class HajDatabase:
             [self.payments, pd.DataFrame([payment_data])], ignore_index=True)
         self._save_df(self.payments, "payments.csv")
 
-        # ---- v5.1 — receipts only for completed payments ----
         if str(payment_data.get('status', '')).strip().lower() == 'completed':
             self._generate_receipt(payment_data)
 
-        # ---- v5.1 — reconcile linked invoice ----
         if invoice_id:
             self._recalculate_invoice_status(invoice_id)
 
@@ -1114,7 +1119,7 @@ class HajDatabase:
 
             updates = {}
             fields = {
-                'amount': self._convert_to_float,
+                'amount': self._money,
                 'payment_date': self._parse_date,
                 'payment_method': self._convert_to_string,
                 'status': self._validate_status,
@@ -1135,7 +1140,6 @@ class HajDatabase:
                 self.payments.loc[mask, key] = value
             self._save_df(self.payments, "payments.csv")
 
-            # ---- v5.1 — reconcile BOTH old and new invoice ----
             new_invoice_id = str(updates.get('invoice_id', '') or '').strip()
             if old_invoice_id:
                 self._recalculate_invoice_status(old_invoice_id)
@@ -1157,12 +1161,7 @@ class HajDatabase:
             return False
 
     def _convert_to_float(self, value):
-        if value is None:
-            return 0.0
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return 0.0
+        return self._money(value)
 
     def _convert_to_string(self, value):
         return '' if value is None else str(value).strip()
@@ -1199,7 +1198,6 @@ class HajDatabase:
             raise Exception(
                 "Cannot delete payment with associated receipts")
 
-        # Capture invoice_id before deletion so we can reconcile afterwards
         mask = self.payments['id'].astype(str) == str(payment_id)
         inv_id = ''
         if mask.any():
@@ -1213,7 +1211,7 @@ class HajDatabase:
             self._recalculate_invoice_status(inv_id)
 
     # =================================================================================
-    # INVOICES  (v5.1 — status recalculated from completed payments)
+    # INVOICES
     # =================================================================================
     def get_invoices(self, traveler_id=None):
         if traveler_id:
@@ -1223,11 +1221,6 @@ class HajDatabase:
         return self.invoices.to_dict('records')
 
     def _recalculate_invoice_status(self, invoice_id):
-        """
-        v5.1 — derive invoice status from all completed payments linked
-        to it. paid if sum(completed) >= rounded_total (or total_amount);
-        otherwise pending.
-        """
         if not invoice_id:
             return
         inv_mask = self.invoices['id'].astype(str) == str(invoice_id)
@@ -1237,16 +1230,16 @@ class HajDatabase:
         try:
             inv_row = self.invoices.loc[inv_mask].iloc[0]
             try:
-                inv_amount = float(inv_row.get('rounded_total', 0) or 0)
+                inv_amount = self._money(inv_row.get('rounded_total', 0) or 0)
             except (ValueError, TypeError):
-                inv_amount = 0.0
+                inv_amount = Decimal('0.00')
             if inv_amount <= 0:
                 try:
-                    inv_amount = float(inv_row.get('total_amount', 0) or 0)
+                    inv_amount = self._money(inv_row.get('total_amount', 0) or 0)
                 except (ValueError, TypeError):
-                    inv_amount = 0.0
+                    inv_amount = Decimal('0.00')
 
-            paid = 0.0
+            paid = Decimal('0.00')
             if not self.payments.empty:
                 pm = (
                     (self.payments['invoice_id'].astype(str)
@@ -1256,12 +1249,12 @@ class HajDatabase:
                 )
                 for _, row in self.payments.loc[pm].iterrows():
                     try:
-                        paid += float(row.get('amount', 0) or 0)
+                        paid += self._money(row.get('amount', 0) or 0)
                     except (ValueError, TypeError):
                         pass
 
             new_status = ('paid'
-                          if (inv_amount > 0 and paid + 0.01 >= inv_amount)
+                          if (inv_amount > 0 and paid + Decimal('0.01') >= inv_amount)
                           else 'pending')
             current = str(inv_row.get('status', '') or '').lower()
             if current != new_status:
@@ -1275,7 +1268,16 @@ class HajDatabase:
 
     def generate_invoice(self, traveler_id, batch_id, amount,
                          gst_percentage=18, tcs_percentage=0.1,
-                         discount_percentage=0.0, discount_amount=None):
+                         discount_percentage=Decimal("0"),
+                         discount_amount=None):
+        amount = self._money(amount)
+        gst_percentage = self._rate(gst_percentage)
+        tcs_percentage = self._rate(tcs_percentage)
+        if amount <= 0:
+            raise ValueError("Invoice amount must be greater than zero")
+        if gst_percentage < 0 or tcs_percentage < 0:
+            raise ValueError("Tax rates cannot be negative")
+
         year = datetime.now().year
         prefix = 'HAJ'
         if batch_id:
@@ -1289,43 +1291,55 @@ class HajDatabase:
         invoice_id = self._generate_id(prefix, 'INV', str(year))
         invoice_no = (f"INV-{datetime.now().strftime('%Y%m')}-"
                       f"{len(self.invoices)+1:04d}")
-        amount = float(amount)
-        gst_percentage = float(gst_percentage)
-        tcs_percentage = float(tcs_percentage)
+
         if discount_amount is not None:
-            discount_amount = float(discount_amount)
+            discount_amount = self._money(discount_amount)
             if discount_amount < 0:
-                discount_amount = 0.0
-            if discount_amount > amount:
-                discount_amount = amount
-            discount_percentage = ((discount_amount / amount) * 100.0
-                                   if amount > 0 else 0.0)
+                raise ValueError("Discount cannot be negative")
+            discount_amount = min(discount_amount, amount)
+            discount_percentage = (
+                (discount_amount / amount) * Decimal("100")
+                if amount > 0 else Decimal("0")
+            )
         else:
-            discount_percentage = float(discount_percentage)
-            discount_amount = amount * (discount_percentage / 100.0)
-        taxable_value = amount - discount_amount
-        gst_amount = taxable_value * (gst_percentage / 100.0)
+            discount_percentage = self._rate(discount_percentage)
+            if discount_percentage < 0 or discount_percentage > 100:
+                raise ValueError("Discount percentage must be between 0 and 100")
+            discount_amount = self._money(
+                amount * discount_percentage / Decimal("100"))
+
+        taxable_value = self._money(amount - discount_amount)
+        gst_amount = self._money(
+            taxable_value * gst_percentage / Decimal("100"))
         taxable_with_gst = taxable_value + gst_amount
-        tcs_amount = taxable_with_gst * (tcs_percentage / 100.0)
-        total_amount = taxable_with_gst + tcs_amount
+        tcs_amount = self._money(
+            taxable_with_gst * tcs_percentage / Decimal("100"))
+        total_amount = self._money(taxable_with_gst + tcs_amount)
         rounded_total = self._round_as_per_rules(total_amount)
+
         invoice_data = {
-            'id': invoice_id, 'invoice_no': invoice_no,
-            'traveler_id': traveler_id, 'batch_id': batch_id,
+            'id': invoice_id,
+            'invoice_no': invoice_no,
+            'traveler_id': traveler_id,
+            'batch_id': batch_id,
             'amount': amount,
             'discount_percentage': discount_percentage,
             'discount_amount': discount_amount,
             'taxable_value': taxable_value,
-            'gst_percentage': gst_percentage, 'gst_amount': gst_amount,
-            'tcs_percentage': tcs_percentage, 'tcs_amount': tcs_amount,
+            'gst_percentage': gst_percentage,
+            'gst_amount': gst_amount,
+            'tcs_percentage': tcs_percentage,
+            'tcs_amount': tcs_amount,
             'total_amount': total_amount,
-            'rounded_total': float(rounded_total),
+            'rounded_total': rounded_total,
             'issue_date': datetime.now().isoformat(),
             'due_date': (datetime.now() + timedelta(days=30)).isoformat(),
-            'status': 'pending', 'notes': '',
+            'status': 'pending',
+            'notes': ''
         }
+        new_invoice = pd.DataFrame([invoice_data])
         self.invoices = pd.concat(
-            [self.invoices, pd.DataFrame([invoice_data])], ignore_index=True)
+            [self.invoices, new_invoice], ignore_index=True)
         self._save_df(self.invoices, "invoices.csv")
         return invoice_id
 
@@ -1334,21 +1348,17 @@ class HajDatabase:
         self._save_df(self.invoices, "invoices.csv")
 
     def _round_as_per_rules(self, amount):
-        if isinstance(amount, (int, float)):
-            decimal_part = amount - math.floor(amount)
-            if decimal_part >= 0.50:
-                return math.ceil(amount)
-            return math.floor(amount)
-        return amount
+        amount = self._to_decimal(amount)
+        floor_value = amount.to_integral_value(rounding=ROUND_FLOOR)
+        decimal_part = amount - floor_value
+        if decimal_part >= Decimal("0.50"):
+            return amount.to_integral_value(rounding=ROUND_CEILING)
+        return floor_value
 
     # =================================================================================
-    # RECEIPTS  (v5.1 — idempotent)
+    # RECEIPTS
     # =================================================================================
     def _generate_receipt(self, payment_data):
-        """
-        v5.1 — idempotent. If a receipt already exists for the payment,
-        return the existing one instead of creating a duplicate.
-        """
         pid = str(payment_data.get('id', '') or '').strip()
         if pid and not self.receipts.empty:
             existing = self.receipts[
@@ -1381,7 +1391,7 @@ class HajDatabase:
             'id': receipt_id, 'receipt_no': receipt_no,
             'payment_id': payment_data['id'],
             'invoice_id': invoice_id,
-            'amount': float(payment_data['amount']),
+            'amount': self._money(payment_data['amount']),
             'receipt_date': datetime.now().isoformat(),
             'notes': payment_data.get('notes', ''),
         }
@@ -1389,7 +1399,6 @@ class HajDatabase:
             [self.receipts, pd.DataFrame([receipt_data])], ignore_index=True)
         self._save_df(self.receipts, "receipts.csv")
 
-        # v5.1 — reconcile invoice via the shared recalculation
         if invoice_id:
             self._recalculate_invoice_status(invoice_id)
 
@@ -1412,11 +1421,14 @@ class HajDatabase:
         return {
             'total_travelers': len(self.travelers),
             'active_batches': active_batches,
-            'total_payments': (self.payments['amount'].sum()
-                               if not self.payments.empty else 0),
+            'total_payments': (sum(
+                (self._money(v) for v in self.payments['amount']),
+                Decimal("0.00")
+            ) if not self.payments.empty else Decimal("0.00")),
             'pending_payments': int((pending_inv == 'pending').sum()),
-            'available_seats': (self.batches['available_seats'].sum()
-                                if not self.batches.empty else 0),
+            'available_seats': (sum(
+                (int(v) for v in self.batches['available_seats']), 0
+            ) if not self.batches.empty else 0),
             'total_receipts': len(self.receipts),
         }
 
@@ -1427,13 +1439,18 @@ class HajDatabase:
         if end_date:
             payments = payments[payments['payment_date'] <= end_date]
         return {
-            'total_collected': (payments['amount'].sum()
-                                if not payments.empty else 0),
+            'total_collected': (sum(
+                (self._money(v) for v in payments['amount']),
+                Decimal("0.00")
+            ) if not payments.empty else Decimal("0.00")),
             'payment_count': len(payments) if not payments.empty else 0,
             'by_method': (payments.groupby('payment_method')['amount']
                           .sum().to_dict() if not payments.empty else {}),
-            'average_payment': (payments['amount'].mean()
-                                if not payments.empty else 0),
+            'average_payment': (
+                sum((self._money(v) for v in payments['amount']), Decimal("0.00"))
+                / Decimal(len(payments))
+                if not payments.empty else Decimal("0.00")
+            )
         }
 
     # =================================================================================
@@ -1636,5 +1653,5 @@ class HajDatabase:
 
 
 # =================================================================================
-# SECTION 2 END (FLET VERSION) — v5.2
+# SECTION 2 END (FLET VERSION) — v5.3
 # =================================================================================
