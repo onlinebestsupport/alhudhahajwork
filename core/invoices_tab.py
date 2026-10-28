@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v4.1 — Definitive async retry fix for Dropdown selection.
-#   • Uses e.data as primary source, with a fallback polling loop.
-#   • Runs in an async task to prevent UI freezes while waiting for Flet.
-#   • Includes manual fallbacks if the mapping fails.
+# v4.2 — Absolute final fix for Flet Dropdown UI sync.
+#   • Removed async tasks and delays (which caused events to be dropped).
+#   • Added Text-Fallback: If Flet sends the Display Name instead of the ID,
+#     the system will manually match the text to the database record.
+#   • Upgraded traveler_map to store both ID and Text for precise matching.
 # =================================================================================
 
 import flet as ft
@@ -1582,7 +1583,10 @@ class InvoiceDialog:
                 pp = t.get('passport_no', '')
                 label = f"{name} ({pp})" if pp else name
                 key = f"t_{i}"
-                self.traveler_map[key] = str(t['id']).strip()
+                self.traveler_map[key] = {
+                    'id': str(t['id']).strip(),
+                    'text': label[:60]
+                }
                 traveler_opts.append(
                     ft.dropdown.Option(key=key, text=label[:60]))
         except Exception:
@@ -1743,30 +1747,24 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Use Retry mechanism to bypass Flet's delayed UI sync
-        opt_key = e.control.value
-        if not opt_key:
-            opt_key = e.data
-        if not opt_key:
-            opt_key = self.traveler_dd.value
+        # Synchronous text fallback to bypass Flet mobile web bug
+        val = e.control.value
+        if not val:
+            val = e.data
             
-        if not opt_key or str(opt_key).strip().lower() in ("none", ""):
-            self.page.run_task(self._retry_traveler_change)
-            return
-            
-        tid = self.traveler_map.get(opt_key)
-        if not tid:
-            return
-            
-        self._apply_traveler_change(tid)
-
-    async def _retry_traveler_change(self):
-        await asyncio.sleep(0.2)
-        opt_key = self.traveler_dd.value
-        if opt_key and str(opt_key).strip().lower() not in ("none", ""):
-            tid = self.traveler_map.get(opt_key)
-            if tid:
-                self._apply_traveler_change(tid)
+        tid = None
+        if val:
+            if str(val) in self.traveler_map:
+                tid = self.traveler_map[str(val)]['id']
+            else:
+                # Flet bug: sometimes sends text instead of key
+                for k, info in self.traveler_map.items():
+                    if info['text'] == str(val):
+                        tid = info['id']
+                        break
+                        
+        if tid:
+            self._apply_traveler_change(tid)
 
     def _apply_traveler_change(self, tid):
         print(f"[DEBUG-INV] Applying traveler change: {tid!r}")
@@ -1920,8 +1918,16 @@ class InvoiceDialog:
                 pass
 
     def save(self, e):
-        opt_key = self.traveler_dd.value
-        tid = self.traveler_map.get(opt_key)
+        val = self.traveler_dd.value
+        tid = None
+        if val and str(val) in self.traveler_map:
+            tid = self.traveler_map[str(val)]['id']
+        elif val:
+            for k, info in self.traveler_map.items():
+                if info['text'] == str(val):
+                    tid = info['id']
+                    break
+                    
         if not tid:
             self._snack("⚠️ Select a traveler")
             return
@@ -2615,7 +2621,10 @@ class ManualInvoiceDialog:
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
                 key = f"t_{i}"
-                self.traveler_map[key] = str(t['id']).strip()
+                self.traveler_map[key] = {
+                    'id': str(t['id']).strip(),
+                    'text': name[:50]
+                }
                 topts.append(ft.dropdown.Option(
                     key=key, text=name[:50]))
         except Exception:
@@ -2768,30 +2777,24 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        # Use Retry mechanism to bypass Flet's delayed UI sync
-        opt_key = e.control.value
-        if not opt_key:
-            opt_key = e.data
-        if not opt_key:
-            opt_key = self.traveler_dd.value
+        # Synchronous text fallback to bypass Flet mobile web bug
+        val = e.control.value
+        if not val:
+            val = e.data
             
-        if not opt_key or str(opt_key).strip().lower() in ("none", ""):
-            self.page.run_task(self._retry_traveler_change)
-            return
-            
-        tid = self.traveler_map.get(opt_key)
-        if not tid:
-            return
-            
-        self._apply_traveler_change(tid)
-
-    async def _retry_traveler_change(self):
-        await asyncio.sleep(0.2)
-        opt_key = self.traveler_dd.value
-        if opt_key and str(opt_key).strip().lower() not in ("none", ""):
-            tid = self.traveler_map.get(opt_key)
-            if tid:
-                self._apply_traveler_change(tid)
+        tid = None
+        if val:
+            if str(val) in self.traveler_map:
+                tid = self.traveler_map[str(val)]['id']
+            else:
+                # Flet bug: sometimes sends text instead of key
+                for k, info in self.traveler_map.items():
+                    if info['text'] == str(val):
+                        tid = info['id']
+                        break
+                        
+        if tid:
+            self._apply_traveler_change(tid)
 
     def _apply_traveler_change(self, tid):
         if not tid:
@@ -2944,8 +2947,16 @@ class ManualInvoiceDialog:
             self._snack("⚠️ Customer name and phone required")
             return
 
-        opt_key = self.traveler_dd.value
-        tid = self.traveler_map.get(opt_key) if opt_key else None
+        val = self.traveler_dd.value
+        tid = None
+        if val and str(val) in self.traveler_map:
+            tid = self.traveler_map[str(val)]['id']
+        elif val:
+            for k, info in self.traveler_map.items():
+                if info['text'] == str(val):
+                    tid = info['id']
+                    break
+                    
         bid = self.package_dd.value
 
         if tid:
@@ -3016,5 +3027,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v4.1
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.2
 # =================================================================================
