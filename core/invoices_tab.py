@@ -1,12 +1,12 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.6 — Definitive fix for Base Amount auto-fill (Flet Dropdown Race Condition).
-#   • Updated on_traveler_change to extract the selected ID directly from 
-#     `e.control.value` instead of relying on the control's internal state.
-#   • Passes the captured ID into the async task.
-#   • This guarantees the backend gets the correct ID without waiting for Flet 
-#     to fully commit the dropdown UI state.
+# v2.7 — Ultimate fix for Flet Dropdown race condition.
+#   • Uses e.data first, then falls back to e.control.value.
+#   • Added fallback inside _sync_traveler_ui to read self.traveler_dd.value 
+#     directly after the asyncio.sleep.
+#   • Added try/except blocks to the async tasks to catch and print any hidden 
+#     errors that prevent the UI from updating.
 # =================================================================================
 
 import flet as ft
@@ -1739,77 +1739,86 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # FIX: Capture the value directly from the event
-        selected_id = e.control.value
+        # Use e.data as it's the most reliable source for Dropdown changes
+        selected_id = e.data
+        if selected_id is None:
+            selected_id = e.control.value
         self.page.run_task(self._sync_traveler_ui, selected_id)
 
     async def _sync_traveler_ui(self, tid):
-        # Yield to the Flet event loop to allow the Dropdown to finish updating
-        await asyncio.sleep(0.1)
+        try:
+            await asyncio.sleep(0.1) # Yield to Flet event loop
+            
+            # Fallback if event data was empty
+            tid = str(tid or "").strip()
+            if not tid:
+                tid = str(self.traveler_dd.value or "").strip()
+                
+            print(f"[InvoiceDialog] selected traveler ID: {tid!r}")
 
-        tid = str(tid or "").strip()
+            if not tid:
+                self.traveler_info.value = "No traveler selected"
+                self.traveler_info.color = ft.Colors.GREY_600
+                self.batch_label.value = "Not assigned"
+                self.amount_field.value = "0"
+                self.generate_btn.disabled = True
+                self.recalculate(None)
+                self._force_ui_update()
+                return
 
-        print(f"[InvoiceDialog] selected traveler ID: {tid!r}")
+            t = self.db.get_traveler_by_id(tid)
+            if not t:
+                self.traveler_info.value = "⚠️ Traveler not found"
+                self.traveler_info.color = ft.Colors.RED_600
+                self.batch_label.value = "Batch not found"
+                self.amount_field.value = "0"
+                self.generate_btn.disabled = True
+                self.recalculate(None)
+                self._force_ui_update()
+                return
 
-        if not tid:
-            self.traveler_info.value = "No traveler selected"
-            self.traveler_info.color = ft.Colors.GREY_600
-            self.batch_label.value = "Not assigned"
-            self.amount_field.value = "0"
-            self.generate_btn.disabled = True
-            self.recalculate(None)
-            self._force_ui_update()
-            return
+            existing_invoices = self.db.get_invoices(traveler_id=tid)
+            name = (f"{t.get('first_name', '')} "
+                    f"{t.get('last_name', '')}").strip()
 
-        t = self.db.get_traveler_by_id(tid)
-        if not t:
-            self.traveler_info.value = "⚠️ Traveler not found"
-            self.traveler_info.color = ft.Colors.RED_600
-            self.batch_label.value = "Batch not found"
-            self.amount_field.value = "0"
-            self.generate_btn.disabled = True
-            self.recalculate(None)
-            self._force_ui_update()
-            return
-
-        existing_invoices = self.db.get_invoices(traveler_id=tid)
-        name = (f"{t.get('first_name', '')} "
-                f"{t.get('last_name', '')}").strip()
-
-        if existing_invoices:
-            inv_no = existing_invoices[0].get('invoice_no', '')
-            self.traveler_info.value = (
-                f"⚠️ {name} already has invoice {inv_no}.")
-            self.traveler_info.color = ft.Colors.RED_600
-            self.batch_label.value = "Cannot create duplicate"
-            self.amount_field.value = "0"
-            self.generate_btn.disabled = True
-        else:
-            self.traveler_info.value = (
-                f"✅ {name} | Passport: {t.get('passport_no', '')}")
-            self.traveler_info.color = ft.Colors.GREY_600
-
-            bid = str(t.get('batch_id') or '').strip()
-            batch = self.db.get_batch_by_id(bid) if bid else None
-
-            if batch:
-                price = _money(batch.get('price', 0) or 0)
-                self.batch_label.value = (
-                    f"📦 {batch.get('batch_name', '')} | "
-                    f"Price: ₹{price:,.2f}")
-                self.amount_field.value = str(price)
-                self.generate_btn.disabled = price <= 0
-            elif bid:
-                self.batch_label.value = f"Batch not found: {bid}"
+            if existing_invoices:
+                inv_no = existing_invoices[0].get('invoice_no', '')
+                self.traveler_info.value = (
+                    f"⚠️ {name} already has invoice {inv_no}.")
+                self.traveler_info.color = ft.Colors.RED_600
+                self.batch_label.value = "Cannot create duplicate"
                 self.amount_field.value = "0"
                 self.generate_btn.disabled = True
             else:
-                self.batch_label.value = "No batch assigned"
-                self.amount_field.value = "0"
-                self.generate_btn.disabled = True
+                self.traveler_info.value = (
+                    f"✅ {name} | Passport: {t.get('passport_no', '')}")
+                self.traveler_info.color = ft.Colors.GREY_600
 
-        self.recalculate(None)
-        self._force_ui_update()
+                bid = str(t.get('batch_id') or '').strip()
+                batch = self.db.get_batch_by_id(bid) if bid else None
+
+                if batch:
+                    price = _money(batch.get('price', 0) or 0)
+                    self.batch_label.value = (
+                        f"📦 {batch.get('batch_name', '')} | "
+                        f"Price: ₹{price:,.2f}")
+                    self.amount_field.value = str(price)
+                    self.generate_btn.disabled = price <= 0
+                elif bid:
+                    self.batch_label.value = f"Batch not found: {bid}"
+                    self.amount_field.value = "0"
+                    self.generate_btn.disabled = True
+                else:
+                    self.batch_label.value = "No batch assigned"
+                    self.amount_field.value = "0"
+                    self.generate_btn.disabled = True
+
+            self.recalculate(None)
+            self._force_ui_update()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            print(f"[InvoiceDialog] _sync_traveler_ui error: {ex}")
 
     def _force_ui_update(self):
         # Force the specific controls and the dialog to update
@@ -2738,49 +2747,58 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        # FIX: Capture the value directly from the event
-        selected_id = e.control.value
+        # Use e.data as it's the most reliable source for Dropdown changes
+        selected_id = e.data
+        if selected_id is None:
+            selected_id = e.control.value
         self.page.run_task(self._sync_traveler_ui, selected_id)
 
     async def _sync_traveler_ui(self, tid):
-        await asyncio.sleep(0.1)
-
-        tid = str(tid or "").strip()
-
-        print(f"[ManualInvoiceDialog] selected traveler ID: {tid!r}")
-
-        if not tid:
-            self.cust_name.value = ""
-            self.cust_phone.value = ""
-            self.cust_email.value = ""
-            self.package_dd.value = ""
-            self.dup_warning_lbl.value = ""
-            self.gen_btn.disabled = False
-            self._force_ui_update()
-            return
-
-        traveler = self.db.get_traveler_by_id(tid)
-        if traveler:
-            self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
-            self.cust_phone.value = traveler.get('mobile', '')
-            self.cust_email.value = traveler.get('email', '')
+        try:
+            await asyncio.sleep(0.1)
             
-            bid = str(traveler.get('batch_id') or '').strip()
-            if bid:
-                self.package_dd.value = bid
-            else:
-                self.package_dd.value = ""
+            tid = str(tid or "").strip()
+            if not tid:
+                tid = str(self.traveler_dd.value or "").strip()
+                
+            print(f"[ManualInvoiceDialog] selected traveler ID: {tid!r}")
 
-            existing_invoices = self.db.get_invoices(traveler_id=tid)
-            if existing_invoices:
-                inv_no = existing_invoices[0].get('invoice_no', '')
-                self.dup_warning_lbl.value = f"⚠️ Notice: Invoice {inv_no} already exists for this traveler!"
-                self.gen_btn.disabled = True
-            else:
+            if not tid:
+                self.cust_name.value = ""
+                self.cust_phone.value = ""
+                self.cust_email.value = ""
+                self.package_dd.value = ""
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
+                self._force_ui_update()
+                return
 
-        self._force_ui_update()
+            traveler = self.db.get_traveler_by_id(tid)
+            if traveler:
+                self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
+                self.cust_phone.value = traveler.get('mobile', '')
+                self.cust_email.value = traveler.get('email', '')
+                
+                bid = str(traveler.get('batch_id') or '').strip()
+                if bid:
+                    self.package_dd.value = bid
+                else:
+                    self.package_dd.value = ""
+
+                existing_invoices = self.db.get_invoices(traveler_id=tid)
+                if existing_invoices:
+                    inv_no = existing_invoices[0].get('invoice_no', '')
+                    self.dup_warning_lbl.value = f"⚠️ Notice: Invoice {inv_no} already exists for this traveler!"
+                    self.gen_btn.disabled = True
+                else:
+                    self.dup_warning_lbl.value = ""
+                    self.gen_btn.disabled = False
+
+            self._force_ui_update()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            print(f"[ManualInvoiceDialog] _sync_traveler_ui error: {ex}")
 
     def _force_ui_update(self):
         try:
@@ -2970,5 +2988,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.6
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.7
 # =================================================================================
