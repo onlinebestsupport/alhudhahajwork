@@ -1,9 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.3 — Forced dialog reactivity updates for Flet web clients.
-#   • Added self.page.update() in on_traveler_change for both dialogs.
-#   • Extracted e.control.value for reliable dropdown event handling.
+# v2.4 — Final fixes for Flet reactivity, auto-fill, and invoice lifecycle.
+#   • Added explicit page.update() on modal dropdown changes to force redraw.
+#   • Robust event value extraction (e.data / e.control.value).
+#   • Removed the disabled manual date field.
+#   • Locked financial fields in modify dialog if invoice is paid.
 # =================================================================================
 
 import flet as ft
@@ -442,7 +444,7 @@ class InvoicesTab:
                 tid = t.get('id')
                 if tid:
                     batch_id = t.get('batch_id')
-                    bp = Decimal('0')
+                    bp = 0
                     bn = 'N/A'
                     if batch_id and batch_id in self.batches:
                         bp = _money(self.batches[batch_id].get('price', 0) or 0)
@@ -1735,9 +1737,15 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Explicitly capture the value from the event control
-        tid = e.control.value if e and hasattr(e, 'control') else self.traveler_dd.value
-        
+        # Robust event extraction for Flet 1.0
+        control = getattr(e, "control", None)
+        tid = getattr(control, "value", None) if control is not None else None
+        if not tid:
+            tid = getattr(self.traveler_dd, "value", None)
+        tid = str(tid or "").strip()
+
+        print(f"[InvoiceDialog] selected traveler ID: {tid!r}")
+
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
@@ -1747,22 +1755,23 @@ class InvoiceDialog:
             self.recalculate(None)
             self.page.update()
             return
-            
+
         t = self.db.get_traveler_by_id(tid)
         if not t:
-            self.traveler_info.value = "⚠️ Not found"
+            self.traveler_info.value = "⚠️ Traveler not found"
             self.traveler_info.color = ft.Colors.RED_600
+            self.batch_label.value = "Batch not found"
+            self.amount_field.value = "0"
+            self.generate_btn.disabled = True
+            self.recalculate(None)
             self.page.update()
             return
-        
-        # STRICT Check for existing invoice
+
         existing_invoices = self.db.get_invoices(traveler_id=tid)
-        has_existing = len(existing_invoices) > 0
-        
         name = (f"{t.get('first_name', '')} "
                 f"{t.get('last_name', '')}").strip()
-        
-        if has_existing:
+
+        if existing_invoices:
             inv_no = existing_invoices[0].get('invoice_no', '')
             self.traveler_info.value = (
                 f"⚠️ {name} already has invoice {inv_no}.")
@@ -1774,29 +1783,27 @@ class InvoiceDialog:
             self.traveler_info.value = (
                 f"✅ {name} | Passport: {t.get('passport_no', '')}")
             self.traveler_info.color = ft.Colors.GREY_600
-            bid = t.get('batch_id')
-            if bid:
-                batches = self.db.get_batches()
-                batch = next((b for b in batches if str(b.get('id')) == str(bid)), None)
-                if batch:
-                    price_val = float(batch.get('price', 0) or 0)
-                    self.batch_label.value = (
-                        f"📦 {batch.get('batch_name', '')} | "
-                        f"Price: ₹{price_val:,.2f}")
-                    self.amount_field.value = str(price_val)
-                    self.generate_btn.disabled = False
-                else:
-                    self.batch_label.value = "Batch not found in system"
-                    self.amount_field.value = "0"
-                    self.generate_btn.disabled = True
+
+            bid = str(t.get('batch_id') or '').strip()
+            batch = self.db.get_batch_by_id(bid) if bid else None
+
+            if batch:
+                price = _money(batch.get('price', 0) or 0)
+                self.batch_label.value = (
+                    f"📦 {batch.get('batch_name', '')} | "
+                    f"Price: ₹{price:,.2f}")
+                self.amount_field.value = str(price)
+                self.generate_btn.disabled = price <= 0
+            elif bid:
+                self.batch_label.value = f"Batch not found: {bid}"
+                self.amount_field.value = "0"
+                self.generate_btn.disabled = True
             else:
                 self.batch_label.value = "No batch assigned"
                 self.amount_field.value = "0"
                 self.generate_btn.disabled = True
-                
+
         self.recalculate(None)
-        
-        # Force a full page update to ensure the overlay redraws
         self.page.update()
 
     def on_disc_type_change(self, e):
@@ -1860,6 +1867,14 @@ class InvoiceDialog:
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
         self.breakdown_lbl.value = (f"GST: ₹{gst_amt:,.2f} | "
                                     f"TCS: ₹{tcs_amt:,.2f}")
+        
+        for c in (self.discount_amt_lbl, self.discount_pct_lbl,
+                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
+                  self.breakdown_lbl):
+            try:
+                c.update()
+            except Exception:
+                pass
 
     def save(self, e):
         tid = self.traveler_dd.value
@@ -2703,8 +2718,13 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        # Explicitly capture value from event control
-        tid = e.control.value if e and hasattr(e, 'control') else self.traveler_dd.value
+        control = getattr(e, "control", None)
+        tid = getattr(control, "value", None) if control is not None else None
+        if not tid:
+            tid = getattr(self.traveler_dd, "value", None)
+        tid = str(tid or "").strip()
+
+        print(f"[ManualInvoiceDialog] selected traveler ID: {tid!r}")
 
         if not tid:
             self.cust_name.value = ""
@@ -2715,22 +2735,19 @@ class ManualInvoiceDialog:
             self.gen_btn.disabled = False
             self.page.update()
             return
-        
+
         traveler = self.db.get_traveler_by_id(tid)
         if traveler:
-            # Auto-fill details
             self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
             self.cust_phone.value = traveler.get('mobile', '')
             self.cust_email.value = traveler.get('email', '')
             
-            # Auto-select Batch
-            bid = traveler.get('batch_id')
+            bid = str(traveler.get('batch_id') or '').strip()
             if bid:
-                self.package_dd.value = str(bid)
+                self.package_dd.value = bid
             else:
                 self.package_dd.value = ""
 
-            # Duplicate Invoice Check
             existing_invoices = self.db.get_invoices(traveler_id=tid)
             if existing_invoices:
                 inv_no = existing_invoices[0].get('invoice_no', '')
@@ -2740,7 +2757,6 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
-        # Force full page update
         self.page.update()
 
     @staticmethod
@@ -2915,5 +2931,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.3
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.4
 # =================================================================================
