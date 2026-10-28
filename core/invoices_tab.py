@@ -1,11 +1,9 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v2.0 — Comprehensive Accounting Fixes
-#   • Added _get_effective_status for accurate Overdue filtering.
-#   • Locked financial fields in InvoiceModifyDialog if status is Paid.
-#   • Fixed Unmark-Paid cascade (marks payment as refunded).
-#   • Removed disabled manual date field from ManualInvoiceDialog.
+# v2.3 — Forced dialog reactivity updates for Flet web clients.
+#   • Added self.page.update() in on_traveler_change for both dialogs.
+#   • Extracted e.control.value for reliable dropdown event handling.
 # =================================================================================
 
 import flet as ft
@@ -104,13 +102,12 @@ class InvoicesTab:
 
     def _safe_update(self):
         if time.time() < self._typing_until:
-            print("[INVOICES] _safe_update SKIPPED (typing)")
             return
         try:
             if self.root is not None:
                 self.root.update()
-        except Exception as e:
-            print(f"[INVOICES] _safe_update failed: {e}")
+        except Exception:
+            pass
 
     def _update_table_only(self):
         for c in (self.table, self.selection_label):
@@ -375,7 +372,6 @@ class InvoicesTab:
     # 14.1.2 — Helpers
     # =============================================================================
     def safe_float(self, value, default=Decimal("0")):
-        # Backward-compatible method name; all financial values are Decimal.
         if value is None:
             return default
         text = str(value).strip()
@@ -523,7 +519,6 @@ class InvoicesTab:
             bp = tdet.get('batch_price', 0)
             paid = self.traveler_paid.get(tid, 0)
             
-            # Prevent negative package pending
             pkg_pending = max(Decimal('0.00'), bp - paid)
             
             if bp > 0:
@@ -1740,30 +1735,24 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        tid = self.traveler_dd.value
+        # Explicitly capture the value from the event control
+        tid = e.control.value if e and hasattr(e, 'control') else self.traveler_dd.value
+        
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
             self.batch_label.value = "Not assigned"
             self.amount_field.value = "0"
             self.generate_btn.disabled = True
-            for c in (self.traveler_info, self.batch_label,
-                      self.amount_field, self.generate_btn):
-                try:
-                    c.update()
-                except Exception:
-                    pass
             self.recalculate(None)
+            self.page.update()
             return
             
         t = self.db.get_traveler_by_id(tid)
         if not t:
             self.traveler_info.value = "⚠️ Not found"
             self.traveler_info.color = ft.Colors.RED_600
-            try:
-                self.traveler_info.update()
-            except Exception:
-                pass
+            self.page.update()
             return
         
         # STRICT Check for existing invoice
@@ -1788,13 +1777,13 @@ class InvoiceDialog:
             bid = t.get('batch_id')
             if bid:
                 batches = self.db.get_batches()
-                # Ensure strict string comparison
                 batch = next((b for b in batches if str(b.get('id')) == str(bid)), None)
                 if batch:
+                    price_val = float(batch.get('price', 0) or 0)
                     self.batch_label.value = (
                         f"📦 {batch.get('batch_name', '')} | "
-                        f"Price: ₹{batch.get('price', 0):,.2f}")
-                    self.amount_field.value = str(batch.get('price', 0))
+                        f"Price: ₹{price_val:,.2f}")
+                    self.amount_field.value = str(price_val)
                     self.generate_btn.disabled = False
                 else:
                     self.batch_label.value = "Batch not found in system"
@@ -1806,16 +1795,9 @@ class InvoiceDialog:
                 self.generate_btn.disabled = True
                 
         self.recalculate(None)
-        # Force UI updates for all affected elements
-        for c in (self.traveler_info, self.batch_label,
-                  self.amount_field, self.generate_btn,
-                  self.discount_amt_lbl, self.discount_pct_lbl,
-                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
-                  self.breakdown_lbl):
-            try:
-                c.update()
-            except Exception:
-                pass
+        
+        # Force a full page update to ensure the overlay redraws
+        self.page.update()
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -1823,11 +1805,8 @@ class InvoiceDialog:
         else:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
-        try:
-            self.discount_value.update()
-        except Exception:
-            pass
         self.recalculate(None)
+        self.page.update()
 
     def recalculate(self, e):
         try:
@@ -1847,7 +1826,6 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             tcs = Decimal('0.0000')
 
-        # Strict Validation for negatives
         if amount < 0: amount = Decimal('0.00')
         if gst < 0: gst = Decimal('0.0000')
         if tcs < 0: tcs = Decimal('0.0000')
@@ -1860,7 +1838,6 @@ class InvoiceDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * Decimal('100')) if amount > 0 else Decimal('0')
 
-        # Cap discount at 100%
         if disc_pct > Decimal('100'): disc_pct = Decimal('100')
         if disc_amt > amount: disc_amt = amount
 
@@ -1883,14 +1860,6 @@ class InvoiceDialog:
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
         self.breakdown_lbl.value = (f"GST: ₹{gst_amt:,.2f} | "
                                     f"TCS: ₹{tcs_amt:,.2f}")
-        
-        for c in (self.discount_amt_lbl, self.discount_pct_lbl,
-                  self.taxable_lbl, self.total_lbl, self.rounded_lbl,
-                  self.breakdown_lbl):
-            try:
-                c.update()
-            except Exception:
-                pass
 
     def save(self, e):
         tid = self.traveler_dd.value
@@ -1904,7 +1873,6 @@ class InvoiceDialog:
             self._snack("⚠️ Traveler has no batch")
             return
             
-        # Fail-safe: Double check for existing invoice before saving
         existing_invoices = self.db.get_invoices(traveler_id=tid)
         if existing_invoices:
             self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
@@ -2017,7 +1985,6 @@ class InvoiceModifyDialog:
         return field
 
     def setup_ui(self):
-        # Determine if fields should be locked
         is_paid = str(self.invoice.get('status', '')).lower() == 'paid'
 
         self.amount_field = self._field(
@@ -2186,7 +2153,6 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             tcs = Decimal('0.0000')
 
-        # Strict validation
         if amount < 0: amount = Decimal('0.00')
         if gst < 0: gst = Decimal('0.0000')
         if tcs < 0: tcs = Decimal('0.0000')
@@ -2386,7 +2352,6 @@ class InvoiceModifyDialog:
             if not target:
                 return
 
-            # FIX: Mark as refunded instead of deleting to avoid receipt deletion block
             if hasattr(self.db, "update_payment"):
                 self.db.update_payment(
                     target['id'],
@@ -2594,7 +2559,6 @@ class ManualInvoiceDialog:
             label="Traveler", options=topts, value="",
             height=48, text_size=12)
         
-        # Auto-fill and duplicate check on change
         self.traveler_dd.on_change = self.on_traveler_change
 
         self.dup_warning_lbl = ft.Text("", color=ft.Colors.RED_600, weight=ft.FontWeight.BOLD, size=11)
@@ -2739,7 +2703,9 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        tid = self.traveler_dd.value
+        # Explicitly capture value from event control
+        tid = e.control.value if e and hasattr(e, 'control') else self.traveler_dd.value
+
         if not tid:
             self.cust_name.value = ""
             self.cust_phone.value = ""
@@ -2747,11 +2713,7 @@ class ManualInvoiceDialog:
             self.package_dd.value = ""
             self.dup_warning_lbl.value = ""
             self.gen_btn.disabled = False
-            for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-                try:
-                    c.update()
-                except Exception:
-                    pass
+            self.page.update()
             return
         
         traveler = self.db.get_traveler_by_id(tid)
@@ -2778,11 +2740,8 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
-        for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-            try:
-                c.update()
-            except Exception:
-                pass
+        # Force full page update
+        self.page.update()
 
     @staticmethod
     def _money(value):
@@ -2896,7 +2855,6 @@ class ManualInvoiceDialog:
                     self._snack("⚠️ Selected package does not match the traveler's batch.")
                     return
 
-            # Fail-safe: Double check for existing invoice before saving
             existing_invoices = self.db.get_invoices(traveler_id=tid)
             if existing_invoices:
                 self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
@@ -2957,5 +2915,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v2.0
+# SECTION 14 END (FLET 1.0.0 VERSION) — v2.3
 # =================================================================================
