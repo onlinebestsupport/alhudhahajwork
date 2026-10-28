@@ -1,11 +1,12 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.7 — Added duplicate invoice prevention logic.
-#   • InvoiceDialog: Blocks creating a new invoice if one already exists 
-#     for the traveler + batch.
-#   • ManualInvoiceDialog: Blocks creating a manual invoice if the selected 
-#     traveler already has an invoice for the selected package.
+# v1.8 — Auto-fill traveler details & strict duplicate invoice prevention.
+#   • ManualInvoiceDialog: Auto-fills Name, Phone, Email on traveler selection.
+#   • ManualInvoiceDialog: Shows immediate red warning if invoice exists, 
+#     disables the generate button.
+#   • InvoiceDialog: Strictly blocks duplicate invoices (checks if ANY invoice 
+#     exists for the traveler).
 # =================================================================================
 
 import flet as ft
@@ -153,7 +154,6 @@ class InvoicesTab:
             border_radius=12,
         )
 
-        # Added GST badge
         stat_configs = [
             ("total_invoices",   "📊 Invoices",   "#3498db"),
             ("pending",          "⏳ Pending",    "#f39c12"),
@@ -1738,15 +1738,17 @@ class InvoiceDialog:
                 pass
             return
         
-        # Check for existing invoice
+        # STRICT Check for existing invoice
         existing_invoices = self.db.get_invoices(traveler_id=tid)
-        has_existing = any(str(inv.get('batch_id')) == str(t.get('batch_id')) for inv in existing_invoices)
+        has_existing = len(existing_invoices) > 0
         
         name = (f"{t.get('first_name', '')} "
                 f"{t.get('last_name', '')}").strip()
+        
         if has_existing:
+            inv_no = existing_invoices[0].get('invoice_no', '')
             self.traveler_info.value = (
-                f"⚠️ {name} already has an invoice for this package.")
+                f"⚠️ {name} already has invoice {inv_no}.")
             self.traveler_info.color = ft.Colors.RED_600
             self.batch_label.value = "Cannot create duplicate"
             self.generate_btn.disabled = True
@@ -1865,8 +1867,8 @@ class InvoiceDialog:
             
         # Fail-safe: Double check for existing invoice before saving
         existing_invoices = self.db.get_invoices(traveler_id=tid)
-        if any(str(inv.get('batch_id')) == str(bid) for inv in existing_invoices):
-            self._snack("⚠️ This traveler already has an invoice for this package.")
+        if existing_invoices:
+            self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
             return
 
         try:
@@ -2506,6 +2508,8 @@ class ManualInvoiceDialog:
         self.disc_lbl = None
         self.taxable_lbl = None
         self.total_lbl = None
+        self.dup_warning_lbl = None
+        self.gen_btn = None
 
         self.dialog = None
         self._typing_until = 0.0
@@ -2543,6 +2547,11 @@ class ManualInvoiceDialog:
         self.traveler_dd = ft.Dropdown(
             label="Traveler", options=topts, value="",
             height=48, text_size=12)
+        
+        # Auto-fill and duplicate check on change
+        self.traveler_dd.on_change = self.on_traveler_change
+
+        self.dup_warning_lbl = ft.Text("", color=ft.Colors.RED_600, weight=ft.FontWeight.BOLD, size=11)
 
         bopts = [ft.dropdown.Option(key="", text="Select Batch")]
         try:
@@ -2631,7 +2640,7 @@ class ManualInvoiceDialog:
         def generate(e):
             self.generate_invoice()
 
-        gen_btn = ft.Button(
+        self.gen_btn = ft.Button(
             content=ft.Text("💾 Generate Invoice"),
             on_click=generate, height=42,
             bgcolor="#27ae60", color=ft.Colors.WHITE)
@@ -2647,6 +2656,7 @@ class ManualInvoiceDialog:
                         ft.Container(content=self.traveler_dd,
                                      col={"xs": 12, "sm": 6, "md": 6}),
                     ], spacing=8, run_spacing=8),
+                self.dup_warning_lbl,
                 ft.ResponsiveRow(
                     controls=[
                         ft.Container(content=self.cust_name,
@@ -2685,10 +2695,56 @@ class ManualInvoiceDialog:
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
-                gen_btn,
+                self.gen_btn,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
+
+    def on_traveler_change(self, e):
+        tid = self.traveler_dd.value
+        if not tid:
+            self.cust_name.value = ""
+            self.cust_phone.value = ""
+            self.cust_email.value = ""
+            self.dup_warning_lbl.value = ""
+            self.gen_btn.disabled = False
+            try:
+                self.cust_name.update()
+                self.cust_phone.update()
+                self.cust_email.update()
+                self.dup_warning_lbl.update()
+                self.gen_btn.update()
+            except Exception:
+                pass
+            return
+        
+        traveler = self.db.get_traveler_by_id(tid)
+        if traveler:
+            # Auto-fill details
+            self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
+            self.cust_phone.value = traveler.get('mobile', '')
+            self.cust_email.value = traveler.get('email', '')
+
+            # Duplicate Invoice Check
+            existing_invoices = self.db.get_invoices(traveler_id=tid)
+            if existing_invoices:
+                inv_no = existing_invoices[0].get('invoice_no', '')
+                self.dup_warning_lbl.value = f"⚠️ Notice: Invoice {inv_no} already exists for this traveler!"
+                self.gen_btn.disabled = True
+            else:
+                self.dup_warning_lbl.value = ""
+                self.gen_btn.disabled = False
+
+        try: self.cust_name.update()
+        except: pass
+        try: self.cust_phone.update()
+        except: pass
+        try: self.cust_email.update()
+        except: pass
+        try: self.dup_warning_lbl.update()
+        except: pass
+        try: self.gen_btn.update()
+        except: pass
 
     def refresh_items(self):
         self.items_table.rows.clear()
@@ -2790,8 +2846,8 @@ class ManualInvoiceDialog:
 
             # Fail-safe: Double check for existing invoice before saving
             existing_invoices = self.db.get_invoices(traveler_id=tid)
-            if any(str(inv.get('batch_id')) == str(bid) for inv in existing_invoices):
-                self._snack("⚠️ This traveler already has an invoice for this package.")
+            if existing_invoices:
+                self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
                 return
 
         try:
@@ -2849,5 +2905,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.7
+# SECTION 14 END (FLET 1.0.0 VERSION) — v1.8
 # =================================================================================
