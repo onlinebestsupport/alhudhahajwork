@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v4.6 — Definitive Fix for Dropdown click events in AlertDialog.
-#   • Removed fixed-height Container from AlertDialog content.
-#   • Applied height to the inner Column instead (fixes Flet 1.0.5 event-swallow bug).
-#   • Added menu_height to dropdowns for mobile compatibility.
+# v4.5 — Ultimate fix for Flet 1.0.5 Dropdown sync & Layout.
+#   • Restored fixed-width Container for AlertDialogs to fix squished desktop layout.
+#   • Added an aggressive async polling loop (1500ms) in on_traveler_change to 
+#     catch Flet's delayed dropdown value updates.
+#   • Added fuzzy text matching to resolve IDs if Flet sends text.
 # =================================================================================
 
 import flet as ft
@@ -1594,7 +1595,7 @@ class InvoiceDialog:
         self.traveler_dd = ft.Dropdown(
             label="👤 Traveler *",
             options=traveler_opts, value="",
-            height=48, text_size=12, menu_height=300)
+            height=48, text_size=12)
         self.traveler_dd.on_change = self.on_traveler_change
 
         self.traveler_info = ft.Text(
@@ -1626,7 +1627,7 @@ class InvoiceDialog:
                 ft.dropdown.Option(key="pct", text="Percentage (%)"),
                 ft.dropdown.Option(key="amt", text="Fixed Amount (₹)"),
             ],
-            value="pct", height=48, text_size=12, menu_height=200)
+            value="pct", height=48, text_size=12)
         self.discount_type_dd.on_change = self.on_disc_type_change
 
         self.discount_value = self._field(
@@ -1650,7 +1651,7 @@ class InvoiceDialog:
             label="📊 GST %",
             options=[ft.dropdown.Option(x) for x in
                      ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12, menu_height=250)
+            value="18", height=48, text_size=12)
         self.gst_dd.on_change = self.recalculate
 
         self.tcs_field = self._field(
@@ -1715,7 +1716,6 @@ class InvoiceDialog:
                 self.notes_field,
             ],
             spacing=10,
-            height=600, # Height moved here from Container
             scroll=ft.ScrollMode.AUTO,
         )
 
@@ -1724,7 +1724,7 @@ class InvoiceDialog:
             title=ft.Text("📄 Generate Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=560, padding=10),
+                                 width=560, height=680, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1747,26 +1747,59 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        val = e.control.value
-        if not val:
-            val = e.data
-            
-        tid = self._resolve_tid(val)
-        if tid:
-            self._apply_traveler_change(tid)
+        # Apply the event value immediately. Some Flet web versions update
+        # the visible label before traveler_dd.value is synchronized.
+        control = getattr(e, 'control', None)
+        event_val = (getattr(control, 'value', None)
+                     or getattr(e, 'data', None)
+                     or '')
+        immediate_tid = self._resolve_tid(event_val)
+        if immediate_tid:
+            self._apply_traveler_change(immediate_tid)
+            self._last_applied_tid = immediate_tid
+
+        async def _process():
+            # Keep polling for delayed browser-side Dropdown synchronization.
+            for _ in range(15):
+                await asyncio.sleep(0.1)
+                values = [
+                    getattr(self.traveler_dd, 'value', None),
+                    getattr(control, 'value', None),
+                    getattr(e, 'data', None),
+                    event_val,
+                ]
+                for val in values:
+                    tid = self._resolve_tid(val)
+                    if tid and tid != getattr(
+                            self, '_last_applied_tid', None):
+                        self._apply_traveler_change(tid)
+                        self._last_applied_tid = tid
+                        return
+                if any(values):
+                    return
+            print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
+
+        try:
+            self.page.run_task(_process)
+        except Exception as ex:
+            # Immediate resolution remains usable on older Flet runtimes.
+            print(f"[DEBUG-INV] polling task failed: {ex}")
 
     def _resolve_tid(self, val):
         if not val:
             return None
         val_str = str(val).strip()
         
+        # 1. Check map by key
         if val_str in self.traveler_map:
             return self.traveler_map[val_str]['id']
             
+        # 2. Check map by exact text
         for k, info in self.traveler_map.items():
             if info['text'] == val_str:
                 return info['id']
                 
+        # 3. Check database directly (in case of formatting discrepancies)
         for t in self.db.get_travelers():
             name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
             pp = t.get('passport_no', '')
@@ -1774,6 +1807,7 @@ class InvoiceDialog:
             if label == val_str or name == val_str or str(t['id']) == val_str:
                 return str(t['id']).strip()
                 
+            # Fuzzy match
             if val_str in label or val_str in name:
                  return str(t['id']).strip()
                  
@@ -1819,14 +1853,19 @@ class InvoiceDialog:
             self.traveler_info.color = ft.Colors.GREY_600
 
             bid = str(t.get('batch_id') or '').strip()
+            print(f"[InvoiceDialog] traveler batch ID: {bid!r}")
             batch = None
             if bid:
-                batch = self.db.get_batch_by_id(bid)
+                try:
+                    batch = self.db.get_batch_by_id(bid)
+                except Exception as ex:
+                    print(f"[InvoiceDialog] direct batch lookup failed: {ex}")
                 if not batch:
                     batch = next(
                         (b for b in self.db.get_batches()
                          if str(b.get('id') or '').strip() == bid),
                         None)
+            print(f"[InvoiceDialog] matched batch: {batch}")
 
             if batch:
                 price = _money(batch.get('price', 0) or 0)
@@ -2072,7 +2111,7 @@ class InvoiceModifyDialog:
             options=[
                 ft.dropdown.Option(key="pct", text="Percentage (%)"),
                 ft.dropdown.Option(key="amt", text="Fixed Amount (₹)"),
-            ], value="pct", height=48, text_size=12, disabled=is_paid, menu_height=200)
+            ], value="pct", height=48, text_size=12, disabled=is_paid)
         self.disc_type_dd.on_change = self.recalc
 
         self.disc_value = self._field(
@@ -2096,7 +2135,7 @@ class InvoiceModifyDialog:
             label="GST %",
             options=[ft.dropdown.Option(x) for x in
                      ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12, disabled=is_paid, menu_height=250)
+            value="18", height=48, text_size=12, disabled=is_paid)
         self.gst_dd.on_change = self.recalc
 
         self.tcs_field = self._field(
@@ -2120,7 +2159,7 @@ class InvoiceModifyDialog:
             label="Status",
             options=[ft.dropdown.Option(x) for x in
                      ["pending", "paid", "overdue", "cancelled"]],
-            value="pending", height=48, text_size=12, menu_height=250)
+            value="pending", height=48, text_size=12)
 
         self.notes_field = self._field(
             label="Notes", multiline=True,
@@ -2154,14 +2193,14 @@ class InvoiceModifyDialog:
                 self.taxable_lbl,
                 self.rounded_lbl,
                 self.notes_field,
-            ], spacing=10, height=600, scroll=ft.ScrollMode.AUTO)
+            ], spacing=10, scroll=ft.ScrollMode.AUTO)
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Modify Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=520, padding=10),
+                                 width=520, height=620, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2539,14 +2578,14 @@ class InvoiceDetailsDialog:
                         italic=True, color="#27ae60"),
                 ft.Text(f"Notes: {inv.get('notes', '')}", size=11,
                         color=ft.Colors.GREY_600),
-            ], spacing=6, height=500, scroll=ft.ScrollMode.AUTO)
+            ], spacing=6, scroll=ft.ScrollMode.AUTO)
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"📄 {inv.get('invoice_no', 'Invoice')}",
                           weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(content=content,
-                                 width=520, padding=10),
+                                 width=520, height=560, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -2630,7 +2669,7 @@ class ManualInvoiceDialog:
             pass
         self.traveler_dd = ft.Dropdown(
             label="Traveler", options=topts, value="",
-            height=48, text_size=12, menu_height=300)
+            height=48, text_size=12)
         
         self.traveler_dd.on_change = self.on_traveler_change
 
@@ -2647,7 +2686,7 @@ class ManualInvoiceDialog:
             pass
         self.package_dd = ft.Dropdown(
             label="Package", options=bopts, value="",
-            height=48, text_size=12, menu_height=300)
+            height=48, text_size=12)
 
         self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
@@ -2760,7 +2799,6 @@ class ManualInvoiceDialog:
                 self.taxable_lbl, self.total_lbl,
             ],
             spacing=10,
-            height=600, # Height moved here
             scroll=ft.ScrollMode.AUTO,
         )
 
@@ -2769,7 +2807,7 @@ class ManualInvoiceDialog:
             title=ft.Text("🧾 Manual Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=760, padding=10),
+                                 width=760, height=680, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2779,31 +2817,47 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        val = e.control.value
-        if not val:
-            val = e.data
-            
-        tid = self._resolve_tid(val)
-        if tid:
-            self._apply_traveler_change(tid)
+        # Capture what we can from the event immediately
+        control = getattr(e, 'control', None)
+        event_val = (getattr(control, 'value', None)
+                     or getattr(e, 'data', None)
+                     or '')
+        
+        async def _process():
+            # Aggressive polling to catch Flet's delayed value update
+            for _ in range(15):
+                await asyncio.sleep(0.1)
+                val = self.traveler_dd.value or event_val
+                if val:
+                    tid = self._resolve_tid(val)
+                    if tid:
+                        self._apply_traveler_change(tid)
+                        return
+            print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
+
+        self.page.run_task(_process)
 
     def _resolve_tid(self, val):
         if not val:
             return None
         val_str = str(val).strip()
         
+        # 1. Check map by key
         if val_str in self.traveler_map:
             return self.traveler_map[val_str]['id']
             
+        # 2. Check map by exact text
         for k, info in self.traveler_map.items():
             if info['text'] == val_str:
                 return info['id']
                 
+        # 3. Check database directly
         for t in self.db.get_travelers():
             name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
             if name == val_str or str(t['id']) == val_str:
                 return str(t['id']).strip()
                 
+            # 4. Fuzzy match
             if val_str in name:
                  return str(t['id']).strip()
                  
@@ -3023,5 +3077,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v4.6
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.5
 # =================================================================================
