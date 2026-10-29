@@ -434,17 +434,25 @@ class InvoicesTab:
         try:
             self.invoices = self.db.get_invoices()
             self.travelers = {
-                t['id']: (f"{t.get('first_name', '')} "
-                          f"{t.get('last_name', '')}").strip() or "Unnamed"
+                str(t.get('id') or '').strip(): (
+                    f"{t.get('first_name', '')} "
+                    f"{t.get('last_name', '')}"
+                ).strip() or "Unnamed"
                 for t in self.db.get_travelers()
+                if str(t.get('id') or '').strip()
             }
-            self.batches = {b['id']: b for b in self.db.get_batches()}
+            self.batches = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
 
             self.traveler_details_cache = {}
             for t in self.db.get_travelers():
                 tid = t.get('id')
                 if tid:
-                    batch_id = t.get('batch_id')
+                    tid = str(t.get('id') or '').strip()
+                    batch_id = str(t.get('batch_id') or '').strip()
                     bp = 0
                     bn = 'N/A'
                     if batch_id and batch_id in self.batches:
@@ -1759,8 +1767,8 @@ class InvoiceDialog:
               f"control_value={getattr(control, 'value', None)!r}", flush=True)
         immediate_tid = self._resolve_tid(event_val)
         if immediate_tid:
-            self._apply_traveler_change(immediate_tid)
             self._last_applied_tid = immediate_tid
+            self._apply_traveler_change(immediate_tid)
 
         async def _process():
             # Keep polling for delayed browser-side Dropdown synchronization.
@@ -1776,8 +1784,8 @@ class InvoiceDialog:
                     tid = self._resolve_tid(val)
                     if tid and tid != getattr(
                             self, '_last_applied_tid', None):
-                        self._apply_traveler_change(tid)
                         self._last_applied_tid = tid
+                        self._apply_traveler_change(tid)
                         return
                 if any(values):
                     return
@@ -1991,8 +1999,9 @@ class InvoiceDialog:
                 pass
 
     def save(self, e):
-        val = self.traveler_dd.value
-        tid = self._resolve_tid(val)
+        val = getattr(self.traveler_dd, 'value', None)
+        tid = (getattr(self, '_last_applied_tid', None)
+               or self._resolve_tid(val))
                     
         if not tid:
             self._snack("⚠️ Select a traveler")
@@ -2650,6 +2659,8 @@ class ManualInvoiceDialog:
         self.items_table = None
         self.item_rows = []
         self.traveler_map = {}
+        self._last_applied_tid = None
+        self._selection_watch_running = False
 
         self.sub_lbl = None
         self.disc_lbl = None
@@ -2710,8 +2721,11 @@ class ManualInvoiceDialog:
         bopts = [ft.dropdown.Option(key="", text="Select Batch")]
         try:
             for b in self.db.get_batches():
+                bid = str(b.get('id') or '').strip()
+                if not bid:
+                    continue
                 bopts.append(ft.dropdown.Option(
-                    key=str(b['id']),
+                    key=bid,
                     text=(f"{b.get('batch_name', '')} "
                           f"(₹{b.get('price', 0):,.0f})")))
         except Exception:
@@ -2763,7 +2777,7 @@ class ManualInvoiceDialog:
             try:
                 batch = None
                 for b in self.db.get_batches():
-                    if str(b.get('id')) == str(bid):
+                    if str(b.get('id') or '').strip() == str(bid).strip():
                         batch = b
                         break
                 if not batch:
@@ -2849,25 +2863,33 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        # Capture what we can from the event immediately
         control = getattr(e, 'control', None)
         event_val = (getattr(control, 'value', None)
                      or getattr(e, 'data', None)
                      or '')
-        
+        print(f"[ManualInvoice] traveler dropdown event: value={event_val!r}",
+              flush=True)
+        tid = self._resolve_tid(event_val)
+        if tid:
+            self._last_applied_tid = tid
+            self._apply_traveler_change(tid)
+
         async def _process():
-            # Aggressive polling to catch Flet's delayed value update
             for _ in range(15):
                 await asyncio.sleep(0.1)
-                val = self.traveler_dd.value or event_val
-                if val:
-                    tid = self._resolve_tid(val)
-                    if tid:
-                        self._apply_traveler_change(tid)
+                for val in (getattr(self.traveler_dd, 'value', None),
+                            getattr(control, 'value', None),
+                            getattr(e, 'data', None), event_val):
+                    candidate = self._resolve_tid(val)
+                    if candidate and candidate != self._last_applied_tid:
+                        self._last_applied_tid = candidate
+                        self._apply_traveler_change(candidate)
                         return
-            print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
 
-        self.page.run_task(_process)
+        try:
+            self.page.run_task(_process)
+        except Exception as ex:
+            print(f"[ManualInvoice] polling task failed: {ex}")
 
     def _resolve_tid(self, val):
         if not val:
@@ -2928,6 +2950,25 @@ class ManualInvoiceDialog:
                 self.gen_btn.disabled = False
 
         self._force_ui_update()
+
+    async def _watch_traveler_selection(self):
+        """Fallback for a browser dropdown that changes visually without
+        consistently dispatching Flet on_change."""
+        if self._selection_watch_running:
+            return
+        self._selection_watch_running = True
+        print("[ManualInvoice] traveler watcher started", flush=True)
+        try:
+            for _ in range(240):
+                await asyncio.sleep(0.25)
+                tid = self._resolve_tid(getattr(self.traveler_dd, 'value', None))
+                if tid and tid != self._last_applied_tid:
+                    self._last_applied_tid = tid
+                    self._apply_traveler_change(tid)
+        except Exception as ex:
+            print(f"[ManualInvoice] traveler watcher failed: {ex}")
+        finally:
+            self._selection_watch_running = False
 
     def _force_ui_update(self):
         try:
@@ -3036,16 +3077,17 @@ class ManualInvoiceDialog:
             self._snack("⚠️ Customer name and phone required")
             return
 
-        val = self.traveler_dd.value
-        tid = self._resolve_tid(val)
-                    
-        bid = self.package_dd.value
+        val = getattr(self.traveler_dd, 'value', None)
+        tid = (getattr(self, '_last_applied_tid', None)
+               or self._resolve_tid(val))
+
+        bid = str(getattr(self.package_dd, 'value', None) or '').strip()
 
         if tid:
             traveler = self.db.get_traveler_by_id(tid)
             if traveler and bid:
-                t_batch = str(traveler.get('batch_id', ''))
-                if t_batch and t_batch != str(bid):
+                t_batch = str(traveler.get('batch_id') or '').strip()
+                if t_batch and t_batch != bid:
                     self._snack("⚠️ Selected package does not match the traveler's batch.")
                     return
 
@@ -3100,6 +3142,10 @@ class ManualInvoiceDialog:
 
     def show(self):
         self.page.show_dialog(self.dialog)
+        try:
+            self.page.run_task(self._watch_traveler_selection)
+        except Exception as ex:
+            print(f"[ManualInvoice] traveler watcher could not start: {ex}")
 
     def _snack(self, msg):
         try:
