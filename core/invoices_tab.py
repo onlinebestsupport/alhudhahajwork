@@ -1,11 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v1.9 — Auto-fill logic fixed for both Standard and Manual Invoice dialogs.
-#   • InvoiceDialog: Now correctly auto-fills the Base Amount from the 
-#     traveler's assigned batch.
-#   • ManualInvoiceDialog: Now auto-fills Name, Phone, Email, AND selects the 
-#     assigned Package when a traveler is chosen.
+# v4.5 — Ultimate fix for Flet 1.0.5 Dropdown sync & Layout.
+#   • Restored fixed-width Container for AlertDialogs to fix squished desktop layout.
+#   • Added an aggressive async polling loop (1500ms) in on_traveler_change to 
+#     catch Flet's delayed dropdown value updates.
+#   • Added fuzzy text matching to resolve IDs if Flet sends text.
 # =================================================================================
 
 import flet as ft
@@ -14,6 +14,7 @@ import os
 import time
 import base64
 import io
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -88,17 +89,28 @@ class InvoicesTab:
         return self.root
 
     # =============================================================================
-    # 14.1.0 — _safe_update / _update_table_only
+    # 14.1.0 — Helpers
     # =============================================================================
+    def _get_effective_status(self, inv):
+        status = str(inv.get('status', 'pending')).lower()
+        due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
+        if status == 'pending' and due_date:
+            try:
+                due_dt = datetime.strptime(due_date, "%d/%m/%Y").date()
+                if datetime.now().date() > due_dt:
+                    return 'overdue'
+            except Exception:
+                pass
+        return status
+
     def _safe_update(self):
         if time.time() < self._typing_until:
-            print("[INVOICES] _safe_update SKIPPED (typing)")
             return
         try:
             if self.root is not None:
                 self.root.update()
-        except Exception as e:
-            print(f"[INVOICES] _safe_update failed: {e}")
+        except Exception:
+            pass
 
     def _update_table_only(self):
         for c in (self.table, self.selection_label):
@@ -363,7 +375,6 @@ class InvoicesTab:
     # 14.1.2 — Helpers
     # =============================================================================
     def safe_float(self, value, default=Decimal("0")):
-        # Backward-compatible method name; all financial values are Decimal.
         if value is None:
             return default
         text = str(value).strip()
@@ -373,27 +384,6 @@ class InvoicesTab:
             return Decimal(text)
         except (InvalidOperation, ValueError, TypeError):
             return default
-
-    @staticmethod
-    def money(value):
-        try:
-            return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        except (InvalidOperation, ValueError, TypeError):
-            return Decimal("0.00")
-
-    @staticmethod
-    def rate(value):
-        try:
-            return Decimal(str(value)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-        except (InvalidOperation, ValueError, TypeError):
-            return Decimal("0.0000")
-
-    @staticmethod
-    def round_rule(value):
-        value = Decimal(str(value))
-        floor_value = value.to_integral_value(rounding='ROUND_FLOOR')
-        return (value.to_integral_value(rounding='ROUND_CEILING')
-                if value - floor_value >= Decimal("0.50") else floor_value)
 
     def safe_str(self, value, default=''):
         if value is None:
@@ -519,22 +509,12 @@ class InvoicesTab:
                 inv.get('rounded_total', total))
             due_date = self._fmt_date_ddmmyyyy(inv.get('due_date', ''))
             
-            # Handle Effective Overdue Status
-            db_status = self.safe_str(inv.get('status', 'pending')).lower()
-            display_status = db_status.upper()
-            status_color = ("#27ae60" if db_status == "paid"
-                            else "#f39c12" if db_status == "pending"
-                            else "#e74c3c" if db_status == "overdue"
+            eff_status = self._get_effective_status(inv)
+            display_status = eff_status.upper()
+            status_color = ("#27ae60" if eff_status == "paid"
+                            else "#f39c12" if eff_status == "pending"
+                            else "#e74c3c" if eff_status == "overdue"
                             else "#95a5a6")
-            
-            if db_status == "pending" and due_date:
-                try:
-                    due_dt = datetime.strptime(due_date, "%d/%m/%Y").date()
-                    if datetime.now().date() > due_dt:
-                        display_status = "OVERDUE"
-                        status_color = "#e74c3c"
-                except Exception:
-                    pass
 
             tid = inv.get('traveler_id', '')
             tdet = self.traveler_details_cache.get(
@@ -542,7 +522,6 @@ class InvoicesTab:
             bp = tdet.get('batch_price', 0)
             paid = self.traveler_paid.get(tid, 0)
             
-            # Prevent negative package pending
             pkg_pending = max(Decimal('0.00'), bp - paid)
             
             if bp > 0:
@@ -551,7 +530,7 @@ class InvoicesTab:
                     pkg_color = "#27ae60"
                 else:
                     pkg_txt = f"₹{pkg_pending:,.0f}"
-                    pkg_color = ("#e67e22" if pkg_pending < bp * 0.5
+                    pkg_color = ("#e67e22" if pkg_pending < bp * Decimal('0.5')
                                  else "#e74c3c")
             else:
                 pkg_txt = "N/A"
@@ -705,10 +684,10 @@ class InvoicesTab:
         
         pending = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                       for i in self.invoices
-                      if i.get('status') == 'pending')
+                      if self._get_effective_status(i) == 'pending')
         paid = sum(self.safe_float(i.get('rounded_total', i.get('total_amount', 0)))
                    for i in self.invoices
-                   if i.get('status') == 'paid')
+                   if self._get_effective_status(i) == 'paid')
         discount = sum(self.safe_float(i.get('discount_amount', 0))
                        for i in self.invoices)
         gst = sum(self.safe_float(i.get('gst_amount', 0))
@@ -754,9 +733,10 @@ class InvoicesTab:
         search = (self.search_input.value or "").lower().strip() \
             if self.search_input else ""
         filtered = self.invoices
+        
         if status != "All":
-            filtered = [i for i in filtered
-                        if str(i.get('status', '')) == status]
+            filtered = [i for i in filtered if self._get_effective_status(i) == status]
+            
         if search:
             filtered = [
                 i for i in filtered
@@ -1562,6 +1542,7 @@ class InvoiceDialog:
         self.notes_field = None
         self.generate_btn = None
         self.dialog = None
+        self.traveler_map = {}
 
         self._computed_discount_pct = 0.0
         self._computed_discount_amount = 0.0
@@ -1592,14 +1573,22 @@ class InvoiceDialog:
 
     def setup_ui(self):
         traveler_opts = [ft.dropdown.Option(key="", text="Select Traveler")]
+        self.traveler_map = {}
         try:
-            for t in self.db.get_travelers():
+            for i, t in enumerate(self.db.get_travelers()):
+                if not t.get('id'):
+                    continue
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
                 pp = t.get('passport_no', '')
                 label = f"{name} ({pp})" if pp else name
+                key = f"t_{i}"
+                self.traveler_map[key] = {
+                    'id': str(t['id']).strip(),
+                    'text': label
+                }
                 traveler_opts.append(
-                    ft.dropdown.Option(key=str(t['id']), text=label[:60]))
+                    ft.dropdown.Option(key=key, text=label))
         except Exception:
             pass
 
@@ -1758,17 +1747,52 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        """Load the selected traveler's assigned batch price into Base Amount."""
-        # Flet's event control is the source of truth.  Reading only the
-        # stored dropdown value can return the old value during on_change.
-        control = getattr(e, "control", None)
-        tid = getattr(control, "value", None) if control is not None else None
-        if not tid:
-            tid = getattr(self.traveler_dd, "value", None)
-        tid = str(tid or "").strip()
+        # Capture what we can from the event immediately
+        event_val = e.control.value or e.data
+        
+        async def _process():
+            # Aggressive polling to catch Flet's delayed value update
+            for _ in range(15):
+                await asyncio.sleep(0.1)
+                val = self.traveler_dd.value or event_val
+                if val:
+                    tid = self._resolve_tid(val)
+                    if tid:
+                        self._apply_traveler_change(tid)
+                        return
+            print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
 
-        print(f"[InvoiceDialog] selected traveler ID: {tid!r}")
+        self.page.run_task(_process)
 
+    def _resolve_tid(self, val):
+        if not val:
+            return None
+        val_str = str(val).strip()
+        
+        # 1. Check map by key
+        if val_str in self.traveler_map:
+            return self.traveler_map[val_str]['id']
+            
+        # 2. Check map by exact text
+        for k, info in self.traveler_map.items():
+            if info['text'] == val_str:
+                return info['id']
+                
+        # 3. Check database directly (in case of formatting discrepancies)
+        for t in self.db.get_travelers():
+            name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
+            pp = t.get('passport_no', '')
+            label = f"{name} ({pp})" if pp else name
+            if label == val_str or name == val_str or str(t['id']) == val_str:
+                return str(t['id']).strip()
+                
+            # Fuzzy match
+            if val_str in label or val_str in name:
+                 return str(t['id']).strip()
+                 
+        return None
+
+    def _apply_traveler_change(self, tid):
         if not tid:
             self.traveler_info.value = "No traveler selected"
             self.traveler_info.color = ft.Colors.GREY_600
@@ -1776,11 +1800,10 @@ class InvoiceDialog:
             self.amount_field.value = "0"
             self.generate_btn.disabled = True
             self.recalculate(None)
-            self._update_traveler_selection_controls()
+            self._force_ui_update()
             return
 
         t = self.db.get_traveler_by_id(tid)
-        print(f"[InvoiceDialog] traveler record: {t}")
         if not t:
             self.traveler_info.value = "⚠️ Traveler not found"
             self.traveler_info.color = ft.Colors.RED_600
@@ -1788,7 +1811,7 @@ class InvoiceDialog:
             self.amount_field.value = "0"
             self.generate_btn.disabled = True
             self.recalculate(None)
-            self._update_traveler_selection_controls()
+            self._force_ui_update()
             return
 
         existing_invoices = self.db.get_invoices(traveler_id=tid)
@@ -1808,26 +1831,8 @@ class InvoiceDialog:
                 f"✅ {name} | Passport: {t.get('passport_no', '')}")
             self.traveler_info.color = ft.Colors.GREY_600
 
-            # Add Traveler stores the selected package in this exact field.
-            # Use the database lookup first so the invoice always follows the
-            # saved traveler -> batch relationship, not a stale UI selection.
             bid = str(t.get('batch_id') or '').strip()
-            print(f"[InvoiceDialog] traveler batch ID: {bid!r}")
-            batch = None
-            if bid:
-                try:
-                    batch = self.db.get_batch_by_id(bid)
-                except Exception as ex:
-                    print(f"[InvoiceDialog] direct batch lookup failed: {ex}")
-
-                # Compatibility fallback for databases that return IDs with
-                # different scalar types or older database implementations.
-                if not batch:
-                    batch = next(
-                        (b for b in self.db.get_batches()
-                         if str(b.get('id') or '').strip() == bid),
-                        None)
-            print(f"[InvoiceDialog] matched batch: {batch}")
+            batch = self.db.get_batch_by_id(bid) if bid else None
 
             if batch:
                 price = _money(batch.get('price', 0) or 0)
@@ -1846,20 +1851,13 @@ class InvoiceDialog:
                 self.generate_btn.disabled = True
 
         self.recalculate(None)
-        self._update_traveler_selection_controls()
+        self._force_ui_update()
 
-    def _update_traveler_selection_controls(self):
-        """Refresh controls changed by traveler selection without failing headless tests."""
-        for control in (
-            self.traveler_info, self.batch_label, self.amount_field,
-            self.generate_btn, self.discount_amt_lbl, self.discount_pct_lbl,
-            self.taxable_lbl, self.total_lbl, self.rounded_lbl,
-            self.breakdown_lbl,
-        ):
-            try:
-                control.update()
-            except Exception:
-                pass
+    def _force_ui_update(self):
+        try:
+            self.dialog.update()
+        except Exception as ex:
+            print(f"[DEBUG-INV] Dialog update error: {ex}")
 
     def on_disc_type_change(self, e):
         if self.discount_type_dd.value == "amt":
@@ -1867,11 +1865,8 @@ class InvoiceDialog:
         else:
             self.discount_value.label = "🎁 Discount Value (%)"
         self.discount_value.value = "0"
-        try:
-            self.discount_value.update()
-        except Exception:
-            pass
         self.recalculate(None)
+        self._force_ui_update()
 
     def recalculate(self, e):
         try:
@@ -1891,7 +1886,6 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             tcs = Decimal('0.0000')
 
-        # Strict Validation for negatives
         if amount < 0: amount = Decimal('0.00')
         if gst < 0: gst = Decimal('0.0000')
         if tcs < 0: tcs = Decimal('0.0000')
@@ -1904,7 +1898,6 @@ class InvoiceDialog:
             disc_amt = dval
             disc_pct = (disc_amt / amount * Decimal('100')) if amount > 0 else Decimal('0')
 
-        # Cap discount at 100%
         if disc_pct > Decimal('100'): disc_pct = Decimal('100')
         if disc_amt > amount: disc_amt = amount
 
@@ -1937,7 +1930,9 @@ class InvoiceDialog:
                 pass
 
     def save(self, e):
-        tid = self.traveler_dd.value
+        val = self.traveler_dd.value
+        tid = self._resolve_tid(val)
+                    
         if not tid:
             self._snack("⚠️ Select a traveler")
             return
@@ -1948,7 +1943,6 @@ class InvoiceDialog:
             self._snack("⚠️ Traveler has no batch")
             return
             
-        # Fail-safe: Double check for existing invoice before saving
         existing_invoices = self.db.get_invoices(traveler_id=tid)
         if existing_invoices:
             self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
@@ -2061,8 +2055,10 @@ class InvoiceModifyDialog:
         return field
 
     def setup_ui(self):
+        is_paid = str(self.invoice.get('status', '')).lower() == 'paid'
+
         self.amount_field = self._field(
-            label="Base Amount (₹)", height=48, text_size=12)
+            label="Base Amount (₹)", height=48, text_size=12, disabled=is_paid)
 
         def _amt_change(e, _f=self.amount_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2082,12 +2078,12 @@ class InvoiceModifyDialog:
             options=[
                 ft.dropdown.Option(key="pct", text="Percentage (%)"),
                 ft.dropdown.Option(key="amt", text="Fixed Amount (₹)"),
-            ], value="pct", height=48, text_size=12)
+            ], value="pct", height=48, text_size=12, disabled=is_paid)
         self.disc_type_dd.on_change = self.recalc
 
         self.disc_value = self._field(
             label="Discount Value", value="0",
-            height=48, text_size=12)
+            height=48, text_size=12, disabled=is_paid)
 
         def _dv_change(e, _f=self.disc_value):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2106,12 +2102,12 @@ class InvoiceModifyDialog:
             label="GST %",
             options=[ft.dropdown.Option(x) for x in
                      ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12)
+            value="18", height=48, text_size=12, disabled=is_paid)
         self.gst_dd.on_change = self.recalc
 
         self.tcs_field = self._field(
             label="TCS %", value="0.1",
-            height=48, text_size=12)
+            height=48, text_size=12, disabled=is_paid)
 
         def _tcs_change(e, _f=self.tcs_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2188,7 +2184,7 @@ class InvoiceModifyDialog:
         existing_pct = self._f(inv.get('discount_percentage', 0))
         existing_amt = self._f(inv.get('discount_amount', 0))
 
-        use_amt = (abs(existing_pct - round(existing_pct, 2)) > 0.001
+        use_amt = (abs(existing_pct - round(existing_pct, 2)) > Decimal('0.001')
                    and existing_amt > 0)
         if use_amt:
             self.disc_type_dd.value = "amt"
@@ -2227,7 +2223,6 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             tcs = Decimal('0.0000')
 
-        # Strict validation
         if amount < 0: amount = Decimal('0.00')
         if gst < 0: gst = Decimal('0.0000')
         if tcs < 0: tcs = Decimal('0.0000')
@@ -2427,12 +2422,20 @@ class InvoiceModifyDialog:
             if not target:
                 return
 
-            if hasattr(self.db, "delete_payment"):
-                self.db.delete_payment(target['id'])
+            if hasattr(self.db, "update_payment"):
+                self.db.update_payment(
+                    target['id'],
+                    {
+                        "status": "refunded",
+                        "notes": "Auto-voided: Invoice marked unpaid"
+                    }
+                )
             else:
-                self.db.payments = self.db.payments[
-                    self.db.payments['id'] != target['id']]
+                self.db.payments.loc[
+                    self.db.payments['id'] == target['id'],
+                    'status'] = 'refunded'
                 self.db._save_df(self.db.payments, "payments.csv")
+                
         except Exception as ex:
             print(f"[cascade_unmark_paid] {ex}")
 
@@ -2579,9 +2582,9 @@ class ManualInvoiceDialog:
         self.cust_email = None
         self.traveler_dd = None
         self.package_dd = None
-        self.invoice_date = None
         self.items_table = None
         self.item_rows = []
+        self.traveler_map = {}
 
         self.sub_lbl = None
         self.disc_lbl = None
@@ -2615,19 +2618,26 @@ class ManualInvoiceDialog:
 
     def setup_ui(self):
         topts = [ft.dropdown.Option(key="", text="Select Traveler")]
+        self.traveler_map = {}
         try:
-            for t in self.db.get_travelers():
+            for i, t in enumerate(self.db.get_travelers()):
+                if not t.get('id'):
+                    continue
                 name = (f"{t.get('first_name', '')} "
                         f"{t.get('last_name', '')}").strip()
+                key = f"t_{i}"
+                self.traveler_map[key] = {
+                    'id': str(t['id']).strip(),
+                    'text': name
+                }
                 topts.append(ft.dropdown.Option(
-                    key=str(t['id']), text=name[:50]))
+                    key=key, text=name))
         except Exception:
             pass
         self.traveler_dd = ft.Dropdown(
             label="Traveler", options=topts, value="",
             height=48, text_size=12)
         
-        # Auto-fill and duplicate check on change
         self.traveler_dd.on_change = self.on_traveler_change
 
         self.dup_warning_lbl = ft.Text("", color=ft.Colors.RED_600, weight=ft.FontWeight.BOLD, size=11)
@@ -2644,12 +2654,6 @@ class ManualInvoiceDialog:
         self.package_dd = ft.Dropdown(
             label="Package", options=bopts, value="",
             height=48, text_size=12)
-
-        self.invoice_date = self._field(
-            label="Invoice Date",
-            value=datetime.now().strftime("%Y-%m-%d"),
-            height=48, text_size=12, disabled=True,
-            tooltip="Database core uses today's date.")
 
         self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
@@ -2730,8 +2734,6 @@ class ManualInvoiceDialog:
                         weight=ft.FontWeight.BOLD, color="#1e40af"),
                 ft.ResponsiveRow(
                     controls=[
-                        ft.Container(content=self.invoice_date,
-                                     col={"xs": 12, "sm": 6, "md": 6}),
                         ft.Container(content=self.traveler_dd,
                                      col={"xs": 12, "sm": 6, "md": 6}),
                     ], spacing=8, run_spacing=8),
@@ -2763,7 +2765,9 @@ class ManualInvoiceDialog:
                 self.sub_lbl, self.disc_lbl,
                 self.taxable_lbl, self.total_lbl,
             ],
-            spacing=10, scroll=ft.ScrollMode.AUTO)
+            spacing=10,
+            scroll=ft.ScrollMode.AUTO,
+        )
 
         self.dialog = ft.AlertDialog(
             modal=True,
@@ -2780,7 +2784,50 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        tid = self.traveler_dd.value
+        # Capture what we can from the event immediately
+        event_val = e.control.value or e.data
+        
+        async def _process():
+            # Aggressive polling to catch Flet's delayed value update
+            for _ in range(15):
+                await asyncio.sleep(0.1)
+                val = self.traveler_dd.value or event_val
+                if val:
+                    tid = self._resolve_tid(val)
+                    if tid:
+                        self._apply_traveler_change(tid)
+                        return
+            print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
+
+        self.page.run_task(_process)
+
+    def _resolve_tid(self, val):
+        if not val:
+            return None
+        val_str = str(val).strip()
+        
+        # 1. Check map by key
+        if val_str in self.traveler_map:
+            return self.traveler_map[val_str]['id']
+            
+        # 2. Check map by exact text
+        for k, info in self.traveler_map.items():
+            if info['text'] == val_str:
+                return info['id']
+                
+        # 3. Check database directly
+        for t in self.db.get_travelers():
+            name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
+            if name == val_str or str(t['id']) == val_str:
+                return str(t['id']).strip()
+                
+            # 4. Fuzzy match
+            if val_str in name:
+                 return str(t['id']).strip()
+                 
+        return None
+
+    def _apply_traveler_change(self, tid):
         if not tid:
             self.cust_name.value = ""
             self.cust_phone.value = ""
@@ -2788,28 +2835,21 @@ class ManualInvoiceDialog:
             self.package_dd.value = ""
             self.dup_warning_lbl.value = ""
             self.gen_btn.disabled = False
-            for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-                try:
-                    c.update()
-                except Exception:
-                    pass
+            self._force_ui_update()
             return
-        
+
         traveler = self.db.get_traveler_by_id(tid)
         if traveler:
-            # Auto-fill details
             self.cust_name.value = f"{traveler.get('first_name', '')} {traveler.get('last_name', '')}".strip()
             self.cust_phone.value = traveler.get('mobile', '')
             self.cust_email.value = traveler.get('email', '')
             
-            # Auto-select Batch
-            bid = traveler.get('batch_id')
+            bid = str(traveler.get('batch_id') or '').strip()
             if bid:
-                self.package_dd.value = str(bid)
+                self.package_dd.value = bid
             else:
                 self.package_dd.value = ""
 
-            # Duplicate Invoice Check
             existing_invoices = self.db.get_invoices(traveler_id=tid)
             if existing_invoices:
                 inv_no = existing_invoices[0].get('invoice_no', '')
@@ -2819,11 +2859,13 @@ class ManualInvoiceDialog:
                 self.dup_warning_lbl.value = ""
                 self.gen_btn.disabled = False
 
-        for c in (self.cust_name, self.cust_phone, self.cust_email, self.package_dd, self.dup_warning_lbl, self.gen_btn):
-            try:
-                c.update()
-            except Exception:
-                pass
+        self._force_ui_update()
+
+    def _force_ui_update(self):
+        try:
+            self.dialog.update()
+        except Exception:
+            pass
 
     @staticmethod
     def _money(value):
@@ -2926,7 +2968,9 @@ class ManualInvoiceDialog:
             self._snack("⚠️ Customer name and phone required")
             return
 
-        tid = self.traveler_dd.value
+        val = self.traveler_dd.value
+        tid = self._resolve_tid(val)
+                    
         bid = self.package_dd.value
 
         if tid:
@@ -2937,7 +2981,6 @@ class ManualInvoiceDialog:
                     self._snack("⚠️ Selected package does not match the traveler's batch.")
                     return
 
-            # Fail-safe: Double check for existing invoice before saving
             existing_invoices = self.db.get_invoices(traveler_id=tid)
             if existing_invoices:
                 self._snack(f"⚠️ Invoice {existing_invoices[0].get('invoice_no')} already exists for this traveler.")
@@ -2998,5 +3041,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v1.9
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.5
 # =================================================================================
