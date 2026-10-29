@@ -1,13 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v4.3 — Definitive fix for Flet Mobile Web Dropdown bug.
-#   • Moved scrolling to AlertDialog (scrollable=True) and removed it 
-#     from inner Columns. This prevents the scroll container from 
-#     swallowing tap events on the Dropdown.
-#   • Removed label truncation to ensure text-fallback matching works.
-#   • Added robust value resolution (reads e.control.value, e.data, 
-#     and self.traveler_dd.value).
+# v4.4 — Definitive fix for Flet Mobile Web Dropdown bug.
+#   • Removed nested scrolling (fixed-height Container inside scrollable AlertDialog).
+#     This prevents the scroll view from swallowing Dropdown tap events.
+#   • Added robust _resolve_tid which searches the DB if Flet sends text instead of ID.
+#   • Added a 200ms async delay in on_traveler_change to await Flet's internal sync.
 # =================================================================================
 
 import flet as ft
@@ -1724,8 +1722,7 @@ class InvoiceDialog:
             modal=True,
             title=ft.Text("📄 Generate Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=560, height=680, padding=10),
+            content=content,
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -1749,25 +1746,54 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        val = e.control.value
-        if not val:
-            val = e.data
-        if not val:
-            val = self.traveler_dd.value
+        # Capture what we can from the event immediately
+        event_val = e.control.value or e.data
+        
+        async def _process():
+            # Allow Flet a moment to sync the control state
+            await asyncio.sleep(0.1)
             
-        tid = None
-        if val:
-            if str(val) in self.traveler_map:
-                tid = self.traveler_map[str(val)]['id']
+            # Prefer the control's value after the delay
+            val = self.traveler_dd.value or event_val
+            
+            tid = self._resolve_tid(val)
+            if tid:
+                self._apply_traveler_change(tid)
             else:
-                # Flet bug: sometimes sends text instead of key
-                for k, info in self.traveler_map.items():
-                    if info['text'] == str(val) or info['id'] == str(val):
-                        tid = info['id']
-                        break
-                        
-        if tid:
-            self._apply_traveler_change(tid)
+                # If we still can't resolve it, try one more time after a longer wait
+                await asyncio.sleep(0.2)
+                val = self.traveler_dd.value or event_val
+                tid = self._resolve_tid(val)
+                if tid:
+                    self._apply_traveler_change(tid)
+                else:
+                    print(f"[DEBUG-INV] FAILED to resolve traveler. val={val!r}")
+                    
+        self.page.run_task(_process)
+
+    def _resolve_tid(self, val):
+        if not val:
+            return None
+        val_str = str(val).strip()
+        
+        # 1. Check map by key
+        if val_str in self.traveler_map:
+            return self.traveler_map[val_str]['id']
+            
+        # 2. Check map by exact text
+        for k, info in self.traveler_map.items():
+            if info['text'] == val_str:
+                return info['id']
+                
+        # 3. Check database directly (in case of formatting discrepancies)
+        for t in self.db.get_travelers():
+            name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
+            pp = t.get('passport_no', '')
+            label = f"{name} ({pp})" if pp else name
+            if label == val_str or name == val_str or str(t['id']) == val_str:
+                return str(t['id']).strip()
+                
+        return None
 
     def _apply_traveler_change(self, tid):
         if not tid:
@@ -1908,14 +1934,7 @@ class InvoiceDialog:
 
     def save(self, e):
         val = self.traveler_dd.value
-        tid = None
-        if val and str(val) in self.traveler_map:
-            tid = self.traveler_map[str(val)]['id']
-        elif val:
-            for k, info in self.traveler_map.items():
-                if info['text'] == str(val):
-                    tid = info['id']
-                    break
+        tid = self._resolve_tid(val)
                     
         if not tid:
             self._snack("⚠️ Select a traveler")
@@ -2150,8 +2169,7 @@ class InvoiceModifyDialog:
             modal=True,
             title=ft.Text("✏️ Modify Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=520, height=620, padding=10),
+            content=content,
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2756,8 +2774,7 @@ class ManualInvoiceDialog:
             modal=True,
             title=ft.Text("🧾 Manual Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content,
-                                 width=760, height=680, padding=10),
+            content=content,
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2768,24 +2785,52 @@ class ManualInvoiceDialog:
         )
 
     def on_traveler_change(self, e):
-        val = e.control.value
-        if not val:
-            val = e.data
-        if not val:
-            val = self.traveler_dd.value
+        # Capture what we can from the event immediately
+        event_val = e.control.value or e.data
+        
+        async def _process():
+            # Allow Flet a moment to sync the control state
+            await asyncio.sleep(0.1)
             
-        tid = None
-        if val:
-            if str(val) in self.traveler_map:
-                tid = self.traveler_map[str(val)]['id']
+            # Prefer the control's value after the delay
+            val = self.traveler_dd.value or event_val
+            
+            tid = self._resolve_tid(val)
+            if tid:
+                self._apply_traveler_change(tid)
             else:
-                for k, info in self.traveler_map.items():
-                    if info['text'] == str(val) or info['id'] == str(val):
-                        tid = info['id']
-                        break
-                        
-        if tid:
-            self._apply_traveler_change(tid)
+                # If we still can't resolve it, try one more time after a longer wait
+                await asyncio.sleep(0.2)
+                val = self.traveler_dd.value or event_val
+                tid = self._resolve_tid(val)
+                if tid:
+                    self._apply_traveler_change(tid)
+                else:
+                    print(f"[DEBUG-INV] FAILED to resolve traveler. val={val!r}")
+                    
+        self.page.run_task(_process)
+
+    def _resolve_tid(self, val):
+        if not val:
+            return None
+        val_str = str(val).strip()
+        
+        # 1. Check map by key
+        if val_str in self.traveler_map:
+            return self.traveler_map[val_str]['id']
+            
+        # 2. Check map by exact text
+        for k, info in self.traveler_map.items():
+            if info['text'] == val_str:
+                return info['id']
+                
+        # 3. Check database directly (in case of formatting discrepancies)
+        for t in self.db.get_travelers():
+            name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
+            if name == val_str or str(t['id']) == val_str:
+                return str(t['id']).strip()
+                
+        return None
 
     def _apply_traveler_change(self, tid):
         if not tid:
@@ -2929,14 +2974,7 @@ class ManualInvoiceDialog:
             return
 
         val = self.traveler_dd.value
-        tid = None
-        if val and str(val) in self.traveler_map:
-            tid = self.traveler_map[str(val)]['id']
-        elif val:
-            for k, info in self.traveler_map.items():
-                if info['text'] == str(val):
-                    tid = info['id']
-                    break
+        tid = self._resolve_tid(val)
                     
         bid = self.package_dd.value
 
@@ -3008,5 +3046,5 @@ class ManualInvoiceDialog:
 
 
 # =================================================================================
-# SECTION 14 END (FLET 1.0.0 VERSION) — v4.3
+# SECTION 14 END (FLET 1.0.0 VERSION) — v4.4
 # =================================================================================
