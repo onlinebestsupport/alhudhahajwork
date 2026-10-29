@@ -1,10 +1,10 @@
 # =================================================================================
 # SECTION 2 (FLET VERSION) — DATABASE MODULE
 # =================================================================================
-# UPDATED — 2026-10-13 (v3) — UTF-8 safe + ASCII-only output
-#   • Added sys.stdout.reconfigure for file redirection safety
-#   • Replaced all Unicode symbols with ASCII tags
-#   • Preserved ghost-column fix + NaN-safe update_traveler
+# UPDATED — 2026-10-29 (v4) — ID Lookup Safety + UTF-8 output
+#   • Added .strip() and .astype(str) checks to get_batch_by_id and 
+#     get_traveler_by_id to prevent hidden whitespace errors.
+#   • Preserved ghost-column fix + NaN-safe update_traveler.
 # =================================================================================
 
 import os
@@ -666,13 +666,15 @@ class HajDatabase:
         return self.travelers.to_dict('records')
 
     def get_batch_by_id(self, batch_id):
-        batch = self.batches[self.batches['id'] == batch_id]
+        batch_id = str(batch_id).strip()
+        batch = self.batches[self.batches['id'].astype(str).str.strip() == batch_id]
         if not batch.empty:
             return batch.iloc[0].to_dict()
         return None
 
     def get_traveler_by_id(self, traveler_id):
-        traveler = self.travelers[self.travelers['id'] == traveler_id]
+        traveler_id = str(traveler_id).strip()
+        traveler = self.travelers[self.travelers['id'].astype(str).str.strip() == traveler_id]
         if not traveler.empty:
             return traveler.iloc[0].to_dict()
         return None
