@@ -1748,7 +1748,10 @@ class InvoiceDialog:
 
     def on_traveler_change(self, e):
         # Capture what we can from the event immediately
-        event_val = e.control.value or e.data
+        control = getattr(e, 'control', None)
+        event_val = (getattr(control, 'value', None)
+                     or getattr(e, 'data', None)
+                     or '')
         
         async def _process():
             # Aggressive polling to catch Flet's delayed value update
@@ -1832,7 +1835,19 @@ class InvoiceDialog:
             self.traveler_info.color = ft.Colors.GREY_600
 
             bid = str(t.get('batch_id') or '').strip()
-            batch = self.db.get_batch_by_id(bid) if bid else None
+            print(f"[InvoiceDialog] traveler batch ID: {bid!r}")
+            batch = None
+            if bid:
+                try:
+                    batch = self.db.get_batch_by_id(bid)
+                except Exception as ex:
+                    print(f"[InvoiceDialog] direct batch lookup failed: {ex}")
+                if not batch:
+                    batch = next(
+                        (b for b in self.db.get_batches()
+                         if str(b.get('id') or '').strip() == bid),
+                        None)
+            print(f"[InvoiceDialog] matched batch: {batch}")
 
             if batch:
                 price = _money(batch.get('price', 0) or 0)
@@ -2785,7 +2800,10 @@ class ManualInvoiceDialog:
 
     def on_traveler_change(self, e):
         # Capture what we can from the event immediately
-        event_val = e.control.value or e.data
+        control = getattr(e, 'control', None)
+        event_val = (getattr(control, 'value', None)
+                     or getattr(e, 'data', None)
+                     or '')
         
         async def _process():
             # Aggressive polling to catch Flet's delayed value update
