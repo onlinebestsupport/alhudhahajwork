@@ -1747,25 +1747,43 @@ class InvoiceDialog:
         self.recalculate(None)
 
     def on_traveler_change(self, e):
-        # Capture what we can from the event immediately
+        # Apply the event value immediately. Some Flet web versions update
+        # the visible label before traveler_dd.value is synchronized.
         control = getattr(e, 'control', None)
         event_val = (getattr(control, 'value', None)
                      or getattr(e, 'data', None)
                      or '')
-        
+        immediate_tid = self._resolve_tid(event_val)
+        if immediate_tid:
+            self._apply_traveler_change(immediate_tid)
+            self._last_applied_tid = immediate_tid
+
         async def _process():
-            # Aggressive polling to catch Flet's delayed value update
+            # Keep polling for delayed browser-side Dropdown synchronization.
             for _ in range(15):
                 await asyncio.sleep(0.1)
-                val = self.traveler_dd.value or event_val
-                if val:
+                values = [
+                    getattr(self.traveler_dd, 'value', None),
+                    getattr(control, 'value', None),
+                    getattr(e, 'data', None),
+                    event_val,
+                ]
+                for val in values:
                     tid = self._resolve_tid(val)
-                    if tid:
+                    if tid and tid != getattr(
+                            self, '_last_applied_tid', None):
                         self._apply_traveler_change(tid)
+                        self._last_applied_tid = tid
                         return
+                if any(values):
+                    return
             print(f"[DEBUG-INV] FAILED to resolve traveler. val={event_val!r}")
 
-        self.page.run_task(_process)
+        try:
+            self.page.run_task(_process)
+        except Exception as ex:
+            # Immediate resolution remains usable on older Flet runtimes.
+            print(f"[DEBUG-INV] polling task failed: {ex}")
 
     def _resolve_tid(self, val):
         if not val:
