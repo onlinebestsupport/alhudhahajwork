@@ -864,6 +864,7 @@ class ReportsTab(ft.Column):
                 ft.DataColumn(ft.Text("Method", size=10)),
                 ft.DataColumn(ft.Text("Receipt", size=10)),
                 ft.DataColumn(ft.Text("Amount", size=10)),
+                ft.DataColumn(ft.Text("Status", size=10)),
             ],
             rows=[], heading_row_color="#f1f5f9", column_spacing=10)
 
@@ -998,7 +999,10 @@ class ReportsTab(ft.Column):
             except (TypeError, ValueError):
                 return 0.0
 
-        total_paid = sum(_f(p.get("amount", 0)) for p in payments)
+        total_paid = sum(
+            _f(p.get("amount", 0)) for p in payments
+            if str(p.get("status", "") or "").strip().lower()
+            == "completed")
         inv_base = 0.0
         inv_disc = 0.0
         inv_taxable = 0.0
@@ -1051,6 +1055,12 @@ class ReportsTab(ft.Column):
                                     weight=ft.FontWeight.BOLD,
                                     color="#059669",
                                     text_align=ft.TextAlign.RIGHT)),
+                ft.DataCell(ft.Text(
+                    str(p.get("status", "—") or "—").strip().upper(),
+                    size=10,
+                    color=("#059669" if str(
+                        p.get("status", "") or "").strip().lower()
+                        == "completed" else "#d97706"))),
             ]))
 
         self._single_kpi["invoiced"].value = f"₹{_fmt_inr_(package)}"
