@@ -1,10 +1,11 @@
 # =================================================================================
 # SECTION 14 (FLET 1.0.0 VERSION) — INVOICES TAB
 # =================================================================================
-# v4.6 — Custom GST/TCS input and decimal formatting.
-#   • Replaced GST Dropdown with a TextField allowing custom 0-100% input.
-#   • Fixed decimal formatting so 2.0000 displays as 2 (using _fmt_pct).
-#   • TCS is now a TextField with numeric input filtering.
+# v4.5 — Ultimate fix for Flet 1.0.5 Dropdown sync & Layout.
+#   • Restored fixed-width Container for AlertDialogs to fix squished desktop layout.
+#   • Added an aggressive async polling loop (1500ms) in on_traveler_change to 
+#     catch Flet's delayed dropdown value updates.
+#   • Added fuzzy text matching to resolve IDs if Flet sends text.
 # =================================================================================
 
 import flet as ft
@@ -51,14 +52,6 @@ def _round_rule(value):
     floor_value = value.to_integral_value(rounding="ROUND_FLOOR")
     return (value.to_integral_value(rounding="ROUND_CEILING")
             if value - floor_value >= Decimal("0.50") else floor_value)
-
-
-def _fmt_pct(value):
-    try:
-        d = Decimal(str(value)).normalize()
-        return f"{d:f}"
-    except Exception:
-        return str(value)
 
 
 # =================================================================================
@@ -140,7 +133,7 @@ class InvoicesTab:
             tcs_rate = Decimal('0.1')
 
         self.tax_info_label = ft.Text(
-            f"GST {_fmt_pct(gst_rate)}%  |  TCS {_fmt_pct(tcs_rate)}%",
+            f"GST {gst_rate}%  |  TCS {tcs_rate}%",
             size=11, weight=ft.FontWeight.BOLD,
             color="#FFD700",
             no_wrap=False, max_lines=2)
@@ -428,7 +421,7 @@ class InvoicesTab:
             gst_rate = Decimal('18')
             tcs_rate = Decimal('0.1')
         self.tax_info_label.value = (
-            f"GST {_fmt_pct(gst_rate)}%  |  TCS {_fmt_pct(tcs_rate)}%")
+            f"GST {gst_rate}%  |  TCS {tcs_rate}%")
         try:
             self.tax_info_label.update()
         except Exception:
@@ -630,7 +623,7 @@ class InvoicesTab:
                         ft.DataCell(ft.Text(traveler_name[:18], size=10)),
                         ft.DataCell(ft.Text(f"₹{base:,.0f}", size=10)),
                         ft.DataCell(ft.Text(
-                            f"{_fmt_pct(disc_pct)}%", size=10,
+                            f"{disc_pct:.1f}%", size=10,
                             color="#c2185b" if disc_pct > 0 else None)),
                         ft.DataCell(ft.Text(
                             f"₹{disc_amt:,.0f}", size=10,
@@ -638,9 +631,9 @@ class InvoicesTab:
                         ft.DataCell(ft.Text(
                             f"₹{taxable:,.0f}", size=10,
                             weight=ft.FontWeight.BOLD)),
-                        ft.DataCell(ft.Text(f"{_fmt_pct(gst_pct)}%", size=10)),
+                        ft.DataCell(ft.Text(f"{gst_pct}%", size=10)),
                         ft.DataCell(ft.Text(f"₹{gst_amt:,.0f}", size=10)),
-                        ft.DataCell(ft.Text(f"{_fmt_pct(tcs_pct)}%", size=10)),
+                        ft.DataCell(ft.Text(f"{tcs_pct}%", size=10)),
                         ft.DataCell(ft.Text(f"₹{tcs_amt:,.0f}", size=10)),
                         ft.DataCell(ft.Text(f"₹{total:,.0f}", size=10,
                                             weight=ft.FontWeight.BOLD)),
@@ -1058,7 +1051,7 @@ class InvoicesTab:
                 Paragraph(f"{data['rate']:,.2f}", cell_r),
                 Paragraph("1", cell_c),
                 Paragraph(f"{data['base_amount']:,.2f}", cell_r),
-                Paragraph(f"{_fmt_pct(data['discount_percent'])}%", cell_c),
+                Paragraph(f"{data['discount_percent']:.2f}%", cell_c),
                 Paragraph(f"{data['discount_amount']:,.2f}", cell_r),
                 Paragraph(f"{data['taxable_value']:,.2f}", cell_r),
                 Paragraph(f"{data['cgst']:,.2f}", cell_r),
@@ -1086,7 +1079,7 @@ class InvoicesTab:
             totals = [
                 [Paragraph("Package Cost", t_lbl),
                  Paragraph(f"{data['base_amount']:,.2f}", t_val)],
-                [Paragraph(f"Discount @ {_fmt_pct(data['discount_percent'])}%",
+                [Paragraph(f"Discount @ {data['discount_percent']:.2f}%",
                            t_disc_l),
                  Paragraph(f"- {data['discount_amount']:,.2f}", t_disc_v)],
                 [Paragraph("Taxable Value", t_lbl),
@@ -1456,7 +1449,7 @@ class InvoicesTab:
 
             vals = [
                 1, data['item_desc'], data['hsn_code'], data['rate'],
-                1, data['base_amount'], f"{_fmt_pct(data['discount_percent'])}%",
+                1, data['base_amount'], f"{data['discount_percent']:.2f}%",
                 data['discount_amount'], data['taxable_value'],
                 data['cgst'], data['sgst'], data['rounded_total']]
             for i, v in enumerate(vals, 1):
@@ -1473,7 +1466,7 @@ class InvoicesTab:
 
             totals = [
                 ("Package Cost", data['base_amount'], False),
-                (f"Discount @ {_fmt_pct(data['discount_percent'])}%",
+                (f"Discount @ {data['discount_percent']:.2f}%",
                  -data['discount_amount'], True),
                 ("Taxable Value", data['taxable_value'], False),
                 ("GST", data['gst_amount'], False),
@@ -1546,7 +1539,7 @@ class InvoiceDialog:
         self.amount_field = None
         self.discount_type_dd = None
         self.discount_value = None
-        self.gst_field = None
+        self.gst_dd = None
         self.tcs_field = None
         self.discount_amt_lbl = None
         self.discount_pct_lbl = None
@@ -1664,17 +1657,29 @@ class InvoiceDialog:
 
         self.discount_value.on_change = _discval_on_change
 
-        self.gst_field = self._field(
-            label="📊 GST %", value="18",
-            height=48, text_size=12,
-            input_filter=ft.InputFilter(allow=True, regex_string=r"^\d*\.?\d*$"))
-        self.gst_field.on_change = self.recalculate
+        self.gst_dd = ft.Dropdown(
+            label="📊 GST %",
+            options=[ft.dropdown.Option(x) for x in
+                     ["0", "5", "12", "18", "28"]],
+            value="18", height=48, text_size=12)
+        self.gst_dd.on_change = self.recalculate
 
         self.tcs_field = self._field(
             label="📊 TCS %", value="0.1",
-            height=48, text_size=12,
-            input_filter=ft.InputFilter(allow=True, regex_string=r"^\d*\.?\d*$"))
-        self.tcs_field.on_change = self.recalculate
+            height=48, text_size=12)
+
+        def _tcs_on_change(e, _f=self.tcs_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalculate(e)
+
+        self.tcs_field.on_change = _tcs_on_change
 
         self.discount_amt_lbl = ft.Text(
             "Discount Amount: ₹0.00", size=12,
@@ -1709,7 +1714,7 @@ class InvoiceDialog:
                 self.amount_field,
                 self.discount_type_dd,
                 self.discount_value,
-                self.gst_field,
+                self.gst_dd,
                 self.tcs_field,
                 ft.Divider(height=10),
                 self.discount_amt_lbl,
@@ -1746,11 +1751,14 @@ class InvoiceDialog:
         except Exception:
             gst = Decimal('18')
             tcs = Decimal('0.1')
-        self.gst_field.value = _fmt_pct(gst)
-        self.tcs_field.value = _fmt_pct(tcs)
+        self.gst_dd.value = (
+            str(int(gst)) if int(gst) in [0, 5, 12, 18, 28] else "18")
+        self.tcs_field.value = str(tcs)
         self.recalculate(None)
 
     def on_traveler_change(self, e):
+        # Apply the event value immediately. Some Flet web versions update
+        # the visible label before traveler_dd.value is synchronized.
         control = getattr(e, 'control', None)
         event_val = (getattr(control, 'value', None)
                      or getattr(e, 'data', None)
@@ -1763,6 +1771,7 @@ class InvoiceDialog:
             self._apply_traveler_change(immediate_tid)
 
         async def _process():
+            # Keep polling for delayed browser-side Dropdown synchronization.
             for _ in range(15):
                 await asyncio.sleep(0.1)
                 values = [
@@ -1785,6 +1794,7 @@ class InvoiceDialog:
         try:
             self.page.run_task(_process)
         except Exception as ex:
+            # Immediate resolution remains usable on older Flet runtimes.
             print(f"[DEBUG-INV] polling task failed: {ex}")
 
     def _resolve_tid(self, val):
@@ -1792,13 +1802,16 @@ class InvoiceDialog:
             return None
         val_str = str(val).strip()
         
+        # 1. Check map by key
         if val_str in self.traveler_map:
             return self.traveler_map[val_str]['id']
             
+        # 2. Check map by exact text
         for k, info in self.traveler_map.items():
             if info['text'] == val_str:
                 return info['id']
                 
+        # 3. Check database directly (in case of formatting discrepancies)
         for t in self.db.get_travelers():
             name = f"{t.get('first_name', '')} {t.get('last_name', '')}".strip()
             pp = t.get('passport_no', '')
@@ -1806,6 +1819,7 @@ class InvoiceDialog:
             if label == val_str or name == val_str or str(t['id']) == val_str:
                 return str(t['id']).strip()
                 
+            # Fuzzy match
             if val_str in label or val_str in name:
                  return str(t['id']).strip()
                  
@@ -1851,6 +1865,7 @@ class InvoiceDialog:
             self.traveler_info.color = ft.Colors.GREY_600
 
             bid = str(t.get('batch_id') or '').strip()
+            print(f"[InvoiceDialog] traveler batch ID: {bid!r}")
             batch = None
             if bid:
                 try:
@@ -1862,6 +1877,7 @@ class InvoiceDialog:
                         (b for b in self.db.get_batches()
                          if str(b.get('id') or '').strip() == bid),
                         None)
+            print(f"[InvoiceDialog] matched batch: {batch}")
 
             if batch:
                 price = _money(batch.get('price', 0) or 0)
@@ -1888,7 +1904,10 @@ class InvoiceDialog:
         except Exception as ex:
             print(f"[DEBUG-INV] Dialog update error: {ex}")
 
+
     async def _watch_traveler_selection(self):
+        """Fallback for Flet web builds that update the dropdown without
+        reliably firing the on_change callback."""
         if self._selection_watch_running:
             return
         self._selection_watch_running = True
@@ -1926,7 +1945,7 @@ class InvoiceDialog:
         except (ValueError, TypeError):
             dval = Decimal('0.0000')
         try:
-            gst = _rate(self.gst_field.value or 0)
+            gst = _rate(self.gst_dd.value or 0)
         except (ValueError, TypeError):
             gst = Decimal('0.0000')
         try:
@@ -1964,7 +1983,7 @@ class InvoiceDialog:
 
         self.discount_amt_lbl.value = f"Discount Amount: ₹{disc_amt:,.2f}"
         self.discount_pct_lbl.value = (
-            f"Effective Discount %: {_fmt_pct(disc_pct)}%")
+            f"Effective Discount %: {disc_pct:.2f}%")
         self.taxable_lbl.value = f"Taxable Value: ₹{taxable:,.2f}"
         self.total_lbl.value = f"Total: ₹{total:,.2f}"
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
@@ -2008,7 +2027,7 @@ class InvoiceDialog:
             return
             
         try:
-            gst = _rate(self.gst_field.value or 18)
+            gst = _rate(self.gst_dd.value or 18)
             tcs = _rate(self.tcs_field.value or 0.1)
             if gst < 0 or tcs < 0:
                 self._snack("⚠️ GST/TCS cannot be negative")
@@ -2075,7 +2094,7 @@ class InvoiceModifyDialog:
         self.amount_field = None
         self.disc_type_dd = None
         self.disc_value = None
-        self.gst_field = None
+        self.gst_dd = None
         self.tcs_field = None
         self.status_dd = None
         self.notes_field = None
@@ -2153,15 +2172,29 @@ class InvoiceModifyDialog:
 
         self.disc_value.on_change = _dv_change
 
-        self.gst_field = self._field(
-            label="GST %", height=48, text_size=12, disabled=is_paid,
-            input_filter=ft.InputFilter(allow=True, regex_string=r"^\d*\.?\d*$"))
-        self.gst_field.on_change = self.recalc
+        self.gst_dd = ft.Dropdown(
+            label="GST %",
+            options=[ft.dropdown.Option(x) for x in
+                     ["0", "5", "12", "18", "28"]],
+            value="18", height=48, text_size=12, disabled=is_paid)
+        self.gst_dd.on_change = self.recalc
 
         self.tcs_field = self._field(
-            label="TCS %", height=48, text_size=12, disabled=is_paid,
-            input_filter=ft.InputFilter(allow=True, regex_string=r"^\d*\.?\d*$"))
-        self.tcs_field.on_change = self.recalc
+            label="TCS %", value="0.1",
+            height=48, text_size=12, disabled=is_paid)
+
+        def _tcs_change(e, _f=self.tcs_field):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            try:
+                ctrl = getattr(e, "control", None)
+                if ctrl is not None and hasattr(ctrl, "value"):
+                    if _f.value != ctrl.value:
+                        _f.value = ctrl.value
+            except Exception:
+                pass
+            self.recalc(e)
+
+        self.tcs_field.on_change = _tcs_change
 
         self.status_dd = ft.Dropdown(
             label="Status",
@@ -2192,7 +2225,7 @@ class InvoiceModifyDialog:
                 self.amount_field,
                 self.disc_type_dd,
                 self.disc_value,
-                self.gst_field,
+                self.gst_dd,
                 self.tcs_field,
                 self.status_dd,
                 ft.Divider(height=10),
@@ -2234,8 +2267,8 @@ class InvoiceModifyDialog:
             self.disc_type_dd.value = "pct"
             self.disc_value.value = f"{existing_pct:.2f}"
 
-        self.gst_field.value = _fmt_pct(self._f(inv.get('gst_percentage', 18)))
-        self.tcs_field.value = _fmt_pct(self._f(inv.get('tcs_percentage', 0.1)))
+        self.gst_dd.value = str(int(self._f(inv.get('gst_percentage', 18))))
+        self.tcs_field.value = f"{self._f(inv.get('tcs_percentage', 0.1)):.2f}"
         self.status_dd.value = str(inv.get('status', 'pending'))
         self.notes_field.value = str(inv.get('notes', ''))
         self.recalc(None)
@@ -2256,7 +2289,7 @@ class InvoiceModifyDialog:
         except (ValueError, TypeError):
             dval = Decimal('0.0000')
         try:
-            gst = _rate(self.gst_field.value or 0)
+            gst = _rate(self.gst_dd.value or 0)
         except (ValueError, TypeError):
             gst = Decimal('0.0000')
         try:
@@ -2293,7 +2326,7 @@ class InvoiceModifyDialog:
             'total': total, 'rounded': rounded}
 
         self.disc_amt_lbl.value = f"Discount Amount: ₹{disc_amt:,.2f}"
-        self.disc_pct_lbl.value = f"Effective Discount %: {_fmt_pct(disc_pct)}%"
+        self.disc_pct_lbl.value = f"Effective Discount %: {disc_pct:.2f}%"
         self.taxable_lbl.value = f"Taxable Value: ₹{taxable:,.2f}"
         self.rounded_lbl.value = f"★ Rounded Total: ₹{rounded:,.0f}"
         
@@ -2571,13 +2604,13 @@ class InvoiceDetailsDialog:
                 row("Traveler", traveler_name),
                 ft.Divider(height=8),
                 row("Package Cost", f"₹{base:,.2f}"),
-                row(f"Discount @ {_fmt_pct(disc_pct)}%",
+                row(f"Discount @ {disc_pct:.2f}%",
                     f"- ₹{disc_amt:,.2f}", "#c2185b"),
                 row("Taxable Value", f"₹{taxable:,.2f}"),
-                row(f"GST @ {_fmt_pct(gst_pct)}%", f"₹{gst_amt:,.2f}"),
+                row(f"GST @ {gst_pct}%", f"₹{gst_amt:,.2f}"),
                 row("Total Before TCS",
                     f"₹{taxable + gst_amt:,.2f}"),
-                row(f"TCS @ {_fmt_pct(tcs_pct)}%", f"₹{tcs_amt:,.2f}"),
+                row(f"TCS @ {tcs_pct}%", f"₹{tcs_amt:,.2f}"),
                 ft.Divider(height=8),
                 row("Total Amount", f"₹{total:,.2f}"),
                 row("★ Rounded Total", f"₹{rounded:,.0f}", "#e67e22"),
@@ -2635,10 +2668,6 @@ class ManualInvoiceDialog:
         self.total_lbl = None
         self.dup_warning_lbl = None
         self.gen_btn = None
-        
-        # ADDED: GST and TCS fields
-        self.gst_field = None
-        self.tcs_field = None
 
         self.dialog = None
         self._typing_until = 0.0
@@ -2740,19 +2769,6 @@ class ManualInvoiceDialog:
                                  weight=ft.FontWeight.BOLD,
                                  color="#e67e22")
 
-        # ADDED: Editable GST and TCS TextFields
-        self.gst_field = ft.TextField(
-            label="GST %", value="5", suffix_text="%",
-            height=48, text_size=12,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            on_change=lambda e: self.refresh_items())
-            
-        self.tcs_field = ft.TextField(
-            label="TCS %", value="2", suffix_text="%",
-            height=48, text_size=12,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            on_change=lambda e: self.refresh_items())
-
         def add_item(e):
             bid = self.package_dd.value
             if not bid:
@@ -2825,14 +2841,6 @@ class ManualInvoiceDialog:
                     border=ft.Border.all(1, ft.Colors.GREY_300),
                     border_radius=8, padding=5, height=240),
                 ft.Divider(),
-                # ADDED: Row for GST and TCS inputs
-                ft.ResponsiveRow(
-                    controls=[
-                        ft.Container(content=self.gst_field,
-                                     col={"xs": 6, "sm": 4, "md": 4}),
-                        ft.Container(content=self.tcs_field,
-                                     col={"xs": 6, "sm": 4, "md": 4}),
-                    ], spacing=8, run_spacing=8),
                 self.sub_lbl, self.disc_lbl,
                 self.taxable_lbl, self.total_lbl,
             ],
@@ -2991,13 +2999,13 @@ class ManualInvoiceDialog:
             disc_amt = amount * (Decimal(str(item['discount_percent'])) / Decimal('100'))
             taxable = amount - disc_amt
             
-            # MODIFIED: Using UI text fields instead of hardcoded settings
+            tax = self.settings_manager.get_tax_settings()
             try:
-                gst = Decimal(str(self.gst_field.value or "0"))
+                gst = _rate(tax.get('gst_percentage', 18))
             except Exception:
                 gst = Decimal('18')
             try:
-                tcs = Decimal(str(self.tcs_field.value or "0"))
+                tcs = _rate(tax.get('tcs_percentage', 0.1))
             except Exception:
                 tcs = Decimal('0.1')
 
@@ -3029,10 +3037,10 @@ class ManualInvoiceDialog:
                         on_click=rm())),
                 ]))
 
-        # MODIFIED: Using UI text fields instead of hardcoded settings
+        tax = self.settings_manager.get_tax_settings()
         try:
-            gst = Decimal(str(self.gst_field.value or "0"))
-            tcs = Decimal(str(self.tcs_field.value or "0"))
+            gst = _rate(tax.get('gst_percentage', 18))
+            tcs = _rate(tax.get('tcs_percentage', 0.1))
         except Exception:
             gst = Decimal('18')
             tcs = Decimal('0.1')
@@ -3102,15 +3110,9 @@ class ManualInvoiceDialog:
                     'batch_id': bid}
                 tid = self.db.add_traveler(traveler_data)
 
-            # MODIFIED: Using UI text fields instead of hardcoded settings
-            try:
-                gst = Decimal(str(self.gst_field.value or "0"))
-            except Exception:
-                gst = Decimal('18')
-            try:
-                tcs = Decimal(str(self.tcs_field.value or "0"))
-            except Exception:
-                tcs = Decimal('0.1')
+            tax = self.settings_manager.get_tax_settings()
+            gst = _rate(tax.get('gst_percentage', 18))
+            tcs = _rate(tax.get('tcs_percentage', 0.1))
 
             sub = sum((i['rate'] * Decimal(str(i['qty'])) for i in self.item_rows), Decimal('0.00'))
             disc = sum((i['rate'] * Decimal(str(i['qty'])) * (Decimal(str(i['discount_percent'])) / Decimal('100'))
