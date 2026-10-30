@@ -777,19 +777,14 @@ class InvoicesTab:
     def delete_invoice(self, invoice):
         def confirm(ev):
             try:
-                result = self.db.delete_invoice(invoice['id'])
+                self.db.delete_invoice(invoice['id'])
                 self.db.log_activity(
                     self.current_user['id'], "delete_invoice",
                     f"Deleted invoice {invoice.get('invoice_no', '')}; "
-                    f"cascade={result if result is not None else 'completed'}")
+                    "payments and receipts preserved")
                 self.page.pop_dialog()
                 self.refresh()
-                deleted = result if isinstance(result, dict) else {}
-                payments = deleted.get('payments_deleted', 0)
-                receipts = deleted.get('receipts_deleted', 0)
-                self._snack(
-                    f"✅ Invoice deleted; removed {payments} payment(s) and "
-                    f"{receipts} receipt(s)")
+                self._snack("✅ Invoice deleted; payments and receipts kept")
             except Exception as ex:
                 self._snack(f"❌ {ex}")
 
@@ -797,8 +792,8 @@ class InvoicesTab:
             title=ft.Text("Delete Invoice?", size=14),
             content=ft.Text(
                 f"Delete invoice {invoice.get('invoice_no', 'N/A')}?\n\n"
-                "Any linked payments and receipts will also be permanently "
-                "deleted. This cannot be undone.",
+                "Only the invoice will be deleted. Linked payments and "
+                "receipts will be preserved for verification.",
                 size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
@@ -1533,6 +1528,7 @@ class InvoiceDialog:
         self.traveler_dd = None
         self.traveler_info = None
         self.batch_label = None
+        self.payment_history = None
         self.amount_field = None
         self.discount_type_dd = None
         self.discount_value = None
@@ -1610,6 +1606,9 @@ class InvoiceDialog:
         self.batch_label = ft.Text(
             "Not assigned", size=12,
             weight=ft.FontWeight.BOLD, color="#2c3e50")
+        self.payment_history = ft.Text(
+            "💳 Payment history: select a traveler to view payments.",
+            size=11, color=ft.Colors.GREY_700)
 
         self.amount_field = self._field(
             label="💰 Base Amount (₹) *", value="0",
@@ -1708,6 +1707,9 @@ class InvoiceDialog:
                 self.traveler_dd,
                 self.traveler_info,
                 self.batch_label,
+                ft.Container(
+                    content=self.payment_history,
+                    bgcolor="#f5f7fa", padding=8, border_radius=6),
                 self.amount_field,
                 self.discount_type_dd,
                 self.discount_value,
@@ -1828,6 +1830,8 @@ class InvoiceDialog:
             self.traveler_info.color = ft.Colors.GREY_600
             self.batch_label.value = "Not assigned"
             self.amount_field.value = "0"
+            self.payment_history.value = (
+                "💳 Payment history: select a traveler to view payments.")
             self.generate_btn.disabled = True
             self.recalculate(None)
             self._force_ui_update()
@@ -1839,12 +1843,14 @@ class InvoiceDialog:
             self.traveler_info.color = ft.Colors.RED_600
             self.batch_label.value = "Batch not found"
             self.amount_field.value = "0"
+            self.payment_history.value = "💳 Payment history unavailable."
             self.generate_btn.disabled = True
             self.recalculate(None)
             self._force_ui_update()
             return
 
         existing_invoices = self.db.get_invoices(traveler_id=tid)
+        self._update_payment_history(tid)
         name = (f"{t.get('first_name', '')} "
                 f"{t.get('last_name', '')}").strip()
 
@@ -1900,6 +1906,34 @@ class InvoiceDialog:
             self.dialog.update()
         except Exception as ex:
             print(f"[DEBUG-INV] Dialog update error: {ex}")
+
+    def _update_payment_history(self, traveler_id):
+        """Display payment records without changing payment or receipt data."""
+        try:
+            payments = list(self.db.get_payments(traveler_id) or [])
+        except Exception as ex:
+            self.payment_history.value = f"💳 Payment history error: {ex}"
+            return
+
+        if not payments:
+            self.payment_history.value = (
+                "💳 Payment history: no payments recorded.")
+            return
+
+        payments.sort(
+            key=lambda p: str(p.get('payment_date', '') or ''), reverse=True)
+        total = Decimal('0.00')
+        lines = [f"💳 Payment history ({len(payments)} record(s)):"]
+        for payment in payments:
+            amount = _money(payment.get('amount', 0) or 0)
+            total += amount
+            date = str(payment.get('payment_date', '') or '')[:10] or '—'
+            status = str(payment.get('status', '') or '—')
+            method = str(payment.get('payment_method', '') or '—')
+            lines.append(
+                f"• {date} | ₹{amount:,.2f} | {method} | {status}")
+        lines.append(f"Total paid: ₹{total:,.2f}")
+        self.payment_history.value = "\n".join(lines)
 
 
     async def _watch_traveler_selection(self):
@@ -2371,15 +2405,8 @@ class InvoiceModifyDialog:
                         self.db.invoices['id'] == self.invoice['id'], k] = v
                 self.db._save_df(self.db.invoices, "invoices.csv")
 
-            tid = self.invoice.get('traveler_id', '')
-            inv_id = self.invoice.get('id')
-            try:
-                if new_status == 'paid' and old_status != 'paid':
-                    self._cascade_mark_paid(tid, inv_id, c['rounded'])
-                elif new_status != 'paid' and old_status == 'paid':
-                    self._cascade_unmark_paid(tid, inv_id)
-            except Exception as _ce:
-                print(f"[InvoiceModifyDialog] cascade error: {_ce}")
+            # Invoice status edits do not create, delete, or alter payments.
+            # Payments and receipts are managed only from their own tabs.
 
             try:
                 self.db.log_activity(
