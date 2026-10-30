@@ -70,6 +70,7 @@ class InvoicesTab:
         self.batches = {}
         self.traveler_details_cache = {}
         self.traveler_paid = {}
+        self.invoiced_traveler_ids = set()
 
         self.stat_labels = {}
         self.tax_info_label = None
@@ -281,6 +282,10 @@ class InvoicesTab:
                                 self.open_manual_invoice),
                     col={"xs": 6, "sm": 4, "md": 3}),
                 ft.Container(
+                    content=_tb("🧹 Cleanup Duplicates", "#7f8c8d",
+                                self.open_payment_cleanup),
+                    col={"xs": 6, "sm": 4, "md": 3}),
+                ft.Container(
                     content=_tb("📄 PDF (selected)", "#e74c3c",
                                 self.export_pdf_selected),
                     col={"xs": 6, "sm": 4, "md": 2}),
@@ -433,6 +438,11 @@ class InvoicesTab:
     def refresh(self, e=None):
         try:
             self.invoices = self.db.get_invoices()
+            self.invoiced_traveler_ids = {
+                str(i.get('traveler_id') or '').strip()
+                for i in self.invoices
+                if str(i.get('traveler_id') or '').strip()
+            }
             self.travelers = {
                 str(t.get('id') or '').strip(): (
                     f"{t.get('first_name', '')} "
@@ -469,7 +479,7 @@ class InvoicesTab:
 
             self.traveler_paid = {}
             for p in self.db.get_payments():
-                tid = p.get('traveler_id')
+                tid = str(p.get('traveler_id') or '').strip()
                 status = str(p.get('status', '')).strip().lower()
                 if tid and status == 'completed':
                     self.traveler_paid[tid] = (
@@ -524,13 +534,16 @@ class InvoicesTab:
                             else "#e74c3c" if eff_status == "overdue"
                             else "#95a5a6")
 
-            tid = inv.get('traveler_id', '')
+            tid = str(inv.get('traveler_id') or '').strip()
             tdet = self.traveler_details_cache.get(
                 tid, {'batch_price': 0})
             bp = tdet.get('batch_price', 0)
             paid = self.traveler_paid.get(tid, 0)
             
-            pkg_pending = max(Decimal('0.00'), bp - paid)
+            pkg_pending = (
+                max(Decimal('0.00'), bp - paid)
+                if tid in self.invoiced_traveler_ids
+                else Decimal('0.00'))
             
             if bp > 0:
                 if pkg_pending <= 0:
@@ -703,8 +716,10 @@ class InvoicesTab:
         tcs = sum(self.safe_float(i.get('tcs_amount', 0))
                   for i in self.invoices)
 
-        pkg_pending = 0
+        pkg_pending = Decimal('0.00')
         for tid, paid_amt in self.traveler_paid.items():
+            if tid not in self.invoiced_traveler_ids:
+                continue
             det = self.traveler_details_cache.get(
                 tid, {'batch_price': 0})
             bp = det.get('batch_price', 0)
@@ -809,6 +824,99 @@ class InvoicesTab:
         dlg = ManualInvoiceDialog(self.page, self.db, self.current_user,
                                   on_save=self.refresh)
         dlg.show()
+
+    def open_payment_cleanup(self, e=None):
+        """Show suspicious duplicate/automatic payment records for review."""
+        try:
+            payments = list(self.db.get_payments() or [])
+        except Exception as ex:
+            self._snack(f"❌ Could not load payments: {ex}")
+            return
+
+        candidates = []
+        signatures = {}
+        for index, payment in enumerate(payments):
+            method = str(payment.get('payment_method', '') or '').strip().lower()
+            notes = str(payment.get('notes', '') or '').strip().lower()
+            is_auto = ('auto (invoice status)' in method
+                       or 'auto-created when invoice' in notes)
+            amount = _money(payment.get('amount', 0) or 0)
+            signature = (
+                str(payment.get('traveler_id', '') or '').strip(),
+                str(amount),
+                str(payment.get('payment_date', '') or '').strip(),
+                method,
+                str(payment.get('status', '') or '').strip().lower(),
+                str(payment.get('invoice_id', '') or '').strip(),
+            )
+            signatures.setdefault(signature, []).append(index)
+            if is_auto:
+                candidates.append((index, payment, "automatic invoice payment"))
+
+        for indexes in signatures.values():
+            if len(indexes) > 1:
+                for index in indexes[1:]:
+                    item = (index, payments[index], "exact duplicate payment")
+                    if not any(x[0] == index for x in candidates):
+                        candidates.append(item)
+
+        if not candidates:
+            self._snack("✅ No suspicious duplicate or automatic payments found")
+            return
+
+        checks = []
+        for index, payment, reason in candidates:
+            pid = str(payment.get('id', '') or '').strip() or f"row {index + 2}"
+            date = str(payment.get('payment_date', '') or '')[:10] or '—'
+            traveler = str(payment.get('traveler_id', '') or '—')
+            amount = _money(payment.get('amount', 0) or 0)
+            checks.append(ft.Checkbox(
+                label=(f"{reason}: {pid} | {date} | {traveler} | "
+                       f"₹{amount:,.2f}"),
+                value=False))
+
+        def confirm_cleanup(ev):
+            selected = [
+                candidates[i][1].get('id')
+                for i, checkbox in enumerate(checks)
+                if checkbox.value and candidates[i][1].get('id')
+            ]
+            if not selected:
+                self._snack("⚠️ Check at least one record to delete")
+                return
+            try:
+                result = self.db.delete_payment_records(selected)
+                self.page.pop_dialog()
+                self.refresh()
+                self._snack(
+                    f"✅ Removed {result.get('payments_deleted', 0)} payment(s) "
+                    f"and {result.get('receipts_deleted', 0)} receipt(s)")
+            except Exception as ex:
+                self._snack(f"❌ Cleanup failed: {ex}")
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🧹 Review Duplicate Payments", size=14),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        "Select only records you confirm are duplicates or old "
+                        "automatic invoice payments. Checked records and their "
+                        "receipts will be deleted.", size=11),
+                    ft.Column(checks, spacing=4,
+                              scroll=ft.ScrollMode.AUTO),
+                ], spacing=10, scroll=ft.ScrollMode.AUTO),
+                width=650, height=460, padding=10),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"),
+                              on_click=lambda ev: self.page.pop_dialog()),
+                ft.Button(content=ft.Text("Delete Checked"),
+                          on_click=confirm_cleanup,
+                          bgcolor=ft.Colors.RED_600,
+                          color=ft.Colors.WHITE),
+            ],
+        )
+        self.page.show_dialog(dialog)
 
     # =============================================================================
     # 14.1.8 — Toolbar PDF / Print
