@@ -303,46 +303,22 @@ PAYMENT_FIELDS = [
     ("passport_name", "Passport Name"),
     ("passport_no", "Passport Number"),
     ("mobile", "Mobile Number"),
-    ("invoice_base_amount", "Invoice Base Amount"),
-    ("invoice_discount_pct", "Invoice Discount %"),
-    ("invoice_discount_amount", "Invoice Discount Amount"),
-    ("invoice_taxable_value", "Invoice Taxable Value"),
-    ("gst_amount", "GST Amount (from invoice)"),
-    ("tcs_amount", "TCS Amount (from invoice)"),
-    ("invoice_rounded_total", "Invoice Total (with GST/TCS)"),
-    ("payment_without_tax", "Payment — Without GST/TCS"),
-    ("payment_with_tax", "Payment — With GST/TCS"),
-    ("total_with_tax", "Total — With GST/TCS"),
     ("__sum_total_paid", "Total Paid"),
     ("__sum_payment_count", "Payment Count"),
-    ("__sum_additional_count", "Additional Payments"),
-    ("__sum_additional_total", "Additional Total"),
-    ("__sum_total_base", "Total Base"),
-    ("__sum_total_discount", "Total Discount"),
-    ("__sum_total_taxable", "Total Taxable"),
-    ("__sum_total_gst", "Total GST"),
-    ("__sum_total_tcs", "Total TCS"),
-    ("__sum_total_with_tax", "Total — With GST/TCS"),
-    ("__sum_pending_with_tax", "Pending — With GST/TCS"),
-    ("__sum_payment_without_tax", "Payment — Without GST/TCS"),
+    ("__sum_total_base", "Invoice Base Total"),
+    ("__sum_total_discount", "Invoice Discount Total"),
+    ("__sum_total_taxable", "Invoice Taxable Total"),
+    ("__sum_total_gst", "Invoice GST Total"),
+    ("__sum_total_tcs", "Invoice TCS Total"),
+    ("__sum_total_with_tax", "Invoice Total with GST/TCS"),
     ("__sum_outstanding_balance", "Outstanding Balance"),
-    ("__dyn_amount", "▶ Payment Amount (each, without tax)"),
-    ("__dyn_date", "▶ Payment Date (each)"),
-    ("__dyn_method", "▶ Payment Method (each)"),
-    ("__dyn_receipt", "▶ Receipt No (each)"),
-    ("__dyn_txn", "▶ Txn ID (each)"),
-    ("__dyn_status", "▶ Payment Status (each)"),
-    ("__dyn_gst", "▶ GST (each)"),
-    ("__dyn_tcs", "▶ TCS (each)"),
-    ("__dyn_total_tax", "▶ Total with tax (each)"),
+    ("__dyn_amount", "Payment Amount (each)"),
+    ("__dyn_date", "Payment Date (each)"),
+    ("__dyn_method", "Payment Method (each)"),
+    ("__dyn_receipt", "Receipt No (each)"),
+    ("__dyn_status", "Payment Status (each)"),
     ("__inv_paid_status", "Invoice Status"),
-    ("__inv_paid_is_paid", "Invoice is Paid?"),
-    ("__inv_paid_base", "Invoice Base (paid)"),
-    ("__inv_paid_discount", "Invoice Discount (paid)"),
-    ("__inv_paid_taxable", "Invoice Taxable (paid)"),
-    ("__inv_paid_gst", "Invoice GST (paid)"),
-    ("__inv_paid_tcs", "Invoice TCS (paid)"),
-    ("__inv_paid_total", "Invoice Total (paid)"),
+    ("__inv_paid_total", "Invoice Total"),
 ]
 
 MONEY_FIELDS = {
@@ -549,6 +525,7 @@ class CustomReportDialog:
         self.traveler_data = []
         self.batch_data = []
         self.payment_data = []
+        self.receipt_by_payment_id = {}
         self.invoice_lookup = {}
         self.traveler_discount = {}
         self.traveler_invoice_data = {}
@@ -621,6 +598,51 @@ class CustomReportDialog:
     def _fmt_money_inr(self, value):
         return _fmt_inr_(value)
 
+    @staticmethod
+    def _norm_id(value):
+        return str(value or '').strip()
+
+    @staticmethod
+    def _norm_status(value):
+        return str(value or '').strip().lower()
+
+    @staticmethod
+    def _norm_method(value):
+        return str(value or '').strip().casefold()
+
+    def _normalize_payment_rows(self, rows):
+        """Normalize DB rows so filters and joins are case/whitespace safe."""
+        normalized = []
+        for row in rows or []:
+            item = dict(row)
+            for key in ('id', 'traveler_id', 'batch_id', 'invoice_id',
+                        'transaction_id'):
+                item[key] = self._norm_id(item.get(key))
+            item['status'] = self._norm_status(item.get('status'))
+            item['payment_method'] = str(
+                item.get('payment_method') or '').strip()
+            normalized.append(item)
+        return normalized
+
+    def _normalize_traveler_rows(self, rows):
+        normalized = []
+        for row in rows or []:
+            item = dict(row)
+            item['id'] = self._norm_id(item.get('id'))
+            item['batch_id'] = self._norm_id(item.get('batch_id'))
+            normalized.append(item)
+        return normalized
+
+    def _refresh_receipt_cache(self):
+        self.receipt_by_payment_id = {}
+        try:
+            for receipt in self.db.receipts.to_dict('records'):
+                pid = self._norm_id(receipt.get('payment_id'))
+                if pid:
+                    self.receipt_by_payment_id[pid] = receipt
+        except Exception as ex:
+            print(f"[CR] receipt cache unavailable: {ex}")
+
     # =============================================================================
     # 17.3.1c — _load_live_tax_rates
     # =============================================================================
@@ -653,7 +675,7 @@ class CustomReportDialog:
 
         try:
             for inv in self.db.get_invoices():
-                tid = inv.get('traveler_id')
+                tid = self._norm_id(inv.get('traveler_id'))
                 if not tid:
                     continue
 
@@ -679,14 +701,14 @@ class CustomReportDialog:
                 if inv_entry['rounded_total'] <= 0:
                     inv_entry['rounded_total'] = inv_entry['total_amount']
 
-                iid = str(inv.get('id', '') or '').strip()
-                ino = str(inv.get('invoice_no', '') or '').strip()
+                iid = self._norm_id(inv.get('id'))
+                ino = self._norm_id(inv.get('invoice_no'))
                 if iid:
                     self.invoice_by_id[iid] = inv_entry
                 if ino:
                     self.invoice_by_no[ino] = inv_entry
 
-                if (str(inv.get('status', '')).lower() != 'cancelled'
+                if (self._norm_status(inv.get('status')) != 'cancelled'
                         and tid not in self.default_invoice_by_traveler):
                     self.default_invoice_by_traveler[tid] = inv_entry
 
@@ -1734,59 +1756,18 @@ class CustomReportDialog:
                     except Exception:
                         pass
 
-            self.traveler_data = self.db.get_travelers()
+            self.traveler_data = self._normalize_traveler_rows(self.db.get_travelers())
             self.batch_data = {
                 str(b.get('id') or '').strip(): b
                 for b in self.db.get_batches()
                 if str(b.get('id') or '').strip()
             }
 
-            try:
-                db_payments = list(self.db.get_payments() or [])
-            except Exception:
-                db_payments = []
-
-            print("[CR] ─── payment source check ───")
-            print(f"[CR]   DB  → {len(db_payments)} rows")
-
-            candidates = []
-            if hasattr(self.db, "data_dir"):
-                try:
-                    candidates.append(
-                        os.path.join(str(self.db.data_dir),
-                                     "payments.csv"))
-                except Exception:
-                    pass
-            base = self.get_app_base_path()
-            candidates.extend([
-                os.path.join(base, "data", "payments.csv"),
-                os.path.join(base, "payments.csv"),
-            ])
-
-            best_rows = db_payments
-            best_src = f"DB ({len(db_payments)} rows)"
-            seen = set()
-            for cp in candidates:
-                if not cp or cp in seen:
-                    continue
-                seen.add(cp)
-                if not os.path.exists(cp):
-                    print(f"[CR]   CSV not found: {cp}")
-                    continue
-                try:
-                    with open(cp, "r", encoding="utf-8-sig") as f:
-                        disk_rows = list(csv.DictReader(f))
-                    print(f"[CR]   CSV {cp} → {len(disk_rows)} rows")
-                    if len(disk_rows) > len(best_rows):
-                        best_rows = disk_rows
-                        best_src = f"CSV {cp} ({len(disk_rows)} rows)"
-                except Exception as e:
-                    print(f"[CR]   CSV read error {cp}: {e}")
-
-            self.payment_data = best_rows
-            self._last_payment_source = best_src
-            print(f"[CR]   ✔ USING → {best_src}")
-            print("[CR] ──────────────────────────")
+            self.payment_data = self._normalize_payment_rows(
+                self.db.get_payments() or [])
+            self._last_payment_source = (
+                f"Database ({len(self.payment_data)} rows)")
+            self._refresh_receipt_cache()
 
             self.invoice_lookup = {
                 str(i['id']).strip(): i for i in self.db.get_invoices()
@@ -1821,46 +1802,18 @@ class CustomReportDialog:
             except Exception as ex:
                 print(f"[CR] db.reload_all failed: {ex}")
 
-            self.traveler_data = self.db.get_travelers()
+            self.traveler_data = self._normalize_traveler_rows(self.db.get_travelers())
             self.batch_data = {
                 str(b.get('id') or '').strip(): b
                 for b in self.db.get_batches()
                 if str(b.get('id') or '').strip()
             }
 
-            base = self.get_app_base_path()
-            candidates = []
-            if hasattr(self.db, "data_dir"):
-                try:
-                    candidates.append(
-                        os.path.join(str(self.db.data_dir),
-                                     "payments.csv"))
-                except Exception:
-                    pass
-            candidates.extend([
-                os.path.join(base, "data", "payments.csv"),
-                os.path.join(base, "payments.csv"),
-            ])
-
-            best_rows = None
-            best_path = None
-            for cp in candidates:
-                if not os.path.exists(cp):
-                    continue
-                try:
-                    with open(cp, "r", encoding="utf-8-sig") as f:
-                        rows = list(csv.DictReader(f))
-                    print(f"[CR] FORCE: {cp} → {len(rows)} rows")
-                    if best_rows is None or len(rows) > len(best_rows):
-                        best_rows = rows
-                        best_path = cp
-                except Exception as ex:
-                    print(f"[CR] FORCE read error {cp}: {ex}")
-
-            if best_rows is not None:
-                self.payment_data = best_rows
-                self._last_payment_source = (
-                    f"CSV {best_path} ({len(best_rows)} rows) [FORCE]")
+            self.payment_data = self._normalize_payment_rows(
+                self.db.get_payments() or [])
+            self._last_payment_source = (
+                f"Database ({len(self.payment_data)} rows) [FORCE]")
+            self._refresh_receipt_cache()
             self._refresh_invoice_caches()
             self._typing_until = time.time() + 3.0
             self.generate_preview(None)
@@ -1922,16 +1875,18 @@ class CustomReportDialog:
             except Exception as ex:
                 print(f"[CR] reload failed: {ex}")
 
-            self.traveler_data = self.db.get_travelers()
+            self.traveler_data = self._normalize_traveler_rows(self.db.get_travelers())
             self.batch_data = {
                 str(b.get('id') or '').strip(): b
                 for b in self.db.get_batches()
                 if str(b.get('id') or '').strip()
             }
-            self.payment_data = list(self.db.get_payments() or [])
+            self.payment_data = self._normalize_payment_rows(
+                self.db.get_payments() or [])
             self.invoice_lookup = {
                 str(i['id']).strip(): i for i in self.db.get_invoices()
             }
+            self._refresh_receipt_cache()
 
             self._load_live_tax_rates()
             self._refresh_invoice_caches()
@@ -2017,16 +1972,16 @@ class CustomReportDialog:
 
                     if has_payment_cols:
                         _pays = [p for p in self.payment_data
-                                 if p.get('traveler_id')
-                                 == traveler.get('id')]
+                                 if self._norm_id(p.get('traveler_id'))
+                                 == self._norm_id(traveler.get('id'))]
                         if payment_status_filter != "All":
                             _pays = [p for p in _pays
-                                     if p.get('status')
-                                     == payment_status_filter]
+                                     if self._norm_status(p.get('status'))
+                                     == self._norm_status(payment_status_filter)]
                         if payment_method_filter != "All":
                             _pays = [p for p in _pays
-                                     if p.get('payment_method')
-                                     == payment_method_filter]
+                                     if self._norm_method(p.get('payment_method'))
+                                     == self._norm_method(payment_method_filter)]
                         _pays = [p for p in _pays
                                  if min_amt <= float(
                                      p.get('amount', 0) or 0) <= max_amt]
@@ -2041,15 +1996,15 @@ class CustomReportDialog:
             if has_payment_cols:
                 for traveler in filtered_travelers:
                     pays = [p for p in self.payment_data
-                            if p.get('traveler_id') == traveler.get('id')]
+                            if self._norm_id(p.get('traveler_id')) == self._norm_id(traveler.get('id'))]
                     if payment_status_filter != "All":
                         pays = [p for p in pays
-                                if p.get('status')
-                                == payment_status_filter]
+                                if self._norm_status(p.get('status'))
+                                == self._norm_status(payment_status_filter)]
                     if payment_method_filter != "All":
                         pays = [p for p in pays
-                                if p.get('payment_method')
-                                == payment_method_filter]
+                                if self._norm_method(p.get('payment_method'))
+                                == self._norm_method(payment_method_filter)]
                     pays = [p for p in pays
                             if min_amt <= float(
                                 p.get('amount', 0) or 0) <= max_amt]
@@ -2124,15 +2079,15 @@ class CustomReportDialog:
                 try:
                     batch = batch_lookup.get(str(traveler.get('batch_id') or '').strip())
                     pays = [p for p in self.payment_data
-                            if p.get('traveler_id') == traveler.get('id')]
+                            if self._norm_id(p.get('traveler_id')) == self._norm_id(traveler.get('id'))]
                     if payment_status_filter != "All":
                         pays = [p for p in pays
-                                if p.get('status')
-                                == payment_status_filter]
+                                if self._norm_status(p.get('status'))
+                                == self._norm_status(payment_status_filter)]
                     if payment_method_filter != "All":
                         pays = [p for p in pays
-                                if p.get('payment_method')
-                                == payment_method_filter]
+                                if self._norm_method(p.get('payment_method'))
+                                == self._norm_method(payment_method_filter)]
                     pays = [p for p in pays
                             if min_amt <= float(
                                 p.get('amount', 0) or 0) <= max_amt]
@@ -2243,10 +2198,10 @@ class CustomReportDialog:
                         if d_to is not None and pd > d_to:
                             continue
                     if payment_status_filter != "All":
-                        if p.get('status') != payment_status_filter:
+                        if self._norm_status(p.get('status')) != self._norm_status(payment_status_filter):
                             continue
                     if payment_method_filter != "All":
-                        if p.get('payment_method') != payment_method_filter:
+                        if self._norm_method(p.get('payment_method')) != self._norm_method(payment_method_filter):
                             continue
                     amt = float(p.get('amount', 0) or 0)
                     if amt < min_amt or amt > max_amt:
@@ -2726,7 +2681,9 @@ class CustomReportDialog:
         if key == '__dyn_method':
             return str(payment.get('payment_method', '') or '')
         if key == '__dyn_receipt':
-            return str(payment.get('id', '') or '')
+            receipt = self.receipt_by_payment_id.get(
+                self._norm_id(payment.get('id')), {})
+            return str(receipt.get('receipt_no', '') or '—')
         if key == '__dyn_txn':
             return self.convert_scientific_to_number(
                 str(payment.get('transaction_id', '') or ''))
