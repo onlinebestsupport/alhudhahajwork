@@ -304,6 +304,58 @@ def send_file_to_user(page, filepath, label="Download"):
 
 
 # =================================================================================
+# cleanup_old_downloads — remove expired server-side export files
+# =================================================================================
+def cleanup_old_downloads(max_age_days=7, downloads_dir=None):
+    """Delete regular files older than ``max_age_days`` from the download cache.
+
+    Browser downloads are copies; server-side files in ``static/downloads``
+    remain until removed. This cleanup only touches regular files in the
+    resolved downloads directory and leaves directories and symlinks alone.
+
+    Returns a summary dictionary with directory, scanned, deleted, and errors.
+    """
+    try:
+        days = float(max_age_days)
+    except (TypeError, ValueError):
+        days = 7.0
+    if days < 0:
+        days = 0.0
+
+    directory = (downloads_dir or
+                 os.path.join(get_app_base_path(), "static", "downloads"))
+    directory = os.path.abspath(os.path.normpath(str(directory)))
+    result = {"directory": directory, "scanned": 0,
+              "deleted": 0, "errors": 0}
+
+    if not os.path.isdir(directory):
+        return result
+
+    cutoff = datetime.now().timestamp() - (days * 24 * 60 * 60)
+    try:
+        entries = list(os.scandir(directory))
+    except OSError as ex:
+        result["errors"] = 1
+        print(f"[cleanup] could not scan {directory}: {ex}")
+        return result
+
+    for entry in entries:
+        if not entry.is_file(follow_symlinks=False):
+            continue
+        result["scanned"] += 1
+        try:
+            if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                os.unlink(entry.path)
+                result["deleted"] += 1
+                print(f"[cleanup] deleted: {entry.name}")
+        except OSError as ex:
+            result["errors"] += 1
+            print(f"[cleanup] could not delete {entry.name}: {ex}")
+
+    return result
+
+
+# =================================================================================
 # photo_data_uri — inline base64 image for reports
 # =================================================================================
 def photo_data_uri(path):
