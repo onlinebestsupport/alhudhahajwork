@@ -1350,8 +1350,30 @@ class HajDatabase:
         return invoice_id
 
     def delete_invoice(self, invoice_id):
-        self.invoices = self.invoices[self.invoices['id'] != invoice_id]
+        """Delete only an invoice; preserve payments and receipts.
+
+        Payments and receipts are independent financial records. Their
+        ``invoice_id`` reference is intentionally retained so payment history
+        remains available for verification even after an invoice is removed.
+        """
+        invoice_key = str(invoice_id or '').strip()
+        if not invoice_key:
+            raise ValueError("Invoice ID is required")
+
+        invoice_mask = self.invoices['id'].astype(str).str.strip() == invoice_key
+        if not invoice_mask.any():
+            raise ValueError(f"Invoice not found: {invoice_key}")
+
+        invoices_deleted = int(invoice_mask.sum())
+        self.invoices = self.invoices.loc[~invoice_mask].copy()
         self._save_df(self.invoices, "invoices.csv")
+
+        return {
+            'invoice_id': invoice_key,
+            'invoices_deleted': invoices_deleted,
+            'payments_deleted': 0,
+            'receipts_deleted': 0,
+        }
 
     def _round_as_per_rules(self, amount):
         if isinstance(amount, (int, float)):
