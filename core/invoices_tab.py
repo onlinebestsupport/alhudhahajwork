@@ -775,33 +775,30 @@ class InvoicesTab:
         dlg.show()
 
     def delete_invoice(self, invoice):
-        try:
-            payments = self.db.get_payments(invoice.get('traveler_id', ''))
-            has_pay = any(str(p.get('invoice_id', '')) == str(invoice.get('id', ''))
-                          for p in payments)
-        except Exception:
-            has_pay = False
-
-        if has_pay:
-            self._snack("⚠️ Cannot delete — payments linked to this invoice")
-            return
-
         def confirm(ev):
             try:
-                self.db.delete_invoice(invoice['id'])
+                result = self.db.delete_invoice(invoice['id'])
                 self.db.log_activity(
                     self.current_user['id'], "delete_invoice",
-                    f"Deleted invoice {invoice.get('invoice_no', '')}")
+                    f"Deleted invoice {invoice.get('invoice_no', '')}; "
+                    f"cascade={result if result is not None else 'completed'}")
                 self.page.pop_dialog()
                 self.refresh()
-                self._snack("✅ Invoice deleted")
+                deleted = result if isinstance(result, dict) else {}
+                payments = deleted.get('payments_deleted', 0)
+                receipts = deleted.get('receipts_deleted', 0)
+                self._snack(
+                    f"✅ Invoice deleted; removed {payments} payment(s) and "
+                    f"{receipts} receipt(s)")
             except Exception as ex:
                 self._snack(f"❌ {ex}")
 
         dialog = ft.AlertDialog(
             title=ft.Text("Delete Invoice?", size=14),
             content=ft.Text(
-                f"Delete invoice {invoice.get('invoice_no', 'N/A')}?",
+                f"Delete invoice {invoice.get('invoice_no', 'N/A')}?\n\n"
+                "Any linked payments and receipts will also be permanently "
+                "deleted. This cannot be undone.",
                 size=12),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
