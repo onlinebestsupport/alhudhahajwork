@@ -311,6 +311,7 @@ PAYMENT_FIELDS = [
     ("__sum_total_gst", "Invoice GST Total"),
     ("__sum_total_tcs", "Invoice TCS Total"),
     ("__sum_total_with_tax", "Invoice Total with GST/TCS"),
+    ("__sum_invoice_total", "Invoice Total"),
     ("__sum_outstanding_balance", "Outstanding Balance"),
     ("__dyn_amount", "Payment Amount (each)"),
     ("__dyn_date", "Payment Date (each)"),
@@ -2440,6 +2441,7 @@ class CustomReportDialog:
                 row[label] = self.safe_str(batch.get(key, ''))
 
         traveler_id = traveler.get('id')
+        traveler_id = self._norm_id(traveler_id)
         base_total = 0.0
         discount_total = 0.0
         taxable_total = 0.0
@@ -2447,6 +2449,22 @@ class CustomReportDialog:
         tcs_total = 0.0
         total_share_total = 0.0
         running_paid_per_invoice = {}
+
+        # Invoice summary fields must come directly from invoices.csv/database.
+        # They are not derived from payment rows because payments may be
+        # independent records and an invoice can exist before any payment.
+        invoice_entry = self.traveler_invoice_data.get(traveler_id, {})
+        invoice_base_total = float(invoice_entry.get('base', 0.0) or 0.0)
+        invoice_discount_total = float(
+            invoice_entry.get('discount_amount', 0.0) or 0.0)
+        invoice_taxable_total = float(
+            invoice_entry.get('taxable', 0.0) or 0.0)
+        invoice_gst_total = float(invoice_entry.get('gst', 0.0) or 0.0)
+        invoice_tcs_total = float(invoice_entry.get('tcs', 0.0) or 0.0)
+        invoice_with_tax_total = float(
+            invoice_entry.get('total_amount', 0.0) or 0.0)
+        invoice_rounded_total = float(
+            invoice_entry.get('rounded_total', 0.0) or 0.0)
 
         for p in payments:
             inv_obj = self._resolve_invoice_for_payment(p, traveler_id)
@@ -2542,16 +2560,17 @@ class CustomReportDialog:
                 'Payment Count':              str(len(payments)),
                 'Additional Payments':        str(len(overflow)) if overflow else '0',
                 'Additional Total':           f"₹{_fmt_inr_(ov_total)}" if overflow else '₹0.00',
-                'Total Base':                 f"₹{_fmt_inr_(base_total)}",
-                'Total Discount':             f"₹{_fmt_inr_(discount_total)}",
-                'Total Taxable':              f"₹{_fmt_inr_(taxable_total)}",
-                'Total GST':                  f"₹{_fmt_inr_(gst_total)}",
-                'Total TCS':                  f"₹{_fmt_inr_(tcs_total)}",
-                'Total — With GST/TCS':       f"₹{_fmt_inr_(total_share_total)}",
+                'Invoice Base Total':         f"₹{_fmt_inr_(invoice_base_total)}",
+                'Invoice Discount Total':    f"₹{_fmt_inr_(invoice_discount_total)}",
+                'Invoice Taxable Total':     f"₹{_fmt_inr_(invoice_taxable_total)}",
+                'Invoice GST Total':         f"₹{_fmt_inr_(invoice_gst_total)}",
+                'Invoice TCS Total':         f"₹{_fmt_inr_(invoice_tcs_total)}",
+                'Invoice Total with GST/TCS': f"₹{_fmt_inr_(invoice_with_tax_total)}",
+                'Invoice Total':             f"₹{_fmt_inr_(invoice_rounded_total)}",
                 'Pending — With GST/TCS':     f"₹{_fmt_inr_(pending_with_tax_total)}",
                 'Payment — Without GST/TCS':  f"₹{_fmt_inr_(payment_without_tax_total)}",
                 'Outstanding Balance':        f"₹{_fmt_inr_(outstanding_balance)}",
-                'Total (with GST/TCS)':       f"₹{_fmt_inr_(total_share_total)}",
+                'Total (with GST/TCS)':       f"₹{_fmt_inr_(invoice_with_tax_total)}",
                 'Pending Payment (with GST/TCS)': f"₹{_fmt_inr_(pending_with_tax_total)}",
                 'Payment (without GST/TCS)':  f"₹{_fmt_inr_(payment_without_tax_total)}",
             }
