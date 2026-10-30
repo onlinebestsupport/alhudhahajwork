@@ -1363,7 +1363,7 @@ class CustomReportDialog:
             for batch in self.db.get_batches():
                 self.batch_filter_combo.options.append(
                     ft.dropdown.Option(
-                        batch['id'],
+                        str(batch.get('id') or '').strip(),
                         batch.get('batch_name', 'Unknown')[:30]))
         except Exception:
             pass
@@ -1735,7 +1735,11 @@ class CustomReportDialog:
                         pass
 
             self.traveler_data = self.db.get_travelers()
-            self.batch_data = {b['id']: b for b in self.db.get_batches()}
+            self.batch_data = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
 
             try:
                 db_payments = list(self.db.get_payments() or [])
@@ -1796,7 +1800,7 @@ class CustomReportDialog:
                 for batch in self.db.get_batches():
                     self.batch_filter_combo.options.append(
                         ft.dropdown.Option(
-                            batch['id'],
+                            str(batch.get('id') or '').strip(),
                             batch.get('batch_name', 'Unknown')[:30]))
             except Exception:
                 pass
@@ -1818,7 +1822,11 @@ class CustomReportDialog:
                 print(f"[CR] db.reload_all failed: {ex}")
 
             self.traveler_data = self.db.get_travelers()
-            self.batch_data = self.db.get_batches()
+            self.batch_data = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
 
             base = self.get_app_base_path()
             candidates = []
@@ -1915,7 +1923,11 @@ class CustomReportDialog:
                 print(f"[CR] reload failed: {ex}")
 
             self.traveler_data = self.db.get_travelers()
-            self.batch_data = {b['id']: b for b in self.db.get_batches()}
+            self.batch_data = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
             self.payment_data = list(self.db.get_payments() or [])
             self.invoice_lookup = {
                 str(i['id']).strip(): i for i in self.db.get_invoices()
@@ -1994,8 +2006,9 @@ class CustomReportDialog:
                             continue
                         if d_to is not None and rd > d_to:
                             continue
-                    if batch_filter and traveler.get(
-                            'batch_id') != batch_filter:
+                    if (batch_filter and
+                            str(traveler.get('batch_id') or '').strip()
+                            != str(batch_filter or '').strip()):
                         continue
                     if traveler_status_filter != "All":
                         if (traveler.get('status', 'Active')
@@ -2102,10 +2115,14 @@ class CustomReportDialog:
                              + dynamic_payment_cols)
 
             report_data = []
-            batch_lookup = {b['id']: b for b in self.db.get_batches()}
+            batch_lookup = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
             for traveler in filtered_travelers:
                 try:
-                    batch = batch_lookup.get(traveler.get('batch_id'))
+                    batch = batch_lookup.get(str(traveler.get('batch_id') or '').strip())
                     pays = [p for p in self.payment_data
                             if p.get('traveler_id') == traveler.get('id')]
                     if payment_status_filter != "All":
@@ -2199,7 +2216,11 @@ class CustomReportDialog:
             self._set_status("⏳", "Generating payment ledger...", "#d97706")
 
             traveler_lookup = {t['id']: t for t in self.traveler_data}
-            batch_lookup = {b['id']: b for b in self.db.get_batches()}
+            batch_lookup = {
+                str(b.get('id') or '').strip(): b
+                for b in self.db.get_batches()
+                if str(b.get('id') or '').strip()
+            }
 
             total_paid_by_traveler = {}
             for p in self.payment_data:
@@ -2233,8 +2254,9 @@ class CustomReportDialog:
                     traveler = traveler_lookup.get(p.get('traveler_id'))
                     if not traveler:
                         continue
-                    if batch_filter and traveler.get(
-                            'batch_id') != batch_filter:
+                    if (batch_filter and
+                            str(traveler.get('batch_id') or '').strip()
+                            != str(batch_filter or '').strip()):
                         continue
                     if traveler_status_filter != "All":
                         if (traveler.get('status', 'Active')
@@ -2284,7 +2306,7 @@ class CustomReportDialog:
                 traveler = traveler_lookup.get(p.get('traveler_id'))
                 if not traveler:
                     continue
-                batch = batch_lookup.get(traveler.get('batch_id'))
+                batch = batch_lookup.get(str(traveler.get('batch_id') or '').strip())
                 tid = traveler.get('id')
 
                 share = self._get_payment_share(p, tid)
