@@ -67,7 +67,12 @@ def _resolve_base_dir() -> Path:
     for env_key in ("DATA_ROOT", "RAILWAY_VOLUME_MOUNT_PATH"):
         candidate = os.environ.get(env_key)
         if candidate:
-            p = Path(candidate)
+            p = Path(candidate).expanduser()
+            # DATA_DIR is built below as BASE_DIR / "data". If the configured
+            # volume already is the data directory, use its parent to avoid
+            # creating a /data/data path.
+            if p.name.lower() == "data":
+                p = p.parent
             try:
                 p.mkdir(parents=True, exist_ok=True)
                 return p
