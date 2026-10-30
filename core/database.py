@@ -1237,6 +1237,40 @@ class HajDatabase:
         if inv_id:
             self._recalculate_invoice_status(inv_id)
 
+    def delete_payment_records(self, payment_ids):
+        """Delete explicitly approved payment IDs and their receipts.
+
+        This is used only by the invoice-tab duplicate cleanup dialog after
+        the administrator checks individual records. Normal payment deletion
+        remains protected by delete_payment().
+        """
+        ids = {str(value or '').strip() for value in (payment_ids or [])}
+        ids.discard('')
+        if not ids:
+            raise ValueError("No payment records selected")
+
+        payment_mask = self.payments['id'].astype(str).str.strip().isin(ids)
+        existing_ids = set(
+            self.payments.loc[payment_mask, 'id'].astype(str).str.strip())
+        if not existing_ids:
+            raise ValueError("Selected payment records were not found")
+
+        receipt_mask = (
+            self.receipts['payment_id'].astype(str).str.strip().isin(existing_ids)
+            if 'payment_id' in self.receipts.columns
+            else pd.Series(False, index=self.receipts.index)
+        )
+        receipts_deleted = int(receipt_mask.sum())
+        payments_deleted = int(payment_mask.sum())
+        self.receipts = self.receipts.loc[~receipt_mask].copy()
+        self.payments = self.payments.loc[~payment_mask].copy()
+        self._save_df(self.receipts, "receipts.csv")
+        self._save_df(self.payments, "payments.csv")
+        return {
+            'payments_deleted': payments_deleted,
+            'receipts_deleted': receipts_deleted,
+        }
+
     # =================================================================================
     # 2.8 — INVOICES
     # =================================================================================
