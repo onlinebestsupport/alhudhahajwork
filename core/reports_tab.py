@@ -404,7 +404,9 @@ class ReportsTab(ft.Column):
                 return
 
             try:
-                if hasattr(self.db, "reload"):
+                if hasattr(self.db, "reload_all"):
+                    self.db.reload_all()
+                elif hasattr(self.db, "reload"):
                     self.db.reload()
                 elif hasattr(self.db, "_load_all"):
                     self.db._load_all()
@@ -435,7 +437,9 @@ class ReportsTab(ft.Column):
                             f"{t.get('last_name','')}").strip() or "Unknown"
                     passport = t.get("passport_no", "") or ""
                     label = f"{name}  ·  {passport}"
-                    tid = t.get("id", "")
+                    tid = str(t.get("id") or "").strip()
+                    if not tid:
+                        continue
                     opts.append(ft.dropdown.Option(tid, label))
                     self._single_map[tid] = t
                 self._single_search.options = opts
@@ -454,7 +458,9 @@ class ReportsTab(ft.Column):
                             f"{t.get('last_name','')}").strip() or "Unknown"
                     has = "📸" if _find_photo_path(t) else "📷"
                     label = f"{has}  {name} · {t.get('passport_no','')}"
-                    tid = t.get("id", "")
+                    tid = str(t.get("id") or "").strip()
+                    if not tid:
+                        continue
                     opts.append(ft.dropdown.Option(tid, label))
                     self._photo_map[tid] = t
                 self._photo_search.options = opts
@@ -605,7 +611,9 @@ class ReportsTab(ft.Column):
     def _refresh_hub_stats(self, e=None):
         try:
             try:
-                if hasattr(self.db, "reload"):
+                if hasattr(self.db, "reload_all"):
+                    self.db.reload_all()
+                elif hasattr(self.db, "reload"):
                     self.db.reload()
                 elif hasattr(self.db, "_load_all"):
                     self.db._load_all()
@@ -968,7 +976,7 @@ class ReportsTab(ft.Column):
             color=fg)
         self._single_status_badge.bgcolor = bg
 
-        batch_id = t.get("batch_id")
+        batch_id = str(t.get("batch_id") or "").strip()
         batch = self.db.get_batch_by_id(batch_id) if batch_id else None
         batch_name = batch.get("batch_name", "—") if batch else "—"
         self._single_info["mobile"].value = str(t.get("mobile", "—") or "—")
@@ -980,7 +988,7 @@ class ReportsTab(ft.Column):
         self._single_info["dob"].value = (
             _fmt_date_ddmmyyyy(str(t.get("dob", "") or "")) or "—")
 
-        tid = t.get("id", "")
+        tid = str(t.get("id") or "").strip()
         payments = self.db.get_payments(tid) if tid else []
         invoices = self.db.get_invoices(tid) if tid else []
 
@@ -1179,7 +1187,9 @@ class ReportsTab(ft.Column):
     def _generate_standard(self, e=None):
         try:
             try:
-                if hasattr(self.db, "reload"):
+                if hasattr(self.db, "reload_all"):
+                    self.db.reload_all()
+                elif hasattr(self.db, "reload"):
                     self.db.reload()
                 elif hasattr(self.db, "_load_all"):
                     self.db._load_all()
@@ -1253,14 +1263,14 @@ class ReportsTab(ft.Column):
         travelers = self.db.get_travelers()
         counts = {}
         for t in travelers:
-            bid = t.get("batch_id")
+            bid = str(t.get("batch_id") or "").strip()
             if bid:
                 counts[bid] = counts.get(bid, 0) + 1
         lines = [f"BATCH UTILIZATION — {sd} to {ed}", "=" * 60, ""]
         ts = tb = 0
         tr = 0.0
         for b in batches:
-            bid = b.get("id")
+            bid = str(b.get("id") or "").strip()
             booked = counts.get(bid, 0)
             total = int(b.get("total_seats", 0) or 0)
             price = float(b.get("price", 0) or 0)
