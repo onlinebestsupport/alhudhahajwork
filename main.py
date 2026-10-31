@@ -23,6 +23,7 @@ import math
 import traceback
 import mimetypes
 import secrets
+from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -46,12 +47,11 @@ try:
 except Exception as _sec_err:
     print(f"[BOOT][SECURITY] core.security import failed: {_sec_err}",
           flush=True)
-    print("[BOOT][SECURITY] Falling back to no-op stubs — "
-          "SECURITY IS NOT ENFORCED", flush=True)
+    print("[BOOT][SECURITY] Security module unavailable — protected endpoints disabled", flush=True)
     _SECURITY_AVAILABLE = False
 
     async def require_admin(request: Request):
-        return None
+        raise HTTPException(status_code=503, detail="Security service unavailable")
 
     class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request, call_next):
@@ -61,13 +61,13 @@ except Exception as _sec_err:
         return request.client.host if request.client else "unknown"
 
     def validate_length(v, name, min_len=0, max_len=1000):
-        return str(v or "").strip()[:max_len]
+        raise HTTPException(status_code=503, detail="Security service unavailable")
 
     def safe_filename(name, max_len=200):
         return os.path.basename(str(name or "upload.bin"))[:max_len]
 
     def validate_upload_content(data, allowed):
-        return True
+        return False
 
     def generate_token(n=32):
         return secrets.token_hex(n)
@@ -118,6 +118,8 @@ def _is_https_request(request: Request) -> bool:
     try:
         if request.url.scheme == "https":
             return True
+        if os.getenv("TRUST_PROXY_HEADERS", "").lower() not in {"1", "true", "yes"}:
+            return False
         xfp = request.headers.get("x-forwarded-proto", "").lower()
         return xfp.split(",")[0].strip() == "https"
     except Exception:
@@ -141,6 +143,8 @@ def _json_safe(obj):
         if math.isnan(obj) or math.isinf(obj):
             return None
         return obj
+    if isinstance(obj, Decimal):
+        return format(obj, "f")
     if isinstance(obj, (int, bool)):
         return obj
     if isinstance(obj, str):
@@ -265,7 +269,7 @@ def _find_user_by_id(db, user_id):
     try:
         from core.traveler_portal import _to_list
         for u in _to_list(db.get_users()):
-            if str(u.get("id")) == str(user_id):
+            if str(u.get("id", "")).strip() == str(user_id or "").strip():
                 return dict(u)
     except Exception as e:
         print(f"[SESSION] find_user_by_id failed: {e}")
@@ -371,46 +375,8 @@ async def _clear_session(page):
 # 21.2.6 — /app/documents SYMLINK GUARD
 # =================================================================================
 def _ensure_documents_symlink():
-    target = "/app/data/documents"
-    link = "/app/documents"
-    try:
-        os.makedirs(target, exist_ok=True)
-    except Exception as e:
-        print(f"[DOCS] Could not create {target}: {e}", flush=True)
-        return
-    if os.path.islink(link):
-        try:
-            resolved = os.path.realpath(link)
-            print(f"[DOCS] {link} -> {resolved} (already set)", flush=True)
-        except Exception:
-            print(f"[DOCS] {link} is a symlink", flush=True)
-        return
-    if os.path.isdir(link):
-        migrated = 0
-        skipped = 0
-        for item in os.listdir(link):
-            src = os.path.join(link, item)
-            dst = os.path.join(target, item)
-            if os.path.exists(dst):
-                skipped += 1
-                continue
-            try:
-                shutil.move(src, dst)
-                migrated += 1
-            except Exception as e:
-                print(f"[DOCS] could not migrate '{item}': {e}", flush=True)
-        try:
-            shutil.rmtree(link)
-        except Exception as e:
-            print(f"[DOCS] Could not remove old dir {link}: {e}", flush=True)
-            return
-        print(f"[DOCS] migrated {migrated} item(s), skipped {skipped} "
-              f"(already present) -> {target}", flush=True)
-    try:
-        os.symlink(target, link)
-        print(f"[DOCS] {link} -> {target} (persistent)", flush=True)
-    except Exception as e:
-        print(f"[DOCS] symlink failed: {e}", flush=True)
+    """Deprecated compatibility hook; never writes to a hardcoded /app path."""
+    _boot_log("Document symlink migration skipped; using database data_dir")
 
 
 # =================================================================================
@@ -621,6 +587,23 @@ class FaviconOverrideMiddleware(BaseHTTPMiddleware):
 # =================================================================================
 # 21.5 — FASTAPI APP ASSEMBLY
 # =================================================================================
+def _documents_root() -> Path:
+    if AppState.db is not None:
+        return Path(AppState.db.data_dir).resolve() / "documents"
+    return (Path(get_app_base_path()).resolve() / "data" / "documents").resolve()
+
+
+def _safe_document_path(value: str) -> Path:
+    root = _documents_root().resolve()
+    raw = Path(str(value or ""))
+    candidate = (raw if raw.is_absolute() else root / raw).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Unauthorized document path")
+    return candidate
+
+
 def _build_app() -> FastAPI:
     base_path = get_app_base_path()
     static_dir = os.path.join(base_path, "static")
@@ -633,12 +616,13 @@ def _build_app() -> FastAPI:
     os.makedirs(downloads_dir, exist_ok=True)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
-    gallery_root = os.path.join(base_path, "data", "gallery")
+    data_root = Path(AppState.db.data_dir if AppState.db is not None else (Path(base_path) / "data")).resolve()
+    gallery_root = str(data_root / "gallery")
     os.makedirs(os.path.join(gallery_root, "photos"), exist_ok=True)
     os.makedirs(os.path.join(gallery_root, "videos"), exist_ok=True)
     AppState.gallery_root = gallery_root
 
-    os.makedirs(os.path.join(base_path, "data", "documents"), exist_ok=True)
+    (data_root / "documents").mkdir(parents=True, exist_ok=True)
 
     try:
         if os.path.exists(logo_path):
@@ -662,7 +646,7 @@ def _build_app() -> FastAPI:
     _boot_log(f"Gallery root    : {gallery_root}")
 
     _admin_key = os.getenv("ADMIN_API_KEY", "")
-    if not _admin_key or len(_admin_key) < 16:
+    if not _admin_key or len(_admin_key) < 32:
         _boot_log("WARNING: ADMIN_API_KEY not set (or too short). "
                   "Admin endpoints will return 503.")
     else:
@@ -876,6 +860,7 @@ def _build_app() -> FastAPI:
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/frontpage/diagnose")
     async def frontpage_diagnose(_: None = Depends(require_admin)):
+        raise HTTPException(status_code=410, detail="Mutating diagnostic disabled; use the read-only System Test Center")
         from core.frontpage_config import (
             load_config, save_config, get_selected_batches,
             add_gallery_item, list_gallery_items, remove_gallery_item,
@@ -1223,7 +1208,7 @@ def _build_app() -> FastAPI:
             travelers = _to_list(AppState.db.get_travelers())
             traveler = None
             for t in travelers:
-                if str(t.get("id", "")) == session.get("traveler_id"):
+                if str(t.get("id", "")).strip() == str(session.get("traveler_id", "")).strip():
                     traveler = dict(t)
                     break
             if not traveler:
@@ -1379,7 +1364,7 @@ def _build_app() -> FastAPI:
                 status_code=400,
                 detail="File content does not match its extension")
 
-        unique = generate_token(8)
+        unique = generate_token(16)
         fname = f"{unique}{ext}"
         target_dir = GALLERY_ROOT / media_type
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -1534,13 +1519,14 @@ def _build_app() -> FastAPI:
 
         fname = (f"{doc_key}_"
                  f"{datetime.now().strftime('%Y%m%d_%H%M%S')}{ext}")
-        target_dir = Path("/app/data/documents") / safe_folder / sub
+        documents_root = _documents_root()
+        target_dir = (documents_root / safe_folder / sub).resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / fname
 
         try:
             target.resolve().relative_to(
-                Path("/app/data/documents").resolve())
+                documents_root.resolve())
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid path")
 
@@ -1558,7 +1544,7 @@ def _build_app() -> FastAPI:
         is_edit = (mode == "edit" and traveler_id)
         if is_edit:
             try:
-                csv_path = Path("/app/data/travelers.csv")
+                csv_path = Path(AppState.db.data_dir if AppState.db is not None else (Path(get_app_base_path()) / "data")) / "travelers.csv"
                 if csv_path.exists():
                     import pandas as _pd
                     df = _pd.read_csv(csv_path, dtype=str).fillna("")
@@ -1602,19 +1588,28 @@ def _build_app() -> FastAPI:
         files: List[UploadFile] = File(...),
         paths: List[str] = Form(...),
         traveler_id: str = Form(""),   # <--- NEW PARAM (v2.32)
+        _: None = Depends(require_admin),
     ):
+        if not upload_limiter.check("folder"):
+            raise HTTPException(status_code=429, detail="Too many uploads. Slow down.")
+        if len(files) > 500:
+            raise HTTPException(status_code=400, detail="Too many files; maximum is 500")
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
 
+        documents_root = _documents_root()
+        total_bytes = 0
+        max_file_bytes = 15 * 1024 * 1024
+        allowed_folder_ext = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".txt", ".doc", ".docx", ".xls", ".xlsx"}
         # ----- Branch 1: upload launched from a specific traveler row -----
-        # All extracted files land in /app/data/documents/<traveler_id>/...
+        # All extracted files land below the configured documents root.
         if traveler_id:
             safe_root = "".join(
                 c for c in traveler_id if c.isalnum() or c in "-_")
             if not safe_root:
                 raise HTTPException(
                     status_code=400, detail="Invalid traveler_id")
-            target_base = Path("/app/data/documents") / safe_root
+            target_base = (documents_root / safe_root).resolve()
 
             extracted = 0
             for file, path in zip(files, paths):
@@ -1624,11 +1619,20 @@ def _build_app() -> FastAPI:
 
                 # Strip the root folder name (e.g. 'HAJ_TRV_2027_038')
                 rel_path = Path(*parts[1:])
-                dest = target_base / rel_path
+                dest = (target_base / rel_path).resolve()
+                try:
+                    dest.relative_to(target_base)
+                except ValueError:
+                    continue
+                if Path(str(path)).suffix.lower() not in allowed_folder_ext:
+                    continue
+                data = await file.read()
+                if len(data) > max_file_bytes or total_bytes + len(data) > 250 * 1024 * 1024:
+                    raise HTTPException(status_code=400, detail="Folder upload size limit exceeded")
+                total_bytes += len(data)
                 dest.parent.mkdir(parents=True, exist_ok=True)
 
                 try:
-                    data = await file.read()
                     dest.write_bytes(data)
                     extracted += 1
                 except Exception as e:
@@ -1648,7 +1652,7 @@ def _build_app() -> FastAPI:
 
         safe_root = "".join(
             c for c in root_folder if c.isalnum() or c in "-_")
-        target_base = Path("/app/data/documents") / safe_root
+        target_base = (documents_root / safe_root).resolve()
 
         extracted = 0
         for file, path in zip(files, paths):
@@ -1657,11 +1661,20 @@ def _build_app() -> FastAPI:
                 continue
 
             rel_path = Path(*parts[1:])
-            dest = target_base / rel_path
+            dest = (target_base / rel_path).resolve()
+            try:
+                dest.relative_to(target_base)
+            except ValueError:
+                continue
+            if Path(str(path)).suffix.lower() not in allowed_folder_ext:
+                continue
+            data = await file.read()
+            if len(data) > max_file_bytes or total_bytes + len(data) > 250 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="Folder upload size limit exceeded")
+            total_bytes += len(data)
             dest.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                data = await file.read()
                 dest.write_bytes(data)
                 extracted += 1
             except Exception as e:
@@ -1674,11 +1687,9 @@ def _build_app() -> FastAPI:
     # 21.5.8e — View Document Inline (for Data Admin)
     # -----------------------------------------------------------------------------
     @app.get("/api/admin/view-doc")
-    async def view_doc(path: str):
-        safe_path = Path(path).resolve()
-        if not str(safe_path).startswith("/app/data/documents"):
-            raise HTTPException(status_code=403, detail="Unauthorized path")
-        if not safe_path.exists():
+    async def view_doc(path: str, _: None = Depends(require_admin)):
+        safe_path = _safe_document_path(path)
+        if not safe_path.exists() or not safe_path.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
         import mimetypes as _mimetypes
