@@ -1,304 +1,249 @@
-# =================================================================================
-# SECTION 3 (FLET 1.0.0 VERSION) — SETTINGS MANAGER
-# =================================================================================
-# v1.1 — Cloud-ready (all logic preserved)
-#   • All CSV reads/writes use encoding='utf-8-sig' (no BOM issues)
-#   • Default company settings include logo_data_uri field
-#   • Error logging on write failures
-#   • Safe fallback if disk is read-only
-# =================================================================================
-
+# core/settings_manager.py — centralized, validated application settings
 import json
-import uuid
+import math
 import os
+import tempfile
+import uuid
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+
 import pandas as pd
 
+DEFAULT_GST_PERCENTAGE = Decimal("5")
+DEFAULT_TCS_PERCENTAGE = Decimal("2")
+MIN_TOUR_YEAR = 2020
+MAX_TOUR_YEAR = 2099
 
-# =================================================================================
-# 3.1 — CLASS: SettingsManager
-# =================================================================================
+
+def _decimal_percent(value, default):
+    try:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            raise InvalidOperation
+        parsed = Decimal(str(value).strip())
+        if not parsed.is_finite():
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        parsed = default
+    return max(Decimal("0"), min(Decimal("100"), parsed)).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    ).normalize()
+
+
+def _percent_for_csv(value):
+    return format(_decimal_percent(value, Decimal("0")), "f")
+
+
 class SettingsManager:
-
     def __init__(self, db):
         self.db = db
 
-    # =================================================================================
-    # 3.1.2 — SAFE CSV HELPERS (private)
-    # =================================================================================
     def _safe_read_csv(self, path):
-        """Read a CSV with proper encoding; return None on failure."""
         try:
-            if not os.path.exists(str(path)):
+            path = Path(path)
+            if not path.exists():
                 return None
-            df = pd.read_csv(path, encoding='utf-8-sig')
-            return df
+            return pd.read_csv(path, encoding="utf-8-sig")
         except Exception as ex:
             print(f"[SETTINGS] read failed ({path}): {ex}")
             return None
 
     def _safe_write_csv(self, df, path):
-        """Write a CSV with proper encoding; return True/False."""
+        """Write atomically so a restart cannot leave a half-written CSV."""
+        path = Path(path)
+        tmp_path = None
         try:
-            parent = os.path.dirname(str(path))
-            if parent and not os.path.exists(parent):
-                os.makedirs(parent, exist_ok=True)
-            df.to_csv(path, index=False, encoding='utf-8-sig')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+            )
+            os.close(fd)
+            tmp_path = Path(tmp_name)
+            df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
+            os.replace(tmp_path, path)
             return True
         except Exception as ex:
             print(f"[SETTINGS] write failed ({path}): {ex}")
+            if tmp_path:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             return False
 
-    # =================================================================================
-    # 3.2 — COMPANY SETTINGS
-    # =================================================================================
     def get_company_settings(self):
         if not self.db.company_settings.empty:
             company = self.db.company_settings.iloc[0].to_dict()
-            if company.get('bank_details') and isinstance(
-                    company['bank_details'], str):
+            bank = company.get("bank_details")
+            if isinstance(bank, str):
                 try:
-                    company['bank_details'] = json.loads(
-                        company['bank_details'])
+                    company["bank_details"] = json.loads(bank)
                 except Exception:
-                    company['bank_details'] = {}
+                    company["bank_details"] = {}
             return company
         return self.get_default_company_settings()
 
     def get_default_company_settings(self):
         return {
-            'company_name': 'Alhudha Haj Travel',
-            'address': '123 Pilgrim Street, Makkah Road',
-            'phone': '+966 123456789',
-            'email': 'info@alhudahaj.com',
-            'website': 'www.alhudahaj.com',
-            'gst_no': 'GST123456',
-            'tan_no': 'TAN123456',
-            'pan_no': 'PAN123456',
-            'logo_path': '',
-            'logo_data_uri': '',
-            'bank_details': {
-                'bank_name': 'Islamic Bank',
-                'account_no': '1234567890',
-                'ifsc': 'ISBK0001234',
-                'upi': 'alhudha@islamic'
-            }
+            "company_name": "Alhudha Haj Travel",
+            "address": "",
+            "phone": "",
+            "email": "",
+            "website": "",
+            "gst_no": "",
+            "tan_no": "",
+            "pan_no": "",
+            "logo_path": "",
+            "logo_data_uri": "",
+            "bank_details": {
+                "bank_name": "", "account_no": "", "ifsc": "", "upi": ""
+            },
         }
 
-    # =================================================================================
-    # 3.3 — TAX SETTINGS (GST & TCS)
-    # =================================================================================
     def get_tax_settings(self):
-        tax_file = self.db.data_dir / "tax_settings.csv"
+        tax_file = Path(self.db.data_dir) / "tax_settings.csv"
         df = self._safe_read_csv(tax_file)
         if df is not None and not df.empty:
-            try:
-                row = df.iloc[0].to_dict()
-
-                gst_val = row.get('gst_percentage', 18)
-                if gst_val is None or (isinstance(gst_val, float)
-                                       and str(gst_val) == 'nan'):
-                    gst_val = 18.0
-                try:
-                    gst_val = float(gst_val)
-                except Exception:
-                    gst_val = 18.0
-
-                tcs_val = row.get('tcs_percentage', 0.1)
-                if tcs_val is None or (isinstance(tcs_val, float)
-                                       and str(tcs_val) == 'nan'):
-                    tcs_val = 0.1
-                try:
-                    tcs_val = float(tcs_val)
-                except Exception:
-                    tcs_val = 0.1
-
-                return {
-                    'gst_percentage': gst_val,
-                    'tcs_percentage': tcs_val,
-                    'gst_description': 'Goods and Services Tax',
-                    'tcs_description': 'Tax Collected at Source',
-                    'updated_date': datetime.now().isoformat(),
-                    'updated_by': 'system'
-                }
-            except Exception as e:
-                print(f"[SETTINGS] tax parse error: {e}")
-
-        default_tax = {
-            'id': str(uuid.uuid4()),
-            'gst_percentage': 18.0,
-            'tcs_percentage': 0.1,
-            'gst_description': 'Goods and Services Tax',
-            'tcs_description': 'Tax Collected at Source',
-            'updated_date': datetime.now().isoformat(),
-            'updated_by': 'system'
-        }
-        self._safe_write_csv(pd.DataFrame([default_tax]), tax_file)
-        return default_tax
-
-    def update_tax_settings(self, gst_percentage, tcs_percentage):
-        tax_file = self.db.data_dir / "tax_settings.csv"
-
-        try:
-            gst_val = float(gst_percentage)
-        except Exception:
-            gst_val = 18.0
-
-        try:
-            tcs_val = float(tcs_percentage)
-        except Exception:
-            tcs_val = 0.1
-
-        gst_val = max(0, min(100, gst_val))
-        tcs_val = max(0, min(100, tcs_val))
+            row = df.iloc[0].to_dict()
+            gst = _decimal_percent(row.get("gst_percentage"), DEFAULT_GST_PERCENTAGE)
+            tcs = _decimal_percent(row.get("tcs_percentage"), DEFAULT_TCS_PERCENTAGE)
+            return {
+                "id": str(row.get("id") or uuid.uuid4()),
+                "gst_percentage": format(gst, "f"),
+                "tcs_percentage": format(tcs, "f"),
+                "gst_description": str(row.get("gst_description") or "Goods and Services Tax"),
+                "tcs_description": str(row.get("tcs_description") or "Tax Collected at Source"),
+                "updated_date": str(row.get("updated_date") or ""),
+                "updated_by": str(row.get("updated_by") or "system"),
+            }
 
         tax_data = {
-            'id': str(uuid.uuid4()),
-            'gst_percentage': gst_val,
-            'tcs_percentage': tcs_val,
-            'gst_description': 'Goods and Services Tax',
-            'tcs_description': 'Tax Collected at Source',
-            'updated_date': datetime.now().isoformat(),
-            'updated_by': 'system'
+            "id": str(uuid.uuid4()),
+            "gst_percentage": format(DEFAULT_GST_PERCENTAGE, "f"),
+            "tcs_percentage": format(DEFAULT_TCS_PERCENTAGE, "f"),
+            "gst_description": "Goods and Services Tax",
+            "tcs_description": "Tax Collected at Source",
+            "updated_date": datetime.now().isoformat(),
+            "updated_by": "system",
         }
-        ok = self._safe_write_csv(pd.DataFrame([tax_data]), tax_file)
-        if not ok:
-            print(f"[SETTINGS] ⚠️ Could not save tax settings to {tax_file}")
+        if not self._safe_write_csv(pd.DataFrame([tax_data]), tax_file):
+            print(f"[SETTINGS] unable to create default tax file: {tax_file}")
         return tax_data
 
-    # =================================================================================
-    # 3.4 — TOUR TYPES
-    # =================================================================================
-    def get_tour_types(self):
-        tour_file = self.db.data_dir / "tour_types.csv"
-        df = self._safe_read_csv(tour_file)
+    def update_tax_settings(self, gst_percentage, tcs_percentage, updated_by="system"):
+        tax_file = Path(self.db.data_dir) / "tax_settings.csv"
+        gst = _decimal_percent(gst_percentage, DEFAULT_GST_PERCENTAGE)
+        tcs = _decimal_percent(tcs_percentage, DEFAULT_TCS_PERCENTAGE)
+        tax_data = {
+            "id": str(uuid.uuid4()),
+            "gst_percentage": format(gst, "f"),
+            "tcs_percentage": format(tcs, "f"),
+            "gst_description": "Goods and Services Tax",
+            "tcs_description": "Tax Collected at Source",
+            "updated_date": datetime.now().isoformat(),
+            "updated_by": str(updated_by or "system"),
+        }
+        if not self._safe_write_csv(pd.DataFrame([tax_data]), tax_file):
+            raise OSError(f"Could not save tax settings to {tax_file}")
+        return tax_data
 
+    def get_tour_types(self):
+        tour_file = Path(self.db.data_dir) / "tour_types.csv"
+        df = self._safe_read_csv(tour_file)
         if df is not None and not df.empty:
             try:
-                if 'year' not in df.columns:
-                    df['year'] = datetime.now().year
+                if "year" not in df.columns:
+                    df["year"] = datetime.now().year
                     self._safe_write_csv(df, tour_file)
-                return df.to_dict('records')
-            except Exception as e:
-                print(f"[SETTINGS] tour parse error: {e}")
+                return df.to_dict("records")
+            except Exception as ex:
+                print(f"[SETTINGS] tour parse error: {ex}")
 
         current_year = datetime.now().year
-        default_tours = []
-
+        tours = []
         for year in range(current_year - 2, current_year + 6):
-            default_tours.append({
-                'id': str(uuid.uuid4()),
-                'tour_name': 'Haj',
-                'year': year,
-                'description': 'Haj Pilgrimage',
-                'is_active': True
-            })
-            default_tours.append({
-                'id': str(uuid.uuid4()),
-                'tour_name': 'Umrah',
-                'year': year,
-                'description': 'Umrah Pilgrimage',
-                'is_active': True
-            })
-
+            for name, description in (("Haj", "Haj Pilgrimage"), ("Umrah", "Umrah Pilgrimage")):
+                tours.append({"id": str(uuid.uuid4()), "tour_name": name,
+                              "year": year, "description": description, "is_active": True})
             if current_year - 1 <= year <= current_year + 3:
-                default_tours.append({
-                    'id': str(uuid.uuid4()),
-                    'tour_name': 'Ziyarah',
-                    'year': year,
-                    'description': 'Ziyarah Tour - Visit Holy Sites',
-                    'is_active': True
-                })
-                default_tours.append({
-                    'id': str(uuid.uuid4()),
-                    'tour_name': 'UK Tour',
-                    'year': year,
-                    'description': 'United Kingdom Tour',
-                    'is_active': True
-                })
+                for name, description in (("Ziyarah", "Ziyarah Tour - Visit Holy Sites"),
+                                          ("UK Tour", "United Kingdom Tour")):
+                    tours.append({"id": str(uuid.uuid4()), "tour_name": name,
+                                  "year": year, "description": description, "is_active": True})
+        if not self._safe_write_csv(pd.DataFrame(tours), tour_file):
+            print(f"[SETTINGS] unable to create tour file: {tour_file}")
+        return tours
 
-        self._safe_write_csv(pd.DataFrame(default_tours), tour_file)
-        return default_tours
+    @staticmethod
+    def _year(value):
+        try:
+            return max(MIN_TOUR_YEAR, min(MAX_TOUR_YEAR, int(value)))
+        except (TypeError, ValueError):
+            return datetime.now().year
+
+    @staticmethod
+    def _tour_key(name, year):
+        return str(name or "").strip().casefold(), int(year)
 
     def add_tour_type(self, tour_name, description, year=None):
-        tour_file = self.db.data_dir / "tour_types.csv"
+        name = str(tour_name or "").strip()
+        if not name:
+            raise ValueError("Tour name is required")
+        year = self._year(year)
         tours = self.get_tour_types()
-
-        if year is None:
-            year = datetime.now().year
-
-        if year < 2020:
-            year = 2020
-        elif year > 2099:
-            year = 2099
-
-        new_tour = {
-            'id': str(uuid.uuid4()),
-            'tour_name': str(tour_name),
-            'year': int(year),
-            'description': str(description),
-            'is_active': True
-        }
+        if any(self._tour_key(t.get("tour_name"), t.get("year")) == self._tour_key(name, year)
+               and bool(t.get("is_active", True)) for t in tours):
+            raise ValueError(f"Tour '{name}' for {year} already exists")
+        new_tour = {"id": str(uuid.uuid4()), "tour_name": name, "year": year,
+                    "description": str(description or "").strip(), "is_active": True}
         tours.append(new_tour)
-        self._safe_write_csv(pd.DataFrame(tours), tour_file)
+        if not self._safe_write_csv(pd.DataFrame(tours), Path(self.db.data_dir) / "tour_types.csv"):
+            raise OSError("Could not save tour type")
         return new_tour
 
-    def update_tour_type(self, tour_id, tour_name, year, description,
-                         is_active):
-        tour_file = self.db.data_dir / "tour_types.csv"
+    def update_tour_type(self, tour_id, tour_name, year, description, is_active):
+        target = str(tour_id or "").strip()
         tours = self.get_tour_types()
-
-        if year < 2020:
-            year = 2020
-        elif year > 2099:
-            year = 2099
-
+        found = False
+        year = self._year(year)
         for tour in tours:
-            if tour['id'] == tour_id:
-                tour['tour_name'] = str(tour_name)
-                tour['year'] = int(year)
-                tour['description'] = str(description)
-                tour['is_active'] = bool(is_active)
+            if str(tour.get("id", "")).strip() == target:
+                tour.update({"tour_name": str(tour_name or "").strip(), "year": year,
+                             "description": str(description or "").strip(),
+                             "is_active": bool(is_active)})
+                found = True
                 break
-
-        self._safe_write_csv(pd.DataFrame(tours), tour_file)
+        if not found:
+            raise KeyError(f"Tour type not found: {target}")
+        if not self._safe_write_csv(pd.DataFrame(tours), Path(self.db.data_dir) / "tour_types.csv"):
+            raise OSError("Could not save tour type")
 
     def delete_tour_type(self, tour_id):
-        tour_file = self.db.data_dir / "tour_types.csv"
+        target = str(tour_id or "").strip()
         tours = self.get_tour_types()
-        tours = [t for t in tours if t['id'] != tour_id]
-        self._safe_write_csv(pd.DataFrame(tours), tour_file)
+        remaining = [t for t in tours if str(t.get("id", "")).strip() != target]
+        if len(remaining) == len(tours):
+            raise KeyError(f"Tour type not found: {target}")
+        if not self._safe_write_csv(pd.DataFrame(remaining), Path(self.db.data_dir) / "tour_types.csv"):
+            raise OSError("Could not delete tour type")
 
     def get_tour_type_by_name_year(self, tour_name, year):
-        tours = self.get_tour_types()
-        for tour in tours:
-            if (tour.get('tour_name', '').upper() == tour_name.upper()
-                    and tour.get('year') == year):
-                return tour
-        return None
+        key = self._tour_key(tour_name, year)
+        return next((t for t in self.get_tour_types()
+                     if self._tour_key(t.get("tour_name"), t.get("year")) == key), None)
 
     def get_tour_types_by_year(self, year):
-        tours = self.get_tour_types()
-        return [t for t in tours
-                if t.get('year') == year and t.get('is_active', True)]
+        try:
+            target = int(year)
+        except (TypeError, ValueError):
+            return []
+        return [t for t in self.get_tour_types()
+                if int(t.get("year", 0)) == target and bool(t.get("is_active", True))]
 
     def get_tour_years(self):
-        tours = self.get_tour_types()
-        years = sorted(set(
-            [t.get('year', datetime.now().year) for t in tours]))
-
-        all_years = list(range(2020, 2100))
-        if not years:
-            return all_years
-
-        combined = list(set(all_years + years))
-        return sorted(combined, reverse=True)
+        years = {int(t.get("year")) for t in self.get_tour_types()
+                 if str(t.get("year", "")).isdigit()}
+        return sorted(years or {datetime.now().year}, reverse=True)
 
     def get_active_tour_types(self):
-        tours = self.get_tour_types()
-        return [t for t in tours if t.get('is_active', True)]
-
-
-# =================================================================================
-# SECTION 3 END (FLET 1.0.0 VERSION)
-# =================================================================================
+        return [t for t in self.get_tour_types() if bool(t.get("is_active", True))]
