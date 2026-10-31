@@ -652,8 +652,8 @@ class CustomReportDialog:
             if SettingsManager is not None:
                 sm = SettingsManager(self.db)
                 tax = sm.get_tax_settings()
-                self.gst_rate = float(tax.get('gst_percentage', 18) or 0)
-                self.tcs_rate = float(tax.get('tcs_percentage', 0.1) or 0)
+                self.gst_rate = float(tax.get('gst_percentage', 5) or 0)
+                self.tcs_rate = float(tax.get('tcs_percentage', 2) or 0)
         except Exception as e:
             print(f"[CR] _load_live_tax_rates failed: {e}")
             self.gst_rate = 0.0
