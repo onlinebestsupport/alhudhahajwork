@@ -401,15 +401,28 @@ class SystemTestTab:
         relative_url = f"/download/{filename}"
         public_base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or "").strip().rstrip("/")
         url = f"{public_base}{relative_url}" if public_base else relative_url
-        script = f"window.open({json.dumps(url)}, '_blank', 'noopener,noreferrer');"
+        # Same-tab navigation triggers the attachment response without popup blocking.
+        script = f"window.location.assign({json.dumps(url)});"
         try:
             runner = getattr(self.page, "run_javascript", None)
             if callable(runner):
-                runner(script)
-                return
+                result = runner(script)
+                if asyncio.iscoroutine(result):
+                    async def _await_js():
+                        await result
+                    self.page.run_task(_await_js)
+                return url
         except Exception:
             pass
-        self.page.launch_url(url)
+        try:
+            result = self.page.launch_url(url)
+            if asyncio.iscoroutine(result):
+                async def _await_launch():
+                    await result
+                self.page.run_task(_await_launch)
+        except Exception:
+            raise
+        return url
 
     def _export_csv(self, rows, label):
         if not rows:
@@ -428,8 +441,8 @@ class SystemTestTab:
             for row in rows:
                 writer.writerow({key: row.get(key, "") for key in fields})
         try:
-            self._open_download(filename)
-            self.notification.value = f"CSV download started: {filename}"
+            download_url = self._open_download(filename)
+            self.notification.value = f"CSV download started: {filename} ({download_url})"
             self.notification.color = "#166534"
         except Exception as ex:
             self.notification.value = f"CSV created but browser download could not start: {ex}"
@@ -468,8 +481,8 @@ class SystemTestTab:
         target = project_static / filename
         target.write_text("\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(prompts), encoding="utf-8")
         try:
-            self._open_download(filename)
-            self.notification.value = f"Copy-ready Manus prompt file downloaded: {filename}"
+            download_url = self._open_download(filename)
+            self.notification.value = f"Copy-ready Manus prompt file downloaded: {filename} ({download_url})"
             self.notification.color = "#166534"
         except Exception as ex:
             self.notification.value = f"Prompt file created but browser download could not start: {ex}"
