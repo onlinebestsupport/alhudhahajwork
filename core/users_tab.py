@@ -21,7 +21,10 @@
 # =================================================================================
 
 import flet as ft
+import base64
 import hashlib
+import hmac
+import secrets
 import json
 import time
 import traceback
@@ -101,8 +104,27 @@ def _serialize_permissions(perms):
     return json.dumps(sorted(perms))
 
 
-def _hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+def _hash_password(password) -> str:
+    salt = secrets.token_bytes(16)
+    rounds = 240_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return "pbkdf2_sha256$%d$%s$%s" % (
+        rounds, base64.urlsafe_b64encode(salt).decode(),
+        base64.urlsafe_b64encode(digest).decode())
+
+
+def _verify_password(password, stored: str) -> bool:
+    stored = str(stored or "").strip()
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt_b64, digest_b64 = stored.split("$", 3)
+            salt = base64.urlsafe_b64decode(salt_b64.encode())
+            expected = base64.urlsafe_b64decode(digest_b64.encode())
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds))
+            return hmac.compare_digest(actual, expected)
+        except Exception:
+            return False
+    return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored)
 
 
 def _user_has_permission(user, perm_key):
@@ -865,8 +887,8 @@ class UserFormDialog:
             if password and password != confirm:
                 self._snack("⚠️ Passwords do not match.")
                 return
-            if password and len(password) < 4:
-                self._snack("⚠️ Password must be at least 4 chars.")
+            if password and len(password) < 10:
+                self._snack("⚠️ Password must be at least 10 characters.")
                 return
 
             # Duplicate username check
@@ -880,6 +902,9 @@ class UserFormDialog:
                     self._snack(f"⚠️ Username '{username}' exists.")
                     return
 
+            if role == "super_admin" and _safe_str(self.current_user.get("role")).lower() != "super_admin":
+                self._snack("⛔ Only a super_admin can create another super_admin.")
+                return
             perms = {k for k, cb in self.permission_checkboxes.items()
                      if cb.value}
             if role == "super_admin":
