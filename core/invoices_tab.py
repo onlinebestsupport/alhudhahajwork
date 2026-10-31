@@ -47,6 +47,20 @@ def _rate(value):
         return Decimal("0.0000")
 
 
+def _clamp_rate(value, default=Decimal("0")):
+    rate = _rate(value)
+    if rate < Decimal("0"):
+        return Decimal("0.0000")
+    if rate > Decimal("100"):
+        return Decimal("100.0000")
+    return rate
+
+
+def _display_rate(value):
+    text = format(_clamp_rate(value), "f").rstrip("0").rstrip(".")
+    return text or "0"
+
+
 def _round_rule(value):
     value = Decimal(str(value))
     floor_value = value.to_integral_value(rounding="ROUND_FLOOR")
@@ -127,11 +141,11 @@ class InvoicesTab:
     def setup_ui(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst_rate = _rate(tax.get('gst_percentage', 18))
-            tcs_rate = _rate(tax.get('tcs_percentage', 0.1))
+            gst_rate = _rate(tax.get('gst_percentage', 5))
+            tcs_rate = _rate(tax.get('tcs_percentage', 2))
         except Exception:
-            gst_rate = Decimal('18')
-            tcs_rate = Decimal('0.1')
+            gst_rate = Decimal('5')
+            tcs_rate = Decimal('2')
 
         self.tax_info_label = ft.Text(
             f"GST {gst_rate}%  |  TCS {tcs_rate}%",
@@ -420,11 +434,11 @@ class InvoicesTab:
     def update_tax_display(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst_rate = _rate(tax.get('gst_percentage', 18))
-            tcs_rate = _rate(tax.get('tcs_percentage', 0.1))
+            gst_rate = _rate(tax.get('gst_percentage', 5))
+            tcs_rate = _rate(tax.get('tcs_percentage', 2))
         except Exception:
-            gst_rate = Decimal('18')
-            tcs_rate = Decimal('0.1')
+            gst_rate = Decimal('5')
+            tcs_rate = Decimal('2')
         self.tax_info_label.value = (
             f"GST {gst_rate}%  |  TCS {tcs_rate}%")
         try:
@@ -518,9 +532,9 @@ class InvoicesTab:
             disc_amt = self.safe_float(inv.get('discount_amount', 0))
             taxable = self.safe_float(
                 inv.get('taxable_value', base - disc_amt))
-            gst_pct = self.safe_float(inv.get('gst_percentage', 18))
+            gst_pct = self.safe_float(inv.get('gst_percentage', 5))
             gst_amt = self.safe_float(inv.get('gst_amount', 0))
-            tcs_pct = self.safe_float(inv.get('tcs_percentage', 0.1))
+            tcs_pct = self.safe_float(inv.get('tcs_percentage', 2))
             tcs_amt = self.safe_float(inv.get('tcs_amount', 0))
             total = self.safe_float(inv.get('total_amount', 0))
             rounded = self.safe_float(
@@ -1369,9 +1383,9 @@ class InvoicesTab:
         dp = self.safe_float(invoice.get('discount_percentage', 0))
         da = self.safe_float(invoice.get('discount_amount', 0))
         tv = self.safe_float(invoice.get('taxable_value', base - da))
-        gp = self.safe_float(invoice.get('gst_percentage', 18))
+        gp = self.safe_float(invoice.get('gst_percentage', 5))
         ga = self.safe_float(invoice.get('gst_amount', 0))
-        tp = self.safe_float(invoice.get('tcs_percentage', 0.1))
+        tp = self.safe_float(invoice.get('tcs_percentage', 2))
         ta_ = self.safe_float(invoice.get('tcs_amount', 0))
         tot = self.safe_float(invoice.get('total_amount', 0))
         rt = self.safe_float(invoice.get('rounded_total', tot))
@@ -1761,16 +1775,19 @@ class InvoiceDialog:
 
         self.discount_value.on_change = _discval_on_change
 
-        self.gst_dd = ft.Dropdown(
-            label="📊 GST %",
-            options=[ft.dropdown.Option(x) for x in
-                     ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12)
-        self.gst_dd.on_change = self.recalculate
+        self.gst_dd = self._field(
+            label="📊 GST % (0–100)", value="5",
+            height=48, text_size=12, keyboard_type=ft.KeyboardType.NUMBER)
+
+        def _gst_on_change(e, _f=self.gst_dd):
+            self._typing_until = time.time() + TYPING_GUARD_SECONDS
+            self.recalculate(e)
+
+        self.gst_dd.on_change = _gst_on_change
 
         self.tcs_field = self._field(
-            label="📊 TCS %", value="0.1",
-            height=48, text_size=12)
+            label="📊 TCS % (0–100)", value="2",
+            height=48, text_size=12, keyboard_type=ft.KeyboardType.NUMBER)
 
         def _tcs_on_change(e, _f=self.tcs_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -1853,14 +1870,13 @@ class InvoiceDialog:
     def load_tax_rates(self):
         tax = self.settings_manager.get_tax_settings()
         try:
-            gst = _rate(tax.get('gst_percentage', 18))
-            tcs = _rate(tax.get('tcs_percentage', 0.1))
+            gst = _rate(tax.get('gst_percentage', 5))
+            tcs = _rate(tax.get('tcs_percentage', 2))
         except Exception:
-            gst = Decimal('18')
-            tcs = Decimal('0.1')
-        self.gst_dd.value = (
-            str(int(gst)) if int(gst) in [0, 5, 12, 18, 28] else "18")
-        self.tcs_field.value = str(tcs)
+            gst = Decimal('5')
+            tcs = Decimal('2')
+        self.gst_dd.value = _display_rate(_clamp_rate(gst, Decimal("5")))
+        self.tcs_field.value = _display_rate(_clamp_rate(tcs, Decimal("2")))
         self.recalculate(None)
 
     def on_traveler_change(self, e):
@@ -2093,8 +2109,8 @@ class InvoiceDialog:
             tcs = Decimal('0.0000')
 
         if amount < 0: amount = Decimal('0.00')
-        if gst < 0: gst = Decimal('0.0000')
-        if tcs < 0: tcs = Decimal('0.0000')
+        gst = _clamp_rate(gst)
+        tcs = _clamp_rate(tcs)
         if dval < 0: dval = Decimal('0.0000')
         if gst > Decimal('100'): gst = Decimal('100')
         if tcs > Decimal('100'): tcs = Decimal('100')
@@ -2168,12 +2184,12 @@ class InvoiceDialog:
         try:
             gst = _rate(self.gst_dd.value or 18)
             tcs = _rate(self.tcs_field.value or 0.1)
-            if gst < 0 or tcs < 0:
-                self._snack("⚠️ GST/TCS cannot be negative")
+            if gst < 0 or tcs < 0 or gst > Decimal("100") or tcs > Decimal("100"):
+                self._snack("⚠️ GST/TCS must be between 0% and 100%")
                 return
         except Exception:
-            gst = Decimal('18')
-            tcs = Decimal('0.1')
+            gst = Decimal('5')
+            tcs = Decimal('2')
 
         is_pct = self.discount_type_dd.value == "pct"
 
@@ -2311,16 +2327,16 @@ class InvoiceModifyDialog:
 
         self.disc_value.on_change = _dv_change
 
-        self.gst_dd = ft.Dropdown(
-            label="GST %",
-            options=[ft.dropdown.Option(x) for x in
-                     ["0", "5", "12", "18", "28"]],
-            value="18", height=48, text_size=12, disabled=is_paid)
+        self.gst_dd = self._field(
+            label="GST % (0–100)", value="5", height=48,
+            text_size=12, disabled=is_paid,
+            keyboard_type=ft.KeyboardType.NUMBER)
         self.gst_dd.on_change = self.recalc
 
         self.tcs_field = self._field(
-            label="TCS %", value="0.1",
-            height=48, text_size=12, disabled=is_paid)
+            label="TCS % (0–100)", value="2", height=48,
+            text_size=12, disabled=is_paid,
+            keyboard_type=ft.KeyboardType.NUMBER)
 
         def _tcs_change(e, _f=self.tcs_field):
             self._typing_until = time.time() + TYPING_GUARD_SECONDS
@@ -2406,8 +2422,10 @@ class InvoiceModifyDialog:
             self.disc_type_dd.value = "pct"
             self.disc_value.value = f"{existing_pct:.2f}"
 
-        self.gst_dd.value = str(int(self._f(inv.get('gst_percentage', 18))))
-        self.tcs_field.value = f"{self._f(inv.get('tcs_percentage', 0.1)):.2f}"
+        self.gst_dd.value = _display_rate(_clamp_rate(
+            self._f(inv.get('gst_percentage', 5)), Decimal("5")))
+        self.tcs_field.value = _display_rate(_clamp_rate(
+            self._f(inv.get('tcs_percentage', 2)), Decimal("2")))
         self.status_dd.value = str(inv.get('status', 'pending'))
         self.notes_field.value = str(inv.get('notes', ''))
         self.recalc(None)
@@ -2437,8 +2455,8 @@ class InvoiceModifyDialog:
             tcs = Decimal('0.0000')
 
         if amount < 0: amount = Decimal('0.00')
-        if gst < 0: gst = Decimal('0.0000')
-        if tcs < 0: tcs = Decimal('0.0000')
+        gst = _clamp_rate(gst)
+        tcs = _clamp_rate(tcs)
         if dval < 0: dval = Decimal('0.0000')
 
         if self.disc_type_dd.value == "pct":
@@ -2702,9 +2720,9 @@ class InvoiceDetailsDialog:
         disc_pct = self._f(inv.get('discount_percentage', 0))
         disc_amt = self._f(inv.get('discount_amount', 0))
         taxable = self._f(inv.get('taxable_value', base - disc_amt))
-        gst_pct = self._f(inv.get('gst_percentage', 18))
+        gst_pct = self._f(inv.get('gst_percentage', 5))
         gst_amt = self._f(inv.get('gst_amount', 0))
-        tcs_pct = self._f(inv.get('tcs_percentage', 0.1))
+        tcs_pct = self._f(inv.get('tcs_percentage', 2))
         tcs_amt = self._f(inv.get('tcs_amount', 0))
         total = self._f(inv.get('total_amount', 0))
         rounded = self._f(inv.get('rounded_total', total))
@@ -2788,6 +2806,8 @@ class ManualInvoiceDialog:
         self.cust_email = None
         self.traveler_dd = None
         self.package_dd = None
+        self.gst_field = None
+        self.tcs_field = None
         self.items_table = None
         self.item_rows = []
         self.traveler_map = {}
@@ -2865,6 +2885,21 @@ class ManualInvoiceDialog:
         self.package_dd = ft.Dropdown(
             label="Package", options=bopts, value="",
             height=48, text_size=12)
+
+        tax = self.settings_manager.get_tax_settings()
+        try:
+            default_gst = _clamp_rate(tax.get('gst_percentage', 5))
+            default_tcs = _clamp_rate(tax.get('tcs_percentage', 2))
+        except Exception:
+            default_gst, default_tcs = Decimal('5'), Decimal('2')
+        self.gst_field = self._field(
+            label="GST % (0–100)", value=_display_rate(default_gst),
+            height=48, text_size=12, keyboard_type=ft.KeyboardType.NUMBER)
+        self.tcs_field = self._field(
+            label="TCS % (0–100)", value=_display_rate(default_tcs),
+            height=48, text_size=12, keyboard_type=ft.KeyboardType.NUMBER)
+        self.gst_field.on_change = lambda e: self.refresh_items()
+        self.tcs_field.on_change = lambda e: self.refresh_items()
 
         self.cust_name = self._field(
             label="Customer Name *", height=48, text_size=12)
@@ -2965,6 +3000,13 @@ class ManualInvoiceDialog:
                                      col={"xs": 12, "sm": 8, "md": 9}),
                         ft.Container(content=add_btn,
                                      col={"xs": 12, "sm": 4, "md": 3}),
+                    ], spacing=8, run_spacing=8),
+                ft.ResponsiveRow(
+                    controls=[
+                        ft.Container(content=self.gst_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
+                        ft.Container(content=self.tcs_field,
+                                     col={"xs": 12, "sm": 6, "md": 6}),
                     ], spacing=8, run_spacing=8),
                 ft.Container(
                     content=ft.Row([self.items_table],
@@ -3131,15 +3173,8 @@ class ManualInvoiceDialog:
             disc_amt = amount * (Decimal(str(item['discount_percent'])) / Decimal('100'))
             taxable = amount - disc_amt
             
-            tax = self.settings_manager.get_tax_settings()
-            try:
-                gst = _rate(tax.get('gst_percentage', 18))
-            except Exception:
-                gst = Decimal('18')
-            try:
-                tcs = _rate(tax.get('tcs_percentage', 0.1))
-            except Exception:
-                tcs = Decimal('0.1')
+            gst = _clamp_rate(self.gst_field.value or 5)
+            tcs = _clamp_rate(self.tcs_field.value or 2)
 
             gst_amt = taxable * gst / Decimal('100')
             taxable_with_gst = taxable + gst_amt
@@ -3169,13 +3204,8 @@ class ManualInvoiceDialog:
                         on_click=rm())),
                 ]))
 
-        tax = self.settings_manager.get_tax_settings()
-        try:
-            gst = _rate(tax.get('gst_percentage', 18))
-            tcs = _rate(tax.get('tcs_percentage', 0.1))
-        except Exception:
-            gst = Decimal('18')
-            tcs = Decimal('0.1')
+        gst = _clamp_rate(self.gst_field.value or 5)
+        tcs = _clamp_rate(self.tcs_field.value or 2)
 
         sub = sum((i['rate'] * Decimal(str(i['qty'])) for i in self.item_rows), Decimal('0.00'))
         disc = sum((i['rate'] * Decimal(str(i['qty'])) * (Decimal(str(i['discount_percent'])) / Decimal('100'))
@@ -3242,9 +3272,11 @@ class ManualInvoiceDialog:
                     'batch_id': bid}
                 tid = self.db.add_traveler(traveler_data)
 
-            tax = self.settings_manager.get_tax_settings()
-            gst = _rate(tax.get('gst_percentage', 18))
-            tcs = _rate(tax.get('tcs_percentage', 0.1))
+            gst = _clamp_rate(self.gst_field.value or 5)
+            tcs = _clamp_rate(self.tcs_field.value or 2)
+            if gst > Decimal('100') or tcs > Decimal('100'):
+                self._snack("⚠️ GST/TCS must be between 0% and 100%")
+                return
 
             sub = sum((i['rate'] * Decimal(str(i['qty'])) for i in self.item_rows), Decimal('0.00'))
             disc = sum((i['rate'] * Decimal(str(i['qty'])) * (Decimal(str(i['discount_percent'])) / Decimal('100'))
