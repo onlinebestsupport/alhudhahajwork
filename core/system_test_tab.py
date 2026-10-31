@@ -36,6 +36,9 @@ class SystemTestTab:
         self.notification = ft.Text("", size=11, weight=ft.FontWeight.BOLD)
         self.last_run = ft.Text("", size=10, color="#64748b")
         self.history_label = ft.Text("", size=10, color="#64748b")
+        self.progress_bar = ft.ProgressBar(value=0, min=0, max=1, height=8, color="#2563eb", bgcolor="#dbeafe")
+        self.progress_text = ft.Text("Ready — no test is running", size=11, color="#475569")
+        self._progress_started = None
         self.last_results = []
         self._test_running = False
         self.cleanup_candidates = []
@@ -125,7 +128,7 @@ class SystemTestTab:
                     ft.Container(content=ft.Text("SUPER ADMIN", size=9, weight=ft.FontWeight.BOLD, color="#ffffff"),
                                  bgcolor="#dc2626", padding=7, border_radius=6),
                 ], spacing=10), padding=16, bgcolor="#0f3b66", border_radius=12),
-                ft.Container(content=ft.Column([self.notification, self.summary, self.last_run, self.history_label], spacing=3),
+                ft.Container(content=ft.Column([self.notification, self.summary, self.progress_text, self.progress_bar, self.last_run, self.history_label], spacing=5),
                              padding=10, bgcolor="#eff6ff", border_radius=8),
                 ft.ResponsiveRow(cards, spacing=6, run_spacing=6),
                 ft.Row([
@@ -261,10 +264,26 @@ class SystemTestTab:
 
     def _set_running(self, running):
         self._test_running = running
-        self.notification.value = "Tests are running in the background. The admin connection remains responsive…" if running else self.notification.value
-        self.notification.color = "#075985" if running else self.notification.color
+        if running:
+            self._progress_started = time.perf_counter()
+            self.progress_bar.value = 0
+            self.progress_text.value = f"Starting tests — 0% (0/{len(self.test_specs)})"
+            self.notification.value = "Tests are running in the background. The admin connection remains responsive…"
+            self.notification.color = "#075985"
+        else:
+            self.progress_bar.value = 1
         try:
-            self.notification.update()
+            self.progress_bar.update(); self.progress_text.update(); self.notification.update()
+        except Exception:
+            pass
+
+    def _show_progress(self, completed, total, title):
+        fraction = min(1, completed / total) if total else 1
+        elapsed = time.perf_counter() - self._progress_started if self._progress_started else 0
+        self.progress_bar.value = fraction
+        self.progress_text.value = f"Checking: {title} — {fraction * 100:.0f}% ({completed}/{total}) • elapsed {elapsed:.1f}s"
+        try:
+            self.progress_bar.update(); self.progress_text.update()
         except Exception:
             pass
 
@@ -285,7 +304,12 @@ class SystemTestTab:
 
     async def _run_one_async(self, fn):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        self.progress_text.value = "Checking selected test — 50%"
+        self.progress_bar.value = 0.5
+        try: self.progress_bar.update(); self.progress_text.update()
+        except Exception: pass
         results = await asyncio.to_thread(self._run_specs_sync, [("", "", fn)])
+        self._show_progress(1, 1, "Selected test complete")
         results = [self._prepare_result(r, run_id) for r in results]
         self._record(results, run_id)
         self.last_results = results
@@ -308,7 +332,13 @@ class SystemTestTab:
 
     async def _run_all_async(self):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-        results = await asyncio.to_thread(self._run_specs_sync)
+        results = []
+        total = len(self.test_specs)
+        for completed, spec in enumerate(self.test_specs, start=1):
+            self._show_progress(completed - 1, total, spec[0])
+            result = await asyncio.to_thread(self._run_specs_sync, [spec])
+            results.extend(result)
+            self._show_progress(completed, total, spec[0])
         results = [self._prepare_result(r, run_id) for r in results]
         self._record(results, run_id)
         self.last_results = results
@@ -412,6 +442,41 @@ class SystemTestTab:
             self.notification.value = f"Prompt file created but browser download could not start: {ex}"
             self.notification.color = "#92400e"
         self.notification.update()
+
+    def _render_results(self, results):
+        self.results_column.controls.clear()
+        passed = sum(r.get("level") == "OK" for r in results)
+        failed = sum(r.get("level") == "FAIL" for r in results)
+        warnings = sum(r.get("level") == "WARN" for r in results)
+        self.summary.value = f"Completed {len(results)} checks • Passed: {passed} • Warnings: {warnings} • Failed: {failed}"
+        elapsed = time.perf_counter() - self._progress_started if self._progress_started else 0
+        self.progress_bar.value = 1
+        self.progress_text.value = f"Completed — 100% ({len(results)}/{len(results)}) • total time {elapsed:.1f}s"
+        self.last_run.value = f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Results recorded • No business data modified"
+        self.notification.value = (f"ATTENTION: {failed} failure(s) and {warnings} warning(s) require review." if failed or warnings else "All completed checks passed.")
+        self.notification.color = "#991b1b" if failed else "#92400e" if warnings else "#166534"
+        for r in results:
+            level = r.get("level", "FAIL")
+            color = {"OK": "#166534", "WARN": "#92400e", "FAIL": "#991b1b"}.get(level, "#334155")
+            bg = {"OK": "#f0fdf4", "WARN": "#fffbeb", "FAIL": "#fef2f2"}.get(level, "#f8fafc")
+            plain = r.get("plain_language") or self._plain_language(r)
+            self.results_column.controls.append(ft.Container(content=ft.Column([
+                ft.Row([
+                    ft.Text(f"{level}  {r.get('title', '')}", size=12, weight=ft.FontWeight.BOLD, color=color),
+                    ft.Container(expand=True),
+                    ft.Text(r.get("owner", ""), size=9, color="#64748b"),
+                ]),
+                ft.Text(f"Meaning: {plain}", size=11, color="#334155", selectable=True),
+                ft.Text(f"Technical details: {r.get('message', '')}", size=10, color="#475569", selectable=True),
+                ft.Text(f"Action: {r.get('action', 'No action required')}", size=10, color=color, selectable=True),
+            ], spacing=3), padding=10, bgcolor=bg, border_radius=7, border=ft.Border.all(1, color)))
+        self.results_column.update()
+        self.summary.update()
+        self.progress_bar.update()
+        self.progress_text.update()
+        self.notification.update()
+        self.last_run.update()
+        self._refresh_cleanup_ui()
 
     # ------------------------------------------------------------------ result helpers
     @staticmethod
