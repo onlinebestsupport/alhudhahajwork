@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import csv
 import json
 import os
@@ -36,6 +37,7 @@ class SystemTestTab:
         self.last_run = ft.Text("", size=10, color="#64748b")
         self.history_label = ft.Text("", size=10, color="#64748b")
         self.last_results = []
+        self._test_running = False
         self.cleanup_candidates = []
         self.cleanup_checks = {}
         self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be permanently deleted", value=False)
@@ -247,26 +249,71 @@ class SystemTestTab:
         self._append_rows(self.ERROR_FILE, errors, fields)
 
     # ------------------------------------------------------------------ execution/UI
-    def run_one(self, fn):
-        started = time.perf_counter(); result = self._safe_call(fn)
-        result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
-        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-        result = self._prepare_result(result, run_id)
-        self._record([result], run_id)
-        self.last_results = [result]
-        self._render_results(self.last_results)
-
-    def run_all(self, e=None):
-        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    def _run_specs_sync(self, selected=None):
+        specs = selected or self.test_specs
         results = []
-        for _, _, fn in self.test_specs:
-            started = time.perf_counter(); result = self._safe_call(fn)
+        for _, _, fn in specs:
+            started = time.perf_counter()
+            result = self._safe_call(fn)
             result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
             results.append(result)
+        return results
+
+    def _set_running(self, running):
+        self._test_running = running
+        self.notification.value = "Tests are running in the background. The admin connection remains responsive…" if running else self.notification.value
+        self.notification.color = "#075985" if running else self.notification.color
+        try:
+            self.notification.update()
+        except Exception:
+            pass
+
+    def run_one(self, fn):
+        if self._test_running:
+            self.notification.value = "A test is already running. Please wait for it to finish."
+            self.notification.color = "#92400e"; self.notification.update(); return
+        self._set_running(True)
+        try:
+            self.page.run_task(self._run_one_async, fn)
+        except Exception:
+            self._test_running = False
+            result = self._safe_call(fn)
+            result["duration_ms"] = "0.0"
+            self.last_results = [self._prepare_result(result)]
+            self._record(self.last_results, datetime.now().strftime("%Y%m%d%H%M%S%f"))
+            self._render_results(self.last_results)
+
+    async def _run_one_async(self, fn):
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        results = await asyncio.to_thread(self._run_specs_sync, [("", "", fn)])
         results = [self._prepare_result(r, run_id) for r in results]
         self._record(results, run_id)
         self.last_results = results
-        self._render_results(self.last_results)
+        self._test_running = False
+        self._render_results(results)
+
+    def run_all(self, e=None):
+        if self._test_running:
+            self.notification.value = "Tests are already running. Please wait for the current run to finish."
+            self.notification.color = "#92400e"; self.notification.update(); return
+        self._set_running(True)
+        try:
+            self.page.run_task(self._run_all_async)
+        except Exception:
+            self._test_running = False
+            results = self._run_specs_sync()
+            run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+            results = [self._prepare_result(r, run_id) for r in results]
+            self._record(results, run_id); self.last_results = results; self._render_results(results)
+
+    async def _run_all_async(self):
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        results = await asyncio.to_thread(self._run_specs_sync)
+        results = [self._prepare_result(r, run_id) for r in results]
+        self._record(results, run_id)
+        self.last_results = results
+        self._test_running = False
+        self._render_results(results)
 
     def _safe_call(self, fn):
         try:
@@ -283,9 +330,23 @@ class SystemTestTab:
         if not rows:
             self._render_results([self._warn("No history", "No completed diagnostic run is recorded yet.", "system_test_tab.py", "Run All Tests")]); return
         run_id = rows[-1].get("run_id")
-        results = [{k: r.get(k, "") for k in ("level", "title", "message", "owner", "action")} for r in rows if r.get("run_id") == run_id]
+        results = [{k: r.get(k, "") for k in ("level", "title", "plain_language", "message", "owner", "action", "manus_prompt", "run_id")} for r in rows if r.get("run_id") == run_id]
         self.last_results = results
         self._render_results(results)
+
+    def _open_download(self, filename):
+        relative_url = f"/download/{filename}"
+        public_base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or "").strip().rstrip("/")
+        url = f"{public_base}{relative_url}" if public_base else relative_url
+        script = f"window.open({json.dumps(url)}, '_blank', 'noopener,noreferrer');"
+        try:
+            runner = getattr(self.page, "run_javascript", None)
+            if callable(runner):
+                runner(script)
+                return
+        except Exception:
+            pass
+        self.page.launch_url(url)
 
     def _export_csv(self, rows, label):
         if not rows:
@@ -304,7 +365,7 @@ class SystemTestTab:
             for row in rows:
                 writer.writerow({key: row.get(key, "") for key in fields})
         try:
-            self.page.launch_url(f"/download/{filename}")
+            self._open_download(filename)
             self.notification.value = f"CSV download started: {filename}"
             self.notification.color = "#166534"
         except Exception as ex:
@@ -313,11 +374,16 @@ class SystemTestTab:
         self.notification.update()
 
     def download_current_csv(self, e=None):
-        self._export_csv(self.last_results, "current_run")
+        rows = self.last_results
+        if not rows:
+            history = self._history()
+            if history:
+                latest = history[-1].get("run_id")
+                rows = [row for row in history if row.get("run_id") == latest]
+        self._export_csv(rows, "current_run")
 
     def download_history_csv(self, e=None):
-        rows = self._history()
-        self._export_csv(rows, "history")
+        self._export_csv(self._history(), "history")
 
     def download_manus_prompt(self, e=None):
         rows = self.last_results or self._history()
@@ -339,30 +405,13 @@ class SystemTestTab:
         target = project_static / filename
         target.write_text("\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(prompts), encoding="utf-8")
         try:
-            self.page.launch_url(f"/download/{filename}")
+            self._open_download(filename)
             self.notification.value = f"Copy-ready Manus prompt file downloaded: {filename}"
             self.notification.color = "#166534"
         except Exception as ex:
             self.notification.value = f"Prompt file created but browser download could not start: {ex}"
             self.notification.color = "#92400e"
         self.notification.update()
-
-    def _render_results(self, results):
-        self.results_column.controls.clear()
-        passed = sum(r.get("level") == "OK" for r in results); failed = sum(r.get("level") == "FAIL" for r in results); warnings = sum(r.get("level") == "WARN" for r in results)
-        self.summary.value = f"Completed {len(results)} checks • Passed: {passed} • Warnings: {warnings} • Failed: {failed}"
-        self.last_run.value = f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Results recorded • No business data modified"
-        self.notification.value = (f"ATTENTION: {failed} failure(s) and {warnings} warning(s) require review." if failed or warnings else "All completed checks passed.")
-        self.notification.color = "#991b1b" if failed else "#92400e" if warnings else "#166534"
-        for r in results:
-            level=r.get("level", "FAIL"); color={"OK":"#166534", "WARN":"#92400e", "FAIL":"#991b1b"}.get(level, "#334155"); bg={"OK":"#f0fdf4", "WARN":"#fffbeb", "FAIL":"#fef2f2"}.get(level, "#f8fafc")
-            self.results_column.controls.append(ft.Container(content=ft.Column([
-                ft.Row([ft.Text(f"{level}  {r.get('title','')}", size=12, weight=ft.FontWeight.BOLD, color=color), ft.Container(expand=True), ft.Text(r.get("owner", ""), size=9, color="#64748b")]),
-                ft.Text(f"Meaning: {r.get('plain_language', self._plain_language(r))}", size=11, color="#334155", selectable=True),
-                ft.Text(f"Technical details: {r.get('message', '')}", size=10, color="#475569", selectable=True),
-                ft.Text(f"Action: {r.get('action', 'No action required')}", size=10, color=color, selectable=True),
-            ], spacing=3), padding=10, bgcolor=bg, border_radius=7, border=ft.Border.all(1, color)))
-        self.results_column.update(); self.summary.update(); self.notification.update(); self.last_run.update(); self._refresh_cleanup_ui()
 
     # ------------------------------------------------------------------ result helpers
     @staticmethod
