@@ -208,10 +208,10 @@ class CompanySettingsDialog:
 
         # ---- TAX TAB ----
         self.gst_percentage_field = self._field(
-            label="💰 GST Percentage", value="18", hint_text="e.g., 5",
+            label="💰 GST Percentage", value="5", hint_text="0 to 100",
             suffix=ft.Text("%"))
         self.tcs_percentage_field = self._field(
-            label="💰 TCS Percentage", value="0", hint_text="e.g., 2",
+            label="💰 TCS Percentage", value="2", hint_text="0 to 100",
             suffix=ft.Text("%"))
 
         tax_tab = ft.Column(
@@ -404,6 +404,9 @@ class CompanySettingsDialog:
                 return
 
             data = getattr(f, 'bytes', None)
+            if isinstance(data, bytes) and len(data) > 5 * 1024 * 1024:
+                self.show_snack("⚠️ Logo must be 5 MB or smaller.")
+                return
             if isinstance(data, bytes) and len(data) > 0:
                 print(f">>> Got {len(data)} bytes from .bytes ✅")
                 await self._save_logo_from_bytes(
@@ -608,9 +611,9 @@ class CompanySettingsDialog:
 
             tax = self.settings_manager.get_tax_settings()
             self.gst_percentage_field.value = str(
-                tax.get('gst_percentage', 18))
+                tax.get('gst_percentage', 5))
             self.tcs_percentage_field.value = str(
-                tax.get('tcs_percentage', 0))
+                tax.get('tcs_percentage', 2))
 
             self.load_tour_types()
         except Exception as ex:
@@ -789,16 +792,19 @@ class CompanySettingsDialog:
             print(f">>> Company CSV saved "
                   f"(logo_data_uri length: {len(logo_data_uri_value)})")
 
-            try:
-                gst_val = float(self.gst_percentage_field.value or 18)
-            except Exception:
-                gst_val = 18.0
-            try:
-                tcs_val = float(self.tcs_percentage_field.value or 0)
-            except Exception:
-                tcs_val = 0.0
-
-            self.settings_manager.update_tax_settings(gst_val, tcs_val)
+            from decimal import Decimal, InvalidOperation
+            def _tax_value(field, label, default):
+                try:
+                    value = Decimal(str(field.value or default).strip())
+                    if not value.is_finite() or value < 0 or value > 100:
+                        raise InvalidOperation
+                    return value
+                except (InvalidOperation, ValueError, TypeError):
+                    raise ValueError(f"{label} must be between 0% and 100%")
+            gst_val = _tax_value(self.gst_percentage_field, "GST", 5)
+            tcs_val = _tax_value(self.tcs_percentage_field, "TCS", 2)
+            self.settings_manager.update_tax_settings(
+                gst_val, tcs_val, updated_by=self.current_user.get("id", "admin"))
             print(f">>> Tax saved: GST={gst_val}, TCS={tcs_val}")
 
             try:
