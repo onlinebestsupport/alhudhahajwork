@@ -149,8 +149,10 @@ var DOC_INFO = {
   'photo':         {label: 'Photo', accept: 'image/*'}
 };
 
-var info = DOC_INFO[docKey] || DOC_INFO['photo'];
+if (!DOC_INFO[docKey]) docKey = 'photo';
+var info = DOC_INFO[docKey];
 var selectedFile = null;
+var MAX_BYTES = 15 * 1024 * 1024;
 
 function $(id) { return document.getElementById(id); }
 
@@ -172,10 +174,29 @@ function pickFiles() {
   $('file-input').click();
 }
 
+function fileMatchesDocument(file) {
+  var mime = String(file && file.type || '').toLowerCase();
+  var isPdf = mime === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+  var isImage = mime.indexOf('image/') === 0 ||
+    /\.(jpe?g|png|webp|gif|bmp)$/i.test(file.name || '');
+  return docKey === 'photo' ? isImage : (isImage || isPdf);
+}
+
 function onFilePicked(ev) {
   var files = ev.target.files;
   if (!files || files.length === 0) return;
-  selectedFile = files[0];
+  var candidate = files[0];
+  if (!fileMatchesDocument(candidate)) {
+    showToast('⚠️ Unsupported file type for ' + info.label + '.', 'error');
+    ev.target.value = '';
+    return;
+  }
+  if (candidate.size > MAX_BYTES) {
+    showToast('⚠️ File too large. Maximum size is 15 MB.', 'error');
+    ev.target.value = '';
+    return;
+  }
+  selectedFile = candidate;
 
   var list = $('file-list');
   list.innerHTML = '';
@@ -207,6 +228,10 @@ function setStatus(cls, icon) {
 
 async function startUpload() {
   if (!selectedFile) return;
+  if (!fileMatchesDocument(selectedFile) || selectedFile.size > MAX_BYTES) {
+    showToast('⚠️ Please select a valid file no larger than 15 MB.', 'error');
+    return;
+  }
 
   $('upload-btn').disabled = true;
   $('progress').style.display = 'block';
@@ -223,7 +248,6 @@ async function startUpload() {
     var headers = {};
     if (token) {
         headers['Authorization'] = 'Bearer ' + token;
-        headers['X-API-Key'] = token;
     }
 
     var res = await fetch('/api/admin/traveler/upload-doc', {
@@ -249,7 +273,11 @@ async function startUpload() {
       return;
     }
 
-    var data = await res.json();
+    var data = null;
+    try { data = await res.json(); } catch (e) {}
+    if (!data || data.success !== true) {
+      throw new Error('Server returned an invalid upload response.');
+    }
     setStatus('success', '✅');
     $('progress-bar').style.width = '100%';
     showToast('✅ Uploaded successfully', 'success');
