@@ -33,6 +33,7 @@ class SystemTestTab:
         self.notification = ft.Text("", size=11, weight=ft.FontWeight.BOLD)
         self.last_run = ft.Text("", size=10, color="#64748b")
         self.history_label = ft.Text("", size=10, color="#64748b")
+        self.last_results = []
         self._build_specs()
         self.setup_ui()
         self._load_previous_notification()
@@ -47,6 +48,22 @@ class SystemTestTab:
     @property
     def source_root(self):
         return Path(__file__).resolve().parent
+
+    @property
+    def project_root(self):
+        candidate = self.source_root.parent
+        return candidate if (candidate / "main.py").exists() else self.source_root
+
+    @property
+    def python_roots(self):
+        roots = [self.project_root, self.source_root]
+        return list(dict.fromkeys(r for r in roots if r.exists()))
+
+    @property
+    def diagnostics_dir(self):
+        path = self.data_dir / "system_tests"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _build_specs(self):
         self.test_specs = [
@@ -97,6 +114,10 @@ class SystemTestTab:
                               on_click=self.run_all, bgcolor="#2563eb", color=ft.Colors.WHITE, height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.HISTORY, size=17), ft.Text("Show Last Run")], tight=True),
                               on_click=self.show_last_run, bgcolor="#f1f5f9", color="#334155", height=42),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=17), ft.Text("Current CSV")], tight=True),
+                              on_click=self.download_current_csv, bgcolor="#dcfce7", color="#166534", height=42),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=17), ft.Text("All History CSV")], tight=True),
+                              on_click=self.download_history_csv, bgcolor="#dcfce7", color="#166534", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CLEAR_ALL, size=17), ft.Text("Clear Screen")], tight=True),
                               on_click=lambda e: self.clear_screen(), bgcolor="#f1f5f9", color="#334155", height=42),
                 ], spacing=8, wrap=True),
@@ -110,8 +131,7 @@ class SystemTestTab:
     def _append_rows(self, filename, rows, fields):
         if not rows:
             return
-        path = self.data_dir / filename
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        path = self.diagnostics_dir / filename
         existing = []
         if path.exists():
             try:
@@ -128,9 +148,13 @@ class SystemTestTab:
         os.replace(tmp, path)
 
     def _history(self):
-        path = self.data_dir / self.HISTORY_FILE
+        path = self.diagnostics_dir / self.HISTORY_FILE
         if not path.exists():
-            return []
+            legacy = self.data_dir / self.HISTORY_FILE
+            if legacy.exists():
+                path = legacy
+            else:
+                return []
         try:
             with path.open("r", encoding="utf-8-sig", newline="") as f:
                 return list(csv.DictReader(f))
@@ -142,7 +166,7 @@ class SystemTestTab:
         if not rows:
             self.notification.value = "No previous diagnostic run recorded. Run All Tests after deployment."
             self.notification.color = "#92400e"
-            self.history_label.value = f"History file: {self.data_dir / self.HISTORY_FILE}"
+            self.history_label.value = f"History file: {self.diagnostics_dir / self.HISTORY_FILE}"
             return
         latest_run = rows[-1].get("run_id", "")
         recent = [r for r in rows if r.get("run_id") == latest_run]
@@ -151,7 +175,7 @@ class SystemTestTab:
         self.notification.value = (f"Previous run alert: {len(failures)} failure(s), {len(warnings)} warning(s). "
                                    "Run All Tests to refresh.")
         self.notification.color = "#991b1b" if failures else "#92400e" if warnings else "#166534"
-        self.history_label.value = f"Recorded runs: {len({r.get('run_id') for r in rows if r.get('run_id')})} • {self.data_dir / self.HISTORY_FILE}"
+        self.history_label.value = f"Recorded runs: {len({r.get('run_id') for r in rows if r.get('run_id')})} • {self.diagnostics_dir / self.HISTORY_FILE}"
         self.summary.value = f"Previous run: {recent[-1].get('timestamp', '')} • {len(recent)} checks"
 
     def _record(self, results, run_id):
@@ -169,7 +193,8 @@ class SystemTestTab:
         started = time.perf_counter(); result = self._safe_call(fn)
         result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
         self._record([result], datetime.now().strftime("%Y%m%d%H%M%S%f"))
-        self._render_results([result])
+        self.last_results = [result]
+        self._render_results(self.last_results)
 
     def run_all(self, e=None):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
@@ -179,7 +204,8 @@ class SystemTestTab:
             result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
             results.append(result)
         self._record(results, run_id)
-        self._render_results(results)
+        self.last_results = results
+        self._render_results(self.last_results)
 
     def _safe_call(self, fn):
         try:
@@ -197,7 +223,40 @@ class SystemTestTab:
             self._render_results([self._warn("No history", "No completed diagnostic run is recorded yet.", "system_test_tab.py", "Run All Tests")]); return
         run_id = rows[-1].get("run_id")
         results = [{k: r.get(k, "") for k in ("level", "title", "message", "owner", "action")} for r in rows if r.get("run_id") == run_id]
+        self.last_results = results
         self._render_results(results)
+
+    def _export_csv(self, rows, label):
+        if not rows:
+            self.notification.value = "Nothing to download. Run a test first."
+            self.notification.color = "#92400e"
+            self.notification.update()
+            return
+        project_static = self.project_root / "static" / "downloads"
+        project_static.mkdir(parents=True, exist_ok=True)
+        filename = f"system_test_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        target = project_static / filename
+        fields = ["run_id", "timestamp", "level", "title", "message", "owner", "action", "duration_ms", "user_id"]
+        with target.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: row.get(key, "") for key in fields})
+        try:
+            self.page.launch_url(f"/download/{filename}")
+            self.notification.value = f"CSV download started: {filename}"
+            self.notification.color = "#166534"
+        except Exception as ex:
+            self.notification.value = f"CSV created but browser download could not start: {ex}"
+            self.notification.color = "#92400e"
+        self.notification.update()
+
+    def download_current_csv(self, e=None):
+        self._export_csv(self.last_results, "current_run")
+
+    def download_history_csv(self, e=None):
+        rows = self._history()
+        self._export_csv(rows, "history")
 
     def _render_results(self, results):
         self.results_column.controls.clear()
@@ -228,7 +287,7 @@ class SystemTestTab:
 
     # ------------------------------------------------------------------ checks
     def check_api_contract(self):
-        path=self.source_root/"main.py"
+        path=self.project_root/"main.py"
         if not path.exists(): return self._fail("API source missing", str(path), "main.py")
         text=path.read_text(encoding="utf-8", errors="replace")
         required=["/api/frontpage", "/api/batches", "/api/captcha/new", "/api/captcha/verify", "/api/traveler/login", "/api/traveler/me", "/api/admin/traveler/upload-doc", "/api/admin/traveler/upload-folder-html"]
@@ -255,9 +314,9 @@ class SystemTestTab:
 
     def check_frontpage(self):
         required=["index.html", "robots.txt", "sitemap.xml"]
-        missing=[x for x in required if not (self.source_root/x).exists()]
+        missing=[x for x in required if not (self.project_root/x).exists()]
         if missing: return self._fail("Front-page files missing", ", ".join(missing), "index.html / robots.txt / sitemap.xml", "Deploy the missing public files")
-        html=(self.source_root/"index.html").read_text(encoding="utf-8", errors="replace")
+        html=(self.project_root/"index.html").read_text(encoding="utf-8", errors="replace")
         markers=["viewport", "api/frontpage", "alert"]
         absent=[x for x in markers if x.lower() not in html.lower()]
         if absent: return self._warn("Front-page markers missing", ", ".join(absent), "index.html / frontpage_config.py", "Review mobile, API and alert rendering")
@@ -329,16 +388,22 @@ class SystemTestTab:
 
     def check_source(self):
         bad=[]; functions=0
-        for path in sorted(self.source_root.glob("*.py")):
+        all_files = []
+        for folder in self.python_roots:
+            all_files.extend(folder.glob("*.py"))
+        for path in sorted(set(all_files)):
             try:
                 tree=ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 functions += sum(isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) for n in ast.walk(tree))
             except SyntaxError as ex: bad.append(f"{path.name}:{ex.lineno}")
-        return self._fail("Source syntax issue", ", ".join(bad), "all Python files", "Fix the reported syntax errors") if bad else self._ok("Source syntax and functions", f"Parsed {len(list(self.source_root.glob('*.py')))} files and {functions} functions/methods", "all Python files")
+        return self._fail("Source syntax issue", ", ".join(bad), "all Python files", "Fix the reported syntax errors") if bad else self._ok("Source syntax and functions", f"Parsed {len(set(all_files))} files and {functions} functions/methods", "all Python files")
 
     def check_ui_wiring(self):
         problems=[]; controls=0; handlers=0
-        for path in sorted(self.source_root.glob("*.py")):
+        all_files = []
+        for folder in self.python_roots:
+            all_files.extend(folder.glob("*.py"))
+        for path in sorted(set(all_files)):
             if path.name in {"database.py","security.py"}: continue
             text=path.read_text(encoding="utf-8", errors="replace")
             controls += text.count("on_click=") + text.count("on_change=") + text.count("on_submit=")
@@ -349,7 +414,7 @@ class SystemTestTab:
     def check_security(self):
         key=os.getenv("ADMIN_API_KEY", "")
         if not key or len(key)<32: return self._warn("Admin API key", "ADMIN_API_KEY is missing or shorter than 32 characters in this runtime", "security.py / main.py", "Set a random 32+ character ADMIN_API_KEY")
-        main=(self.source_root/"main.py").read_text(encoding="utf-8", errors="replace")
+        main=(self.project_root/"main.py").read_text(encoding="utf-8", errors="replace")
         return self._fail("Security fallback detected", "main.py does not fail closed when security import fails", "main.py / security.py", "Keep protected endpoints returning 503") if "Security service unavailable" not in main else self._ok("Security configuration", "ADMIN_API_KEY length and fail-closed security fallback are present", "security.py / main.py")
 
     def check_background_errors(self):
