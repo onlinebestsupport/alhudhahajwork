@@ -751,7 +751,7 @@ table.data-table tr:hover td { background: #f8fafc; }
     <div class="modal-content" onclick="event.stopPropagation()">
         <div class="modal-header">
             <div class="modal-title" id="docModalTitle">Document</div>
-            <button class="modal-close" onclick="closeDocModal(event)">&times;</button>
+            <button class="modal-close" type="button" onclick="closeDocModal()">&times;</button>
         </div>
         <div class="modal-body" id="docModalBody"></div>
     </div>
@@ -762,7 +762,7 @@ var API = {
     login:      '/api/traveler/login',
     logout:     '/api/traveler/logout',
     me:         '/api/traveler/me',
-    doc:        function(key) { return '/api/traveler/document/' + key; },
+    doc:        function(key) { return '/api/traveler/document/' + encodeURIComponent(String(key || '')); },
     captchaNew:     '/api/captcha/new'
 };
 
@@ -950,6 +950,7 @@ async function doLogin() {
         $('userGreeting').style.display = 'block';
         $('logoutBtn').style.display = 'inline-flex';
         await loadTravelerData();
+        setLoginLoading(false);
 
     } catch (err) {
         console.error(err);
@@ -1059,7 +1060,7 @@ function renderHero(data) {
     var avatar = $('heroAvatar');
     if (photoDoc) {
         var imgUrl = photoDoc.url + '?t=' + Date.now();
-        avatar.innerHTML = '<img src="' + imgUrl + '" alt="' + escapeHTML(name) + '">';
+        avatar.innerHTML = '<img src="' + escapeHTML(imgUrl) + '" alt="' + escapeHTML(name) + '">';
     } else {
         avatar.innerHTML = '<div class="no-photo">\uD83D\uDC64</div>';
     }
@@ -1181,7 +1182,7 @@ function renderDocuments(data) {
         var cls = d.exists ? '' : ' missing';
         var thumb;
         if (d.exists && d.is_image) {
-            thumb = '<img src="' + d.url + '?t=' + Date.now() + '" alt="' + escapeHTML(d.label) + '" loading="lazy">';
+            thumb = '<img src="' + escapeHTML(String(d.url || '') + '?t=' + Date.now()) + '" alt="' + escapeHTML(d.label) + '" loading="lazy">';
         } else if (d.exists) {
             var isPdf = d.filename && d.filename.toLowerCase().indexOf('.pdf') !== -1;
             thumb = '<div class="doc-icon"><i class="fas ' + (isPdf ? 'fa-file-pdf' : 'fa-file-image') + '"></i></div>';
@@ -1191,8 +1192,10 @@ function renderDocuments(data) {
         var status = d.exists
             ? '<span class="doc-status ok"><i class="fas fa-check"></i> Uploaded</span>'
             : '<span class="doc-status miss"><i class="fas fa-times"></i> Not uploaded</span>';
+        var encodedKey = encodeURIComponent(String(d.key || '')).replace(/'/g, '%27');
+        var encodedLabel = encodeURIComponent(String(d.label || 'Document')).replace(/'/g, '%27');
         var click = d.exists
-            ? ' onclick="openDoc(\'' + d.key + '\', \'' + escapeHTML(d.label).replace(/'/g, '\\\'') + '\')"'
+            ? ' onclick="openDoc(decodeURIComponent(\'' + encodedKey + '\'), decodeURIComponent(\'' + encodedLabel + '\'))"'
             : '';
         html += '<div class="doc-card' + cls + '"' + click + '>'
               + '<div class="doc-thumb">' + thumb + '</div>'
@@ -1280,11 +1283,23 @@ function renderInvoice(data) {
 function openDoc(key, label) {
     var modal = $('docModal');
     var body = $('docModalBody');
-    $('docModalTitle').textContent = label;
+    $('docModalTitle').textContent = label || 'Document';
 
     var url = API.doc(key) + '?t=' + Date.now();
-    body.innerHTML = '<img src="' + url + '" alt="' + escapeHTML(label) + '" '
-                   + 'onerror="this.outerHTML=\'<iframe src=&quot;' + url + '&quot;></iframe>\'">';
+    body.textContent = '';
+    var img = document.createElement('img');
+    img.alt = label || 'Document';
+    img.src = url;
+    img.onload = function() { body.replaceChildren(img); };
+    img.onerror = function() {
+        body.textContent = '';
+        var frame = document.createElement('iframe');
+        frame.src = url;
+        frame.title = label || 'Document';
+        frame.loading = 'lazy';
+        body.appendChild(frame);
+    };
+    body.appendChild(img);
     modal.classList.add('active');
 }
 
