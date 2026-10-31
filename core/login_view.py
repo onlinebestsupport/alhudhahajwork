@@ -14,7 +14,10 @@
 # =================================================================================
 
 import asyncio
+import base64
 import hashlib
+import hmac
+import secrets
 import json
 import time
 import traceback
@@ -30,13 +33,13 @@ try:
         invalidate_captcha,
     )
 except ImportError:
-    print("[LOGIN] captcha.py missing — running without CAPTCHA")
+    print("[LOGIN] captcha.py missing — CAPTCHA unavailable; login disabled")
 
     def generate_math_captcha(sid):
         return {"question": "0 + 0", "session_id": sid, "expires_in": 300}
 
     def verify_math_captcha(sid, ans):
-        return True, "ok"
+        return False, "captcha_unavailable"
 
     def invalidate_captcha(sid):
         return None
@@ -51,7 +54,26 @@ TYPING_GUARD_SECONDS = 3.0
 # 2.1 — Password hash helper
 # =================================================================================
 def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+    salt = secrets.token_bytes(16)
+    rounds = 240_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, rounds)
+    return "pbkdf2_sha256$%d$%s$%s" % (
+        rounds, base64.urlsafe_b64encode(salt).decode(),
+        base64.urlsafe_b64encode(digest).decode())
+
+
+def _verify_password(password: str, stored: str) -> bool:
+    stored = str(stored or "").strip()
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _, rounds, salt_b64, digest_b64 = stored.split("$", 3)
+            salt = base64.urlsafe_b64decode(salt_b64.encode())
+            expected = base64.urlsafe_b64decode(digest_b64.encode())
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds))
+            return hmac.compare_digest(actual, expected)
+        except Exception:
+            return False
+    return hmac.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored)
 
 
 # =================================================================================
@@ -180,6 +202,7 @@ class LoginView:
 
         # v2.0 — typing guard
         self._typing_until = 0.0
+        self._login_attempts = []
 
         self._build()
 
@@ -540,6 +563,7 @@ class LoginView:
                 "expired": "⏱️ Security question expired. Try again.",
                 "too_many_tries": "⛔ Too many wrong answers. Please reload.",
                 "no_session": "⛔ Session error. Please reload.",
+                "captcha_unavailable": "⛔ Security check unavailable. Contact administrator.",
             }
             self._set_status(
                 messages.get(reason, "❌ Security check failed."))
@@ -567,6 +591,12 @@ class LoginView:
             pass
 
     def _do_login(self, e):
+        now = time.time()
+        self._login_attempts = [t for t in self._login_attempts if now - t < 300]
+        if len(self._login_attempts) >= 5:
+            self._set_status("⛔ Too many login attempts. Please wait 5 minutes.")
+            return
+        self._login_attempts.append(now)
         username = _safe_str(self.username_field.value)
         password = _safe_str(self.password_field.value)
 
@@ -613,12 +643,12 @@ class LoginView:
             self._refresh_captcha()
             return
 
-        input_hash = _hash_password(password)
-        if input_hash != stored_hash:
+        if not _verify_password(password, stored_hash):
             self._set_status("❌ Invalid username or password.")
             self._refresh_captcha()
             return
 
+        self._login_attempts.clear()
         print(f"[LOGIN] Success: {username} "
               f"(role={match.get('role', '?')})")
 
