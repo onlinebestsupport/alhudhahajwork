@@ -225,7 +225,7 @@ h1 { font-size: 20px; margin-bottom: 4px; color: #1e3a8a; }
   </button>
 
   <!-- [HTML-1.7] Close tab -->
-  <button class="btn btn-secondary" onclick="forceClose()">
+  <button class="btn btn-secondary" onclick="forceClose('Tab Closed', 'Your browser blocked automatic closing. You can close this tab manually.')">
     ✕ Close This Tab
   </button>
 </div>
@@ -247,6 +247,7 @@ var currentType = 'photos';
 var pendingFiles = [];
 var fileStatus = [];
 var adminKey = '';
+var MAX_FILES = 50;
 
 var LIMITS = {
   photos: 15  * 1024 * 1024,   //  15 MB
@@ -367,15 +368,27 @@ function onFilesPicked(ev) {
   ev.target.value = '';
 }
 
+function fileMatchesType(file) {
+  var mime = String(file && file.type || '').toLowerCase();
+  if (currentType === 'photos') return mime ? mime.indexOf('image/') === 0 :
+    /\.(jpe?g|png|webp|gif)$/i.test(file.name || '');
+  return mime ? mime.indexOf('video/') === 0 :
+    /\.(mp4|webm|mov|m4v)$/i.test(file.name || '');
+}
+
 function handleFileList(files) {
   var limit = LIMITS[currentType];
   var accepted = [];
   var acceptedStatus = [];
   var rejected = 0;
+  var wrongType = 0;
+  var total = Math.min(files.length, MAX_FILES);
 
-  for (var i = 0; i < files.length; i++) {
+  for (var i = 0; i < total; i++) {
     var f = files[i];
-    if (f.size > limit) {
+    if (!fileMatchesType(f)) {
+      wrongType++;
+    } else if (f.size > limit) {
       rejected++;
     } else {
       accepted.push(f);
@@ -385,6 +398,14 @@ function handleFileList(files) {
 
   pendingFiles = accepted;
   fileStatus = acceptedStatus;
+
+  if (files.length > MAX_FILES) {
+    showToast('⚠️ Only the first ' + MAX_FILES + ' files were selected.', 'error');
+  }
+  if (wrongType > 0) {
+    showToast('⚠️ ' + wrongType + ' file' + (wrongType === 1 ? '' : 's') +
+      ' skipped (wrong media type).', 'error');
+  }
 
   renderFileList();
   $('upload-btn').disabled = (pendingFiles.length === 0);
@@ -681,7 +702,10 @@ function showSuccessScreen(count, type) {
 /* ============================================================================
    [10] FORCE CLOSE
    ============================================================================ */
-function forceClose() {
+function forceClose(fallbackTitle, fallbackMessage) {
+  fallbackTitle = fallbackTitle || 'Upload Complete';
+  fallbackMessage = fallbackMessage ||
+    'Your files were uploaded successfully. You can now close this tab manually.';
   try { window.close(); } catch (e) {}
   try { window.open('', '_self'); window.close(); } catch (e) {}
   try { self.close(); } catch (e) {}
@@ -694,10 +718,9 @@ function forceClose() {
       'font-family:-apple-system,sans-serif">' +
       '<div style="font-size:72px;color:#059669;line-height:1">✅</div>' +
       '<h2 style="color:#059669;margin:16px 0 8px;font-size:22px">' +
-      'Upload Complete</h2>' +
+      escapeHtml(fallbackTitle) + '</h2>' +
       '<p style="color:#64748b;font-size:15px;margin-bottom:24px">' +
-      'Your browser blocked automatic closing.<br>' +
-      'You can now close this tab manually.</p>' +
+      escapeHtml(fallbackMessage) + '</p>' +
       '<button onclick="window.close()" style="padding:14px 28px;' +
       'font-size:16px;background:#2563eb;color:white;border:none;' +
       'border-radius:10px;cursor:pointer;font-weight:600">' +
