@@ -444,10 +444,13 @@ class FrontPageSettingsTab:
         return field
 
     def _two_col(self, left, right):
-        return ft.Row([
-            ft.Container(content=left, expand=True),
-            ft.Container(content=right, expand=True),
-        ], spacing=10, vertical_alignment=ft.CrossAxisAlignment.START)
+        # A fixed two-column Row overflows on phones and narrow desktop windows.
+        # Stack the controls by default; this is stable across Flet desktop, web,
+        # Android, and iOS and keeps every field reachable without horizontal scroll.
+        return ft.Column([
+            ft.Container(content=left, width=float("inf")),
+            ft.Container(content=right, width=float("inf")),
+        ], spacing=10, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
 
 
 # =================================================================================
