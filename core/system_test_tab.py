@@ -5,6 +5,7 @@ import ast
 import csv
 import json
 import os
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -12,6 +13,7 @@ import zipfile
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from html.parser import HTMLParser
 
 import flet as ft
 
@@ -34,6 +36,10 @@ class SystemTestTab:
         self.last_run = ft.Text("", size=10, color="#64748b")
         self.history_label = ft.Text("", size=10, color="#64748b")
         self.last_results = []
+        self.cleanup_candidates = []
+        self.cleanup_checks = {}
+        self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be permanently deleted", value=False)
+        self.cleanup_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
         self._build_specs()
         self.setup_ui()
         self._load_previous_notification()
@@ -63,6 +69,14 @@ class SystemTestTab:
     def diagnostics_dir(self):
         path = self.data_dir / "system_tests"
         path.mkdir(parents=True, exist_ok=True)
+        for filename in (self.HISTORY_FILE, self.ERROR_FILE):
+            legacy = self.data_dir / filename
+            target = path / filename
+            if legacy.exists() and not target.exists():
+                try:
+                    os.replace(legacy, target)
+                except OSError:
+                    pass
         return path
 
     def _build_specs(self):
@@ -70,6 +84,9 @@ class SystemTestTab:
             ("API contract", "main.py / security.py", self.check_api_contract),
             ("Live API probe", "main.py / deployed URL", self.check_live_api),
             ("Front-page integrity", "index.html / frontpage_config.py", self.check_frontpage),
+            ("Static HTML files", "static/**/*.html", self.check_static_html),
+            ("Database file hygiene", "data/ root", self.check_data_file_hygiene),
+            ("Project unused-file candidates", "Git workspace / project files", self.check_unused_files),
             ("Database schema", "database.py", self.check_schema),
             ("Database records", "database.py / travelers / batches", self.check_database_records),
             ("ID and relationship integrity", "database.py / reports", self.check_relationships),
@@ -118,9 +135,17 @@ class SystemTestTab:
                               on_click=self.download_current_csv, bgcolor="#dcfce7", color="#166534", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=17), ft.Text("All History CSV")], tight=True),
                               on_click=self.download_history_csv, bgcolor="#dcfce7", color="#166534", height=42),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.CONTENT_COPY, size=17), ft.Text("Manus Prompt TXT")], tight=True),
+                              on_click=self.download_manus_prompt, bgcolor="#fef3c7", color="#92400e", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CLEAR_ALL, size=17), ft.Text("Clear Screen")], tight=True),
                               on_click=lambda e: self.clear_screen(), bgcolor="#f1f5f9", color="#334155", height=42),
                 ], spacing=8, wrap=True),
+                ft.Container(content=ft.Column([
+                    ft.Text("File cleanup candidates", size=13, weight=ft.FontWeight.BOLD, color="#0f172a"),
+                    ft.Text("Candidates are only suggestions. Review each checkbox. Business CSVs, uploaded documents, backups and remote GitHub files are never deleted automatically.", size=10, color="#64748b"),
+                    self.cleanup_column,
+                    ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Delete Selected Files"), on_click=self.delete_selected_cleanup, bgcolor="#dc2626", color=ft.Colors.WHITE, height=38)], wrap=True),
+                ], spacing=5), padding=10, bgcolor="#fffbeb", border=ft.Border.all(1, "#f59e0b"), border_radius=8),
                 ft.Container(content=self.results_column, expand=True, padding=8,
                              border=ft.Border.all(1, "#e2e8f0"), border_radius=8),
             ], spacing=10, expand=True, scroll=ft.ScrollMode.AUTO),
@@ -178,8 +203,41 @@ class SystemTestTab:
         self.history_label.value = f"Recorded runs: {len({r.get('run_id') for r in rows if r.get('run_id')})} • {self.diagnostics_dir / self.HISTORY_FILE}"
         self.summary.value = f"Previous run: {recent[-1].get('timestamp', '')} • {len(recent)} checks"
 
+    def _plain_language(self, result):
+        level = result.get("level", "FAIL")
+        title = result.get("title", "System check")
+        message = result.get("message", "")
+        if level == "OK":
+            return f"Good news: the {title.lower()} check passed. No problem was found in this area."
+        if level == "WARN":
+            return f"This is a warning, not necessarily a failure. The system could not fully confirm {title.lower()} or found something that should be reviewed. Details: {message}"
+        return f"The system found a problem in {title.lower()}. This area may not work correctly until it is repaired. Details: {message}"
+
+    def _manus_prompt(self, result, run_id=""):
+        level = result.get("level", "FAIL")
+        return (
+            "Alhudha Haj Service P Ltd — System Test Center issue\n\n"
+            f"Please investigate this {level} result from the website test.\n"
+            f"Test: {result.get('title', '')}\n"
+            f"Simple explanation: {self._plain_language(result)}\n"
+            f"Technical details: {result.get('message', '')}\n"
+            f"Responsible file/module: {result.get('owner', '')}\n"
+            f"Recommended action: {result.get('action', '')}\n"
+            f"Run ID: {run_id or result.get('run_id', '')}\n\n"
+            "Please inspect the complete Alhudha Haj Service P Ltd project files, identify the exact cause, "
+            "make the smallest safe correction, preserve existing traveler/payment/invoice/receipt data, "
+            "and run the relevant compilation and regression tests. Explain what was changed in simple language."
+        )
+
+    def _prepare_result(self, result, run_id=""):
+        result = dict(result)
+        result["plain_language"] = self._plain_language(result)
+        result["manus_prompt"] = self._manus_prompt(result, run_id)
+        return result
+
     def _record(self, results, run_id):
-        fields = ["run_id", "timestamp", "level", "title", "message", "owner", "action", "duration_ms", "user_id"]
+        results = [self._prepare_result(r, run_id) for r in results]
+        fields = ["run_id", "timestamp", "level", "title", "plain_language", "message", "owner", "action", "duration_ms", "user_id", "manus_prompt"]
         now = datetime.now().isoformat(timespec="seconds")
         rows = []
         for r in results:
@@ -192,7 +250,9 @@ class SystemTestTab:
     def run_one(self, fn):
         started = time.perf_counter(); result = self._safe_call(fn)
         result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
-        self._record([result], datetime.now().strftime("%Y%m%d%H%M%S%f"))
+        run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+        result = self._prepare_result(result, run_id)
+        self._record([result], run_id)
         self.last_results = [result]
         self._render_results(self.last_results)
 
@@ -203,6 +263,7 @@ class SystemTestTab:
             started = time.perf_counter(); result = self._safe_call(fn)
             result["duration_ms"] = f"{(time.perf_counter() - started) * 1000:.1f}"
             results.append(result)
+        results = [self._prepare_result(r, run_id) for r in results]
         self._record(results, run_id)
         self.last_results = results
         self._render_results(self.last_results)
@@ -236,7 +297,7 @@ class SystemTestTab:
         project_static.mkdir(parents=True, exist_ok=True)
         filename = f"system_test_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         target = project_static / filename
-        fields = ["run_id", "timestamp", "level", "title", "message", "owner", "action", "duration_ms", "user_id"]
+        fields = ["run_id", "timestamp", "level", "title", "plain_language", "message", "owner", "action", "duration_ms", "user_id", "manus_prompt"]
         with target.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
@@ -258,6 +319,34 @@ class SystemTestTab:
         rows = self._history()
         self._export_csv(rows, "history")
 
+    def download_manus_prompt(self, e=None):
+        rows = self.last_results or self._history()
+        if not rows:
+            self.notification.value = "Nothing to export. Run a test first."
+            self.notification.color = "#92400e"
+            self.notification.update()
+            return
+        prompts = []
+        for row in rows:
+            prompt = row.get("manus_prompt") or self._manus_prompt(row, row.get("run_id", ""))
+            if row.get("level") in {"FAIL", "WARN"}:
+                prompts.append(prompt)
+        if not prompts:
+            prompts = ["Alhudha Haj Service P Ltd — All selected system checks passed. No corrective issue was reported."]
+        project_static = self.project_root / "static" / "downloads"
+        project_static.mkdir(parents=True, exist_ok=True)
+        filename = f"alhudha_manus_prompts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        target = project_static / filename
+        target.write_text("\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(prompts), encoding="utf-8")
+        try:
+            self.page.launch_url(f"/download/{filename}")
+            self.notification.value = f"Copy-ready Manus prompt file downloaded: {filename}"
+            self.notification.color = "#166534"
+        except Exception as ex:
+            self.notification.value = f"Prompt file created but browser download could not start: {ex}"
+            self.notification.color = "#92400e"
+        self.notification.update()
+
     def _render_results(self, results):
         self.results_column.controls.clear()
         passed = sum(r.get("level") == "OK" for r in results); failed = sum(r.get("level") == "FAIL" for r in results); warnings = sum(r.get("level") == "WARN" for r in results)
@@ -269,10 +358,11 @@ class SystemTestTab:
             level=r.get("level", "FAIL"); color={"OK":"#166534", "WARN":"#92400e", "FAIL":"#991b1b"}.get(level, "#334155"); bg={"OK":"#f0fdf4", "WARN":"#fffbeb", "FAIL":"#fef2f2"}.get(level, "#f8fafc")
             self.results_column.controls.append(ft.Container(content=ft.Column([
                 ft.Row([ft.Text(f"{level}  {r.get('title','')}", size=12, weight=ft.FontWeight.BOLD, color=color), ft.Container(expand=True), ft.Text(r.get("owner", ""), size=9, color="#64748b")]),
-                ft.Text(r.get("message", ""), size=11, color="#334155", selectable=True),
+                ft.Text(f"Meaning: {r.get('plain_language', self._plain_language(r))}", size=11, color="#334155", selectable=True),
+                ft.Text(f"Technical details: {r.get('message', '')}", size=10, color="#475569", selectable=True),
                 ft.Text(f"Action: {r.get('action', 'No action required')}", size=10, color=color, selectable=True),
             ], spacing=3), padding=10, bgcolor=bg, border_radius=7, border=ft.Border.all(1, color)))
-        self.results_column.update(); self.summary.update(); self.notification.update(); self.last_run.update()
+        self.results_column.update(); self.summary.update(); self.notification.update(); self.last_run.update(); self._refresh_cleanup_ui()
 
     # ------------------------------------------------------------------ result helpers
     @staticmethod
@@ -325,6 +415,130 @@ class SystemTestTab:
             cfg=load_config(); packages=cfg.get("packages", {}) if isinstance(cfg, dict) else {}
             return self._ok("Front-page integrity", f"Public files present; selected package IDs: {len(packages.get('selected_batch_ids', []))}", "index.html / frontpage_config.py")
         except Exception as ex: return self._fail("Front-page configuration error", str(ex), "frontpage_config.py", "Repair front-page configuration loading")
+
+    def check_static_html(self):
+        static = self.project_root / "static"
+        if not static.exists():
+            return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
+        html_files = sorted(static.rglob("*.html"))
+        if not html_files:
+            return self._warn("No static HTML files", str(static), "static/", "Confirm that the deployed static folder contains the intended pages")
+        bad = []
+        for path in html_files:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+                if "<html" not in text.lower() and "<!doctype" not in text.lower():
+                    bad.append(f"{path.relative_to(self.project_root)}: no HTML document marker")
+                if "<script" in text.lower() and "</script>" not in text.lower():
+                    bad.append(f"{path.relative_to(self.project_root)}: unclosed script tag")
+            except Exception as ex:
+                bad.append(f"{path.name}: {ex}")
+        if bad:
+            return self._fail("Static HTML issue", " ; ".join(bad[:8]), "static/**/*.html", "Open the named HTML file and correct the reported markup")
+        return self._ok("Static HTML files", f"Checked {len(html_files)} HTML file(s) under static/", "static/**/*.html")
+
+    def _add_cleanup_candidates(self, paths, category, reason):
+        for path in paths:
+            resolved = Path(path).resolve()
+            if any(str(resolved) == str(existing["path"]) for existing in self.cleanup_candidates):
+                continue
+            self.cleanup_candidates.append({"path": resolved, "category": category, "reason": reason})
+
+    def check_data_file_hygiene(self):
+        data = self.data_dir
+        if not data.exists():
+            return self._fail("Data folder missing", str(data), "imports.py / database.py", "Repair the configured data directory")
+        allowed_files = {
+            "users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv",
+            "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json", ".db.lock",
+        }
+        ignored_dirs = {"backups", "documents", "logos", "invoices", "receipts", "system_tests"}
+        candidates = [p for p in data.iterdir() if p.is_file() and p.name not in allowed_files and not p.name.startswith(".")]
+        self._add_cleanup_candidates(candidates, "data", "Unrecognized file directly inside the application data folder")
+        if candidates:
+            names = ", ".join(p.name for p in candidates[:8])
+            return self._warn("Unrecognized data files", names, "data/ root / database.py", "Review the checkboxes; delete only files you recognize as unwanted")
+        return self._ok("Database file hygiene", "No unrecognized files found directly in the application data folder", "data/ root / database.py")
+
+    def check_unused_files(self):
+        candidates = []
+        git_dir = self.project_root / ".git"
+        tracked = []
+        if git_dir.exists():
+            try:
+                tracked = subprocess.check_output(["git", "-C", str(self.project_root), "ls-files"], text=True, timeout=5).splitlines()
+            except Exception:
+                tracked = []
+        files = []
+        for folder in (self.project_root, self.project_root / "core", self.project_root / "static"):
+            if folder.exists():
+                files.extend(x for x in folder.rglob("*") if x.is_file() and ".git" not in x.parts)
+        important = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
+        for path in sorted(set(files)):
+            rel = str(path.relative_to(self.project_root)).replace("\\", "/")
+            if path.name in important or path.suffix in {".csv", ".db", ".zip", ".png", ".jpg", ".jpeg", ".webp", ".pdf"}:
+                continue
+            if path.suffix.lower() not in {".py", ".html", ".js", ".css", ".txt", ".md"}:
+                continue
+            text = ""
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            referenced = False
+            for other in files:
+                if other == path or other.suffix not in {".py", ".html", ".js", ".css", ".txt", ".md"}:
+                    continue
+                try:
+                    if path.name in other.read_text(encoding="utf-8", errors="ignore"):
+                        referenced = True; break
+                except Exception:
+                    pass
+            if not referenced and (not tracked or rel in tracked):
+                candidates.append(path)
+        self._add_cleanup_candidates(candidates, "project", "Candidate file is not referenced by another scanned project file")
+        if candidates:
+            names = ", ".join(str(x.relative_to(self.project_root)) for x in candidates[:8])
+            return self._warn("Unused-file candidates found", names, "Git workspace / project files", "Review every checkbox; this is a suggestion and may include intentionally standalone files")
+        return self._ok("Project unused-file candidates", "No unused-file candidates were identified by the conservative scan", "Git workspace / project files")
+
+    def _refresh_cleanup_ui(self):
+        self.cleanup_column.controls.clear()
+        if not self.cleanup_candidates:
+            self.cleanup_column.controls.append(ft.Text("Run the file hygiene tests to list review candidates.", size=10, color="#64748b"))
+        else:
+            for item in self.cleanup_candidates:
+                path = str(item["path"])
+                checkbox = ft.Checkbox(label=f"{item['category'].upper()}: {path} — {item['reason']}", value=False)
+                self.cleanup_checks[path] = checkbox
+                self.cleanup_column.controls.append(checkbox)
+        self.cleanup_column.update()
+
+    def delete_selected_cleanup(self, e=None):
+        if not self.cleanup_confirmation.value:
+            self.notification.value = "Deletion blocked: tick the permanent-deletion confirmation checkbox first."
+            self.notification.color = "#991b1b"; self.notification.update(); return
+        selected = [item for item in self.cleanup_candidates if self.cleanup_checks.get(str(item["path"]), None) and self.cleanup_checks[str(item["path"])].value]
+        if not selected:
+            self.notification.value = "No cleanup candidate selected."; self.notification.color = "#92400e"; self.notification.update(); return
+        deleted=[]; blocked=[]
+        data_root=self.data_dir.resolve(); project_root=self.project_root.resolve()
+        for item in selected:
+            path=Path(item["path"]).resolve()
+            # Never permit cleanup to remove core business data or uploaded content.
+            if path == data_root or data_root in path.parents and path.name in {"users.csv","travelers.csv","batches.csv","payments.csv","invoices.csv","receipts.csv"}:
+                blocked.append(f"protected business file: {path}"); continue
+            if path == project_root or project_root not in path.parents:
+                blocked.append(f"outside project root: {path}"); continue
+            try:
+                if path.is_file(): path.unlink(); deleted.append(str(path))
+            except Exception as ex: blocked.append(f"{path}: {ex}")
+        self.cleanup_candidates=[item for item in self.cleanup_candidates if str(item["path"]) not in deleted]
+        self._refresh_cleanup_ui()
+        self.cleanup_confirmation.value=False; self.cleanup_confirmation.update()
+        message=f"Deleted {len(deleted)} selected file(s)."
+        if blocked: message += " Blocked: " + " ; ".join(blocked[:3])
+        self.notification.value=message; self.notification.color="#166534" if not blocked else "#92400e"; self.notification.update()
 
     def check_schema(self):
         expected={"users":{"id","username","role"},"travelers":{"id","batch_id"},"batches":{"id","price"},"payments":{"id","traveler_id","amount","status"},"invoices":{"id","traveler_id"},"receipts":{"id","payment_id"}}
