@@ -35,8 +35,8 @@ except ImportError:
 # §1.2 — Responsive breakpoint (px). Below this we stack the toolbar vertically.
 MOBILE_BREAKPOINT = 700
 
-# §1.3 — Persistent location of traveler documents (on the Railway Volume)
-DOCUMENTS_ROOT = "/app/data/documents"
+# §1.3 — Document location is derived from the database/cloud-aware data root.
+DOCUMENTS_ROOT = None
 
 
 # =================================================================================
@@ -111,8 +111,8 @@ class DataAdminTab:
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
-        self.data_dir = Path("/app/data")
-        self.documents_dir = Path(DOCUMENTS_ROOT)
+        self.data_dir = Path(getattr(db, "data_dir", Path("/app/data"))).resolve()
+        self.documents_dir = (self.data_dir / "documents").resolve()
 
         # UI handles filled by setup_ui()
         self.stats_labels = {}          # CSV stats
@@ -1922,8 +1922,16 @@ class DataAdminTab:
             self.documents_dir.mkdir(parents=True, exist_ok=True)
             extracted = 0
 
+            if len(data) > 500 * 1024 * 1024:
+                raise ValueError("Document ZIP exceeds the 500 MB limit")
             with zipfile.ZipFile(io.BytesIO(data)) as z:
-                for info in z.infolist():
+                members = z.infolist()
+                if len(members) > 10000:
+                    raise ValueError("Document ZIP contains too many files")
+                total_uncompressed = sum(max(0, i.file_size) for i in members)
+                if total_uncompressed > 2 * 1024 * 1024 * 1024:
+                    raise ValueError("Document ZIP expands beyond the 2 GB limit")
+                for info in members:
                     if info.is_dir():
                         continue
 
@@ -1937,7 +1945,9 @@ class DataAdminTab:
                     if ".." in parts:
                         continue
 
-                    dest = self.documents_dir / info.filename
+                    dest = (self.documents_dir / Path(info.filename)).resolve()
+                    if self.documents_dir not in dest.parents:
+                        continue
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     with z.open(info) as src, open(dest, "wb") as dst:
                         shutil.copyfileobj(src, dst)
