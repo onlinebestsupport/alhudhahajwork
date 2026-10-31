@@ -12,7 +12,12 @@ import os
 import json
 import secrets
 import time
+import hmac
+import re
+import tempfile
+from urllib.parse import quote
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 
 # Try to import the captcha module (self-hosted math CAPTCHA)
 try:
@@ -28,10 +33,11 @@ except ImportError:
     _CAPTCHA_AVAILABLE = False
 
     def generate_math_captcha(sid):
-        return {"question": "0 + 0", "session_id": sid, "expires_in": 300}
+        return {"question": "Security service unavailable", "session_id": sid,
+                "expires_in": 0}
 
     def verify_math_captcha(sid, ans):
-        return True, "ok"
+        return False, "unavailable"
 
     def invalidate_captcha(sid):
         return None
@@ -58,12 +64,7 @@ def _safe_str(v) -> str:
 
 
 def _clean_number_string(value) -> str:
-    """
-    Strip trailing ".0" from numeric-looking strings.
-    "1234.0"       → "1234"
-    "9841186164.0" → "9841186164"
-    1234.0         → "1234"
-    """
+    """Normalize numeric-looking spreadsheet values without float precision loss."""
     if value is None:
         return ""
     if isinstance(value, float):
@@ -71,20 +72,13 @@ def _clean_number_string(value) -> str:
             return ""
         if value.is_integer():
             return str(int(value))
-        return str(value)
+        return str(value).strip()
     s = str(value).strip()
     if not s or s.lower() in ("nan", "none", "nat", "null"):
         return ""
-    if s.endswith(".0"):
-        s = s[:-2]
-    if "." in s:
-        try:
-            f = float(s)
-            if f.is_integer():
-                return str(int(f))
-        except (ValueError, TypeError):
-            pass
-    return s
+    # Only strip a decimal suffix when the entire value is an integer string.
+    m = re.fullmatch(r"([+-]?\d+)\.0+", s)
+    return m.group(1) if m else s
 
 
 def _to_list(x) -> list:
@@ -169,11 +163,27 @@ def _load_sessions() -> dict:
 
 
 def _save_sessions(sessions: dict):
+    path = _session_file_path()
+    tmp_path = None
     try:
-        path = _session_file_path()
-        with open(path, "w", encoding="utf-8") as f:
+        fd, tmp_path = tempfile.mkstemp(prefix=".traveler_sessions_", dir=os.path.dirname(path))
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(sessions, f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, path)
+        tmp_path = None
     except Exception as e:
+        if tmp_path:
+            try: os.remove(tmp_path)
+            except OSError: pass
         print(f"[TRAVELER] session save failed: {e}")
 
 
@@ -249,7 +259,7 @@ def authenticate_traveler(db, passport_no, pin):
             break
 
     if not match:
-        print(f"[TRAVELER] No match for passport='{passport_no}'")
+        print("[TRAVELER] No traveler matched the supplied passport")
         return None, "Invalid passport number or PIN."
 
     stored_pin = _clean_number_string(match.get("pin", ""))
@@ -258,9 +268,8 @@ def authenticate_traveler(db, passport_no, pin):
         return None, ("Your account is not yet activated. "
                       "Please contact the office to set your PIN.")
 
-    if stored_pin != pin:
-        print(f"[TRAVELER] Wrong PIN for passport='{passport_no}' "
-              f"(stored='{stored_pin}', input='{pin}')")
+    if not hmac.compare_digest(str(stored_pin), str(pin)):
+        print("[TRAVELER] Invalid traveler PIN")
         return None, "Invalid passport number or PIN."
 
     return dict(match), None
@@ -288,42 +297,55 @@ def _get_base_path():
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _safe_component(value: str) -> str:
+    value = _safe_str(value)
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "_", value)
+    return cleaned[:128]
+
+
 def get_document_path(db, traveler, doc_key):
-    base = _get_base_path()
+    base = os.path.realpath(_get_base_path())
     tid = _safe_str(traveler.get("id", ""))
-    if not tid:
+    if not tid or doc_key not in {s[0] for s in _DOC_SPECS}:
         return None
 
-    folder = tid.replace("/", "_").replace("\\", "_")
-    t_folder = os.path.join(base, "documents", folder)
+    folder = _safe_component(tid)
+    if not folder:
+        return None
+    documents_root = os.path.realpath(os.path.join(base, "documents"))
+    t_folder = os.path.join(documents_root, folder)
 
     rel = _safe_str(traveler.get(doc_key, ""))
     if rel:
         rel = rel.replace("\\", os.sep).replace("/", os.sep)
-        candidate = os.path.join(base, rel)
-        if os.path.exists(candidate):
+        candidate = os.path.realpath(os.path.join(base, rel))
+        try:
+            inside = os.path.commonpath([candidate, documents_root]) == documents_root
+        except ValueError:
+            inside = False
+        if inside and os.path.isfile(candidate):
             return candidate
 
     spec = next((s for s in _DOC_SPECS if s[0] == doc_key), None)
     if not spec:
         return None
-
-    subs = spec[2]
-    for sub in subs:
+    for sub in spec[2]:
         sub_dir = os.path.join(t_folder, sub) if sub else t_folder
         if not os.path.isdir(sub_dir):
             continue
         try:
-            for fname in os.listdir(sub_dir):
+            for fname in sorted(os.listdir(sub_dir)):
                 if fname.lower().endswith(_ALLOWED_EXTS):
-                    return os.path.join(sub_dir, fname)
-        except Exception:
+                    candidate = os.path.realpath(os.path.join(sub_dir, fname))
+                    if os.path.isfile(candidate) and candidate.startswith(os.path.realpath(sub_dir) + os.sep):
+                        return candidate
+        except OSError:
             pass
     return None
 
 
 def _doc_url_for(traveler_id: str, doc_key: str) -> str:
-    return f"/api/traveler/document/{doc_key}"
+    return f"/api/traveler/document/{quote(str(doc_key), safe="")}" 
 
 
 # =================================================================================
@@ -333,16 +355,24 @@ _HIDDEN_FIELDS = {
     "pin",
     "medical_notes",
     "extra_fields",
+    "photo", "passport_scan", "aadhaar_scan", "pan_scan", "vaccine_scan",
+    "pin_hash", "password", "password_hash", "session_token",
 }
 
 
-def _f(v, default=0.0):
+def _f(v, default=Decimal("0")):
+    """Parse financial values exactly; never use binary floating point."""
     try:
-        x = float(v)
-        if x != x:
+        if v is None:
             return default
-        return x
-    except (TypeError, ValueError):
+        if isinstance(v, Decimal):
+            return v
+        text = str(v).strip().replace(",", "")
+        if not text or text.lower() in ("nan", "none", "nat", "null"):
+            return default
+        value = Decimal(text)
+        return default if not value.is_finite() else value
+    except (InvalidOperation, TypeError, ValueError):
         return default
 
 
@@ -526,24 +556,29 @@ def build_traveler_view(db, traveler: dict) -> dict:
 
     # ---------- 4. Payments ----------
     payments = []
-    total_paid = 0.0
+    total_paid = Decimal("0")
     payment_by_method = {}
     payment_by_month = {}
 
     try:
         raw_payments = _to_list(db.get_payments(tid)) if tid else []
+        settled_statuses = {"completed", "complete", "paid", "success",
+                            "successful", "received", "approved"}
         for p in raw_payments:
             amt = _f(p.get("amount", 0))
-            total_paid += amt
+            status_value = _safe_str(p.get("status", "completed") or "completed")
+            is_settled = status_value.lower() in settled_statuses
+            if is_settled:
+                total_paid += amt
 
             method = _safe_str(p.get("payment_method", "") or "Other")
-            payment_by_method[method] = (
-                payment_by_method.get(method, 0.0) + amt)
-
             date_str = _safe_str(p.get("payment_date", ""))[:10]
             month_key = date_str[:7] if len(date_str) >= 7 else "Unknown"
-            payment_by_month[month_key] = (
-                payment_by_month.get(month_key, 0.0) + amt)
+            if is_settled:
+                payment_by_method[method] = (
+                    payment_by_method.get(method, Decimal("0")) + amt)
+                payment_by_month[month_key] = (
+                    payment_by_month.get(month_key, Decimal("0")) + amt)
 
             payments.append({
                 "id": _safe_str(p.get("id", "")),
@@ -553,8 +588,7 @@ def build_traveler_view(db, traveler: dict) -> dict:
                 "method": method,
                 "transaction_id": _clean_number_string(
                     p.get("transaction_id", "")),
-                "status": _safe_str(p.get("status", "completed")
-                                    or "completed"),
+                "status": status_value,
                 "receipt_no": _safe_str(p.get("receipt_no", "")),
                 "notes": _safe_str(p.get("notes", "")),
             })
@@ -629,24 +663,24 @@ def build_traveler_view(db, traveler: dict) -> dict:
         print(f"[TRAVELER] get_invoices failed: {e}")
 
     # ---------- 6. Summary / KPIs ----------
-    package_price = _f(batch.get("price", 0)) if batch else 0.0
-    invoice_total = 0.0
+    package_price = _f(batch.get("price", 0)) if batch else Decimal("0")
+    invoice_total = Decimal("0")
     if invoice:
         invoice_total = _f(invoice.get("rounded_total",
                                        invoice.get("total_amount", 0)))
 
     pkg_pending = max(0.0, package_price - total_paid) if package_price > 0 else 0.0
 
-    inv_pending = 0.0
+    inv_pending = Decimal("0")
     if invoice:
         if _safe_str(invoice.get("status", "")).lower() == "paid":
             inv_pending = 0.0
         else:
             inv_pending = max(0.0, invoice_total - total_paid)
 
-    paid_pct = 0.0
+    paid_pct = Decimal("0")
     if package_price > 0:
-        paid_pct = min(100.0, (total_paid / package_price) * 100.0)
+        paid_pct = min(Decimal("100"), (total_paid / package_price) * Decimal("100"))
 
     kpis = [
         {"key": "total_paid", "label": "Total Paid", "icon": "rupee-sign",
@@ -731,6 +765,10 @@ def get_captcha_new(session_id: str = "") -> dict:
     """
     if not session_id:
         session_id = secrets.token_urlsafe(16)
+    if not _CAPTCHA_AVAILABLE:
+        return {"ok": False, "session_id": session_id,
+                "reason": "unavailable",
+                "detail": "CAPTCHA service unavailable"}
 
     internal_key = f"traveler:{session_id}"
     try:
@@ -794,12 +832,13 @@ def authenticate_traveler_with_captcha(db, passport_no, pin,
                                        can decide which HTTP status code
                                        to send back)
     """
-    # ---- Step 1: CAPTCHA ----
-    if _CAPTCHA_AVAILABLE:
-        result = check_captcha_answer(captcha_session_id, captcha_answer)
-        if not result.get("ok"):
-            reason = result.get("reason", "wrong")
-            return None, f"captcha:{reason}"
+    # ---- Step 1: CAPTCHA (fail closed) ----
+    if not _CAPTCHA_AVAILABLE:
+        return None, "captcha:unavailable"
+    result = check_captcha_answer(captcha_session_id, captcha_answer)
+    if not result.get("ok"):
+        reason = result.get("reason", "wrong")
+        return None, f"captcha:{reason}"
 
     # ---- Step 2: Credentials ----
     traveler, err = authenticate_traveler(db, passport_no, pin)
