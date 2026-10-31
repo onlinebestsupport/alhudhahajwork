@@ -16,6 +16,8 @@
   
   /* Added style for the close button */
   #close-btn { background: #059669; display: none; margin-top: 12px; }
+  button:focus-visible { outline: 3px solid #f59e0b; outline-offset: 2px; }
+  #folder-input:disabled { opacity: 0.65; }
   #close-btn:hover { background: #047857; }
   
   #status { margin-top: 20px; font-weight: bold; text-align: center; font-size: 14px; padding: 10px; border-radius: 8px; }
@@ -40,10 +42,25 @@
 
   <script>
     const params = new URLSearchParams(window.location.search);
-    const travelerId = params.get('traveler_id') || '';
-    
+    const travelerId = (params.get('traveler_id') || '').trim();
+    const token = (params.get('token') || '').trim();
+    const MAX_FILES = 100;
+    const MAX_TOTAL_BYTES = 500 * 1024 * 1024;
+
     if (travelerId) {
-      document.getElementById('target-info').innerHTML = `<b>Target Traveler:</b> ${travelerId}<br>Select the folder containing this traveler's files.`;
+      const info = document.getElementById('target-info');
+      info.textContent = '';
+      const strong = document.createElement('b');
+      strong.textContent = 'Target Traveler: ' + travelerId;
+      info.appendChild(strong);
+      info.appendChild(document.createElement('br'));
+      info.appendChild(document.createTextNode("Select the folder containing this traveler's files."));
+    }
+
+    function showStatus(message, type) {
+      const status = document.getElementById('status');
+      status.className = type || 'info';
+      status.textContent = message;
     }
 
     async function upload() {
@@ -52,15 +69,29 @@
       const status = document.getElementById('status');
       const closeBtn = document.getElementById('close-btn');
       
-      if (!input.files.length) { 
-        alert('Please select a folder first.'); 
-        return; 
+      if (!input.files.length) {
+        showStatus('Please select a folder first.', 'error');
+        return;
       }
-      
+      if (input.files.length > MAX_FILES) {
+        showStatus('Too many files. Select no more than ' + MAX_FILES + '.', 'error');
+        return;
+      }
+      let totalBytes = 0;
+      for (const file of input.files) totalBytes += file.size || 0;
+      if (totalBytes > MAX_TOTAL_BYTES) {
+        showStatus('Folder is too large. Maximum total size is 500 MB.', 'error');
+        return;
+      }
+      if (!token) {
+        showStatus('Missing admin token. Reopen this page from the admin panel.', 'error');
+        return;
+      }
+
       btn.disabled = true;
       input.disabled = true;
       status.className = 'info';
-      status.innerText = '⏳ Uploading... Please wait.';
+      status.textContent = '⏳ Uploading... Please wait.';
       
       const fd = new FormData();
       if (travelerId) fd.append('traveler_id', travelerId);
@@ -73,28 +104,33 @@
       try {
         const res = await fetch('/api/admin/traveler/upload-folder-html', {
           method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + token },
+          credentials: 'include',
           body: fd
         });
-        
-        if (res.ok) {
-          const data = await res.json();
+
+        let data = null;
+        try { data = await res.json(); } catch (e) {}
+        if (res.ok && data && data.success === true) {
           status.className = 'success';
-          status.innerHTML = `✅ Upload successful!<br>Uploaded ${data.count} files to <b>${data.folder}</b>.`;
+          status.textContent = '✅ Upload successful! Uploaded ' +
+            String(data.count || 0) + ' files to ' + String(data.folder || '') + '.';
           
           // Hide the upload button and show the close button
           btn.style.display = 'none';
           closeBtn.style.display = 'block';
           
         } else {
-          const err = await res.text();
+          const err = data && (data.detail || data.message)
+            ? (data.detail || data.message) : 'HTTP ' + res.status;
           status.className = 'error';
-          status.innerText = '❌ Upload failed: ' + err;
+          status.textContent = '❌ Upload failed: ' + String(err).slice(0, 240);
           btn.disabled = false;
           input.disabled = false;
         }
       } catch (e) {
         status.className = 'error';
-        status.innerText = '❌ Network error: ' + e.message;
+        status.textContent = '❌ Network error: ' + (e.message || 'Request failed');
         btn.disabled = false;
         input.disabled = false;
       }
@@ -109,7 +145,8 @@
       // show a message so the user knows to close it manually.
       setTimeout(() => {
         const status = document.getElementById('status');
-        status.innerHTML = `✅ Upload successful!<br>Uploaded files successfully.<br><br><i>Please close this tab manually.</i>`;
+        status.className = 'success';
+        status.textContent = 'Upload page finished. Please close this tab manually.';
       }, 300);
     }
   </script>
