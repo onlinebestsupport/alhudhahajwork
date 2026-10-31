@@ -1703,20 +1703,31 @@ def _build_app() -> FastAPI:
         )
 
     # -----------------------------------------------------------------------------
-    # 21.5.9 — Mount Flet admin at /admin
+    # 21.5.9 — Admin/WS health endpoints (outside the Flet mount)
+    # -----------------------------------------------------------------------------
+    @app.get("/healthz")
+    async def healthz():
+        return {"ok": True, "database_ready": bool(AppState.db_ready), "flet_mount": "/admin", "websocket": "/admin/ws"}
+
+    @app.get("/admin/health")
+    async def admin_health():
+        return {"ok": True, "database_ready": bool(AppState.db_ready), "websocket": "/admin/ws"}
+
+    # -----------------------------------------------------------------------------
+    # 21.5.10 — Mount Flet admin at /admin
     # -----------------------------------------------------------------------------
     admin_app = flet_fastapi.app(flet_main, assets_dir=flet_assets_dir)
     app.mount("/admin", admin_app)
     _boot_log(f"Mounted Flet admin at /admin (assets_dir={flet_assets_dir})")
 
     # -----------------------------------------------------------------------------
-    # 21.5.10 — Mount /static
+    # 21.5.11 — Mount /static
     # -----------------------------------------------------------------------------
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     _boot_log("Mounted /static for logo + assets")
 
     # -----------------------------------------------------------------------------
-    # 21.5.11 — Root route "/"
+    # 21.5.12 — Root route "/"
     # -----------------------------------------------------------------------------
     @app.get("/")
     async def root():
@@ -1731,7 +1742,7 @@ def _build_app() -> FastAPI:
         return RedirectResponse(url="/admin")
 
     # -----------------------------------------------------------------------------
-    # 21.5.12 — /robots.txt  (BONUS - helps search engines, deters bots)
+    # 21.5.13 — /robots.txt  (BONUS - helps search engines, deters bots)
     # -----------------------------------------------------------------------------
     @app.get("/robots.txt")
     async def robots_txt():
@@ -1764,7 +1775,7 @@ def _build_app() -> FastAPI:
     _boot_log("robots.txt route registered")
 
     # -----------------------------------------------------------------------------
-    # 21.5.13 -- /sitemap.xml  (embedded -- no external file needed)
+    # 21.5.14 -- /sitemap.xml  (embedded -- no external file needed)
     # -----------------------------------------------------------------------------
     @app.get("/sitemap.xml")
     async def sitemap_xml():
@@ -1841,8 +1852,12 @@ app = _build_app()
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
+        app,
         host=APP_HOST,
         port=APP_PORT,
         log_level="info",
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+        ws_ping_interval=20.0,
+        ws_ping_timeout=20.0,
     )
