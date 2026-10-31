@@ -25,6 +25,7 @@ class SystemTestTab:
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
+    CHECK_TIMEOUT_SECONDS = 20
 
     def __init__(self, page, db, current_user):
         self.page = page
@@ -282,10 +283,28 @@ class SystemTestTab:
         elapsed = time.perf_counter() - self._progress_started if self._progress_started else 0
         self.progress_bar.value = fraction
         self.progress_text.value = f"Checking: {title} — {fraction * 100:.0f}% ({completed}/{total}) • elapsed {elapsed:.1f}s"
+        print(f"[SYSTEM-TEST] {title}: {fraction * 100:.0f}% ({completed}/{total})", flush=True)
         try:
             self.progress_bar.update(); self.progress_text.update()
         except Exception:
             pass
+
+    async def _run_spec_with_timeout(self, spec):
+        title = spec[0] or getattr(spec[2], "__name__", "selected test")
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._run_specs_sync, [spec]),
+                timeout=self.CHECK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            return [self._fail(
+                "Test check timed out",
+                f"{title} did not finish within {self.CHECK_TIMEOUT_SECONDS} seconds.",
+                "system_test_tab.py / " + title,
+                "Review the named check for a slow file, network request, or locked resource",
+            )]
+        except Exception as ex:
+            return [self._fail("Test check failed", repr(ex), "system_test_tab.py / " + title, "Review the named check and its responsible file")]
 
     def run_one(self, fn):
         if self._test_running:
@@ -309,7 +328,7 @@ class SystemTestTab:
             self.progress_bar.value = 0.5
             try: self.progress_bar.update(); self.progress_text.update()
             except Exception: pass
-            results = await asyncio.to_thread(self._run_specs_sync, [("", "", fn)])
+            results = await self._run_spec_with_timeout(("Selected test", "", fn))
             self._show_progress(1, 1, "Selected test complete")
             results = [self._prepare_result(r, run_id) for r in results]
             self._record(results, run_id)
@@ -344,7 +363,7 @@ class SystemTestTab:
             total = len(self.test_specs)
             for completed, spec in enumerate(self.test_specs, start=1):
                 self._show_progress(completed - 1, total, spec[0])
-                result = await asyncio.to_thread(self._run_specs_sync, [spec])
+                result = await self._run_spec_with_timeout(spec)
                 results.extend(result)
                 self._show_progress(completed, total, spec[0])
             results = [self._prepare_result(r, run_id) for r in results]
