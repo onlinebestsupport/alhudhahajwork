@@ -1328,7 +1328,7 @@ class HajDatabase:
             print(f"[DB] _recalculate_invoice_status failed: {e}")
 
     def generate_invoice(self, traveler_id, batch_id, amount,
-                         gst_percentage=18, tcs_percentage=0.1,
+                         gst_percentage=5, tcs_percentage=2,
                          discount_percentage=0.0, discount_amount=None):
         year = datetime.now().year
         prefix = 'HAJ'
