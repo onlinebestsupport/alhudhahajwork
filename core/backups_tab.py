@@ -816,7 +816,15 @@ class BackupView:
                 self._show_status("⏳ Creating safety backup…",
                                   ft.Colors.BLUE_700)
                 self._safe_update()
-                self.db.create_backup()
+                safety_path = self.db.create_backup()
+                if not safety_path or not Path(str(safety_path)).is_file() or not zipfile.is_zipfile(str(safety_path)):
+                    raise RuntimeError("Safety backup was not created successfully")
+                backup_path = Path(backup["file_path"]).resolve()
+                allowed = [Path(d).resolve() for d in self._scan_all_dirs()]
+                if not any(d == backup_path.parent for d in allowed):
+                    raise ValueError("Selected backup is outside the backup directories")
+                if not zipfile.is_zipfile(str(backup_path)):
+                    raise ValueError("Selected backup is not a valid ZIP file")
                 self._show_status("⏳ Restoring backup…",
                                   ft.Colors.BLUE_700)
                 self._safe_update()
