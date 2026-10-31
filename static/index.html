@@ -80,11 +80,13 @@
             color: white;
             padding: 14px 0;
             width: 100%;
+            position: relative;
             z-index: 1001;
             display: none;
+            overflow: visible;
             border-bottom: 2px solid rgba(255, 255, 255, 0.2);
         }
-        .alert-banner.active { display: block; }
+        .alert-banner.active { display: block !important; }
         .alert-banner.pulse { animation: alertPulse 2s infinite; }
         .alert-banner.blink { animation: alertBlink 1s infinite; }
         @keyframes alertPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.9; } }
@@ -94,13 +96,20 @@
             display: flex; align-items: center; justify-content: space-between;
             flex-wrap: wrap; gap: 15px;
         }
-        .alert-message { display: flex; align-items: center; gap: 15px; flex: 1; }
+        .alert-message {
+            display: flex; align-items: center; gap: 15px; flex: 1 1 240px;
+            min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+        }
         .alert-message .emoji {
             font-size: 1.8rem;
             filter: drop-shadow(0 2px 4px rgba(0,0,0,0.2));
         }
-        .alert-text { font-size: 1rem; font-weight: 500; }
+        .alert-text {
+            font-size: 1rem; font-weight: 500; min-width: 0;
+            overflow-wrap: anywhere; word-break: break-word;
+        }
         .alert-link {
+            flex: 0 1 auto; max-width: 100%; overflow-wrap: anywhere;
             background: rgba(255, 255, 255, 0.2); color: white;
             padding: 8px 22px; border-radius: 50px;
             text-decoration: none; font-weight: 600;
@@ -631,7 +640,11 @@
             }
             .contact-info { flex-direction: column; align-items: center; gap: 6px; }
             .alert-content { flex-direction: column; text-align: center; }
-            .alert-message { flex-direction: column; text-align: center; }
+            .alert-message {
+                width: 100%; flex-direction: column; text-align: center;
+                flex-basis: 100%;
+            }
+            .alert-link, .alert-close { flex: 0 0 auto; }
             .alert-message .emoji { font-size: 2rem; }
             .gallery-grid {
                 grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -864,6 +877,7 @@
         // =====================================================================
         let CONFIG = null;
         let BATCHES = [];
+        let ACTIVE_ALERT_KEY = '';
         let GALLERY = { photos: [], videos: [], enabled: false };
 
         // =====================================================================
@@ -1054,8 +1068,8 @@
         // =====================================================================
         async function loadAll() {
             const [cfgResult, bResult] = await Promise.allSettled([
-                fetch('/api/frontpage', { cache: 'no-store' }).then(r => r.json()),
-                fetch('/api/batches',   { cache: 'no-store' }).then(r => r.json()),
+                fetch('/api/frontpage', { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error('frontpage HTTP ' + r.status); return r.json(); }),
+                fetch('/api/batches',   { cache: 'no-store' }).then(r => { if (!r.ok) throw new Error('batches HTTP ' + r.status); return r.json(); }),
             ]);
             if (cfgResult.status === 'fulfilled' && cfgResult.value) {
                 CONFIG = cfgResult.value;
@@ -1102,7 +1116,12 @@
                 banner.style.display = 'none';
                 return;
             }
-            if (localStorage.getItem('alertClosed') === 'true') {
+            // Scope dismissal to the current alert, not the whole device.
+            // This prevents an old closed announcement from hiding a new one.
+            ACTIVE_ALERT_KEY = 'alertClosed:' + btoa(unescape(encodeURIComponent([
+                a.message || '', a.link || '', a.color || '', a.style || ''
+            ].join('|')))).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 160);
+            if (localStorage.getItem(ACTIVE_ALERT_KEY) === 'true') {
                 banner.classList.remove('active');
                 banner.style.display = 'none';
                 return;
@@ -1123,9 +1142,14 @@
             banner.style.display = 'block';
         }
         function closeAlert() {
-            document.getElementById('alertBanner').style.display = 'none';
-            localStorage.setItem('alertClosed', 'true');
-            setTimeout(() => { localStorage.removeItem('alertClosed'); }, 3600 * 1000);
+            const banner = document.getElementById('alertBanner');
+            banner.style.display = 'none';
+            if (ACTIVE_ALERT_KEY) {
+                try { localStorage.setItem(ACTIVE_ALERT_KEY, 'true'); } catch (e) {}
+                setTimeout(() => {
+                    try { localStorage.removeItem(ACTIVE_ALERT_KEY); } catch (e) {}
+                }, 3600 * 1000);
+            }
         }
         function shadeColor(hex, percent) {
             try {
