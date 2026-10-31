@@ -78,6 +78,13 @@ except ImportError as _e:
     print(f"[IMPORT] core.data_admin_tab failed: {_e}")
     DataAdminTab = None
 
+try:
+    from core.system_test_tab import SystemTestTab
+    print("[IMPORT] Loaded SystemTestTab from core.system_test_tab")
+except ImportError as _e:
+    print(f"[IMPORT] core.system_test_tab failed: {_e}")
+    SystemTestTab = None
+
 BackupTab = None
 try:
     from core.backups_tab import BackupTab
@@ -158,6 +165,7 @@ class MainWindowView:
         self.frontpage_tab = None
         self.backup_tab = None
         self.data_admin_tab = None
+        self.system_test_tab = None
 
         self.tab_instances = {}
         self.tabs_control = None
@@ -474,6 +482,8 @@ class MainWindowView:
              "manage_backups",   BackupTab),
             ("🗄️ Data Admin", ft.Icons.STORAGE, "data_admin_tab",
              "manage_settings",  DataAdminTab),
+            ("🧪 System Tests", ft.Icons.HEALTH_AND_SAFETY, "system_test_tab",
+             "manage_settings",  SystemTestTab),
         ]
 
         print(f"[MAIN] user='{user_name}' role='{user_role}'")
@@ -485,6 +495,11 @@ class MainWindowView:
                 continue
 
             if attr_name == "data_admin_tab":
+                if str(user_role).strip().lower() != "super_admin":
+                    print(f"[TAB] {label.strip()}: ⛔ super_admin only")
+                    continue
+
+            if attr_name == "system_test_tab":
                 if str(user_role).strip().lower() != "super_admin":
                     print(f"[TAB] {label.strip()}: ⛔ super_admin only")
                     continue
