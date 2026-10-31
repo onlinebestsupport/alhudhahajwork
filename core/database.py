@@ -20,13 +20,16 @@
 import os
 import sys
 import json
+import base64
 import hashlib
+import secrets
 import zipfile
 import math
 import tempfile
 import threading
 from pathlib import Path
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import pandas as pd
 import numpy as np
 
@@ -91,6 +94,20 @@ ROLE_DEFAULT_PERMISSIONS = {
                     "manage_payments", "manage_receipts", "view_reports"},
     "viewer":      {"view_dashboard", "view_reports"},
 }
+
+
+def _decimal(value, default=Decimal("0")):
+    try:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return default
+        result = Decimal(str(value).strip())
+        return result if result.is_finite() else default
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+
+
+def _money(value):
+    return _decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class HajDatabase:
@@ -305,7 +322,7 @@ class HajDatabase:
             print(f"[DB] {filename} not found - creating empty")
             return self._create_empty_df(filename)
         try:
-            df = pd.read_csv(filepath)
+            df = pd.read_csv(filepath, encoding="utf-8-sig")
 
             if filename == "users.csv":
                 for col in ['username', 'full_name', 'email', 'role',
@@ -411,6 +428,11 @@ class HajDatabase:
                         df[col] = (df[col].astype(str).fillna('')
                                    .replace('nan', ''))
 
+            for id_col in ("id", "traveler_id", "batch_id", "invoice_id", "payment_id"):
+                if id_col in df.columns:
+                    df[id_col] = df[id_col].astype(str).str.strip().replace({"nan": "", "None": ""})
+            if "status" in df.columns:
+                df["status"] = df["status"].astype(str).str.strip().str.lower().replace({"nan": ""})
             return df
         except Exception as e:
             print(f"Error loading {filename}: {e}")
@@ -536,19 +558,19 @@ class HajDatabase:
             company = pd.DataFrame([{
                 'id': "COMP/001",
                 'company_name': 'Alhudha Haj Travel',
-                'address': '123 Pilgrim Street, Makkah Road',
-                'phone': '+966 123456789',
+                'address': '',
+                'phone': '',
                 'email': 'info@alhudahaj.com',
                 'website': 'www.alhudahaj.com',
-                'gst_no': 'GST123456',
-                'tan_no': 'TAN123456',
-                'pan_no': 'PAN123456',
+                'gst_no': '',
+                'tan_no': '',
+                'pan_no': '',
                 'logo_path': '',
                 'bank_details': json.dumps({
-                    'bank_name': 'Islamic Bank',
-                    'account_no': '1234567890',
-                    'ifsc': 'ISBK0001234',
-                    'upi': 'alhudha@islamic',
+                    'bank_name': '',
+                    'account_no': '',
+                    'ifsc': '',
+                    'upi': '',
                 }),
             }])
             self.company_settings = pd.concat(
@@ -564,19 +586,28 @@ class HajDatabase:
         return hashlib.sha256(password.encode()).hexdigest()
 
     def _check_password(self, stored_hash: str, password: str) -> bool:
+        stored_hash = str(stored_hash or "").strip()
         if not stored_hash:
             return False
-        if _WERKZEUG_OK and stored_hash.startswith(
-                ("pbkdf2:", "scrypt:", "argon2:")):
+        if stored_hash.startswith("pbkdf2_sha256$"):
+            try:
+                _, rounds, salt_b64, digest_b64 = stored_hash.split("$", 3)
+                salt = base64.urlsafe_b64decode(salt_b64.encode())
+                expected = base64.urlsafe_b64decode(digest_b64.encode())
+                actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(rounds))
+                return secrets.compare_digest(actual, expected)
+            except Exception:
+                return False
+        if _WERKZEUG_OK and stored_hash.startswith(("pbkdf2:", "scrypt:", "argon2:")):
             try:
                 return check_password_hash(stored_hash, password)
             except Exception:
                 return False
-        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+        return secrets.compare_digest(hashlib.sha256(password.encode("utf-8")).hexdigest(), stored_hash)
 
     def _is_legacy_hash(self, stored_hash: str) -> bool:
         return bool(stored_hash) and not stored_hash.startswith(
-            ("pbkdf2:", "scrypt:", "argon2:"))
+            ("pbkdf2:", "scrypt:", "argon2:", "pbkdf2_sha256$"))
 
     def authenticate_user(self, username, password):
         user = self.users[self.users['username'] == username]
@@ -1070,7 +1101,7 @@ class HajDatabase:
     def get_payments(self, traveler_id=None):
         if traveler_id:
             return self.payments[
-                self.payments['traveler_id'] == traveler_id
+                self.payments['traveler_id'].astype(str).str.strip() == str(traveler_id).strip()
             ].to_dict('records')
         return self.payments.to_dict('records')
 
@@ -1106,13 +1137,16 @@ class HajDatabase:
                 or (isinstance(invoice_id, float) and str(invoice_id) == 'nan')):
             invoice_id = ''
         payment_data['invoice_id'] = invoice_id
-        payment_data['amount'] = float(payment_data.get('amount', 0))
+        amount = _money(payment_data.get('amount', 0))
+        if amount < 0:
+            raise ValueError('Payment amount cannot be negative')
+        payment_data['amount'] = float(amount)
 
         for key, value in payment_data.items():
             if value is None:
                 payment_data[key] = ''
             elif key == 'amount':
-                payment_data[key] = float(value)
+                payment_data[key] = float(_money(value))
             else:
                 payment_data[key] = str(value).strip()
 
@@ -1220,7 +1254,7 @@ class HajDatabase:
         return str(invoice_id).strip()
 
     def delete_payment(self, payment_id):
-        receipts = self.receipts[self.receipts['payment_id'] == payment_id]
+        receipts = self.receipts[self.receipts['payment_id'].astype(str).str.strip() == str(payment_id).strip()]
         if not receipts.empty:
             raise Exception(
                 "Cannot delete payment with associated receipts")
@@ -1231,7 +1265,7 @@ class HajDatabase:
             inv_id = str(
                 self.payments.loc[mask, 'invoice_id'].iloc[0] or '').strip()
 
-        self.payments = self.payments[self.payments['id'] != payment_id]
+        self.payments = self.payments[self.payments['id'].astype(str).str.strip() != str(payment_id).strip()]
         self._save_df(self.payments, "payments.csv")
 
         if inv_id:
@@ -1277,7 +1311,7 @@ class HajDatabase:
     def get_invoices(self, traveler_id=None):
         if traveler_id:
             return self.invoices[
-                self.invoices['traveler_id'] == traveler_id
+                self.invoices['traveler_id'].astype(str).str.strip() == str(traveler_id).strip()
             ].to_dict('records')
         return self.invoices.to_dict('records')
 
@@ -1291,16 +1325,16 @@ class HajDatabase:
         try:
             inv_row = self.invoices.loc[inv_mask].iloc[0]
             try:
-                inv_amount = float(inv_row.get('rounded_total', 0) or 0)
+                inv_amount = _money(inv_row.get('rounded_total', 0))
             except (ValueError, TypeError):
-                inv_amount = 0.0
+                inv_amount = Decimal('0.00')
             if inv_amount <= 0:
                 try:
-                    inv_amount = float(inv_row.get('total_amount', 0) or 0)
+                    inv_amount = _money(inv_row.get('total_amount', 0))
                 except (ValueError, TypeError):
-                    inv_amount = 0.0
+                    inv_amount = Decimal('0.00')
 
-            paid = 0.0
+            paid = Decimal('0.00')
             if not self.payments.empty:
                 pm = (
                     (self.payments['invoice_id'].astype(str)
@@ -1310,12 +1344,12 @@ class HajDatabase:
                 )
                 for _, row in self.payments.loc[pm].iterrows():
                     try:
-                        paid += float(row.get('amount', 0) or 0)
+                        paid += _money(row.get('amount', 0))
                     except (ValueError, TypeError):
                         pass
 
             new_status = ('paid'
-                          if (inv_amount > 0 and paid + 0.01 >= inv_amount)
+                          if (inv_amount > 0 and paid + Decimal('0.01') >= inv_amount)
                           else 'pending')
             current = str(inv_row.get('status', '') or '').lower()
             if current != new_status:
@@ -1343,36 +1377,31 @@ class HajDatabase:
         invoice_id = self._generate_id(prefix, 'INV', str(year))
         invoice_no = (f"INV-{datetime.now().strftime('%Y%m')}-"
                       f"{len(self.invoices)+1:04d}")
-        amount = float(amount)
-        gst_percentage = float(gst_percentage)
-        tcs_percentage = float(tcs_percentage)
+        amount = _money(amount)
+        gst_percentage = max(Decimal('0'), min(Decimal('100'), _decimal(gst_percentage, Decimal('5'))))
+        tcs_percentage = max(Decimal('0'), min(Decimal('100'), _decimal(tcs_percentage, Decimal('2'))))
         if discount_amount is not None:
-            discount_amount = float(discount_amount)
-            if discount_amount < 0:
-                discount_amount = 0.0
-            if discount_amount > amount:
-                discount_amount = amount
-            discount_percentage = ((discount_amount / amount) * 100.0
-                                   if amount > 0 else 0.0)
+            discount_amount = max(Decimal('0'), min(amount, _money(discount_amount)))
+            discount_percentage = (discount_amount / amount * Decimal('100')) if amount > 0 else Decimal('0')
         else:
-            discount_percentage = float(discount_percentage)
-            discount_amount = amount * (discount_percentage / 100.0)
-        taxable_value = amount - discount_amount
-        gst_amount = taxable_value * (gst_percentage / 100.0)
+            discount_percentage = max(Decimal('0'), min(Decimal('100'), _decimal(discount_percentage)))
+            discount_amount = _money(amount * discount_percentage / Decimal('100'))
+        taxable_value = _money(amount - discount_amount)
+        gst_amount = _money(taxable_value * gst_percentage / Decimal('100'))
         taxable_with_gst = taxable_value + gst_amount
-        tcs_amount = taxable_with_gst * (tcs_percentage / 100.0)
-        total_amount = taxable_with_gst + tcs_amount
+        tcs_amount = _money(taxable_with_gst * tcs_percentage / Decimal('100'))
+        total_amount = _money(taxable_with_gst + tcs_amount)
         rounded_total = self._round_as_per_rules(total_amount)
         invoice_data = {
             'id': invoice_id, 'invoice_no': invoice_no,
             'traveler_id': traveler_id, 'batch_id': batch_id,
-            'amount': amount,
-            'discount_percentage': discount_percentage,
-            'discount_amount': discount_amount,
-            'taxable_value': taxable_value,
-            'gst_percentage': gst_percentage, 'gst_amount': gst_amount,
-            'tcs_percentage': tcs_percentage, 'tcs_amount': tcs_amount,
-            'total_amount': total_amount,
+            'amount': float(amount),
+            'discount_percentage': float(discount_percentage),
+            'discount_amount': float(discount_amount),
+            'taxable_value': float(taxable_value),
+            'gst_percentage': float(gst_percentage), 'gst_amount': float(gst_amount),
+            'tcs_percentage': float(tcs_percentage), 'tcs_amount': float(tcs_amount),
+            'total_amount': float(total_amount),
             'rounded_total': float(rounded_total),
             'issue_date': datetime.now().isoformat(),
             'due_date': (datetime.now() + timedelta(days=30)).isoformat(),
@@ -1410,12 +1439,9 @@ class HajDatabase:
         }
 
     def _round_as_per_rules(self, amount):
-        if isinstance(amount, (int, float)):
-            decimal_part = amount - math.floor(amount)
-            if decimal_part >= 0.50:
-                return math.ceil(amount)
-            return math.floor(amount)
-        return amount
+        value = _decimal(amount)
+        floor_value = value.to_integral_value(rounding="ROUND_FLOOR")
+        return floor_value + (Decimal('1') if value - floor_value >= Decimal('0.50') else Decimal('0'))
 
     # =================================================================================
     # 2.9 — RECEIPTS
@@ -1469,7 +1495,7 @@ class HajDatabase:
     def get_receipts(self, payment_id=None):
         if payment_id:
             return self.receipts[
-                self.receipts['payment_id'] == payment_id
+                self.receipts['payment_id'].astype(str).str.strip() == str(payment_id).strip()
             ].to_dict('records')
         return self.receipts.to_dict('records')
 
@@ -1479,12 +1505,14 @@ class HajDatabase:
     def get_dashboard_summary(self):
         statuses = self.batches['status'].astype(str).str.strip().str.lower()
         active_batches = int(statuses.isin(_ACTIVE_BATCH_STATUSES).sum())
-        pending_inv = self.invoices['status'].astype(str).str.lower()
+        pending_inv = self.invoices['status'].astype(str).str.strip().str.lower()
+        completed = (self.payments[self.payments['status'].astype(str).str.strip().str.lower() == 'completed']
+                     if not self.payments.empty and 'status' in self.payments.columns else self.payments)
         return {
             'total_travelers': len(self.travelers),
             'active_batches': active_batches,
-            'total_payments': (self.payments['amount'].sum()
-                               if not self.payments.empty else 0),
+            'total_payments': (completed['amount'].sum()
+                               if not completed.empty else 0),
             'pending_payments': int((pending_inv == 'pending').sum()),
             'available_seats': (self.batches['available_seats'].sum()
                                 if not self.batches.empty else 0),
@@ -1493,6 +1521,8 @@ class HajDatabase:
 
     def get_financial_report(self, start_date=None, end_date=None):
         payments = self.payments.copy()
+        if 'status' in payments.columns:
+            payments = payments[payments['status'].astype(str).str.strip().str.lower() == 'completed']
         if start_date:
             payments = payments[payments['payment_date'] >= start_date]
         if end_date:
@@ -1537,20 +1567,27 @@ class HajDatabase:
         target = Path(target_dir).resolve()
         for member in zip_file.infolist():
             dest = (target / member.filename).resolve()
-            if not str(dest).startswith(str(target) + os.sep):
-                raise ValueError(
-                    f"Unsafe path in backup archive: {member.filename}")
+            try:
+                dest.relative_to(target)
+            except ValueError:
+                raise ValueError(f"Unsafe path in backup archive: {member.filename}")
         zip_file.extractall(target)
 
     def restore_backup(self, backup_file):
-        with zipfile.ZipFile(backup_file, 'r') as zipf:
-            self._safe_extract.__func__(zipf, self.data_dir)
+        backup_path = Path(backup_file).resolve()
+        try:
+            backup_path.relative_to(self._backup_dir.resolve())
+        except ValueError:
+            raise ValueError("Backup must be inside the configured backup directory")
+        if not backup_path.is_file() or not zipfile.is_zipfile(backup_path):
+            raise ValueError("Invalid backup ZIP")
+        with zipfile.ZipFile(backup_path, 'r') as zipf:
             staging = Path(tempfile.mkdtemp(
                 prefix=".restore_", dir=str(self.data_dir.parent)))
             try:
-                zipf.extractall(staging)
-                for required in ("travelers.csv", "users.csv",
-                                 "batches.csv"):
+                self._safe_extract(zipf, staging)
+                for required in ("users.csv", "travelers.csv", "batches.csv",
+                                 "payments.csv", "invoices.csv", "receipts.csv"):
                     src = staging / required
                     if not src.exists():
                         raise ValueError(
