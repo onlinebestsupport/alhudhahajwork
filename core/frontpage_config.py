@@ -26,11 +26,16 @@
 import os
 import json
 import tempfile
+import copy
+import re
 from datetime import datetime
 
 
 MAX_PACKAGES_SHOWN_DEFAULT = 9
 MAX_PACKAGES_SHOWN_HARD_CAP = 30
+_ALERT_STYLES = {"none", "pulse", "blink"}
+_DEFAULT_ALERT_COLOR = "#f39c12"
+_HEX_COLOR_RE = re.compile(r"^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$")
 
 
 # =================================================================================
@@ -159,7 +164,8 @@ def _config_path() -> str:
 # [S.4] DEEP MERGE
 # =================================================================================
 def _deep_merge(base: dict, override: dict) -> dict:
-    result = dict(base or {})
+    # Deep-copy defaults so one request or UI edit cannot mutate DEFAULT_CONFIG.
+    result = copy.deepcopy(base or {})
     if not override:
         return result
     for k, v in override.items():
@@ -223,16 +229,53 @@ def _normalize_id(x) -> str:
 # =================================================================================
 # [S.6] PUBLIC CONFIG API
 # =================================================================================
+def _normalize_alert(alert) -> dict:
+    """Keep alert data safe and predictable for every frontend/browser."""
+    a = alert if isinstance(alert, dict) else {}
+    message = str(a.get("message", "") or "").strip()
+    link = str(a.get("link", "#") or "#").strip() or "#"
+    color = str(a.get("color", _DEFAULT_ALERT_COLOR) or "").strip()
+    if not _HEX_COLOR_RE.fullmatch(color):
+        color = _DEFAULT_ALERT_COLOR
+    style = str(a.get("style", "pulse") or "pulse").strip().lower()
+    if style not in _ALERT_STYLES:
+        style = "pulse"
+    expires_at = str(a.get("expires_at", "") or "").strip()
+    # Keep a valid ISO-like value only; invalid values are omitted rather than
+    # making the browser hide a visible alert unpredictably.
+    if expires_at:
+        try:
+            datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            expires_at = ""
+    out = {
+        "enabled": bool(a.get("enabled", False)),
+        "message": message,
+        "link": link,
+        "color": color,
+        "style": style,
+    }
+    if expires_at:
+        out["expires_at"] = expires_at
+    return out
+
+
+def _normalize_config(cfg: dict) -> dict:
+    result = _deep_merge(DEFAULT_CONFIG, cfg or {})
+    result["alert"] = _normalize_alert(result.get("alert"))
+    return result
+
+
 def load_config() -> dict:
     path = _config_path()
     if not os.path.exists(path):
         print(f"[FP-CFG] no config at {path} — creating defaults")
         save_config(DEFAULT_CONFIG)
-        return dict(DEFAULT_CONFIG)
+        return copy.deepcopy(DEFAULT_CONFIG)
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        merged = _deep_merge(DEFAULT_CONFIG, data)
+        merged = _normalize_config(data)
         try:
             ids = merged.get("packages", {}).get("selected_batch_ids", []) or []
             ms = merged.get("packages", {}).get("max_shown", 0)
@@ -244,7 +287,7 @@ def load_config() -> dict:
         return merged
     except Exception as e:
         print(f"[FP-CFG] load failed ({path}): {e}")
-        return dict(DEFAULT_CONFIG)
+        return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def save_config(cfg: dict) -> bool:
@@ -252,7 +295,7 @@ def save_config(cfg: dict) -> bool:
     path = _config_path()
     tmp_path = None
     try:
-        merged = _deep_merge(DEFAULT_CONFIG, cfg or {})
+        merged = _normalize_config(cfg or {})
 
         # Sanitise batch IDs
         try:
@@ -569,7 +612,12 @@ def gallery_summary() -> dict:
     gal = cfg.get("gallery", {}) or {}
     photos = gal.get("photos", []) or []
     videos = gal.get("videos", []) or []
-    total = sum(int(x.get("size", 0) or 0) for x in photos + videos)
+    total = 0
+    for item in photos + videos:
+        try:
+            total += max(0, int(float(item.get("size", 0) or 0)))
+        except (TypeError, ValueError, AttributeError):
+            continue
 
     def _human(n):
         try:
