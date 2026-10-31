@@ -481,7 +481,7 @@ class ReceiptsTab:
             if inv_id and inv_id in self.invoices:
                 inv = self.invoices[inv_id]
                 inv_no = inv.get('invoice_no', '')
-                if inv.get('status') == 'pending':
+                if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
                     inv_pending = self._f(
                         inv.get('rounded_total', inv.get('total_amount', 0)))
 
@@ -490,7 +490,7 @@ class ReceiptsTab:
             amount = self._f(r.get('amount', 0))
             method = str(p.get('payment_method', 'N/A'))
             status = str(p.get('status', 'completed'))
-            status_color = ("#27ae60" if status == "completed"
+            status_color = ("#27ae60" if status.strip().lower() == "completed"
                             else "#f39c12" if status == "pending"
                             else "#e74c3c")
 
@@ -681,7 +681,7 @@ class ReceiptsTab:
 
         inv_pending_total = 0
         for inv in self.invoices.values():
-            if inv.get('status') == 'pending':
+            if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
                 inv_pending_total += self._f(
                     inv.get('rounded_total', inv.get('total_amount', 0)))
 
@@ -751,7 +751,7 @@ class ReceiptsTab:
         if inv_id and inv_id in self.invoices:
             inv = self.invoices[inv_id]
             inv_no = inv.get('invoice_no', 'N/A')
-            if inv.get('status') == 'pending':
+            if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
                 inv_pending = self._f(
                     inv.get('rounded_total', inv.get('total_amount', 0)))
 
