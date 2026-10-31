@@ -36,7 +36,7 @@ class SystemTestTab:
         self.notification = ft.Text("", size=11, weight=ft.FontWeight.BOLD)
         self.last_run = ft.Text("", size=10, color="#64748b")
         self.history_label = ft.Text("", size=10, color="#64748b")
-        self.progress_bar = ft.ProgressBar(value=0, min=0, max=1, height=8, color="#2563eb", bgcolor="#dbeafe")
+        self.progress_bar = ft.ProgressBar(value=0, color="#2563eb", bgcolor="#dbeafe")
         self.progress_text = ft.Text("Ready — no test is running", size=11, color="#475569")
         self._progress_started = None
         self.last_results = []
@@ -304,17 +304,24 @@ class SystemTestTab:
 
     async def _run_one_async(self, fn):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
-        self.progress_text.value = "Checking selected test — 50%"
-        self.progress_bar.value = 0.5
-        try: self.progress_bar.update(); self.progress_text.update()
-        except Exception: pass
-        results = await asyncio.to_thread(self._run_specs_sync, [("", "", fn)])
-        self._show_progress(1, 1, "Selected test complete")
-        results = [self._prepare_result(r, run_id) for r in results]
-        self._record(results, run_id)
-        self.last_results = results
-        self._test_running = False
-        self._render_results(results)
+        try:
+            self.progress_text.value = "Checking selected test — 50%"
+            self.progress_bar.value = 0.5
+            try: self.progress_bar.update(); self.progress_text.update()
+            except Exception: pass
+            results = await asyncio.to_thread(self._run_specs_sync, [("", "", fn)])
+            self._show_progress(1, 1, "Selected test complete")
+            results = [self._prepare_result(r, run_id) for r in results]
+            self._record(results, run_id)
+            self.last_results = results
+            self._render_results(results)
+        except Exception as ex:
+            result = self._prepare_result(self._fail("Test runner error", repr(ex), "system_test_tab.py", "Review the System Test Center runner"), run_id)
+            self.last_results = [result]
+            try: self._record([result], run_id); self._render_results([result])
+            except Exception: pass
+        finally:
+            self._test_running = False
 
     def run_all(self, e=None):
         if self._test_running:
@@ -333,17 +340,24 @@ class SystemTestTab:
     async def _run_all_async(self):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         results = []
-        total = len(self.test_specs)
-        for completed, spec in enumerate(self.test_specs, start=1):
-            self._show_progress(completed - 1, total, spec[0])
-            result = await asyncio.to_thread(self._run_specs_sync, [spec])
-            results.extend(result)
-            self._show_progress(completed, total, spec[0])
-        results = [self._prepare_result(r, run_id) for r in results]
-        self._record(results, run_id)
-        self.last_results = results
-        self._test_running = False
-        self._render_results(results)
+        try:
+            total = len(self.test_specs)
+            for completed, spec in enumerate(self.test_specs, start=1):
+                self._show_progress(completed - 1, total, spec[0])
+                result = await asyncio.to_thread(self._run_specs_sync, [spec])
+                results.extend(result)
+                self._show_progress(completed, total, spec[0])
+            results = [self._prepare_result(r, run_id) for r in results]
+            self._record(results, run_id)
+            self.last_results = results
+            self._render_results(results)
+        except Exception as ex:
+            result = self._prepare_result(self._fail("Test runner error", repr(ex), "system_test_tab.py", "Review the System Test Center runner"), run_id)
+            self.last_results = [result]
+            try: self._record([result], run_id); self._render_results([result])
+            except Exception: pass
+        finally:
+            self._test_running = False
 
     def _safe_call(self, fn):
         try:
