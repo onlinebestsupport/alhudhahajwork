@@ -28,6 +28,9 @@ import threading
 import time
 import pandas as pd
 from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
+
+from core.settings_manager import SettingsManager
 
 import flet as ft
 
@@ -48,15 +51,15 @@ except Exception:
 
 
 def format_currency_indian(amount):
-    if amount is None or (isinstance(amount, float) and math.isnan(amount)):
-        return "₹ 0.00"
     try:
-        amount = float(amount)
-    except Exception:
+        amount = Decimal(str(amount or 0))
+        if not amount.is_finite():
+            return "₹ 0.00"
+    except (InvalidOperation, ValueError, TypeError):
         return "₹ 0.00"
     is_negative = amount < 0
     amount = abs(amount)
-    amount_str = f"{amount:.2f}"
+    amount_str = f"{amount.quantize(Decimal('0.01')):.2f}"
     integer_part, fractional_part = amount_str.split(".")
     if len(integer_part) > 3:
         last_three = integer_part[-3:]
@@ -143,14 +146,11 @@ class DashboardTab:
         except Exception:
             pass
 
-        gst_rate, tcs_rate = 18.0, 0.1
+        gst_rate, tcs_rate = "5", "2"
         try:
-            tax_file = self.db.data_dir / "tax_settings.csv"
-            if tax_file.exists():
-                tdf = pd.read_csv(tax_file)
-                if not tdf.empty:
-                    gst_rate = float(tdf.iloc[0].get("gst_percentage", 18) or 18)
-                    tcs_rate = float(tdf.iloc[0].get("tcs_percentage", 0.1) or 0.1)
+            tax = SettingsManager(self.db).get_tax_settings()
+            gst_rate = str(tax.get("gst_percentage", "5"))
+            tcs_rate = str(tax.get("tcs_percentage", "2"))
         except Exception:
             pass
 
@@ -614,29 +614,33 @@ class DashboardTab:
             invoices = self.db.get_invoices()
             receipts = self.db.get_receipts()
 
-            total_seats = sum(int(float(b.get("total_seats", 0) or 0))
-                              for b in batches)
-            available_seats = sum(int(float(b.get("available_seats", 0) or 0))
-                                  for b in batches)
-            total_payments = sum(float(p.get("amount", 0) or 0)
-                                 for p in payments)
+            def _dec(value):
+                try:
+                    value = Decimal(str(value or 0))
+                    return value if value.is_finite() else Decimal("0")
+                except (InvalidOperation, ValueError, TypeError):
+                    return Decimal("0")
+            def _id(value):
+                return str(value or "").strip()
+            def _status(row):
+                return str(row.get("status", "")).strip().lower()
+            total_seats = sum(int(_dec(b.get("total_seats"))) for b in batches)
+            available_seats = sum(int(_dec(b.get("available_seats"))) for b in batches)
+            completed_payments = [p for p in payments if _status(p) == "completed"]
+            total_payments = sum((_dec(p.get("amount")) for p in completed_payments), Decimal("0"))
 
-            batch_prices = {b["id"]: float(b.get("price", 0) or 0)
-                            for b in batches}
+            batch_prices = {_id(b.get("id")): _dec(b.get("price")) for b in batches}
             traveler_batch_map = {}
             for t in travelers:
-                bid = t.get("batch_id")
-                if bid and bid in batch_prices:
-                    traveler_batch_map[t["id"]] = {
-                        "batch_id": bid, "price": batch_prices[bid]}
+                tid, bid = _id(t.get("id")), _id(t.get("batch_id"))
+                if tid and bid in batch_prices:
+                    traveler_batch_map[tid] = {"batch_id": bid, "price": batch_prices[bid]}
 
             traveler_paid = {}
-            for p in payments:
-                tid = p.get("traveler_id")
+            for p in completed_payments:
+                tid = _id(p.get("traveler_id"))
                 if tid:
-                    traveler_paid[tid] = (
-                        traveler_paid.get(tid, 0)
-                        + float(p.get("amount", 0) or 0))
+                    traveler_paid[tid] = traveler_paid.get(tid, Decimal("0")) + _dec(p.get("amount"))
 
             total_package_pending = 0
             for tid, info in traveler_batch_map.items():
@@ -647,10 +651,9 @@ class DashboardTab:
 
             total_invoice_pending = 0
             for inv in invoices:
-                if inv.get("status") == "pending":
-                    total_invoice_pending += float(
-                        inv.get("rounded_total",
-                                inv.get("total_amount", 0)) or 0)
+                if str(inv.get("status", "")).strip().lower() in {"pending", "partially_paid"}:
+                    total_invoice_pending += _dec(
+                        inv.get("rounded_total", inv.get("total_amount", 0)))
 
             self._set_stat("total_travelers", f"{len(travelers):,}")
 
@@ -953,6 +956,8 @@ class DashboardTab:
         df["payment_date"] = pd.to_datetime(df["payment_date"],
                                             errors="coerce")
         cutoff = datetime.now() - timedelta(days=days)
+        if "status" in df.columns:
+            df = df[df["status"].astype(str).str.strip().str.lower() == "completed"]
         recent = df[df["payment_date"] >= cutoff]
         if recent.empty:
             return pd.DataFrame()
