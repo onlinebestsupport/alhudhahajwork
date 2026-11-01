@@ -22,7 +22,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r4-railway-layout-timeout-fix"
+    VERSION = "2026-11-01-r5-expected-railway-notices"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -606,7 +606,8 @@ class SystemTestTab:
 
     def check_live_api(self):
         base=os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
-        if not base: return self._warn("Live API probe skipped", "PUBLIC_BASE_URL is not configured; static API contract was checked instead.", "main.py", "Set PUBLIC_BASE_URL only when you want a network probe")
+        if not base:
+            return self._ok("Live API probe skipped (optional)", "PUBLIC_BASE_URL is not configured; the static API contract was checked successfully. No network probe was requested.", "main.py", "Optional: set PUBLIC_BASE_URL to enable an external live probe")
         checks=[("frontpage", "/api/frontpage", 200), ("batches", "/api/batches", 200), ("admin protected", "/api/admin/frontpage/diagnose", 401)]
         failures=[]
         for name, route, expected in checks:
@@ -682,7 +683,7 @@ class SystemTestTab:
             "users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv",
             "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json",
             "tour_types.csv", "tax_settings.csv", "frontpage_config.json", "frontage_config.json",
-            "system_test_history.csv", "system_error_events.csv", "_cleanup.sh", ".db.lock",
+            "system_test_history.csv", "system_error_events.csv", "traveler_sessions.json", "_cleanup.sh", ".db.lock",
         }
         allowed_prefixes = ("documents_backup_", "system_test_")
         candidates = [
@@ -703,7 +704,7 @@ class SystemTestTab:
         if not (root / ".git").exists():
             # A deployed Railway container normally has no .git directory; do
             # not inspect the whole runtime volume as if it were a repository.
-            return self._warn("Repository scan unavailable", "The deployed container has no .git directory, so unused Git files cannot be confirmed here.", "Git workspace / project files", "Run this check in the GitHub working copy or attach the repository checkout")
+            return self._ok("Repository scan skipped (expected on Railway)", "The deployed container has no .git directory. Runtime source scanning was safely skipped; run this check in the GitHub working copy when needed.", "Git workspace / project files", "Optional: run the unused-file scan from the GitHub working copy")
         excluded_dirs = {".git", "data", "downloads", "__pycache__", "flet_assets"}
         extensions = {".py", ".html", ".js", ".css", ".txt", ".md"}
         files=[]
