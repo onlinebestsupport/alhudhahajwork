@@ -23,7 +23,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r10-folder-inventory-classification"
+    VERSION = "2026-11-01-r11-bounded-folder-inventory"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -157,7 +157,7 @@ class SystemTestTab:
                 ], spacing=8, wrap=True),
                 ft.Container(content=ft.Column([
                     ft.Text("File cleanup candidates", size=13, weight=ft.FontWeight.BOLD, color="#0f172a"),
-                    ft.Text("Every discovered file is listed. Protected app/data files are disabled. Approved project files first move to the quarantine/delete folder; permanent deletion is a separate second step.", size=10, color="#64748b"),
+                    ft.Text("Safe project files are listed. Protected app/data files are disabled; very large protected folders are shown as protected summaries. Approved project files first move to the quarantine/delete folder; permanent deletion is a separate second step.", size=10, color="#64748b"),
                     self.inventory_summary,
                     self.cleanup_column,
                     ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Move Selected to Delete Folder"), on_click=self.delete_selected_cleanup, bgcolor="#d97706", color=ft.Colors.WHITE, height=38)], wrap=True),
@@ -732,41 +732,77 @@ class SystemTestTab:
 
     def check_unused_files(self):
         root = self.project_root
-        excluded = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
-        protected_dirs = {"data", "documents", "backups", "invoices", "logos", "flet_assets", "seed_data", "downloads", "delete_quarantine"}
-        protected_names = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
+        excluded_names = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
+        protected_names = {"data", "documents", "invoices", "logos", "flet_assets", "seed_data", "backups", "downloads", "delete_quarantine"}
+        protected_files = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
         text_extensions = {".py", ".html", ".js", ".css", ".json", ".toml", ".ini", ".yaml", ".yml", ".md", ".txt"}
         files=[]; text_parts=[]; total_text_bytes=0
-        for path in root.rglob("*"):
-            if not path.is_file() or any(str(part).casefold() in excluded for part in path.parts):
-                continue
+
+        def add_record(path, protected, folder_summary=False):
+            nonlocal total_text_bytes
             try:
                 stat=path.stat(); age_days=max(0, int((time.time()-stat.st_mtime)/86400))
             except OSError:
-                continue
+                return
             relative=path.relative_to(root)
-            in_protected_dir=any(str(part).casefold() in protected_dirs for part in relative.parts)
-            if path.suffix.lower() in text_extensions and total_text_bytes < 20_000_000:
+            if path.is_file() and path.suffix.lower() in text_extensions and total_text_bytes < 20_000_000:
                 try:
                     text=path.read_text(encoding="utf-8", errors="ignore")[:500_000]
                     text_parts.append(text); total_text_bytes += len(text)
                 except OSError:
                     pass
-            files.append({"path": path, "relative": relative, "age_days": age_days, "in_protected_dir": in_protected_dir})
+            files.append({"path":path, "relative":relative, "age_days":age_days, "in_protected_dir":protected, "folder_summary":folder_summary})
+
+        # Fully scan the deployable source tree, pruning large/private runtime trees.
+        for current, dirnames, filenames in os.walk(root, topdown=True):
+            current_path=Path(current)
+            relative=current_path.relative_to(root)
+            if any(str(part).casefold() in excluded_names for part in relative.parts):
+                dirnames[:] = []
+                continue
+            kept=[]
+            for dirname in dirnames:
+                if dirname.casefold() in protected_names:
+                    continue
+                kept.append(dirname)
+            dirnames[:]=kept
+            for filename in filenames:
+                add_record(current_path / filename, filename.casefold() in {x.casefold() for x in protected_files} or current_path != root and current_path.relative_to(root).parts[0].casefold() == "core")
+
+        # Show protected data/runtime roots without recursively opening every
+        # uploaded document or large backup tree. Child folders are represented
+        # as disabled protected folder summaries.
+        for dirname in sorted(protected_names):
+            path=root / dirname
+            if not path.is_dir():
+                continue
+            try:
+                children=[]; oversized=False
+                for index, child in enumerate(path.iterdir()):
+                    if index >= 2000:
+                        oversized=True; break
+                    children.append(child)
+            except OSError:
+                continue
+            if oversized:
+                add_record(path, True, True)
+            else:
+                for child in children:
+                    add_record(child, True, child.is_dir())
+
         combined_text="\n".join(text_parts)
-        self.file_inventory_info={}
-        protected_paths=set()
+        self.file_inventory_info={}; protected_paths=set()
         for record in files:
             path=record["path"]; relative=record["relative"]; name=path.name
-            referenced=name in combined_text if name else False
+            referenced=not record["folder_summary"] and bool(name) and name in combined_text
             is_core_module=bool(relative.parts and relative.parts[0].casefold()=="core" and path.suffix.lower()==".py")
-            essential=name.casefold() in {item.casefold() for item in protected_names}
-            protected=record["in_protected_dir"] or is_core_module or essential or referenced
-            classification="protected system file" if protected else "unused candidate"
-            info={"protected": protected, "classification": classification, "used": referenced or is_core_module or essential, "age_days": record["age_days"]}
+            essential=name.casefold() in {item.casefold() for item in protected_files}
+            protected=record["in_protected_dir"] or is_core_module or essential or referenced or record["folder_summary"]
+            classification="protected folder" if record["folder_summary"] else ("protected system file" if protected else "unused candidate")
+            info={"protected":protected, "classification":classification, "used":referenced or is_core_module or essential, "age_days":record["age_days"], "folder_summary":record["folder_summary"]}
             key=str(path.resolve()); self.file_inventory_info[key]=info
             if protected: protected_paths.add(key)
-        self._add_cleanup_candidates([record["path"] for record in files], "inventory", "Folder inventory classification", protected_paths=protected_paths)
+        self._add_cleanup_candidates([record["path"] for record in files], "inventory", "Complete folder inventory classification", protected_paths=protected_paths)
         groups={}
         for record in files:
             folder=record["relative"].parts[0] if record["relative"].parts else "."
@@ -775,8 +811,9 @@ class SystemTestTab:
             group["total"]+=1; group["protected"]+=int(info.get("protected",False)); group["used"]+=int(info.get("used",False)); group["unused"]+=int(not info.get("protected",False)); group["oldest"]=max(group["oldest"], record["age_days"])
         self.folder_inventory=groups
         if files:
-            details="; ".join(f"{folder}: {g['total']} total / {g['protected']} protected / {g['used']} used / {g['unused']} unused / oldest {g['oldest']}d" for folder,g in sorted(groups.items(), key=lambda item:item[0].casefold()))
-            return self._warn("Complete folder file inventory", details, "project root / all folders", "Review unused candidates; protected and used files are not selectable") if any(g["unused"] for g in groups.values()) else self._ok("Complete folder file inventory", details, "project root / all folders", "No unused candidates found")
+            details="; ".join(f"{folder}: {g['total']} listed / {g['protected']} protected / {g['used']} used / {g['unused']} unused / oldest {g['oldest']}d" for folder,g in sorted(groups.items(), key=lambda item:item[0].casefold()))
+            action="Review unused candidates; protected system files and protected folder summaries are disabled"
+            return self._warn("Complete folder file inventory", details, "project root / all folders", action) if any(g["unused"] for g in groups.values()) else self._ok("Complete folder file inventory", details, "project root / all folders", action)
         return self._ok("Complete folder file inventory", "No files were found", "project root / all folders", "No action required")
 
     def _refresh_cleanup_ui(self):
