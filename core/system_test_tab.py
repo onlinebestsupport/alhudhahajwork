@@ -178,6 +178,12 @@ class SystemTestTab:
             writer.writeheader(); writer.writerows(existing)
         os.replace(tmp, path)
 
+    @property
+    def export_dir(self):
+        path = self.diagnostics_dir / "exports"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def _history(self):
         path = self.diagnostics_dir / self.HISTORY_FILE
         if not path.exists():
@@ -397,11 +403,53 @@ class SystemTestTab:
         self.last_results = results
         self._render_results(results)
 
+    def _download_text_in_browser(self, filename, text, mime_type):
+        """Trigger a real browser download without popup or server-navigation dependency."""
+        script = (
+            "(function(){"
+            f"const data={json.dumps(text)};"
+            f"const name={json.dumps(filename)};"
+            f"const blob=new Blob([data],{{type:{json.dumps(mime_type)} }});"
+            "const url=URL.createObjectURL(blob);"
+            "const a=document.createElement('a');"
+            "a.href=url; a.download=name; a.style.display='none';"
+            "document.body.appendChild(a); a.click();"
+            "setTimeout(function(){URL.revokeObjectURL(url);a.remove();},1500);"
+            "})()"
+        )
+        try:
+            runner = getattr(self.page, "run_javascript", None)
+            if callable(runner):
+                result = runner(script)
+                if asyncio.iscoroutine(result):
+                    async def _await_blob():
+                        await result
+                    self.page.run_task(_await_blob)
+                return True
+        except Exception:
+            pass
+        return False
+
     def _open_download(self, filename):
+        """Open the attachment route in the same browser tab using Flet's launcher."""
         relative_url = f"/download/{filename}"
         public_base = (os.getenv("PUBLIC_BASE_URL") or os.getenv("APP_PUBLIC_URL") or "").strip().rstrip("/")
         url = f"{public_base}{relative_url}" if public_base else relative_url
-        # Same-tab navigation triggers the attachment response without popup blocking.
+        # UrlLauncher is the supported Flet web navigation API in Flet 1.0.x.
+        try:
+            launcher = ft.UrlLauncher()
+            try:
+                result = launcher.launch_url(url, web_only_window_name="_self")
+            except TypeError:
+                result = launcher.launch_url(url, web_window_name="_self")
+            if asyncio.iscoroutine(result):
+                async def _await_launch():
+                    await result
+                self.page.run_task(_await_launch)
+            return url
+        except Exception:
+            pass
+        # Fallback for deployments where UrlLauncher is unavailable.
         script = f"window.location.assign({json.dumps(url)});"
         try:
             runner = getattr(self.page, "run_javascript", None)
@@ -414,14 +462,11 @@ class SystemTestTab:
                 return url
         except Exception:
             pass
-        try:
-            result = self.page.launch_url(url)
-            if asyncio.iscoroutine(result):
-                async def _await_launch():
-                    await result
-                self.page.run_task(_await_launch)
-        except Exception:
-            raise
+        result = self.page.launch_url(url)
+        if asyncio.iscoroutine(result):
+            async def _await_page_launch():
+                await result
+            self.page.run_task(_await_page_launch)
         return url
 
     def _export_csv(self, rows, label):
@@ -434,12 +479,18 @@ class SystemTestTab:
         project_static.mkdir(parents=True, exist_ok=True)
         filename = f"system_test_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         target = project_static / filename
+        persistent_target = self.export_dir / filename
         fields = ["run_id", "timestamp", "level", "title", "plain_language", "message", "owner", "action", "duration_ms", "user_id", "manus_prompt"]
-        with target.open("w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({key: row.get(key, "") for key in fields})
+        import io
+        buffer = io.StringIO(newline="")
+        writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fields})
+        csv_text = buffer.getvalue()
+        target.write_text(csv_text, encoding="utf-8-sig")
+        persistent_target.write_text(csv_text, encoding="utf-8-sig")
+        print(f"[SYSTEM-TEST] CSV_EXPORT file={filename} browser={target} persistent={persistent_target}", flush=True)
         try:
             download_url = self._open_download(filename)
             self.notification.value = f"CSV download started: {filename} ({download_url})"
@@ -479,7 +530,11 @@ class SystemTestTab:
         project_static.mkdir(parents=True, exist_ok=True)
         filename = f"alhudha_manus_prompts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         target = project_static / filename
-        target.write_text("\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(prompts), encoding="utf-8")
+        persistent_target = self.export_dir / filename
+        prompt_text = "\n\n" + ("\n\n" + "=" * 80 + "\n\n").join(prompts)
+        target.write_text(prompt_text, encoding="utf-8")
+        persistent_target.write_text(prompt_text, encoding="utf-8")
+        print(f"[SYSTEM-TEST] PROMPT_EXPORT file={filename} browser={target} persistent={persistent_target}", flush=True)
         try:
             download_url = self._open_download(filename)
             self.notification.value = f"Copy-ready Manus prompt file downloaded: {filename} ({download_url})"
