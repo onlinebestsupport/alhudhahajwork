@@ -22,7 +22,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r5-expected-railway-notices"
+    VERSION = "2026-11-01-r8-lowercase-folder-layout"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -93,6 +93,7 @@ class SystemTestTab:
             ("Live API probe", "main.py / deployed URL", self.check_live_api),
             ("Front-page integrity", "index.html / frontpage_config.py", self.check_frontpage),
             ("Static HTML files", "static/**/*.html", self.check_static_html),
+            ("GitHub folder layout", "core / data / documents / static / tools", self.check_repository_layout),
             ("Database file hygiene", "data/ root", self.check_data_file_hygiene),
             ("Project unused-file candidates", "Git workspace / project files", self.check_unused_files),
             ("Database schema", "database.py", self.check_schema),
@@ -647,6 +648,17 @@ class SystemTestTab:
         except Exception as ex:
             return self._fail("Front-page configuration error", str(ex), "frontpage_config.py", "Repair front-page configuration loading")
 
+    def check_repository_layout(self):
+        expected = [
+            "core", "core/exports", "data", "data/backups", "documents",
+            "flet_assets", "invoices", "logos", "seed_data", "static", "tools",
+        ]
+        actual = {str(path.relative_to(self.project_root)).replace("\\", "/").casefold(): path for path in self.project_root.rglob("*") if path.is_dir()}
+        missing = [name for name in expected if name.casefold() not in actual]
+        if missing:
+            return self._warn("Expected GitHub folders missing", ", ".join(missing), "project repository layout", "Confirm the folder exists in GitHub and is included in the deployment")
+        return self._ok("GitHub folder layout", f"Verified {len(expected)} expected repository folders, including core/exports and tools", "project repository layout", "No action required")
+
     def check_static_html(self):
         static = self.project_root / "static"
         if not static.exists():
@@ -701,43 +713,62 @@ class SystemTestTab:
 
     def check_unused_files(self):
         root = self.project_root
-        if not (root / ".git").exists():
-            # A deployed Railway container normally has no .git directory; do
-            # not inspect the whole runtime volume as if it were a repository.
-            return self._ok("Repository scan skipped (expected on Railway)", "The deployed container has no .git directory. Runtime source scanning was safely skipped; run this check in the GitHub working copy when needed.", "Git workspace / project files", "Optional: run the unused-file scan from the GitHub working copy")
-        excluded_dirs = {".git", "data", "downloads", "__pycache__", "flet_assets"}
-        extensions = {".py", ".html", ".js", ".css", ".txt", ".md"}
+        # Scan the deployed project tree even when Railway omits .git. Runtime
+        # business data and uploaded/private assets are deliberately excluded.
+        excluded_dirs = {".git", "data", "backups", "documents", "invoices", "logos", "seed_data", "downloads", "flet_assets", "__pycache__", ".pytest_cache", ".mypy_cache"}
+        extensions = {".py", ".html", ".js", ".css", ".txt", ".md", ".json", ".toml", ".ini", ".yaml", ".yml"}
+        temp_suffixes = {".bak", ".old", ".orig", ".tmp", ".swp", ".pyc", ".log"}
+        temp_tokens = ("pasted_content", "pasted-file", "copy of ", "_old", "_backup", ".backup")
         files=[]
         for path in root.rglob("*"):
-            if not path.is_file() or path.suffix.lower() not in extensions:
+            if not path.is_file():
                 continue
-            if any(part in excluded_dirs for part in path.parts):
+            if any(str(part).casefold() in excluded_dirs for part in path.parts):
                 continue
             try:
-                if path.stat().st_size > 2_000_000:
-                    continue
+                relative = path.relative_to(root)
+                size = path.stat().st_size
             except OSError:
                 continue
-            files.append(path)
+            # Keep the scan bounded and never inspect large media/documents.
+            if size > 2_000_000:
+                continue
+            if path.suffix.lower() in extensions or path.suffix.lower() in temp_suffixes or any(token in path.name.lower() for token in temp_tokens):
+                files.append(path)
         corpus=[]
         for path in files:
+            if path.suffix.lower() not in extensions:
+                continue
             try:
                 corpus.append((path, path.read_text(encoding="utf-8", errors="ignore")))
             except OSError:
                 pass
+        protected_names={"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
         candidates=[]
-        important={"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
-        for path, text in corpus:
-            if path.name in important:
+        for path in files:
+            rel=str(path.relative_to(root)).replace("\\", "/")
+            name_lower=path.name.lower()
+            # Python modules in core are application code, not unused-file candidates.
+            is_core_module = rel.startswith("core/") and path.suffix.lower() == ".py"
+            obvious_temp = path.suffix.lower() in temp_suffixes or any(token in name_lower for token in temp_tokens)
+            if path.name in protected_names or is_core_module:
+                if not obvious_temp:
+                    continue
+            if obvious_temp:
+                candidates.append(path)
+                continue
+            if path.suffix.lower() not in extensions:
                 continue
             referenced = any(other != path and path.name in other_text for other, other_text in corpus)
             if not referenced:
                 candidates.append(path)
-        self._add_cleanup_candidates(candidates, "project", "Candidate file is not referenced by another scanned Git project file")
+        self._add_cleanup_candidates(candidates, "project", "Candidate file found in the deployed project/subfolder and not referenced by the scanned source")
         if candidates:
-            names=", ".join(str(path.relative_to(root)) for path in candidates[:8])
-            return self._warn("Unused-file candidates found", names, "Git workspace / project files", "Review every checkbox; this is a suggestion and may include intentionally standalone files")
-        return self._ok("Project unused-file candidates", f"Scanned {len(files)} source files in the Git workspace", "Git workspace / project files")
+            names=", ".join(str(path.relative_to(root)) for path in candidates[:12])
+            git_note = "Git metadata is unavailable in Railway; review candidates locally before deleting." if not (root / ".git").exists() else "Git workspace detected; review before committing deletions."
+            return self._warn("Project cleanup candidates found", f"{names} ({git_note})", "project root / all safe subfolders", "Review every checkbox; delete only files you recognize as unwanted")
+        git_note = "Git metadata is unavailable in Railway, but the deployed source tree was scanned." if not (root / ".git").exists() else "Git workspace and safe subfolders were scanned."
+        return self._ok("Project cleanup scan", f"No cleanup candidates found. {git_note}", "project root / all safe subfolders", "Run this check from the GitHub working copy for full repository history")
 
     def _refresh_cleanup_ui(self):
         self.cleanup_column.controls.clear()
