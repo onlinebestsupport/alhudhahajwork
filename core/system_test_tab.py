@@ -661,14 +661,14 @@ class SystemTestTab:
 
     def check_repository_layout(self):
         expected = [
-            "core", "core/exports", "data", "data/backups", "documents",
-            "flet_assets", "invoices", "logos", "seed_data", "static", "tools",
+            "core", "data", "data/backups", "documents",
+            "flet_assets", "logos", "seed_data", "static", "tools",
         ]
         actual = {str(path.relative_to(self.project_root)).replace("\\", "/").casefold(): path for path in self.project_root.rglob("*") if path.is_dir()}
         missing = [name for name in expected if name.casefold() not in actual]
         if missing:
             return self._warn("Expected GitHub folders missing", ", ".join(missing), "project repository layout", "Confirm the folder exists in GitHub and is included in the deployment")
-        return self._ok("GitHub folder layout", f"Verified {len(expected)} expected repository folders, including core/exports and tools", "project repository layout", "No action required")
+        return self._ok("GitHub folder layout", f"Verified {len(expected)} required repository folders; generated exports/invoices folders are optional runtime staging folders", "project repository layout", "No action required")
 
     def check_static_html(self):
         static = self.project_root / "static"
@@ -732,7 +732,13 @@ class SystemTestTab:
 
     def check_unused_files(self):
         root=self.project_root
-        protected_names={"data","documents","invoices","logos","flet_assets","seed_data","backups","downloads","delete_quarantine","exports"}
+        # These directories contain business data, uploaded documents, or
+        # runtime assets.  They are shown in the inventory, but their files
+        # remain protected unless a more specific rule below identifies a
+        # generated export artifact.
+        protected_names={"data","documents","logos","flet_assets","seed_data","backups","downloads","delete_quarantine"}
+        generated_export_dirs={"exports", "invoices"}
+        generated_export_extensions={".pdf", ".xls", ".xlsx", ".csv"}
         protected_files={"main.py","index.html","robots.txt","sitemap.xml","requirements.txt","pyproject.toml","nixpacks.toml"}
         text_extensions={".py",".html",".js",".css",".json",".toml",".ini",".yaml",".yml",".md",".txt"}
         files=[]; text_parts=[]; total_text_bytes=0
@@ -752,7 +758,17 @@ class SystemTestTab:
                 current_path=Path(current)
                 dirnames[:]=[d for d in dirnames if d.casefold() not in protected_names and d.casefold() not in {".git","__pycache__",".pytest_cache",".mypy_cache"}]
                 for filename in filenames:
-                    add_record(current_path/filename, current_path != root and current_path.relative_to(root).parts[0].casefold()=="core")
+                    path=current_path/filename
+                    relative=path.relative_to(root)
+                    # core/exports is a generated-output directory, not a
+                    # Python source directory.  Its PDF/Excel/CSV files are
+                    # safe review candidates, but the directory itself stays
+                    # visible and protected.
+                    in_core_exports=(len(relative.parts) >= 2
+                                     and relative.parts[0].casefold() == "core"
+                                     and relative.parts[1].casefold() == "exports")
+                    generated=in_core_exports and path.suffix.casefold() in generated_export_extensions
+                    add_record(path, (current_path != root and current_path.relative_to(root).parts[0].casefold()=="core") and not generated)
         # Root-level files are always inspected; known source trees are scanned.
         try:
             for child in root.iterdir():
@@ -766,7 +782,13 @@ class SystemTestTab:
         if static.is_dir():
             try:
                 for child in static.iterdir():
-                    if child.is_file(): add_record(child, child.suffix.lower() in text_extensions or child.name.casefold() in {name.casefold() for name in protected_files})
+                    if child.is_file():
+                        # Public HTML/CSS/JS/configuration files are part of
+                        # the website.  Standalone PDF/Excel/CSV files in
+                        # static are generated artifacts and should be
+                        # reviewable instead of silently protected.
+                        generated=(child.suffix.casefold() in generated_export_extensions)
+                        add_record(child, (child.suffix.lower() in text_extensions or child.name.casefold() in {name.casefold() for name in protected_files}) and not generated)
                     elif child.is_dir(): add_record(child, True, True)
             except OSError: pass
         # Large/private application trees are listed as protected folders or by
@@ -779,6 +801,21 @@ class SystemTestTab:
             if len(children)>=2000: add_record(path, True, True)
             else:
                 for child in children: add_record(child, True, child.is_dir())
+        # Root-level exports and invoice files are staging copies created only
+        # so a browser/desktop download can be initiated.  They are not the
+        # database records and must be listed individually as reviewable
+        # candidates.  Keep any unexpected file type protected by default.
+        for dirname in sorted(generated_export_dirs):
+            path=root/dirname
+            if not path.is_dir():
+                continue
+            try:
+                for child in path.iterdir():
+                    generated=(child.is_file()
+                               and child.suffix.casefold() in generated_export_extensions)
+                    add_record(child, not generated, child.is_dir())
+            except OSError:
+                continue
         combined_text="\n".join(text_parts); self.file_inventory_info={}; protected_paths=set()
         protected_file_names={name.casefold() for name in protected_files}
         for record in files:
