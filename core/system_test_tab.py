@@ -23,7 +23,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r9-inventory-quarantine-cleanup"
+    VERSION = "2026-11-01-r10-folder-inventory-classification"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -46,12 +46,14 @@ class SystemTestTab:
         self.last_results = []
         self._test_running = False
         self.cleanup_candidates = []
+        self.file_inventory_info = {}
         self.cleanup_checks = {}
         self.quarantine_checks = {}
         self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be moved to the quarantine/delete folder", value=False)
         self.permanent_confirmation = ft.Checkbox(label="I understand selected quarantine files will be permanently deleted", value=False)
         self.cleanup_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
         self.quarantine_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+        self.inventory_summary = ft.Column(spacing=2, scroll=ft.ScrollMode.AUTO)
         self._build_specs()
         self.setup_ui()
         self._load_previous_notification()
@@ -99,7 +101,7 @@ class SystemTestTab:
             ("Static HTML files", "static/**/*.html", self.check_static_html),
             ("GitHub folder layout", "core / data / documents / static / tools", self.check_repository_layout),
             ("Database file hygiene", "data/ root", self.check_data_file_hygiene),
-            ("Project unused-file candidates", "Git workspace / project files", self.check_unused_files),
+            ("Complete project file inventory", "all folders / protected and unused files", self.check_unused_files),
             ("Database schema", "database.py", self.check_schema),
             ("Database records", "database.py / travelers / batches", self.check_database_records),
             ("ID and relationship integrity", "database.py / reports", self.check_relationships),
@@ -156,6 +158,7 @@ class SystemTestTab:
                 ft.Container(content=ft.Column([
                     ft.Text("File cleanup candidates", size=13, weight=ft.FontWeight.BOLD, color="#0f172a"),
                     ft.Text("Every discovered file is listed. Protected app/data files are disabled. Approved project files first move to the quarantine/delete folder; permanent deletion is a separate second step.", size=10, color="#64748b"),
+                    self.inventory_summary,
                     self.cleanup_column,
                     ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Move Selected to Delete Folder"), on_click=self.delete_selected_cleanup, bgcolor="#d97706", color=ft.Colors.WHITE, height=38)], wrap=True),
                     ft.Text("Quarantine/delete folder", size=12, weight=ft.FontWeight.BOLD, color="#7c2d12"),
@@ -694,7 +697,8 @@ class SystemTestTab:
             resolved = Path(path).resolve()
             if any(str(resolved) == str(existing["path"]) for existing in self.cleanup_candidates):
                 continue
-            self.cleanup_candidates.append({"path": resolved, "category": category, "reason": reason, "protected": str(resolved) in protected_paths})
+            info = self.file_inventory_info.get(str(resolved), {})
+            self.cleanup_candidates.append({"path": resolved, "category": category, "reason": reason, "protected": str(resolved) in protected_paths or bool(info.get("protected")), "classification": info.get("classification", "review candidate"), "used": info.get("used", False), "age_days": info.get("age_days", 0)})
 
     def check_data_file_hygiene(self):
         data = self.data_dir
@@ -731,36 +735,74 @@ class SystemTestTab:
         excluded = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
         protected_dirs = {"data", "documents", "backups", "invoices", "logos", "flet_assets", "seed_data", "downloads", "delete_quarantine"}
         protected_names = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
-        files=[]
+        text_extensions = {".py", ".html", ".js", ".css", ".json", ".toml", ".ini", ".yaml", ".yml", ".md", ".txt"}
+        files=[]; text_parts=[]; total_text_bytes=0
         for path in root.rglob("*"):
             if not path.is_file() or any(str(part).casefold() in excluded for part in path.parts):
                 continue
-            try: path.stat()
-            except OSError: continue
+            try:
+                stat=path.stat(); age_days=max(0, int((time.time()-stat.st_mtime)/86400))
+            except OSError:
+                continue
             relative=path.relative_to(root)
-            protected=(any(str(part).casefold() in protected_dirs for part in relative.parts) or (relative.parts and relative.parts[0].casefold()=="core" and path.suffix.lower()==".py") or path.name.casefold() in {name.casefold() for name in protected_names})
-            files.append((path, protected))
-        protected_paths={str(path.resolve()) for path, protected in files if protected}
-        self._add_cleanup_candidates([path for path, _ in files], "inventory", "Complete deployed-project file inventory; protected app/data files are view-only", protected_paths=protected_paths)
-        protected_count=sum(1 for _, protected in files if protected); selectable_count=len(files)-protected_count
+            in_protected_dir=any(str(part).casefold() in protected_dirs for part in relative.parts)
+            if path.suffix.lower() in text_extensions and total_text_bytes < 20_000_000:
+                try:
+                    text=path.read_text(encoding="utf-8", errors="ignore")[:500_000]
+                    text_parts.append(text); total_text_bytes += len(text)
+                except OSError:
+                    pass
+            files.append({"path": path, "relative": relative, "age_days": age_days, "in_protected_dir": in_protected_dir})
+        combined_text="\n".join(text_parts)
+        self.file_inventory_info={}
+        protected_paths=set()
+        for record in files:
+            path=record["path"]; relative=record["relative"]; name=path.name
+            referenced=name in combined_text if name else False
+            is_core_module=bool(relative.parts and relative.parts[0].casefold()=="core" and path.suffix.lower()==".py")
+            essential=name.casefold() in {item.casefold() for item in protected_names}
+            protected=record["in_protected_dir"] or is_core_module or essential or referenced
+            classification="protected system file" if protected else "unused candidate"
+            info={"protected": protected, "classification": classification, "used": referenced or is_core_module or essential, "age_days": record["age_days"]}
+            key=str(path.resolve()); self.file_inventory_info[key]=info
+            if protected: protected_paths.add(key)
+        self._add_cleanup_candidates([record["path"] for record in files], "inventory", "Folder inventory classification", protected_paths=protected_paths)
+        groups={}
+        for record in files:
+            folder=record["relative"].parts[0] if record["relative"].parts else "."
+            info=self.file_inventory_info.get(str(record["path"].resolve()), {})
+            group=groups.setdefault(folder, {"total":0,"protected":0,"used":0,"unused":0,"oldest":0})
+            group["total"]+=1; group["protected"]+=int(info.get("protected",False)); group["used"]+=int(info.get("used",False)); group["unused"]+=int(not info.get("protected",False)); group["oldest"]=max(group["oldest"], record["age_days"])
+        self.folder_inventory=groups
         if files:
-            return self._warn("Project file inventory ready", f"Listed {len(files)} file(s) across the main folder and subfolders; {selectable_count} reviewable and {protected_count} protected", "project root / all subfolders", "Review selectable checkboxes; move unwanted files to quarantine before permanent deletion")
-        return self._ok("Project file inventory", "No files were found in the deployable project tree", "project root / all subfolders", "No action required")
+            details="; ".join(f"{folder}: {g['total']} total / {g['protected']} protected / {g['used']} used / {g['unused']} unused / oldest {g['oldest']}d" for folder,g in sorted(groups.items(), key=lambda item:item[0].casefold()))
+            return self._warn("Complete folder file inventory", details, "project root / all folders", "Review unused candidates; protected and used files are not selectable") if any(g["unused"] for g in groups.values()) else self._ok("Complete folder file inventory", details, "project root / all folders", "No unused candidates found")
+        return self._ok("Complete folder file inventory", "No files were found", "project root / all folders", "No action required")
 
     def _refresh_cleanup_ui(self):
         self.cleanup_column.controls.clear()
         self.cleanup_checks = {}
+        self.inventory_summary.controls.clear()
+        inventory_items=[item for item in self.cleanup_candidates if item.get("category") == "inventory"]
+        groups={}
+        for item in inventory_items:
+            try: folder=str(Path(item["path"]).relative_to(self.project_root).parts[0])
+            except Exception: folder="."
+            group=groups.setdefault(folder, {"total":0,"protected":0,"used":0,"unused":0,"oldest":0})
+            group["total"]+=1; group["protected"]+=int(item.get("protected",False)); group["used"]+=int(item.get("used",False)); group["unused"]+=int(not item.get("protected",False)); group["oldest"]=max(group["oldest"], int(item.get("age_days",0)))
+        if groups:
+            for folder, group in sorted(groups.items(), key=lambda item:item[0].casefold()):
+                self.inventory_summary.controls.append(ft.Text(f"{folder}/ — {group['total']} total • {group['protected']} protected • {group['used']} used • {group['unused']} unused candidates • oldest modified {group['oldest']} days", size=10, color="#334155"))
+        else:
+            self.inventory_summary.controls.append(ft.Text("Folder summary appears after running Complete project file inventory.", size=10, color="#64748b"))
         if not self.cleanup_candidates:
-            self.cleanup_column.controls.append(ft.Text("Run the project file inventory test to list every file.", size=10, color="#64748b"))
+            self.cleanup_column.controls.append(ft.Text("Run Complete project file inventory to list every file.", size=10, color="#64748b"))
         else:
             for item in sorted(self.cleanup_candidates, key=lambda x: str(x["path"]).casefold()):
-                path = str(item["path"])
-                protected = bool(item.get("protected"))
-                label = f"{'PROTECTED — ' if protected else ''}{item['category'].upper()}: {path} — {item['reason']}"
-                checkbox = ft.Checkbox(label=label, value=False, disabled=protected)
-                self.cleanup_checks[path] = checkbox
-                self.cleanup_column.controls.append(checkbox)
-        self.cleanup_column.update()
+                path=str(item["path"]); protected=bool(item.get("protected")); age=int(item.get("age_days",0)); classification=item.get("classification", "review candidate")
+                label=f"{'PROTECTED — ' if protected else 'UNUSED CANDIDATE — '}{item['category'].upper()}: {path} — {classification}; modified {age} days ago"
+                checkbox=ft.Checkbox(label=label, value=False, disabled=protected); self.cleanup_checks[path]=checkbox; self.cleanup_column.controls.append(checkbox)
+        self.inventory_summary.update(); self.cleanup_column.update()
         self._refresh_quarantine_ui()
 
     def _refresh_quarantine_ui(self):
