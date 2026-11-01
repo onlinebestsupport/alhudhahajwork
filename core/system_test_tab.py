@@ -6,6 +6,7 @@ import asyncio
 import csv
 import json
 import os
+import shutil
 import subprocess
 import time
 import urllib.error
@@ -22,7 +23,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r8-lowercase-folder-layout"
+    VERSION = "2026-11-01-r9-inventory-quarantine-cleanup"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -46,8 +47,11 @@ class SystemTestTab:
         self._test_running = False
         self.cleanup_candidates = []
         self.cleanup_checks = {}
-        self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be permanently deleted", value=False)
+        self.quarantine_checks = {}
+        self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be moved to the quarantine/delete folder", value=False)
+        self.permanent_confirmation = ft.Checkbox(label="I understand selected quarantine files will be permanently deleted", value=False)
         self.cleanup_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
+        self.quarantine_column = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO)
         self._build_specs()
         self.setup_ui()
         self._load_previous_notification()
@@ -151,9 +155,13 @@ class SystemTestTab:
                 ], spacing=8, wrap=True),
                 ft.Container(content=ft.Column([
                     ft.Text("File cleanup candidates", size=13, weight=ft.FontWeight.BOLD, color="#0f172a"),
-                    ft.Text("Candidates are only suggestions. Review each checkbox. Business CSVs, uploaded documents, backups and remote GitHub files are never deleted automatically.", size=10, color="#64748b"),
+                    ft.Text("Every discovered file is listed. Protected app/data files are disabled. Approved project files first move to the quarantine/delete folder; permanent deletion is a separate second step.", size=10, color="#64748b"),
                     self.cleanup_column,
-                    ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Delete Selected Files"), on_click=self.delete_selected_cleanup, bgcolor="#dc2626", color=ft.Colors.WHITE, height=38)], wrap=True),
+                    ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Move Selected to Delete Folder"), on_click=self.delete_selected_cleanup, bgcolor="#d97706", color=ft.Colors.WHITE, height=38)], wrap=True),
+                    ft.Text("Quarantine/delete folder", size=12, weight=ft.FontWeight.BOLD, color="#7c2d12"),
+                    ft.Text("data/delete_quarantine/", size=10, color="#92400e"),
+                    self.quarantine_column,
+                    ft.Row([self.permanent_confirmation, ft.Button(content=ft.Text("Permanently Delete Quarantine Files"), on_click=self.delete_quarantine_files, bgcolor="#991b1b", color=ft.Colors.WHITE, height=38)], wrap=True),
                 ], spacing=5), padding=10, bgcolor="#fffbeb", border=ft.Border.all(1, "#f59e0b"), border_radius=8),
                 ft.Container(content=self.results_column, expand=True, padding=8,
                              border=ft.Border.all(1, "#e2e8f0"), border_radius=8),
@@ -680,12 +688,13 @@ class SystemTestTab:
             return self._fail("Static HTML issue", " ; ".join(bad[:8]), "static/**/*.html", "Open the named HTML file and correct the reported markup")
         return self._ok("Static HTML files", f"Checked {len(html_files)} HTML file(s) under static/", "static/**/*.html")
 
-    def _add_cleanup_candidates(self, paths, category, reason):
+    def _add_cleanup_candidates(self, paths, category, reason, protected_paths=None):
+        protected_paths = protected_paths or set()
         for path in paths:
             resolved = Path(path).resolve()
             if any(str(resolved) == str(existing["path"]) for existing in self.cleanup_candidates):
                 continue
-            self.cleanup_candidates.append({"path": resolved, "category": category, "reason": reason})
+            self.cleanup_candidates.append({"path": resolved, "category": category, "reason": reason, "protected": str(resolved) in protected_paths})
 
     def check_data_file_hygiene(self):
         data = self.data_dir
@@ -705,106 +714,109 @@ class SystemTestTab:
             and path.name not in allowed_exact
             and not any(path.name.startswith(prefix) and path.suffix.lower() in {".zip", ".csv"} for prefix in allowed_prefixes)
         ]
-        self._add_cleanup_candidates(candidates, "data", "Unrecognized file directly inside the application data folder")
+        self._add_cleanup_candidates(candidates, "data", "Application data file; view-only and protected from deletion", protected_paths={str(path.resolve()) for path in candidates})
         if candidates:
             names = ", ".join(path.name for path in candidates[:8])
             return self._warn("Unrecognized data files", names, "data/ root / database.py", "Review the checkboxes; delete only files you recognize as unwanted")
         return self._ok("Database file hygiene", "Only recognized configuration, business, backup and diagnostic files are present", "data/ root / database.py")
 
+    @property
+    def quarantine_dir(self):
+        path = self.data_dir / "delete_quarantine"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def check_unused_files(self):
         root = self.project_root
-        # Scan the deployed project tree even when Railway omits .git. Runtime
-        # business data and uploaded/private assets are deliberately excluded.
-        excluded_dirs = {".git", "data", "backups", "documents", "invoices", "logos", "seed_data", "downloads", "flet_assets", "__pycache__", ".pytest_cache", ".mypy_cache"}
-        extensions = {".py", ".html", ".js", ".css", ".txt", ".md", ".json", ".toml", ".ini", ".yaml", ".yml"}
-        temp_suffixes = {".bak", ".old", ".orig", ".tmp", ".swp", ".pyc", ".log"}
-        temp_tokens = ("pasted_content", "pasted-file", "copy of ", "_old", "_backup", ".backup")
+        excluded = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
+        protected_dirs = {"data", "documents", "backups", "invoices", "logos", "flet_assets", "seed_data", "downloads", "delete_quarantine"}
+        protected_names = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
         files=[]
         for path in root.rglob("*"):
-            if not path.is_file():
+            if not path.is_file() or any(str(part).casefold() in excluded for part in path.parts):
                 continue
-            if any(str(part).casefold() in excluded_dirs for part in path.parts):
-                continue
-            try:
-                relative = path.relative_to(root)
-                size = path.stat().st_size
-            except OSError:
-                continue
-            # Keep the scan bounded and never inspect large media/documents.
-            if size > 2_000_000:
-                continue
-            if path.suffix.lower() in extensions or path.suffix.lower() in temp_suffixes or any(token in path.name.lower() for token in temp_tokens):
-                files.append(path)
-        corpus=[]
-        for path in files:
-            if path.suffix.lower() not in extensions:
-                continue
-            try:
-                corpus.append((path, path.read_text(encoding="utf-8", errors="ignore")))
-            except OSError:
-                pass
-        protected_names={"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
-        candidates=[]
-        for path in files:
-            rel=str(path.relative_to(root)).replace("\\", "/")
-            name_lower=path.name.lower()
-            # Python modules in core are application code, not unused-file candidates.
-            is_core_module = rel.startswith("core/") and path.suffix.lower() == ".py"
-            obvious_temp = path.suffix.lower() in temp_suffixes or any(token in name_lower for token in temp_tokens)
-            if path.name in protected_names or is_core_module:
-                if not obvious_temp:
-                    continue
-            if obvious_temp:
-                candidates.append(path)
-                continue
-            if path.suffix.lower() not in extensions:
-                continue
-            referenced = any(other != path and path.name in other_text for other, other_text in corpus)
-            if not referenced:
-                candidates.append(path)
-        self._add_cleanup_candidates(candidates, "project", "Candidate file found in the deployed project/subfolder and not referenced by the scanned source")
-        if candidates:
-            names=", ".join(str(path.relative_to(root)) for path in candidates[:12])
-            git_note = "Git metadata is unavailable in Railway; review candidates locally before deleting." if not (root / ".git").exists() else "Git workspace detected; review before committing deletions."
-            return self._warn("Project cleanup candidates found", f"{names} ({git_note})", "project root / all safe subfolders", "Review every checkbox; delete only files you recognize as unwanted")
-        git_note = "Git metadata is unavailable in Railway, but the deployed source tree was scanned." if not (root / ".git").exists() else "Git workspace and safe subfolders were scanned."
-        return self._ok("Project cleanup scan", f"No cleanup candidates found. {git_note}", "project root / all safe subfolders", "Run this check from the GitHub working copy for full repository history")
+            try: path.stat()
+            except OSError: continue
+            relative=path.relative_to(root)
+            protected=(any(str(part).casefold() in protected_dirs for part in relative.parts) or (relative.parts and relative.parts[0].casefold()=="core" and path.suffix.lower()==".py") or path.name.casefold() in {name.casefold() for name in protected_names})
+            files.append((path, protected))
+        protected_paths={str(path.resolve()) for path, protected in files if protected}
+        self._add_cleanup_candidates([path for path, _ in files], "inventory", "Complete deployed-project file inventory; protected app/data files are view-only", protected_paths=protected_paths)
+        protected_count=sum(1 for _, protected in files if protected); selectable_count=len(files)-protected_count
+        if files:
+            return self._warn("Project file inventory ready", f"Listed {len(files)} file(s) across the main folder and subfolders; {selectable_count} reviewable and {protected_count} protected", "project root / all subfolders", "Review selectable checkboxes; move unwanted files to quarantine before permanent deletion")
+        return self._ok("Project file inventory", "No files were found in the deployable project tree", "project root / all subfolders", "No action required")
 
     def _refresh_cleanup_ui(self):
         self.cleanup_column.controls.clear()
+        self.cleanup_checks = {}
         if not self.cleanup_candidates:
-            self.cleanup_column.controls.append(ft.Text("Run the file hygiene tests to list review candidates.", size=10, color="#64748b"))
+            self.cleanup_column.controls.append(ft.Text("Run the project file inventory test to list every file.", size=10, color="#64748b"))
         else:
-            for item in self.cleanup_candidates:
+            for item in sorted(self.cleanup_candidates, key=lambda x: str(x["path"]).casefold()):
                 path = str(item["path"])
-                checkbox = ft.Checkbox(label=f"{item['category'].upper()}: {path} — {item['reason']}", value=False)
+                protected = bool(item.get("protected"))
+                label = f"{'PROTECTED — ' if protected else ''}{item['category'].upper()}: {path} — {item['reason']}"
+                checkbox = ft.Checkbox(label=label, value=False, disabled=protected)
                 self.cleanup_checks[path] = checkbox
                 self.cleanup_column.controls.append(checkbox)
         self.cleanup_column.update()
+        self._refresh_quarantine_ui()
+
+    def _refresh_quarantine_ui(self):
+        self.quarantine_column.controls.clear()
+        self.quarantine_checks = {}
+        files = [path for path in self.quarantine_dir.rglob("*") if path.is_file()]
+        if not files:
+            self.quarantine_column.controls.append(ft.Text("No files are waiting in the quarantine/delete folder.", size=10, color="#64748b"))
+        else:
+            for path in sorted(files, key=lambda x: str(x).casefold()):
+                checkbox = ft.Checkbox(label=str(path), value=False)
+                self.quarantine_checks[str(path)] = checkbox
+                self.quarantine_column.controls.append(checkbox)
+        self.quarantine_column.update()
 
     def delete_selected_cleanup(self, e=None):
         if not self.cleanup_confirmation.value:
-            self.notification.value = "Deletion blocked: tick the permanent-deletion confirmation checkbox first."
+            self.notification.value = "Move blocked: tick the quarantine confirmation checkbox first."
             self.notification.color = "#991b1b"; self.notification.update(); return
-        selected = [item for item in self.cleanup_candidates if self.cleanup_checks.get(str(item["path"]), None) and self.cleanup_checks[str(item["path"])].value]
+        selected = [item for item in self.cleanup_candidates if not item.get("protected") and self.cleanup_checks.get(str(item["path"]), None) and self.cleanup_checks[str(item["path"])].value]
         if not selected:
-            self.notification.value = "No cleanup candidate selected."; self.notification.color = "#92400e"; self.notification.update(); return
-        deleted=[]; blocked=[]
-        data_root=self.data_dir.resolve(); project_root=self.project_root.resolve()
+            self.notification.value = "No selectable project file was selected."; self.notification.color = "#92400e"; self.notification.update(); return
+        moved=[]; blocked=[]; batch=self.quarantine_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+        project_root=self.project_root.resolve(); data_root=self.data_dir.resolve()
         for item in selected:
             path=Path(item["path"]).resolve()
-            # Never permit cleanup to remove core business data or uploaded content.
-            if path == data_root or data_root in path.parents and path.name in {"users.csv","travelers.csv","batches.csv","payments.csv","invoices.csv","receipts.csv"}:
-                blocked.append(f"protected business file: {path}"); continue
-            if path == project_root or project_root not in path.parents:
-                blocked.append(f"outside project root: {path}"); continue
+            if path == project_root or project_root not in path.parents or data_root in path.parents:
+                blocked.append(f"protected/outside project: {path}"); continue
+            try:
+                target=batch / path.relative_to(project_root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(target)); moved.append(str(path))
+            except Exception as ex: blocked.append(f"{path}: {ex}")
+        self.cleanup_candidates=[item for item in self.cleanup_candidates if str(item["path"]) not in moved]
+        self.cleanup_confirmation.value=False; self.cleanup_confirmation.update(); self._refresh_cleanup_ui()
+        message=f"Moved {len(moved)} file(s) to data/delete_quarantine/."
+        if blocked: message += " Blocked: " + " ; ".join(blocked[:3])
+        self.notification.value=message; self.notification.color="#166534" if not blocked else "#92400e"; self.notification.update()
+
+    def delete_quarantine_files(self, e=None):
+        if not self.permanent_confirmation.value:
+            self.notification.value = "Permanent deletion blocked: tick the quarantine confirmation checkbox first."
+            self.notification.color = "#991b1b"; self.notification.update(); return
+        selected=[Path(path) for path, checkbox in self.quarantine_checks.items() if checkbox.value]
+        if not selected:
+            self.notification.value="No quarantine file was selected."; self.notification.color="#92400e"; self.notification.update(); return
+        root=self.quarantine_dir.resolve(); deleted=[]; blocked=[]
+        for path in selected:
+            path=path.resolve()
+            if root not in path.parents:
+                blocked.append(str(path)); continue
             try:
                 if path.is_file(): path.unlink(); deleted.append(str(path))
             except Exception as ex: blocked.append(f"{path}: {ex}")
-        self.cleanup_candidates=[item for item in self.cleanup_candidates if str(item["path"]) not in deleted]
-        self._refresh_cleanup_ui()
-        self.cleanup_confirmation.value=False; self.cleanup_confirmation.update()
-        message=f"Deleted {len(deleted)} selected file(s)."
+        self.permanent_confirmation.value=False; self.permanent_confirmation.update(); self._refresh_quarantine_ui()
+        message=f"Permanently deleted {len(deleted)} quarantined file(s)."
         if blocked: message += " Blocked: " + " ; ".join(blocked[:3])
         self.notification.value=message; self.notification.color="#166534" if not blocked else "#92400e"; self.notification.update()
 
