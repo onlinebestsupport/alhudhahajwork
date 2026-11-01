@@ -583,8 +583,8 @@ class SystemTestTab:
 
     # ------------------------------------------------------------------ result helpers
     @staticmethod
-    def _ok(title, message="No issue detected", owner="system_test_tab.py"):
-        return {"level":"OK", "title":title, "message":message, "action":"No action required", "owner":owner}
+    def _ok(title, message="No issue detected", owner="system_test_tab.py", action="No action required"):
+        return {"level":"OK", "title":title, "message":message, "action":action, "owner":owner}
     @staticmethod
     def _warn(title, message, owner, action):
         return {"level":"WARN", "title":title, "message":message, "action":action, "owner":owner}
