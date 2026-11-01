@@ -22,12 +22,14 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
+    VERSION = "2026-11-01-r4-railway-layout-timeout-fix"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
     CHECK_TIMEOUT_SECONDS = 20
 
     def __init__(self, page, db, current_user):
+        print(f"[SYSTEM-TEST] loaded version={self.VERSION}", flush=True)
         self.page = page
         self.db = db
         self.current_user = current_user or {}
@@ -618,18 +620,31 @@ class SystemTestTab:
         return self._fail("Live API probe failed", "; ".join(failures), "main.py / deployed API", "Inspect the endpoint and deployment logs") if failures else self._ok("Live API probe", f"Checked {len(checks)} endpoints at {base}", "main.py / deployed API")
 
     def check_frontpage(self):
-        required=["index.html", "robots.txt", "sitemap.xml"]
-        missing=[x for x in required if not (self.project_root/x).exists()]
-        if missing: return self._fail("Front-page files missing", ", ".join(missing), "index.html / robots.txt / sitemap.xml", "Deploy the missing public files")
-        html=(self.project_root/"index.html").read_text(encoding="utf-8", errors="replace")
+        # Railway serves public assets from /app/static; accept both the source
+        # root and the deployed static layout, and accept route-backed robots/sitemap.
+        root = self.project_root
+        static = root / "static"
+        html_path = root / "index.html" if (root / "index.html").exists() else static / "index.html"
+        robots_path = root / "robots.txt" if (root / "robots.txt").exists() else static / "robots.txt"
+        sitemap_path = root / "sitemap.xml" if (root / "sitemap.xml").exists() else static / "sitemap.xml"
+        main_text = (root / "main.py").read_text(encoding="utf-8", errors="replace") if (root / "main.py").exists() else ""
+        missing=[]
+        if not html_path.exists(): missing.append("index.html")
+        if not robots_path.exists() and "def robots_txt" not in main_text: missing.append("robots.txt")
+        if not sitemap_path.exists() and "def sitemap_xml" not in main_text: missing.append("sitemap.xml")
+        if missing:
+            return self._fail("Front-page files missing", ", ".join(missing), "static/ / main.py", "Deploy the missing public file or keep its FastAPI route")
+        html=html_path.read_text(encoding="utf-8", errors="replace")
         markers=["viewport", "api/frontpage", "alert"]
         absent=[x for x in markers if x.lower() not in html.lower()]
-        if absent: return self._warn("Front-page markers missing", ", ".join(absent), "index.html / frontpage_config.py", "Review mobile, API and alert rendering")
+        if absent:
+            return self._warn("Front-page markers missing", ", ".join(absent), str(html_path.relative_to(root)), "Review mobile, API and alert rendering")
         try:
             from core.frontpage_config import load_config
             cfg=load_config(); packages=cfg.get("packages", {}) if isinstance(cfg, dict) else {}
-            return self._ok("Front-page integrity", f"Public files present; selected package IDs: {len(packages.get('selected_batch_ids', []))}", "index.html / frontpage_config.py")
-        except Exception as ex: return self._fail("Front-page configuration error", str(ex), "frontpage_config.py", "Repair front-page configuration loading")
+            return self._ok("Front-page integrity", f"Public files/routes present; selected package IDs: {len(packages.get('selected_batch_ids', []))}", "static/index.html / main.py / frontpage_config.py")
+        except Exception as ex:
+            return self._fail("Front-page configuration error", str(ex), "frontpage_config.py", "Repair front-page configuration loading")
 
     def check_static_html(self):
         static = self.project_root / "static"
@@ -663,59 +678,65 @@ class SystemTestTab:
         data = self.data_dir
         if not data.exists():
             return self._fail("Data folder missing", str(data), "imports.py / database.py", "Repair the configured data directory")
-        allowed_files = {
+        allowed_exact = {
             "users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv",
-            "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json", ".db.lock",
+            "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json",
+            "tour_types.csv", "tax_settings.csv", "frontpage_config.json", "frontage_config.json",
+            "system_test_history.csv", "system_error_events.csv", "_cleanup.sh", ".db.lock",
         }
-        ignored_dirs = {"backups", "documents", "logos", "invoices", "receipts", "system_tests"}
-        candidates = [p for p in data.iterdir() if p.is_file() and p.name not in allowed_files and not p.name.startswith(".")]
+        allowed_prefixes = ("documents_backup_", "system_test_")
+        candidates = [
+            path for path in data.iterdir()
+            if path.is_file()
+            and not path.name.startswith(".")
+            and path.name not in allowed_exact
+            and not any(path.name.startswith(prefix) and path.suffix.lower() in {".zip", ".csv"} for prefix in allowed_prefixes)
+        ]
         self._add_cleanup_candidates(candidates, "data", "Unrecognized file directly inside the application data folder")
         if candidates:
-            names = ", ".join(p.name for p in candidates[:8])
+            names = ", ".join(path.name for path in candidates[:8])
             return self._warn("Unrecognized data files", names, "data/ root / database.py", "Review the checkboxes; delete only files you recognize as unwanted")
-        return self._ok("Database file hygiene", "No unrecognized files found directly in the application data folder", "data/ root / database.py")
+        return self._ok("Database file hygiene", "Only recognized configuration, business, backup and diagnostic files are present", "data/ root / database.py")
 
     def check_unused_files(self):
-        candidates = []
-        git_dir = self.project_root / ".git"
-        tracked = []
-        if git_dir.exists():
+        root = self.project_root
+        if not (root / ".git").exists():
+            # A deployed Railway container normally has no .git directory; do
+            # not inspect the whole runtime volume as if it were a repository.
+            return self._warn("Repository scan unavailable", "The deployed container has no .git directory, so unused Git files cannot be confirmed here.", "Git workspace / project files", "Run this check in the GitHub working copy or attach the repository checkout")
+        excluded_dirs = {".git", "data", "downloads", "__pycache__", "flet_assets"}
+        extensions = {".py", ".html", ".js", ".css", ".txt", ".md"}
+        files=[]
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in extensions:
+                continue
+            if any(part in excluded_dirs for part in path.parts):
+                continue
             try:
-                tracked = subprocess.check_output(["git", "-C", str(self.project_root), "ls-files"], text=True, timeout=5).splitlines()
-            except Exception:
-                tracked = []
-        files = []
-        for folder in (self.project_root, self.project_root / "core", self.project_root / "static"):
-            if folder.exists():
-                files.extend(x for x in folder.rglob("*") if x.is_file() and ".git" not in x.parts)
-        important = {"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
-        for path in sorted(set(files)):
-            rel = str(path.relative_to(self.project_root)).replace("\\", "/")
-            if path.name in important or path.suffix in {".csv", ".db", ".zip", ".png", ".jpg", ".jpeg", ".webp", ".pdf"}:
-                continue
-            if path.suffix.lower() not in {".py", ".html", ".js", ".css", ".txt", ".md"}:
-                continue
-            text = ""
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            referenced = False
-            for other in files:
-                if other == path or other.suffix not in {".py", ".html", ".js", ".css", ".txt", ".md"}:
+                if path.stat().st_size > 2_000_000:
                     continue
-                try:
-                    if path.name in other.read_text(encoding="utf-8", errors="ignore"):
-                        referenced = True; break
-                except Exception:
-                    pass
-            if not referenced and (not tracked or rel in tracked):
+            except OSError:
+                continue
+            files.append(path)
+        corpus=[]
+        for path in files:
+            try:
+                corpus.append((path, path.read_text(encoding="utf-8", errors="ignore")))
+            except OSError:
+                pass
+        candidates=[]
+        important={"main.py", "index.html", "robots.txt", "sitemap.xml", "requirements.txt", "pyproject.toml", "nixpacks.toml"}
+        for path, text in corpus:
+            if path.name in important:
+                continue
+            referenced = any(other != path and path.name in other_text for other, other_text in corpus)
+            if not referenced:
                 candidates.append(path)
-        self._add_cleanup_candidates(candidates, "project", "Candidate file is not referenced by another scanned project file")
+        self._add_cleanup_candidates(candidates, "project", "Candidate file is not referenced by another scanned Git project file")
         if candidates:
-            names = ", ".join(str(x.relative_to(self.project_root)) for x in candidates[:8])
+            names=", ".join(str(path.relative_to(root)) for path in candidates[:8])
             return self._warn("Unused-file candidates found", names, "Git workspace / project files", "Review every checkbox; this is a suggestion and may include intentionally standalone files")
-        return self._ok("Project unused-file candidates", "No unused-file candidates were identified by the conservative scan", "Git workspace / project files")
+        return self._ok("Project unused-file candidates", f"Scanned {len(files)} source files in the Git workspace", "Git workspace / project files")
 
     def _refresh_cleanup_ui(self):
         self.cleanup_column.controls.clear()
