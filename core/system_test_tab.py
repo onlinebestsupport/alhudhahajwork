@@ -1,45 +1,15 @@
-I have reviewed the CSV diagnostic report and the Railway startup log. 
+The error on line 3 is happening because text from my previous message (the sentence *"Here is the summary of your system's health..."*) was accidentally copied and pasted into your `core/system_test_tab.py` file along with the code. 
 
-Here is the summary of your system's health and the exact fixes needed for the warnings and hidden performance bugs.
+Python is trying to read that plain English sentence as code, which causes the `SyntaxError: unterminated string literal`.
 
-### 📊 System Health Summary
-- **Overall Status:** **HEALTHY** (19 Passed, 4 Warnings, 0 Failures).
-- **Database:** 37 travelers, 3 batches, 69 payments, 1 invoice, 69 receipts correctly loaded.
-- **Security:** Fail-closed architecture verified, API keys are strong.
-- **Environment:** Production variables are safe.
-
-### ⚠️ Why You Got 4 Warnings (and how to fix them)
-
-1. **Unrecognized data files (`_cleanup.sh`)**
-   - **Cause:** The script in `data/` is not in the allowlist. It's a safe helper script, but the diagnostic doesn't recognize it.
-   - **Fix:** I will add `"_cleanup.sh"` back into the `allowed_exact` list in the code.
-2. **Complete folder file inventory (`add_traveler_test.py`, etc.)**
-   - **Cause:** You have 4 legacy test scripts in your root folder (`add_traveler_test.py`, `export_buttons_test.py`, `system_check.py`, `system_test.py`). Nothing imports them anymore because you now use this new System Test tab.
-   - **Fix:** You can safely delete or move these 4 files to the `tools/` folder (which is already protected). The warning will vanish.
-3. **Backup is stale (43.4 hours old)**
-   - **Cause:** Your code checks if the latest backup is older than 24 hours. Yours is ~43 hours old.
-   - **Fix:** Create a new backup in the Backup tab. I will also change the code threshold to **48 hours** so it's less aggressive on weekends.
-4. **Missing static assets (`style.css`, `script.js`)**
-   - **Cause:** The test expects these files to be exactly at the root of `/static/`. Your site likely has them in subfolders (e.g., `static/css/style.css`).
-   - **Fix:** I will update the test to recursively scan the `static/` folder for *any* `.css` and `.js` files instead of expecting specific filenames.
-
-### 🕵️ Hidden Bug Found in the Report
-Look at the `Source syntax and functions` test result:
-> `Parsed 4395 files and 78119 functions` - **Duration: 22.3 seconds**
-
-**Why is this a bug?** Your project does not have 4,395 Python files. The scanner is accidentally crawling your virtual environment (`site-packages`, `.venv`, etc.). This is why it took 22 seconds. I have fixed this by adding strict directory exclusions.
-
----
-
-### 🛠️ Corrected `core/system_test_tab.py` (r17)
-
-Here is the updated, secure, and optimized version. I fixed the CSV export bugs (`run_id` was empty in your CSV), the 22-second scanning bug, and the false-positive warnings.
+### How to fix it:
+**Delete everything** currently inside `core/system_test_tab.py` and replace it entirely with the clean code below. I have ensured this file contains **only valid Python code** with no external text, summaries, or markdown inside it.
 
 ```python
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-02-r17-optimized-fixes
+# Version: 2026-11-02-r18-clean-production
 # ============================================================================
 from __future__ import annotations
 
@@ -67,7 +37,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-02-r17-optimized-fixes"
+    VERSION = "2026-11-02-r18-clean-production"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -224,7 +194,6 @@ class SystemTestTab:
 
         self.root = ft.Container(
             content=ft.Column([
-                # Header
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SECURITY, color=ft.Colors.WHITE, size=32),
@@ -235,12 +204,10 @@ class SystemTestTab:
                         ft.Container(content=ft.Text("SUPER ADMIN", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_600, padding=8, border_radius=6),
                     ], spacing=12), padding=20, bgcolor=ft.Colors.BLUE_GREY_900, border_radius=12
                 ),
-                # Status Board
                 ft.Container(
                     content=ft.Column([self.notification, self.summary, self.progress_text, self.progress_bar, self.last_run, self.history_label], spacing=6),
                     padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_100)
                 ),
-                # Action Bar
                 ft.Row([
                     self.btn_run_all,
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=18), ft.Text("Refresh")], tight=True), on_click=self.refresh_status, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
@@ -250,17 +217,14 @@ class SystemTestTab:
                 ], spacing=10, wrap=True),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # Test Cards Grid
                 ft.Text("Available Diagnostics", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.ResponsiveRow(cards, spacing=10, run_spacing=10),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # Results Area
                 ft.Text("Diagnostic Results", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.Container(content=self.results_column, expand=True, padding=10, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100), border_radius=8, bgcolor=ft.Colors.WHITE),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # File Cleanup Section
                 ft.Container(
                     content=ft.Column([
                         ft.Text("File Cleanup & Quarantine", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900),
@@ -670,7 +634,6 @@ class SystemTestTab:
 # 08. HELPER: FILE SCANNER EXCLUSIONS
 # ============================================================================
     def _should_scan(self, path: Path) -> bool:
-        """Exclude virtual environments, caches, and node_modules to prevent 22s delays."""
         excluded = {".venv", "venv", "env", "site-packages", "dist-packages", 
                     "__pycache__", ".git", ".pytest_cache", ".mypy_cache", 
                     "node_modules", "data", "documents", "logos", "flet_assets", "seed_data"}
@@ -1089,7 +1052,6 @@ class SystemTestTab:
         static = self.project_root / "static"
         if not static.is_dir(): return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
         
-        # FIX: Recursively find any CSS or JS files rather than hardcoding exact filenames
         has_css = any(static.rglob("*.css"))
         has_js = any(static.rglob("*.js"))
         
