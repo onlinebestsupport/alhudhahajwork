@@ -1,7 +1,7 @@
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-02-r23-git-cleanup-instructions
+# Version: 2026-11-02-r24-deep-integration
 # Purpose: Recorded, read-only system diagnostics. Ensures no business data
 #          (travelers, payments, etc.) is ever deleted or altered by tests.
 # 
@@ -19,6 +19,7 @@
 #   11. INVENTORY & FILESYSTEM TESTS
 #   12. DATABASE & FINANCIAL TESTS
 #   13. SYSTEM, SECURITY & ENVIRONMENT TESTS
+#   14. DEEP INTEGRATION TESTS (From Tools)
 # ============================================================================
 from __future__ import annotations
 
@@ -47,11 +48,11 @@ class SystemTestTab:
     # ========================================================================
     # 01. CONSTANTS & CONFIGURATION
     # ========================================================================
-    VERSION = "2026-11-02-r23-git-cleanup-instructions"
+    VERSION = "2026-11-02-r24-deep-integration"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
-    CHECK_TIMEOUT_SECONDS = 25
+    CHECK_TIMEOUT_SECONDS = 30
     HISTORY_FIELDS = [
         "run_id", "timestamp", "level", "title", "plain_language",
         "message", "owner", "action", "duration_ms", "user_id",
@@ -137,30 +138,39 @@ class SystemTestTab:
     # ========================================================================
     def _build_specs(self):
         self.test_specs = [
-            ("API contract", "main.py / security.py", self.check_api_contract),             # 10.01
-            ("Live API probe", "main.py / deployed URL", self.check_live_api),               # 10.02
-            ("Front-page integrity", "index.html / config", self.check_frontpage),           # 10.03
-            ("Static HTML files", "static/**/*.html", self.check_static_html),               # 10.04
-            ("GitHub folder layout", "core / data / static / tools", self.check_repository_layout), # 10.05
-            ("Database file hygiene", "data/ root", self.check_data_file_hygiene),           # 11.01
-            ("Complete project inventory", "all folders / unused files", self.check_unused_files), # 11.02
-            ("Database schema", "database.py", self.check_schema),                           # 12.01
-            ("Database records", "database.py / travelers", self.check_database_records),    # 12.02
-            ("ID and relationship integrity", "database.py / reports", self.check_relationships), # 12.03
-            ("Financial precision", "database.py / invoices", self.check_financials),        # 12.04
-            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),# 12.05
-            ("Tax configuration", "settings_manager.py", self.check_tax),                    # 12.06
-            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),  # 12.07
-            ("Source syntax and functions", "all Python files", self.check_source),          # 13.01
-            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),             # 13.02
-            ("Security configuration", "security.py / main.py", self.check_security),        # 13.03
-            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage), # 13.04
-            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors), # 13.05
-            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),                # 13.06
-            ("Environment security", "env variables", self.check_environment_security),      # 13.07
-            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions), # 13.08
-            ("Dependencies check", "requirements.txt", self.check_dependencies),             # 13.09
-            ("Static assets presence", "static/", self.check_static_assets),                 # 13.10
+            # 10. API & Frontend
+            ("API contract", "main.py / security.py", self.check_api_contract),             
+            ("Live API probe", "main.py / deployed URL", self.check_live_api),               
+            ("Front-page integrity", "index.html / config", self.check_frontpage),           
+            ("Static HTML files", "static/**/*.html", self.check_static_html),               
+            ("GitHub folder layout", "core / data / static / tools", self.check_repository_layout), 
+            # 11. Inventory
+            ("Database file hygiene", "data/ root", self.check_data_file_hygiene),           
+            ("Complete project inventory", "all folders / unused files", self.check_unused_files), 
+            # 12. Database & Financials
+            ("Database schema", "database.py", self.check_schema),                           
+            ("Database records", "database.py / travelers", self.check_database_records),    
+            ("ID and relationship integrity", "database.py / reports", self.check_relationships), 
+            ("Financial precision", "database.py / invoices", self.check_financials),        
+            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),
+            ("Tax configuration", "settings_manager.py", self.check_tax),                    
+            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),  
+            # 13. System & Security
+            ("Source syntax and functions", "all Python files", self.check_source),          
+            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),             
+            ("Security configuration", "security.py / main.py", self.check_security),        
+            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage), 
+            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors), 
+            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),                
+            ("Environment security", "env variables", self.check_environment_security),      
+            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions), 
+            ("Dependencies check", "requirements.txt", self.check_dependencies),             
+            ("Static assets presence", "static/", self.check_static_assets),                 
+            # 14. Deep Integration Tests (From Tools)
+            ("Security Headers (HSTS)", "HTTP Response Headers", self.check_security_headers),
+            ("Mobile Responsiveness", "index.html / traveler.html", self.check_mobile_responsive),
+            ("Frontpage Deep Config", "frontpage_config.json", self.check_frontpage_deep_config),
+            ("Public Pages Reachability", "Deployment URLs", self.check_public_pages),
         ]
 
     # ========================================================================
@@ -196,7 +206,6 @@ class SystemTestTab:
 
         self.root = ft.Container(
             content=ft.Column([
-                # Header
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SECURITY, color=ft.Colors.WHITE, size=32),
@@ -207,12 +216,10 @@ class SystemTestTab:
                         ft.Container(content=ft.Text("SUPER ADMIN", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_600, padding=8, border_radius=6),
                     ], spacing=12), padding=20, bgcolor=ft.Colors.BLUE_GREY_900, border_radius=12
                 ),
-                # Status Board
                 ft.Container(
                     content=ft.Column([self.notification, self.summary, self.progress_text, self.progress_bar, self.last_run, self.history_label], spacing=6),
                     padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_100)
                 ),
-                # Action Bar
                 ft.Row([
                     self.btn_run_all,
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=18), ft.Text("Refresh")], tight=True), on_click=self.refresh_status, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
@@ -224,25 +231,19 @@ class SystemTestTab:
                 ], spacing=10, wrap=True),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # Test Cards Grid
                 ft.Text("Available Diagnostics", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.ResponsiveRow(cards, spacing=10, run_spacing=10),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # Results Area
                 ft.Text("Diagnostic Results", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.Container(content=self.results_column, expand=True, padding=10, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100), border_radius=8, bgcolor=ft.Colors.WHITE),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # Repository Cleanup Section
                 ft.Container(
                     content=ft.Column([
                         ft.Text("GitHub Repository Cleanup", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                         ft.Text("Railway containers are ephemeral. To permanently remove unused files, you must delete them from your GitHub repository. Copy the command below and run it in your local project terminal.", size=12, color=ft.Colors.BLUE_GREY_600),
-                        ft.Container(
-                            content=self.cleanup_instructions_text,
-                            padding=15, bgcolor=ft.Colors.GREY_100, border_radius=6, border=ft.Border.all(1, ft.Colors.GREY_300)
-                        )
+                        ft.Container(content=self.cleanup_instructions_text, padding=15, bgcolor=ft.Colors.GREY_100, border_radius=6, border=ft.Border.all(1, ft.Colors.GREY_300))
                     ], spacing=10),
                     padding=20, bgcolor=ft.Colors.WHITE, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100)
                 ),
@@ -657,7 +658,6 @@ class SystemTestTab:
     # 10. API & FRONTEND TESTS
     # ========================================================================
     def check_api_contract(self):
-        """10.01. Verifies required API routes exist and uploads are protected."""
         path = self.project_root / "main.py"
         if not path.exists(): return self._fail("API source missing", str(path), "main.py")
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -669,7 +669,6 @@ class SystemTestTab:
         return self._ok("API contract", "Required API routes and protected uploads verified", "main.py / security.py")
 
     def check_live_api(self):
-        """10.02. Probes the live deployment URL to ensure endpoints respond correctly."""
         base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
         if not base: return self._ok("Live API probe skipped", "PUBLIC_BASE_URL is not configured.", "main.py", "Optional: set PUBLIC_BASE_URL")
         checks = [("frontpage", "/api/frontpage", 200), ("batches", "/api/batches", 200), ("admin", "/api/admin/frontpage/diagnose", 401)]
@@ -686,7 +685,6 @@ class SystemTestTab:
         return self._ok("Live API probe", f"Checked {len(checks)} endpoints at {base}", "main.py")
 
     def check_frontpage(self):
-        """10.03. Validates index.html, robots.txt, sitemap.xml, and frontpage config."""
         root = self.project_root
         static = root / "static"
         html_path = root / "index.html" if (root / "index.html").exists() else static / "index.html"
@@ -712,7 +710,6 @@ class SystemTestTab:
             return self._fail("Front-page config error", str(ex), "frontpage_config.py", "Repair loading logic")
 
     def check_static_html(self):
-        """10.04. Scans all static HTML files for basic structural integrity."""
         static = self.project_root / "static"
         if not static.exists(): return self._fail("Static folder missing", str(static), "static/", "Deploy static folder")
         html_files = sorted(static.rglob("*.html"))
@@ -728,7 +725,6 @@ class SystemTestTab:
         return self._ok("Static HTML files", f"Checked {len(html_files)} files", "static/")
 
     def check_repository_layout(self):
-        """10.05. Verifies the expected GitHub folder structure is present."""
         expected = ["core", "data", "data/backups", "documents", "flet_assets", "logos", "seed_data", "static", "tools"]
         actual = {str(path.relative_to(self.project_root)).replace("\\", "/").casefold(): path for path in self.project_root.rglob("*") if path.is_dir()}
         missing = [name for name in expected if name.casefold() not in actual]
@@ -739,7 +735,6 @@ class SystemTestTab:
     # 11. INVENTORY & FILESYSTEM TESTS
     # ========================================================================
     def check_data_file_hygiene(self):
-        """11.01. Ensures only recognized application files exist in data/ root."""
         data = self.data_dir
         if not data.exists(): return self._fail("Data folder missing", str(data), "database.py", "Repair directory")
         allowed = {"users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv", "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json", "tour_types.csv", "tax_settings.csv", "frontpage_config.json", "system_test_history.csv", "system_error_events.csv", "traveler_sessions.json", "_cleanup.sh", ".db.lock"}
@@ -748,7 +743,6 @@ class SystemTestTab:
         return self._ok("Database file hygiene", "Only recognized configuration and data files present", "data/")
 
     def check_unused_files(self):
-        """11.02. Generates a full inventory classifying files as used, protected, or unused, and provides a git rm command."""
         root = self.project_root
         protected_names = {"data", "documents", "logos", "flet_assets", "seed_data", "backups", "downloads", "delete_quarantine"}
         generated_export_extensions = {".pdf", ".xls", ".xlsx", ".csv"}
@@ -859,7 +853,6 @@ class SystemTestTab:
         self.folder_inventory = groups
         details = "; ".join(f"{folder}: {g['total']} listed / {g['protected']} protected / {g['unused']} unused" for folder, g in sorted(groups.items()))
         
-        # Build the git command
         if unused_files:
             cmd = "git rm " + " ".join(f'"{f}"' for f in unused_files)
             cmd += "\n\ngit commit -m 'Clean up unused files'\ngit push origin main"
@@ -879,7 +872,6 @@ class SystemTestTab:
     # 12. DATABASE & FINANCIAL TESTS
     # ========================================================================
     def check_schema(self):
-        """12.01. Verifies all necessary columns exist in the DataFrames."""
         expected = {"users": {"id", "username", "role"}, "travelers": {"id", "batch_id"}, "batches": {"id", "price"}, "payments": {"id", "traveler_id", "amount", "status"}, "invoices": {"id", "traveler_id"}, "receipts": {"id", "payment_id"}}
         problems = []
         for attr, cols in expected.items():
@@ -890,7 +882,6 @@ class SystemTestTab:
         return self._ok("Database schema", "All core tables contain required columns", "database.py")
 
     def check_database_records(self):
-        """12.02. Ensures DataFrames load correctly and reports record counts."""
         problems = []
         for attr in ("travelers", "batches", "payments", "invoices", "receipts"):
             df = getattr(self.db, attr, None)
@@ -900,7 +891,6 @@ class SystemTestTab:
         return self._ok("Database records", f"Loaded {len(self.db.travelers)} travelers, {len(self.db.batches)} batches, {len(self.db.payments)} payments, {len(self.db.invoices)} invoices", "database.py")
 
     def check_relationships(self):
-        """12.03. Checks for orphaned IDs in relationships (traveler->batch, payment->traveler)."""
         def ids(attr):
             df = getattr(self.db, attr, None)
             return {str(x).strip() for x in df["id"]} if df is not None and "id" in df.columns else set()
@@ -915,7 +905,6 @@ class SystemTestTab:
         return self._ok("ID and relationship integrity", "No orphan references found", "database.py")
 
     def check_financials(self):
-        """12.04. Validates that financial columns contain non-negative finite numbers."""
         problems = []
         for attr, cols in (("batches", ["price"]), ("payments", ["amount"]), ("invoices", ["amount", "taxable_value", "gst_amount", "tcs_amount", "total_amount", "rounded_total"])):
             df = getattr(self.db, attr, None)
@@ -933,7 +922,6 @@ class SystemTestTab:
         return self._ok("Financial precision", "Financial columns contain valid non-negative numbers", "database.py")
 
     def check_statuses(self):
-        """12.05. Ensures payment statuses are standardized."""
         df = getattr(self.db, "payments", None)
         if df is None: return self._warn("Payment status not checked", "payments dataframe unavailable", "payments_tab.py", "Confirm database.py exposes payments")
         allowed = {"completed", "pending", "failed", "refunded"}
@@ -942,7 +930,6 @@ class SystemTestTab:
         return self._ok("Payment and invoice status", "Statuses are normalized", "payments_tab.py")
 
     def check_tax(self):
-        """12.06. Confirms Tax settings exist and are within 0-100% bounds."""
         try:
             from core.settings_manager import SettingsManager
             tax = SettingsManager(self.db).get_tax_settings()
@@ -952,7 +939,6 @@ class SystemTestTab:
         except Exception as ex: return self._fail("Tax configuration issue", str(ex), "settings_manager.py", "Repair tax_settings.csv")
 
     def check_backups(self):
-        """12.07. Ensures backups are valid ZIPs and checks the age of the latest one."""
         folder = self.data_dir / "backups"
         if not folder.is_dir(): return self._warn("No backup folder", str(folder), "backups_tab.py", "Create a backup")
         try: files = list(folder.glob("*.zip"))
@@ -969,14 +955,12 @@ class SystemTestTab:
     # 13. SYSTEM, SECURITY & ENVIRONMENT TESTS
     # ========================================================================
     def _should_scan(self, path: Path) -> bool:
-        """Helper to exclude virtual environments and caches from slow scans."""
         excluded = {".venv", "venv", "env", "site-packages", "dist-packages", 
                     "__pycache__", ".git", ".pytest_cache", ".mypy_cache", 
                     "node_modules", "data", "documents", "logos", "flet_assets", "seed_data"}
         return not any(part.casefold() in excluded for part in path.parts)
 
     def check_source(self):
-        """13.01. Parses all Python files to ensure there are no syntax errors."""
         bad, functions, all_files = [], 0, []
         for folder in self.python_roots:
             try:
@@ -994,7 +978,6 @@ class SystemTestTab:
         return self._ok("Source syntax and functions", f"Parsed {len(set(all_files))} files and {functions} functions", "Python files")
 
     def check_ui_wiring(self):
-        """13.02. Scans Flet code for event bindings and missing setup_ui markers."""
         problems, controls, handlers, all_files = [], 0, 0, []
         for folder in self.python_roots:
             try:
@@ -1012,7 +995,6 @@ class SystemTestTab:
         return self._ok("UI/button wiring", f"Found {controls} event bindings; {handlers} function definitions", "UI files")
 
     def check_security(self):
-        """13.03. Verifies ADMIN_API_KEY strength and fail-closed security logic."""
         key = os.getenv("ADMIN_API_KEY", "")
         if not key or len(key) < 32: return self._warn("Admin API key", "ADMIN_API_KEY missing or < 32 chars", "security.py", "Set a random 32+ char key")
         main_text = (self.project_root / "main.py").read_text(encoding="utf-8", errors="replace")
@@ -1020,7 +1002,6 @@ class SystemTestTab:
         return self._ok("Security configuration", "Admin API key length and fail-closed fallback are present", "security.py")
 
     def check_runtime_storage(self):
-        """13.04. Ensures necessary runtime directories exist and are writable."""
         data = self.data_dir
         required = {"data": data, "documents": data / "documents", "backups": data / "backups", "static downloads": self.project_root / "static" / "downloads", "flet assets": self.project_root / "flet_assets"}
         missing = [name for name, path in required.items() if not path.is_dir()]
@@ -1029,7 +1010,6 @@ class SystemTestTab:
         return self._ok("Runtime storage and exports", "All required runtime folders are present and writable", "main.py")
 
     def check_background_errors(self):
-        """13.05. Scans activity_log.csv and *.log files for recent errors."""
         hits, now = [], datetime.now()
         activity = self.data_dir / "activity_log.csv"
         if activity.exists():
@@ -1050,7 +1030,6 @@ class SystemTestTab:
         return self._ok("Background error scan", "No recent errors detected in logs", "logs")
 
     def check_tools_scripts(self):
-        """13.06. Verifies the integrity of the tools/ folder and its scripts."""
         tools = self.project_root / "tools"
         if not tools.is_dir(): return self._warn("Tools folder missing", str(tools), "tools/", "Create the tools folder for standalone tests")
         required = ["full_functional_test.py", "full_ui_test.py", "health_check.py", "master_test.py", "security_audit.py", "test_frontpage_features.py"]
@@ -1064,7 +1043,6 @@ class SystemTestTab:
         return self._ok("Tools scripts integrity", f"Verified {len(required)} tools scripts", "tools/")
 
     def check_environment_security(self):
-        """13.07. Checks environment variables for safe production settings."""
         problems = []
         if not os.getenv("ADMIN_API_KEY", "") or len(os.getenv("ADMIN_API_KEY", "")) < 32: problems.append("ADMIN_API_KEY missing or < 32 chars")
         if not os.getenv("PORT", ""): problems.append("PORT env not set")
@@ -1073,7 +1051,6 @@ class SystemTestTab:
         return self._ok("Environment security", "ADMIN_API_KEY, PORT, and DEBUG variables are safely configured", "env")
 
     def check_file_permissions(self):
-        """13.08. Audits sensitive files for world-readable/writable permissions."""
         if os.name == "nt": return self._ok("File permissions", "Skipped on Windows", "system_test_tab.py")
         sensitive = [self.data_dir / "users.csv", self.data_dir / "travelers.csv", self.data_dir / "payments.csv", self.project_root / ".env"]
         problems = []
@@ -1088,7 +1065,6 @@ class SystemTestTab:
         return self._ok("File permissions", "Sensitive files are not world-readable or world-writable", "data/")
 
     def check_dependencies(self):
-        """13.09. Ensures required packages are listed in requirements.txt."""
         req_file = self.project_root / "requirements.txt"
         if not req_file.exists(): return self._warn("requirements.txt missing", str(req_file), "requirements.txt", "Create a requirements.txt file")
         text = req_file.read_text(encoding="utf-8", errors="replace").lower()
@@ -1098,10 +1074,8 @@ class SystemTestTab:
         return self._ok("Dependencies", "All required packages are listed in requirements.txt", "requirements.txt")
 
     def check_static_assets(self):
-        """13.10. Ensures primary static assets (CSS/JS) exist recursively or inline."""
         static = self.project_root / "static"
-        if not static.is_dir(): 
-            return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
+        if not static.is_dir(): return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
         
         has_css = any(static.rglob("*.css"))
         has_js = any(static.rglob("*.js"))
@@ -1125,3 +1099,81 @@ class SystemTestTab:
         if missing: 
             return self._warn("Missing static assets", ", ".join(missing), "static/", "Ensure CSS/JS files or inline styles are present")
         return self._ok("Static assets", "Primary static assets (CSS/JS) or inline styles detected", "static/")
+
+    # ========================================================================
+    # 14. DEEP INTEGRATION TESTS (From Tools)
+    # ========================================================================
+    def check_security_headers(self):
+        url = "https://alhudhahaj.work/"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AlhudhaDiagnostics/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as res:
+                headers = res.headers
+                missing = []
+                if not headers.get("Strict-Transport-Security"):
+                    missing.append("strict-transport-security (HSTS)")
+                if not headers.get("X-Frame-Options") and not headers.get("Content-Security-Policy"):
+                    missing.append("x-frame-options / CSP")
+                if not headers.get("X-Content-Type-Options"):
+                    missing.append("x-content-type-options")
+                
+                if missing:
+                    return self._fail(
+                        "Missing Security Headers", 
+                        f"The server is missing: {', '.join(missing)}. This leaves the app vulnerable.", 
+                        "main.py / SecurityHeadersMiddleware", 
+                        "Add the missing headers to SecurityHeadersMiddleware in main.py"
+                    )
+                return self._ok("Security Headers", "HSTS, CSP, X-Frame-Options, and X-Content-Type-Options are properly set", "main.py")
+        except Exception as ex:
+            return self._fail("Header check failed", f"Could not reach {url}: {ex}", "Network", "Check if the site is online")
+
+    def check_mobile_responsive(self):
+        static = self.project_root / "static"
+        pages = ["index.html", "traveler.html"]
+        problems = []
+        for page in pages:
+            path = static / page
+            if not path.exists(): continue
+            text = path.read_text(encoding="utf-8", errors="replace").lower()
+            if "width=device-width" not in text:
+                problems.append(f"{page}: missing viewport meta tag")
+            if "@media" not in text and "breakpoint" not in text:
+                problems.append(f"{page}: no responsive CSS media queries found")
+        
+        if problems:
+            return self._warn("Mobile Responsiveness", "; ".join(problems), "static/", "Ensure viewport tags and media queries are present")
+        return self._ok("Mobile Responsiveness", "Viewport tags and media queries are present", "static/")
+
+    def check_frontpage_deep_config(self):
+        path = self.data_dir / "frontpage_config.json"
+        if not path.exists():
+            return self._fail("Config missing", str(path), "data/", "Generate frontpage_config.json")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            required_keys = {"hero", "alert", "features", "packages", "about", "contact", "social", "footer", "gallery"}
+            missing = required_keys - set(data.keys())
+            if missing:
+                return self._fail("Config incomplete", f"Missing sections: {', '.join(missing)}", "frontpage_config.json", "Add the missing sections to the configuration")
+            return self._ok("Frontpage Deep Config", "All 9 required sections are present and valid", "frontpage_config.json")
+        except Exception as ex:
+            return self._fail("Config syntax error", str(ex), "frontpage_config.json", "Fix JSON formatting")
+
+    def check_public_pages(self):
+        urls = ["https://alhudhahaj.work/", "https://alhudhahaj.work/traveler", "https://alhudhahaj.work/robots.txt"]
+        problems = []
+        for url in urls:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "AlhudhaDiagnostics/1.0"})
+                with urllib.request.urlopen(req, timeout=10) as res:
+                    if res.status != 200:
+                        problems.append(f"{url}: HTTP {res.status}")
+                    content = res.read().decode("utf-8", errors="ignore")
+                    if len(content) < 100:
+                        problems.append(f"{url}: content too small (might be blank)")
+            except Exception as ex:
+                problems.append(f"{url}: {ex}")
+                
+        if problems:
+            return self._fail("Public Pages failure", "; ".join(problems), "Deployment URL", "Check Railway deployment logs")
+        return self._ok("Public Pages Reachability", "Home, Traveler Portal, and robots.txt load successfully", "Deployment URL")
