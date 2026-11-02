@@ -28,6 +28,11 @@ class SystemTestTab:
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
     CHECK_TIMEOUT_SECONDS = 20
+    HISTORY_FIELDS = [
+        "run_id", "timestamp", "level", "title", "plain_language",
+        "message", "owner", "action", "duration_ms", "user_id",
+        "manus_prompt",
+    ]
 
     def __init__(self, page, db, current_user):
         print(f"[SYSTEM-TEST] loaded version={self.VERSION}", flush=True)
@@ -154,6 +159,8 @@ class SystemTestTab:
                               on_click=self.download_manus_prompt, bgcolor="#fef3c7", color="#92400e", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CLEAR_ALL, size=17), ft.Text("Clear Screen")], tight=True),
                               on_click=lambda e: self.clear_screen(), bgcolor="#f1f5f9", color="#334155", height=42),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP, size=17), ft.Text("Reset CSV History")], tight=True),
+                              on_click=lambda e: self.confirm_reset_csv_history(), bgcolor="#fee2e2", color="#991b1b", height=42),
                 ], spacing=8, wrap=True),
                 ft.Container(content=ft.Column([
                     ft.Text("File cleanup candidates", size=13, weight=ft.FontWeight.BOLD, color="#0f172a"),
@@ -228,6 +235,62 @@ class SystemTestTab:
         self.notification.color = "#991b1b" if failures else "#92400e" if warnings else "#166534"
         self.history_label.value = f"Recorded runs: {len({r.get('run_id') for r in rows if r.get('run_id')})} • {self.diagnostics_dir / self.HISTORY_FILE}"
         self.summary.value = f"Previous run: {recent[-1].get('timestamp', '')} • {len(recent)} checks"
+
+    def confirm_reset_csv_history(self, e=None):
+        """Ask before clearing diagnostic history CSVs."""
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Reset diagnostic CSV history?",
+                          weight=ft.FontWeight.BOLD),
+            content=ft.Text(
+                "This clears only system_test_history.csv and "
+                "system_error_events.csv. Traveler, payment, invoice, "
+                "receipt, backup, and configuration data will not be changed."),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancel"),
+                              on_click=lambda ev: self.page.pop_dialog()),
+                ft.Button(content=ft.Text("Reset CSV History"),
+                          bgcolor="#991b1b", color=ft.Colors.WHITE,
+                          on_click=self.reset_csv_history),
+            ],
+        )
+        self.page.show_dialog(dialog)
+
+    def reset_csv_history(self, e=None):
+        """Truncate diagnostic CSVs and recreate their headers atomically."""
+        try:
+            directory = self.diagnostics_dir
+            for filename in (self.HISTORY_FILE, self.ERROR_FILE):
+                target = directory / filename
+                temporary = target.with_suffix(target.suffix + ".reset.tmp")
+                with temporary.open("w", encoding="utf-8", newline="") as handle:
+                    writer = csv.DictWriter(handle, fieldnames=self.HISTORY_FIELDS)
+                    writer.writeheader()
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            self.last_results = []
+            self.results_column.controls.clear()
+            self.notification.value = "Diagnostic CSV history reset. Business data was not changed."
+            self.notification.color = "#166534"
+            self.summary.value = "No previous diagnostic run recorded."
+            self.history_label.value = f"History file: {directory / self.HISTORY_FILE}"
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                pass
+            self.notification.update()
+            self.summary.update()
+            self.history_label.update()
+            self.results_column.update()
+        except Exception as ex:
+            self.notification.value = f"CSV history reset failed: {ex}"
+            self.notification.color = "#991b1b"
+            try:
+                self.page.pop_dialog()
+            except Exception:
+                pass
+            self.notification.update()
 
     def _plain_language(self, result):
         level = result.get("level", "FAIL")
