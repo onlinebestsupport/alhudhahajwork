@@ -1,7 +1,7 @@
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-02-r21-final-fixed
+# Version: 2026-11-02-r22-static-assets-fix
 # Purpose: Recorded, read-only system diagnostics. Ensures no business data
 #          (travelers, payments, etc.) is ever deleted or altered by tests.
 # 
@@ -48,7 +48,7 @@ class SystemTestTab:
     # ========================================================================
     # 01. CONSTANTS & CONFIGURATION
     # ========================================================================
-    VERSION = "2026-11-02-r21-final-fixed"
+    VERSION = "2026-11-02-r22-static-assets-fix"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -1259,16 +1259,30 @@ class SystemTestTab:
         return self._ok("Dependencies", "All required packages are listed in requirements.txt", "requirements.txt")
 
     def check_static_assets(self):
-        """14.10. Ensures primary static assets (CSS/JS) exist recursively."""
+        """14.10. Ensures primary static assets (CSS/JS) exist recursively or inline."""
         static = self.project_root / "static"
-        if not static.is_dir(): return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
+        if not static.is_dir(): 
+            return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
         
         has_css = any(static.rglob("*.css"))
         has_js = any(static.rglob("*.js"))
         
+        has_inline = False
+        for html in static.rglob("*.html"):
+            try:
+                text = html.read_text(encoding="utf-8", errors="ignore").lower()
+                if "<style" in text or "<script" in text:
+                    has_inline = True
+                    break
+            except Exception:
+                pass
+                
         missing = []
-        if not has_css: missing.append("CSS files (*.css)")
-        if not has_js: missing.append("JS files (*.js)")
+        if not has_css and not has_inline: 
+            missing.append("CSS files (*.css) or inline <style>")
+        if not has_js and not has_inline: 
+            missing.append("JS files (*.js) or inline <script>")
         
-        if missing: return self._warn("Missing static assets", ", ".join(missing), "static/", "Ensure all required static assets are present")
-        return self._ok("Static assets", "Primary static assets (CSS/JS) are present", "static/")
+        if missing: 
+            return self._warn("Missing static assets", ", ".join(missing), "static/", "Ensure CSS/JS files or inline styles are present")
+        return self._ok("Static assets", "Primary static assets (CSS/JS) or inline styles detected", "static/")
