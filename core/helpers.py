@@ -15,6 +15,7 @@ import base64
 import asyncio
 import inspect
 from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 
 # =================================================================================
@@ -51,6 +52,26 @@ def get_app_base_path():
             break
         cur = parent
     return os.path.dirname(here)
+
+
+# =================================================================================
+# Decimal helpers — shared by financial tabs and reports
+# =================================================================================
+def to_decimal(value, default=Decimal("0")):
+    """Convert persisted or user input to a finite Decimal without float drift."""
+    try:
+        if value is None or (isinstance(value, float) and value != value):
+            return default
+        result = Decimal(str(value).strip())
+        return result if result.is_finite() else default
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+
+
+def money_decimal(value, default=Decimal("0.00")):
+    """Return a monetary Decimal rounded to paise using half-up rounding."""
+    return to_decimal(value, default).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 # =================================================================================
@@ -352,6 +373,49 @@ def cleanup_old_downloads(max_age_days=7, downloads_dir=None):
             result["errors"] += 1
             print(f"[cleanup] could not delete {entry.name}: {ex}")
 
+    return result
+
+
+# =================================================================================
+# cleanup_generated_staging — remove temporary export copies
+# =================================================================================
+def cleanup_generated_staging(max_age_days=1, base_path=None):
+    """Remove only generated files from root exports/ and invoices/.
+
+    Business CSV files under data/ are never touched by this function.
+    The directories are retained because export code may recreate files there.
+    """
+    base = os.path.abspath(base_path or get_app_base_path())
+    extensions = {".csv", ".pdf", ".xls", ".xlsx"}
+    result = {"scanned": 0, "deleted": 0, "errors": 0,
+              "directories": []}
+    try:
+        days = max(0.0, float(max_age_days))
+    except (TypeError, ValueError):
+        days = 1.0
+    cutoff = datetime.now().timestamp() - days * 24 * 60 * 60
+    for name in ("exports", "core/exports", "invoices"):
+        directory = os.path.join(base, name)
+        result["directories"].append(directory)
+        if not os.path.isdir(directory):
+            continue
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            result["errors"] += 1
+            continue
+        for entry in entries:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            if os.path.splitext(entry.name)[1].lower() not in extensions:
+                continue
+            result["scanned"] += 1
+            try:
+                if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                    os.unlink(entry.path)
+                    result["deleted"] += 1
+            except OSError:
+                result["errors"] += 1
     return result
 
 
