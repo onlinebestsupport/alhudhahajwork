@@ -740,9 +740,12 @@ class SystemTestTab:
         generated_export_dirs={"exports", "invoices"}
         generated_export_extensions={".pdf", ".xls", ".xlsx", ".csv"}
         protected_files={"main.py","index.html","robots.txt","sitemap.xml","requirements.txt","pyproject.toml","nixpacks.toml"}
+        review_root_names={"add_traveler_test.py", "export_buttons_test.py",
+                           "system_check.py", "system_test.py"}
         text_extensions={".py",".html",".js",".css",".json",".toml",".ini",".yaml",".yml",".md",".txt"}
         files=[]; text_parts=[]; total_text_bytes=0
-        def add_record(path, protected, folder_summary=False):
+        def add_record(path, protected, folder_summary=False,
+                       review_artifact=False):
             nonlocal total_text_bytes
             try: stat=path.stat(); age_days=max(0,int((time.time()-stat.st_mtime)/86400))
             except OSError: return
@@ -751,7 +754,7 @@ class SystemTestTab:
                 try:
                     text=path.read_text(encoding="utf-8",errors="ignore")[:300_000]; text_parts.append(text); total_text_bytes+=len(text)
                 except OSError: pass
-            files.append({"path":path,"relative":relative,"age_days":age_days,"in_protected_dir":protected,"folder_summary":folder_summary})
+            files.append({"path":path,"relative":relative,"age_days":age_days,"in_protected_dir":protected,"folder_summary":folder_summary,"review_artifact":review_artifact})
         def scan_source_tree(base):
             if not base.is_dir(): return
             for current, dirnames, filenames in os.walk(base, topdown=True):
@@ -772,7 +775,15 @@ class SystemTestTab:
         # Root-level files are always inspected; known source trees are scanned.
         try:
             for child in root.iterdir():
-                if child.is_file(): add_record(child, child.name.casefold() in {name.casefold() for name in protected_files})
+                if child.is_file():
+                    review_artifact = child.name.casefold() in {
+                        name.casefold() for name in review_root_names}
+                    add_record(
+                        child,
+                        child.name.casefold() in {
+                            name.casefold() for name in protected_files}
+                        and not review_artifact,
+                        review_artifact=review_artifact)
         except OSError: pass
         scan_source_tree(root/"core")
         scan_source_tree(root/"tools")
@@ -823,8 +834,11 @@ class SystemTestTab:
             referenced=not record["folder_summary"] and bool(name) and name in combined_text
             core_module=bool(relative.parts and relative.parts[0].casefold()=="core" and path.suffix.lower()==".py")
             essential=name.casefold() in protected_file_names
-            protected=record["in_protected_dir"] or record["folder_summary"] or core_module or essential or referenced
-            info={"protected":protected,"classification":"protected folder" if record["folder_summary"] else ("protected system file" if protected else "unused candidate"),"used":referenced or core_module or essential,"age_days":record["age_days"],"folder_summary":record["folder_summary"]}
+            review_artifact=record.get("review_artifact", False)
+            protected=(not review_artifact and
+                       (record["in_protected_dir"] or record["folder_summary"]
+                        or core_module or essential or referenced))
+            info={"protected":protected,"classification":"protected folder" if record["folder_summary"] else ("review candidate" if review_artifact else ("protected system file" if protected else "unused candidate")),"used":(not review_artifact and (referenced or core_module or essential)),"age_days":record["age_days"],"folder_summary":record["folder_summary"]}
             key=str(path.resolve()); self.file_inventory_info[key]=info
             if protected: protected_paths.add(key)
         self._add_cleanup_candidates([record["path"] for record in files],"inventory","Complete folder inventory classification",protected_paths=protected_paths)
