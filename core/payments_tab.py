@@ -26,12 +26,15 @@ import time
 import uuid
 from pathlib import Path
 from datetime import datetime
+from decimal import Decimal
 import pandas as pd
 
 from core.helpers import (
     get_app_base_path,
     number_to_words_indian,
     format_currency_indian,
+    to_decimal,
+    money_decimal,
     send_file_to_user,
 )
 from core.settings_manager import SettingsManager
@@ -204,7 +207,7 @@ class PaymentEditDialog:
                 self._snack("⚠️ Please enter the payment amount")
                 return
             try:
-                amount = float(amount_text)
+                amount = money_decimal(amount_text)
                 if amount <= 0:
                     self._snack("⚠️ Amount must be greater than 0")
                     return
@@ -534,13 +537,13 @@ class PaymentsTab:
                 if bid and bid in self.batches:
                     b = self.batches[bid]
                     self.traveler_details[tid] = {
-                        'batch_price': float(b.get('price', 0) or 0),
+                        'batch_price': money_decimal(b.get('price', 0)),
                         'batch_name': b.get('batch_name', 'Unknown'),
                         'batch_id': bid,
                     }
                 else:
                     self.traveler_details[tid] = {
-                        'batch_price': 0, 'batch_name': 'No Batch',
+                        'batch_price': Decimal('0.00'), 'batch_name': 'No Batch',
                         'batch_id': None,
                     }
 
@@ -592,8 +595,9 @@ class PaymentsTab:
         for p in payments:
             tid = p.get('traveler_id')
             if tid:
-                traveler_paid[tid] = (traveler_paid.get(tid, 0)
-                                      + float(p.get('amount', 0) or 0))
+                traveler_paid[tid] = (
+                    traveler_paid.get(tid, Decimal('0.00'))
+                    + money_decimal(p.get('amount', 0)))
 
         self.table.rows.clear()
         for p in payments:
@@ -602,7 +606,7 @@ class PaymentsTab:
             date_str = (str(p.get('payment_date', ''))[:10]
                         if p.get('payment_date') else '')
             traveler_name = self.travelers.get(tid, 'Unknown')
-            amount_text = f"₹{float(p.get('amount', 0) or 0):,.0f}"
+            amount_text = f"₹{money_decimal(p.get('amount', 0)):,.0f}"
             method = str(p.get('payment_method', ''))
             status = str(p.get('status', 'pending'))
             status_color = ("#27ae60" if status.strip().lower() == "completed"
@@ -619,9 +623,9 @@ class PaymentsTab:
                 inv_no = self.invoices[inv_id].get('invoice_no', '')[:14]
 
             traveler_info = self.traveler_details.get(
-                tid, {'batch_price': 0, 'batch_name': 'No Batch'})
+                tid, {'batch_price': Decimal('0.00'), 'batch_name': 'No Batch'})
             batch_price = traveler_info['batch_price']
-            total_paid = traveler_paid.get(tid, 0)
+            total_paid = traveler_paid.get(tid, Decimal('0.00'))
             package_pending = batch_price - total_paid
 
             if batch_price > 0:
@@ -631,7 +635,7 @@ class PaymentsTab:
                 else:
                     pkg_txt = f"₹{package_pending:,.0f}"
                     pkg_color = ("#e67e22"
-                                 if package_pending < batch_price * 0.5
+                                 if package_pending < batch_price * Decimal('0.5')
                                  else "#e74c3c")
             else:
                 pkg_txt = "N/A"
@@ -641,9 +645,8 @@ class PaymentsTab:
             if inv_id and inv_id in self.invoices:
                 inv = self.invoices[inv_id]
                 if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
-                    inv_pending = float(
-                        inv.get('rounded_total',
-                                inv.get('total_amount', 0)) or 0)
+                    inv_pending = money_decimal(
+                        inv.get('rounded_total', inv.get('total_amount', 0)))
 
             if inv_pending > 0:
                 inv_txt = f"₹{inv_pending:,.0f}"
@@ -740,7 +743,7 @@ class PaymentsTab:
                     self.selection_label.value = (
                         f"✅ Selected: "
                         f"{self.travelers.get(p.get('traveler_id',''),'?')} "
-                        f"| ₹{float(p.get('amount',0) or 0):,.0f} "
+                        f"| ₹{money_decimal(p.get('amount', 0)):,.0f} "
                         f"| Txn: {str(p.get('transaction_id',''))[:12]}")
                 else:
                     self.selection_label.value = ""
@@ -796,30 +799,29 @@ class PaymentsTab:
             int(receipt.get('amount', 0) or 0))
         tid = payment.get('traveler_id', '')
         traveler_info = self.traveler_details.get(
-            tid, {'batch_price': 0, 'batch_name': 'No Batch'})
+            tid, {'batch_price': Decimal('0.00'), 'batch_name': 'No Batch'})
         batch_price = traveler_info['batch_price']
         total_paid = sum(
-            float(p.get('amount', 0) or 0) for p in self.payments
-            if p.get('traveler_id') == tid)
+            (money_decimal(p.get('amount', 0)) for p in self.payments
+             if p.get('traveler_id') == tid), Decimal('0.00'))
         package_pending = batch_price - total_paid
 
         inv_id = payment.get('invoice_id', '')
-        inv_pending = 0
+        inv_pending = Decimal('0.00')
         inv_no = 'N/A'
         if inv_id and inv_id in self.invoices:
             inv = self.invoices[inv_id]
             inv_no = inv.get('invoice_no', 'N/A')
             if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
-                inv_pending = float(
-                    inv.get('rounded_total',
-                            inv.get('total_amount', 0)) or 0)
+                inv_pending = money_decimal(
+                    inv.get('rounded_total', inv.get('total_amount', 0)))
 
         details = (
             f"Company:  {company_name}\n"
             f"Receipt No:  {receipt.get('receipt_no', '')}\n"
             f"Date:  {str(receipt.get('receipt_date', ''))[:10]}\n"
             f"Received From:  {traveler_name}\n"
-            f"Amount:  ₹{float(receipt.get('amount', 0) or 0):,.2f}\n"
+            f"Amount:  ₹{money_decimal(receipt.get('amount', 0)):,.2f}\n"
             f"Amount in Words:  {amount_in_words}\n"
             f"Method:  {payment.get('payment_method', 'N/A')}\n"
             f"Transaction ID:  {payment.get('transaction_id', 'N/A')}\n"
@@ -888,25 +890,25 @@ class PaymentsTab:
                 f"{traveler.get('last_name', '')}").strip() or "Unknown"
             bid = payment.get('batch_id', '')
             batch = self.db.get_batch_by_id(bid) if bid else None
-            batch_price = float(batch.get('price', 0) or 0) if batch else 0
+            batch_price = (money_decimal(batch.get('price', 0))
+                           if batch else Decimal('0.00'))
             batch_name = (batch.get('batch_name', 'No Batch')
                           if batch else 'No Batch')
 
             total_paid = sum(
-                float(p.get('amount', 0) or 0) for p in self.payments
-                if p.get('traveler_id') == tid)
+                (money_decimal(p.get('amount', 0)) for p in self.payments
+                 if p.get('traveler_id') == tid), Decimal('0.00'))
             package_pending = batch_price - total_paid
 
             inv_id = payment.get('invoice_id', '')
-            inv_pending = 0
+            inv_pending = Decimal('0.00')
             inv_no = 'N/A'
             if inv_id and inv_id in self.invoices:
                 inv = self.invoices[inv_id]
                 inv_no = inv.get('invoice_no', 'N/A')
                 if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
-                    inv_pending = float(
-                        inv.get('rounded_total',
-                                inv.get('total_amount', 0)) or 0)
+                    inv_pending = money_decimal(
+                        inv.get('rounded_total', inv.get('total_amount', 0)))
 
             amount_in_words = number_to_words_indian(
                 int(receipt.get('amount', 0) or 0))
@@ -1037,35 +1039,38 @@ class PaymentsTab:
             self._snack(f"❌ {ex}")
 
     def update_summary_stats(self):
-        total = sum(float(p.get('amount', 0) or 0) for p in self.payments)
-        completed = sum(float(p.get('amount', 0) or 0)
-                        for p in self.payments
-                        if str(p.get('status', '')).strip().lower() == 'completed')
-        pending = sum(float(p.get('amount', 0) or 0)
-                      for p in self.payments
-                      if str(p.get('status', '')).strip().lower() == 'pending')
+        total = sum((money_decimal(p.get('amount', 0)) for p in self.payments),
+                    Decimal('0.00'))
+        completed = sum((money_decimal(p.get('amount', 0))
+                         for p in self.payments
+                         if str(p.get('status', '')).strip().lower() == 'completed'),
+                        Decimal('0.00'))
+        pending = sum((money_decimal(p.get('amount', 0))
+                       for p in self.payments
+                       if str(p.get('status', '')).strip().lower() == 'pending'),
+                      Decimal('0.00'))
         receipt_count = len(self.receipts)
 
         traveler_paid = {}
         for p in self.payments:
             tid = p.get('traveler_id')
             if tid:
-                traveler_paid[tid] = (traveler_paid.get(tid, 0)
-                                      + float(p.get('amount', 0) or 0))
+                traveler_paid[tid] = (
+                    traveler_paid.get(tid, Decimal('0.00'))
+                    + money_decimal(p.get('amount', 0)))
 
-        total_package_pending = 0
+        total_package_pending = Decimal('0.00')
         for tid, info in self.traveler_details.items():
             bp = info['batch_price']
-            paid = traveler_paid.get(tid, 0)
+            paid = traveler_paid.get(tid, Decimal('0.00'))
             if bp - paid > 0:
                 total_package_pending += (bp - paid)
 
-        total_invoice_pending = 0
+        total_invoice_pending = Decimal('0.00')
         for inv in self.invoices.values():
             if str(inv.get('status', '')).strip().lower() in {'pending', 'partially_paid'}:
-                total_invoice_pending += float(
-                    inv.get('rounded_total',
-                            inv.get('total_amount', 0)) or 0)
+                total_invoice_pending += money_decimal(
+                    inv.get('rounded_total', inv.get('total_amount', 0)))
 
         def _short(v):
             try:
@@ -1353,16 +1358,16 @@ class PaymentDialog:
             self._update_traveler_labels()
             return
 
-        batch_price = float(batch.get('price', 0) or 0)
+        batch_price = money_decimal(batch.get('price', 0))
         batch_name = batch.get('batch_name', 'Unknown')
         self._batch_price = batch_price
 
         try:
             payments = self.db.get_payments(traveler_id=tid)
-            total_paid = sum(float(p.get('amount', 0) or 0)
-                             for p in payments)
+            total_paid = sum((money_decimal(p.get('amount', 0))
+                              for p in payments), Decimal('0.00'))
         except Exception:
-            total_paid = 0
+            total_paid = Decimal('0.00')
         self._total_paid = total_paid
 
         pending = batch_price - total_paid
@@ -1395,9 +1400,9 @@ class PaymentDialog:
             pending = 0
 
         try:
-            amount = float(self.amount_field.value or 0)
+            amount = money_decimal(self.amount_field.value or 0)
         except (ValueError, TypeError):
-            amount = 0.0
+            amount = Decimal('0.00')
 
         remaining = pending - amount
         if remaining < 0:
@@ -1427,9 +1432,9 @@ class PaymentDialog:
                 return
 
             try:
-                amount = float(self.amount_field.value or 0)
+                amount = money_decimal(self.amount_field.value or 0)
             except (ValueError, TypeError):
-                amount = 0
+                amount = Decimal('0.00')
             if amount <= 0:
                 self._snack("⚠️ Please enter a valid amount")
                 return
@@ -1437,25 +1442,25 @@ class PaymentDialog:
             traveler = self.db.get_traveler_by_id(tid)
             batch_id = traveler.get('batch_id') if traveler else None
 
-            batch_price = 0.0
+            batch_price = Decimal('0.00')
             if batch_id:
                 try:
                     for b in self.db.get_batches():
                         if b.get('id') == batch_id:
-                            batch_price = float(b.get('price', 0) or 0)
+                            batch_price = money_decimal(b.get('price', 0))
                             break
                 except Exception:
                     pass
 
             try:
                 payments = self.db.get_payments(traveler_id=tid)
-                total_paid = sum(float(p.get('amount', 0) or 0)
-                                 for p in payments)
+                total_paid = sum((money_decimal(p.get('amount', 0))
+                                  for p in payments), Decimal('0.00'))
             except Exception:
-                total_paid = 0
+                total_paid = Decimal('0.00')
 
             pending_before = batch_price - total_paid
-            if amount > pending_before + 0.01:
+            if amount > pending_before + Decimal('0.01'):
                 self._snack(
                     f"⚠️ Payment (₹{amount:,.2f}) exceeds pending "
                     f"(₹{pending_before:,.2f})")
@@ -1465,11 +1470,11 @@ class PaymentDialog:
             if self.generate_invoice_check.value and batch_id:
                 tax = self.settings_manager.get_tax_settings()
                 try:
-                    gst_rate = float(tax.get('gst_percentage', 5))
-                    tcs_rate = float(tax.get('tcs_percentage', 2))
+                    gst_rate = money_decimal(tax.get('gst_percentage', 5))
+                    tcs_rate = money_decimal(tax.get('tcs_percentage', 2))
                 except Exception:
-                    gst_rate = 5.0
-                    tcs_rate = 2.0
+                    gst_rate = Decimal('5.00')
+                    tcs_rate = Decimal('2.00')
                 try:
                     invoice_id = self.db.generate_invoice(
                         tid, batch_id, amount, gst_rate, tcs_rate)
