@@ -23,7 +23,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-01-r12-fast-folder-inventory"
+    VERSION = "2026-11-02-r13-reset-refresh-storage-check"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -117,6 +117,7 @@ class SystemTestTab:
             ("Source syntax and functions", "all Python files", self.check_source),
             ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),
             ("Security configuration", "security.py / main.py", self.check_security),
+            ("Runtime storage and exports", "main.py / helpers.py / data", self.check_runtime_storage),
             ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors),
         ]
 
@@ -149,8 +150,10 @@ class SystemTestTab:
                 ft.Row([
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.PLAY_ARROW, size=17), ft.Text("Run All Tests", weight=ft.FontWeight.BOLD)], tight=True),
                               on_click=self.run_all, bgcolor="#2563eb", color=ft.Colors.WHITE, height=42),
-                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.HISTORY, size=17), ft.Text("Show Last Run")], tight=True),
+            ft.Button(content=ft.Row([ft.Icon(ft.Icons.HISTORY, size=17), ft.Text("Show Last Run")], tight=True),
                               on_click=self.show_last_run, bgcolor="#f1f5f9", color="#334155", height=42),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=17), ft.Text("Refresh Status")], tight=True),
+                              on_click=self.refresh_status, bgcolor="#e0f2fe", color="#075985", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=17), ft.Text("Current CSV")], tight=True),
                               on_click=self.download_current_csv, bgcolor="#dcfce7", color="#166534", height=42),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=17), ft.Text("All History CSV")], tight=True),
@@ -469,7 +472,41 @@ class SystemTestTab:
             return self._fail("Unexpected test error", repr(ex), "system_test_tab.py")
 
     def clear_screen(self):
-        self.results_column.controls.clear(); self.results_column.update()
+        """Clear the current visual run without deleting saved CSV history."""
+        if self._test_running:
+            self.notification.value = "A test is running. Clear Screen is available after it finishes."
+            self.notification.color = "#92400e"
+            self.notification.update()
+            return
+        self.last_results = []
+        self._progress_started = None
+        self.progress_bar.value = 0
+        self.progress_text.value = "Ready — no test is running"
+        self.summary.value = "Screen cleared — press Run All Tests to start a new run."
+        self.notification.value = ""
+        self.last_run.value = ""
+        self.history_label.value = "Saved CSV history was not deleted. Press Refresh Status to load it again."
+        self.results_column.controls.clear()
+        for control in (self.progress_bar, self.progress_text, self.summary,
+                        self.notification, self.last_run, self.history_label,
+                        self.results_column):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+    def refresh_status(self, e=None):
+        """Reload the latest saved history/status without running tests."""
+        if self._test_running:
+            self.notification.value = "Tests are running. Refresh Status is available after completion."
+            self.notification.color = "#92400e"
+            self.notification.update()
+            return
+        self._load_previous_notification()
+        self.show_last_run()
+        self.notification.value = "Saved diagnostic status refreshed."
+        self.notification.color = "#166534"
+        self.notification.update()
 
     def show_last_run(self, e=None):
         rows = self._history()
@@ -1134,6 +1171,34 @@ class SystemTestTab:
         if not key or len(key)<32: return self._warn("Admin API key", "ADMIN_API_KEY is missing or shorter than 32 characters in this runtime", "security.py / main.py", "Set a random 32+ character ADMIN_API_KEY")
         main=(self.project_root/"main.py").read_text(encoding="utf-8", errors="replace")
         return self._fail("Security fallback detected", "main.py does not fail closed when security import fails", "main.py / security.py", "Keep protected endpoints returning 503") if "Security service unavailable" not in main else self._ok("Security configuration", "ADMIN_API_KEY length and fail-closed security fallback are present", "security.py / main.py")
+
+    def check_runtime_storage(self):
+        """Check required runtime directories without changing business data."""
+        root = self.project_root
+        data = self.data_dir
+        required = {
+            "data": data,
+            "documents": data / "documents",
+            "backups": data / "backups",
+            "static": root / "static",
+            "static downloads": root / "static" / "downloads",
+            "flet assets": root / "flet_assets",
+        }
+        missing = [name for name, path in required.items() if not path.is_dir()]
+        if missing:
+            return self._warn(
+                "Runtime storage folders missing", ", ".join(missing),
+                "main.py / helpers.py / database.py",
+                "Confirm the listed runtime folders are created by deployment")
+        if not os.access(str(data), os.W_OK):
+            return self._fail(
+                "Runtime data folder is not writable", str(data),
+                "database.py / Railway volume",
+                "Mount a writable persistent data volume")
+        return self._ok(
+            "Runtime storage and exports",
+            "Data, documents, backups, static downloads and Flet asset folders are available",
+            "main.py / helpers.py / data")
 
     def check_background_errors(self):
         hits=[]; now=datetime.now(); activity=self.data_dir/"activity_log.csv"
