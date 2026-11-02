@@ -40,6 +40,7 @@ import subprocess
 import traceback
 import asyncio
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import flet as ft
@@ -51,10 +52,15 @@ except ImportError:
     SettingsManager = None
 
 try:
-    from core.helpers import send_file_to_user
+    from core.helpers import send_file_to_user, money_decimal
 except ImportError:
     def send_file_to_user(page, path, label="Download"):
         return None
+    def money_decimal(value):
+        try:
+            return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+        except Exception:
+            return Decimal("0.00")
 
 
 # =================================================================================
@@ -669,10 +675,7 @@ class CustomReportDialog:
         self.default_invoice_by_traveler = {}
 
         def _f(v):
-            try:
-                return float(v or 0)
-            except (TypeError, ValueError):
-                return 0.0
+            return money_decimal(v)
 
         try:
             for inv in self.db.get_invoices():
@@ -714,19 +717,19 @@ class CustomReportDialog:
                     self.default_invoice_by_traveler[tid] = inv_entry
 
                 entry = self.traveler_invoice_data.setdefault(tid, {
-                    'base': 0.0,
-                    'discount_amount': 0.0,
+                    'base': Decimal('0.00'),
+                    'discount_amount': Decimal('0.00'),
                     'discount_pct': None,
-                    'discount_pct_calc': 0.0,
-                    'taxable': 0.0,
-                    'gst': 0.0,
+                    'discount_pct_calc': Decimal('0.00'),
+                    'taxable': Decimal('0.00'),
+                    'gst': Decimal('0.00'),
                     'gst_pct': None,
-                    'gst_pct_calc': 0.0,
-                    'tcs': 0.0,
+                    'gst_pct_calc': Decimal('0.00'),
+                    'tcs': Decimal('0.00'),
                     'tcs_pct': None,
-                    'tcs_pct_calc': 0.0,
-                    'total_amount': 0.0,
-                    'rounded_total': 0.0,
+                    'tcs_pct_calc': Decimal('0.00'),
+                    'total_amount': Decimal('0.00'),
+                    'rounded_total': Decimal('0.00'),
                     'has_paid_invoice': False,
                 })
                 entry['base']            += inv_entry['base']
@@ -746,12 +749,12 @@ class CustomReportDialog:
             for tid, data in self.traveler_invoice_data.items():
                 if data['base'] > 0:
                     data['discount_pct_calc'] = (
-                        data['discount_amount'] / data['base'] * 100.0)
+                        data['discount_amount'] / data['base'] * Decimal('100'))
                 if data['taxable'] > 0:
                     data['gst_pct_calc'] = (
-                        data['gst'] / data['taxable'] * 100.0)
+                        data['gst'] / data['taxable'] * Decimal('100'))
                     data['tcs_pct_calc'] = (
-                        data['tcs'] / data['taxable'] * 100.0)
+                        data['tcs'] / data['taxable'] * Decimal('100'))
         except Exception as e:
             print(f"[CR] _refresh_invoice_caches failed: {e}")
 
