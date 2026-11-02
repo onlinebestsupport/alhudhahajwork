@@ -1,19 +1,7 @@
-The error is happening because **you copied my entire conversational response** (the text saying *"I hear you loud and clear. I deeply apologize..."*) into your Python file, instead of just the code. 
-
-Python cannot read English sentences; it only reads code.
-
-**To fix this immediately:**
-1. Open your `core/system_test_tab.py` file.
-2. Press **Ctrl + A** (Select All) and hit **Delete** to completely empty the file.
-3. Copy **ONLY the code block below** (start exactly at `# ============================================================================` and go all the way to the very bottom). Do not copy this sentence you are reading right now.
-
-Here is the complete, error-free, properly numbered code with **all functions and buttons restored** (including Manus prompts, Clear Screen, the 22-second scan bug fix, and the missing file warnings fixes):
-
-```python
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-02-r20-final-production
+# Version: 2026-11-02-r21-final-fixed
 # Purpose: Recorded, read-only system diagnostics. Ensures no business data
 #          (travelers, payments, etc.) is ever deleted or altered by tests.
 # 
@@ -60,7 +48,7 @@ class SystemTestTab:
     # ========================================================================
     # 01. CONSTANTS & CONFIGURATION
     # ========================================================================
-    VERSION = "2026-11-02-r20-final-production"
+    VERSION = "2026-11-02-r21-final-fixed"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -221,7 +209,6 @@ class SystemTestTab:
 
         self.root = ft.Container(
             content=ft.Column([
-                # 04.1 Header
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SECURITY, color=ft.Colors.WHITE, size=32),
@@ -232,12 +219,10 @@ class SystemTestTab:
                         ft.Container(content=ft.Text("SUPER ADMIN", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_600, padding=8, border_radius=6),
                     ], spacing=12), padding=20, bgcolor=ft.Colors.BLUE_GREY_900, border_radius=12
                 ),
-                # 04.2 Status Board
                 ft.Container(
                     content=ft.Column([self.notification, self.summary, self.progress_text, self.progress_bar, self.last_run, self.history_label], spacing=6),
                     padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_100)
                 ),
-                # 04.3 Action Bar
                 ft.Row([
                     self.btn_run_all,
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=18), ft.Text("Refresh")], tight=True), on_click=self.refresh_status, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
@@ -249,17 +234,14 @@ class SystemTestTab:
                 ], spacing=10, wrap=True),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # 04.4 Test Cards Grid
                 ft.Text("Available Diagnostics", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.ResponsiveRow(cards, spacing=10, run_spacing=10),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # 04.5 Results Area
                 ft.Text("Diagnostic Results", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.Container(content=self.results_column, expand=True, padding=10, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100), border_radius=8, bgcolor=ft.Colors.WHITE),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
-                # 04.6 File Cleanup Section
                 ft.Container(
                     content=ft.Column([
                         ft.Text("File Cleanup & Quarantine", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900),
@@ -1290,4 +1272,3 @@ class SystemTestTab:
         
         if missing: return self._warn("Missing static assets", ", ".join(missing), "static/", "Ensure all required static assets are present")
         return self._ok("Static assets", "Primary static assets (CSS/JS) are present", "static/")
-```
