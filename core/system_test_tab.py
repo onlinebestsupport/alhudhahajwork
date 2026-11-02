@@ -1,7 +1,7 @@
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-02-r22-static-assets-fix
+# Version: 2026-11-02-r23-git-cleanup-instructions
 # Purpose: Recorded, read-only system diagnostics. Ensures no business data
 #          (travelers, payments, etc.) is ever deleted or altered by tests.
 # 
@@ -17,9 +17,8 @@
 #   09. RESULT RENDERING & HELPERS
 #   10. API & FRONTEND TESTS
 #   11. INVENTORY & FILESYSTEM TESTS
-#   12. CLEANUP & QUARANTINE LOGIC
-#   13. DATABASE & FINANCIAL TESTS
-#   14. SYSTEM, SECURITY & ENVIRONMENT TESTS
+#   12. DATABASE & FINANCIAL TESTS
+#   13. SYSTEM, SECURITY & ENVIRONMENT TESTS
 # ============================================================================
 from __future__ import annotations
 
@@ -48,7 +47,7 @@ class SystemTestTab:
     # ========================================================================
     # 01. CONSTANTS & CONFIGURATION
     # ========================================================================
-    VERSION = "2026-11-02-r22-static-assets-fix"
+    VERSION = "2026-11-02-r23-git-cleanup-instructions"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -84,17 +83,11 @@ class SystemTestTab:
         self._test_running = False
         self.run_buttons = []
         
-        # Cleanup & Quarantine State
-        self.cleanup_candidates = []
-        self.file_inventory_info = {}
-        self.cleanup_checks = {}
-        self.quarantine_checks = {}
-        self.cleanup_confirmation = ft.Checkbox(label="I understand selected files will be moved to quarantine", value=False)
-        self.permanent_confirmation = ft.Checkbox(label="I understand selected quarantine files will be permanently deleted", value=False)
-        
-        self.cleanup_column = ft.Column(spacing=4, scroll=ft.ScrollMode.ADAPTIVE, height=200)
-        self.quarantine_column = ft.Column(spacing=4, scroll=ft.ScrollMode.ADAPTIVE, height=150)
-        self.inventory_summary = ft.Column(spacing=2, scroll=ft.ScrollMode.ADAPTIVE)
+        # Cleanup Instructions State
+        self.cleanup_instructions_text = ft.Text(
+            "Run the 'Complete project inventory' test to generate GitHub cleanup commands.",
+            size=12, font_family="monospace", selectable=True, color=ft.Colors.BLUE_GREY_800
+        )
         
         self._build_specs()
         self.setup_ui()
@@ -139,12 +132,6 @@ class SystemTestTab:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    @property
-    def quarantine_dir(self):
-        path = self.data_dir / "delete_quarantine"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
     # ========================================================================
     # 03. TEST SPECIFICATIONS (Registry)
     # ========================================================================
@@ -157,23 +144,23 @@ class SystemTestTab:
             ("GitHub folder layout", "core / data / static / tools", self.check_repository_layout), # 10.05
             ("Database file hygiene", "data/ root", self.check_data_file_hygiene),           # 11.01
             ("Complete project inventory", "all folders / unused files", self.check_unused_files), # 11.02
-            ("Database schema", "database.py", self.check_schema),                           # 13.01
-            ("Database records", "database.py / travelers", self.check_database_records),    # 13.02
-            ("ID and relationship integrity", "database.py / reports", self.check_relationships), # 13.03
-            ("Financial precision", "database.py / invoices", self.check_financials),        # 13.04
-            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),# 13.05
-            ("Tax configuration", "settings_manager.py", self.check_tax),                    # 13.06
-            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),  # 13.07
-            ("Source syntax and functions", "all Python files", self.check_source),          # 14.01
-            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),             # 14.02
-            ("Security configuration", "security.py / main.py", self.check_security),        # 14.03
-            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage), # 14.04
-            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors), # 14.05
-            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),                # 14.06
-            ("Environment security", "env variables", self.check_environment_security),      # 14.07
-            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions), # 14.08
-            ("Dependencies check", "requirements.txt", self.check_dependencies),             # 14.09
-            ("Static assets presence", "static/", self.check_static_assets),                 # 14.10
+            ("Database schema", "database.py", self.check_schema),                           # 12.01
+            ("Database records", "database.py / travelers", self.check_database_records),    # 12.02
+            ("ID and relationship integrity", "database.py / reports", self.check_relationships), # 12.03
+            ("Financial precision", "database.py / invoices", self.check_financials),        # 12.04
+            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),# 12.05
+            ("Tax configuration", "settings_manager.py", self.check_tax),                    # 12.06
+            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),  # 12.07
+            ("Source syntax and functions", "all Python files", self.check_source),          # 13.01
+            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),             # 13.02
+            ("Security configuration", "security.py / main.py", self.check_security),        # 13.03
+            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage), # 13.04
+            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors), # 13.05
+            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),                # 13.06
+            ("Environment security", "env variables", self.check_environment_security),      # 13.07
+            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions), # 13.08
+            ("Dependencies check", "requirements.txt", self.check_dependencies),             # 13.09
+            ("Static assets presence", "static/", self.check_static_assets),                 # 13.10
         ]
 
     # ========================================================================
@@ -209,6 +196,7 @@ class SystemTestTab:
 
         self.root = ft.Container(
             content=ft.Column([
+                # Header
                 ft.Container(
                     content=ft.Row([
                         ft.Icon(ft.Icons.SECURITY, color=ft.Colors.WHITE, size=32),
@@ -219,10 +207,12 @@ class SystemTestTab:
                         ft.Container(content=ft.Text("SUPER ADMIN", size=10, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE), bgcolor=ft.Colors.RED_600, padding=8, border_radius=6),
                     ], spacing=12), padding=20, bgcolor=ft.Colors.BLUE_GREY_900, border_radius=12
                 ),
+                # Status Board
                 ft.Container(
                     content=ft.Column([self.notification, self.summary, self.progress_text, self.progress_bar, self.last_run, self.history_label], spacing=6),
                     padding=15, bgcolor=ft.Colors.BLUE_50, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_100)
                 ),
+                # Action Bar
                 ft.Row([
                     self.btn_run_all,
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=18), ft.Text("Refresh")], tight=True), on_click=self.refresh_status, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
@@ -234,25 +224,27 @@ class SystemTestTab:
                 ], spacing=10, wrap=True),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
+                # Test Cards Grid
                 ft.Text("Available Diagnostics", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.ResponsiveRow(cards, spacing=10, run_spacing=10),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
+                # Results Area
                 ft.Text("Diagnostic Results", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
                 ft.Container(content=self.results_column, expand=True, padding=10, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100), border_radius=8, bgcolor=ft.Colors.WHITE),
                 
                 ft.Divider(height=1, color=ft.Colors.BLUE_GREY_100),
+                # Repository Cleanup Section
                 ft.Container(
                     content=ft.Column([
-                        ft.Text("File Cleanup & Quarantine", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900),
-                        ft.Text("Safe project files are listed. Protected files are disabled. Files move to a quarantine folder first, and deletion is a separate step.", size=11, color=ft.Colors.ORANGE_800),
-                        self.inventory_summary, self.cleanup_column,
-                        ft.Row([self.cleanup_confirmation, ft.Button(content=ft.Text("Move Selected to Quarantine"), on_click=self.delete_selected_cleanup, bgcolor=ft.Colors.ORANGE_600, color=ft.Colors.WHITE)], wrap=True),
-                        ft.Text("Quarantine/delete folder (data/delete_quarantine/)", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.ORANGE_900),
-                        self.quarantine_column,
-                        ft.Row([self.permanent_confirmation, ft.Button(content=ft.Text("Permanently Delete Files"), on_click=self.delete_quarantine_files, bgcolor=ft.Colors.RED_700, color=ft.Colors.WHITE)], wrap=True),
-                    ], spacing=8),
-                    padding=15, bgcolor=ft.Colors.ORANGE_50, border=ft.Border.all(1, ft.Colors.ORANGE_200), border_radius=8
+                        ft.Text("GitHub Repository Cleanup", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
+                        ft.Text("Railway containers are ephemeral. To permanently remove unused files, you must delete them from your GitHub repository. Copy the command below and run it in your local project terminal.", size=12, color=ft.Colors.BLUE_GREY_600),
+                        ft.Container(
+                            content=self.cleanup_instructions_text,
+                            padding=15, bgcolor=ft.Colors.GREY_100, border_radius=6, border=ft.Border.all(1, ft.Colors.GREY_300)
+                        )
+                    ], spacing=10),
+                    padding=20, bgcolor=ft.Colors.WHITE, border_radius=8, border=ft.Border.all(1, ft.Colors.BLUE_GREY_100)
                 ),
             ], spacing=15, expand=True, scroll=ft.ScrollMode.AUTO),
             padding=20, expand=True, bgcolor=ft.Colors.BLUE_GREY_50,
@@ -530,7 +522,8 @@ class SystemTestTab:
         self.last_run.value = ""
         self.history_label.value = "Saved CSV history was not deleted. Press Refresh Status to load it again."
         self.results_column.controls.clear()
-        for control in (self.progress_bar, self.progress_text, self.summary, self.notification, self.last_run, self.history_label, self.results_column):
+        self.cleanup_instructions_text.value = "Run the 'Complete project inventory' test to generate GitHub cleanup commands."
+        for control in (self.progress_bar, self.progress_text, self.summary, self.notification, self.last_run, self.history_label, self.results_column, self.cleanup_instructions_text):
             try: control.update()
             except Exception: pass
 
@@ -650,9 +643,6 @@ class SystemTestTab:
             self.notification.update()
             self.last_run.update()
         except Exception: pass
-        
-        try: self._refresh_cleanup_ui()
-        except Exception: pass
 
     def _ok(self, title, message="No issue detected", owner="system_test_tab.py", action="No action required"):
         return {"level": "OK", "title": title, "message": message, "action": action, "owner": owner}
@@ -754,12 +744,11 @@ class SystemTestTab:
         if not data.exists(): return self._fail("Data folder missing", str(data), "database.py", "Repair directory")
         allowed = {"users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv", "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json", "tour_types.csv", "tax_settings.csv", "frontpage_config.json", "system_test_history.csv", "system_error_events.csv", "traveler_sessions.json", "_cleanup.sh", ".db.lock"}
         candidates = [path for path in data.iterdir() if path.is_file() and not path.name.startswith(".") and path.name not in allowed and not path.name.startswith("documents_backup_")]
-        self._add_cleanup_candidates(candidates, "data", "Unrecognized data file", protected_paths=None)
-        if candidates: return self._warn("Unrecognized data files", ", ".join(p.name for p in candidates[:5]), "data/", "Review checkboxes")
+        if candidates: return self._warn("Unrecognized data files", ", ".join(p.name for p in candidates[:5]), "data/", "Review data folder contents")
         return self._ok("Database file hygiene", "Only recognized configuration and data files present", "data/")
 
     def check_unused_files(self):
-        """11.02. Generates a full inventory classifying files as used, protected, or unused."""
+        """11.02. Generates a full inventory classifying files as used, protected, or unused, and provides a git rm command."""
         root = self.project_root
         protected_names = {"data", "documents", "logos", "flet_assets", "seed_data", "backups", "downloads", "delete_quarantine"}
         generated_export_extensions = {".pdf", ".xls", ".xlsx", ".csv"}
@@ -830,7 +819,7 @@ class SystemTestTab:
 
         combined_text = "\n".join(text_parts)
         self.file_inventory_info = {}
-        protected_paths = set()
+        unused_files = []
         
         for record in files:
             path = record["path"]
@@ -853,10 +842,9 @@ class SystemTestTab:
             }
             key = str(path.resolve())
             self.file_inventory_info[key] = info
-            if protected: protected_paths.add(key)
+            if not protected and path.is_file():
+                unused_files.append(str(record["relative"]))
 
-        self._add_cleanup_candidates([record["path"] for record in files], "inventory", "Inventory classification", protected_paths=protected_paths)
-        
         groups = {}
         for record in files:
             folder = record["relative"].parts[0] if record["relative"].parts else "."
@@ -870,177 +858,28 @@ class SystemTestTab:
             
         self.folder_inventory = groups
         details = "; ".join(f"{folder}: {g['total']} listed / {g['protected']} protected / {g['unused']} unused" for folder, g in sorted(groups.items()))
-        action = "Review unused candidates; protected files are disabled."
         
-        if files and any(g["unused"] for g in groups.values()):
-            return self._warn("Complete folder file inventory", details, "project root", action)
-        return self._ok("Complete folder file inventory", details or "No files found", "project root", action)
+        # Build the git command
+        if unused_files:
+            cmd = "git rm " + " ".join(f'"{f}"' for f in unused_files)
+            cmd += "\n\ngit commit -m 'Clean up unused files'\ngit push origin main"
+            self.cleanup_instructions_text.value = cmd
+            self.cleanup_instructions_text.color = ft.Colors.RED_700
+        else:
+            self.cleanup_instructions_text.value = "No unused files detected. Repository is clean."
+            self.cleanup_instructions_text.color = ft.Colors.GREEN_700
+        try: self.cleanup_instructions_text.update()
+        except Exception: pass
+
+        if unused_files:
+            return self._warn("Complete folder file inventory", details, "project root", "Use the GitHub cleanup command to remove unused files")
+        return self._ok("Complete folder file inventory", details or "No files found", "project root", "No action required")
 
     # ========================================================================
-    # 12. CLEANUP & QUARANTINE LOGIC
-    # ========================================================================
-    def _add_cleanup_candidates(self, paths, category, reason, protected_paths=None):
-        protected_paths = protected_paths or set()
-        for path in paths:
-            resolved = Path(path).resolve()
-            if any(str(resolved) == str(existing["path"]) for existing in self.cleanup_candidates): continue
-            info = self.file_inventory_info.get(str(resolved), {})
-            self.cleanup_candidates.append({
-                "path": resolved, "category": category, "reason": reason,
-                "protected": str(resolved) in protected_paths or bool(info.get("protected")),
-                "classification": info.get("classification", "review candidate"),
-                "used": info.get("used", False), "age_days": info.get("age_days", 0)
-            })
-
-    def _refresh_cleanup_ui(self):
-        self.cleanup_column.controls.clear()
-        self.cleanup_checks = {}
-        self.inventory_summary.controls.clear()
-        
-        inventory_items = [item for item in self.cleanup_candidates if item.get("category") == "inventory"]
-        expected_folders = ["core", "data", "data/backups", "documents", "flet_assets", "logos", "seed_data", "static", "tools"]
-        groups = {}
-        for item in inventory_items:
-            try: folder = str(Path(item["path"]).relative_to(self.project_root).parts[0])
-            except Exception: folder = "."
-            group = groups.setdefault(folder, {"total": 0, "protected": 0, "used": 0, "unused": 0, "oldest": 0})
-            group["total"] += 1
-            group["protected"] += int(item.get("protected", False))
-            group["used"] += int(item.get("used", False))
-            group["unused"] += int(not item.get("protected", False))
-            group["oldest"] = max(group["oldest"], int(item.get("age_days", 0)))
-            
-        if groups:
-            summary_names = list(expected_folders)
-            summary_names.extend(folder for folder in groups if folder not in summary_names)
-            for folder in sorted(summary_names, key=str.casefold):
-                group = groups.get(folder, {"total": 0, "protected": 0, "used": 0, "unused": 0, "oldest": 0})
-                self.inventory_summary.controls.append(
-                    ft.Container(
-                        content=ft.Text(f"{folder}/ — {group['total']} total • {group['protected']} protected • {group['unused']} unused candidates", size=10, color=ft.Colors.BLUE_GREY_800),
-                        padding=ft.Padding.symmetric(horizontal=8, vertical=4), bgcolor=ft.Colors.WHITE, border_radius=5,
-                        border=ft.Border.all(1, ft.Colors.BLUE_GREY_100)
-                    ))
-        else:
-            self.inventory_summary.controls.append(ft.Text("Folder summary appears after running inventory.", size=10, color=ft.Colors.BLUE_GREY_500))
-            
-        if not self.cleanup_candidates:
-            self.cleanup_column.controls.append(ft.Text("Run inventory to list every file.", size=10, color=ft.Colors.BLUE_GREY_500))
-        else:
-            grouped_items = {}
-            for item in self.cleanup_candidates:
-                try: folder = str(Path(item["path"]).relative_to(self.project_root).parts[0])
-                except Exception: folder = "."
-                grouped_items.setdefault(folder, []).append(item)
-                
-            for folder in sorted(grouped_items, key=str.casefold):
-                group = groups.get(folder, {"total": 0, "protected": 0, "used": 0, "unused": 0, "oldest": 0})
-                self.cleanup_column.controls.append(
-                    ft.Container(
-                        content=ft.Text(f"{folder}/ — {group['total']} files; {group['protected']} protected; {group['unused']} review candidates", size=11, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_GREY_900),
-                        padding=ft.Padding.only(top=8, bottom=3),
-                    ))
-                for item in sorted(grouped_items[folder], key=lambda x: str(x["path"]).casefold()):
-                    path = str(item["path"])
-                    protected = bool(item.get("protected"))
-                    age = int(item.get("age_days", 0))
-                    classification = item.get("classification", "review candidate")
-                    checkbox = ft.Checkbox(label=f"{path} — {classification} — {age} days old", value=False, disabled=protected)
-                    self.cleanup_checks[path] = checkbox
-                    self.cleanup_column.controls.append(checkbox)
-                    
-        try:
-            self.inventory_summary.update()
-            self.cleanup_column.update()
-        except Exception: pass
-        self._refresh_quarantine_ui()
-
-    def _refresh_quarantine_ui(self):
-        self.quarantine_column.controls.clear()
-        self.quarantine_checks = {}
-        files = [path for path in self.quarantine_dir.rglob("*") if path.is_file()]
-        if not files:
-            self.quarantine_column.controls.append(ft.Text("No files waiting in quarantine.", size=10, color=ft.Colors.BLUE_GREY_500))
-        else:
-            for path in sorted(files, key=lambda x: str(x).casefold()):
-                checkbox = ft.Checkbox(label=str(path), value=False)
-                self.quarantine_checks[str(path)] = checkbox
-                self.quarantine_column.controls.append(checkbox)
-        try:
-            self.quarantine_column.update()
-        except Exception: pass
-
-    def delete_selected_cleanup(self, e=None):
-        if not self.cleanup_confirmation.value:
-            self.notification.value = "Move blocked: tick the quarantine confirmation checkbox first."
-            self.notification.color = ft.Colors.RED_700; self.notification.update(); return
-        selected = [item for item in self.cleanup_candidates if not item.get("protected") and self.cleanup_checks.get(str(item["path"]), None) and self.cleanup_checks[str(item["path"])].value]
-        if not selected:
-            self.notification.value = "No selectable file was selected."; self.notification.color = ft.Colors.ORANGE_700; self.notification.update(); return
-            
-        moved, blocked = [], []
-        batch = self.quarantine_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
-        project_root = self.project_root.resolve()
-        
-        for item in selected:
-            path = Path(item["path"]).resolve()
-            if path == project_root or project_root not in path.parents: blocked.append(f"outside project: {path}"); continue
-            if self.quarantine_dir.resolve() in path.parents: blocked.append(f"already in quarantine: {path}"); continue
-            try:
-                target = batch / path.relative_to(project_root)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(path), str(target))
-                moved.append(str(path))
-            except Exception as ex: blocked.append(f"{path}: {ex}")
-                
-        self.cleanup_candidates = [item for item in self.cleanup_candidates if str(item["path"]) not in moved]
-        self.cleanup_confirmation.value = False
-        try: self.cleanup_confirmation.update()
-        except Exception: pass
-        self._refresh_cleanup_ui()
-        
-        message = f"Moved {len(moved)} file(s) to quarantine."
-        if blocked: message += " Blocked: " + " ; ".join(blocked[:3])
-        self.notification.value = message
-        self.notification.color = ft.Colors.GREEN_700 if not blocked else ft.Colors.ORANGE_700
-        self.notification.update()
-
-    def delete_quarantine_files(self, e=None):
-        if not self.permanent_confirmation.value:
-            self.notification.value = "Deletion blocked: tick the quarantine confirmation checkbox first."
-            self.notification.color = ft.Colors.RED_700; self.notification.update(); return
-        selected = [Path(path) for path, checkbox in self.quarantine_checks.items() if checkbox.value]
-        if not selected:
-            self.notification.value = "No quarantine file selected."; self.notification.color = ft.Colors.ORANGE_700; self.notification.update(); return
-            
-        root = self.quarantine_dir.resolve()
-        deleted, blocked = [], []
-        
-        for path in selected:
-            path = path.resolve()
-            if root not in path.parents: blocked.append(str(path)); continue
-            try:
-                if path.is_file():
-                    path.unlink()
-                    deleted.append(str(path))
-            except Exception as ex: blocked.append(f"{path}: {ex}")
-                
-        self.permanent_confirmation.value = False
-        try: self.permanent_confirmation.update()
-        except Exception: pass
-        self._refresh_quarantine_ui()
-        
-        message = f"Permanently deleted {len(deleted)} file(s)."
-        if blocked: message += " Blocked: " + " ; ".join(blocked[:3])
-        self.notification.value = message
-        self.notification.color = ft.Colors.GREEN_700 if not blocked else ft.Colors.ORANGE_700
-        self.notification.update()
-
-    # ========================================================================
-    # 13. DATABASE & FINANCIAL TESTS
+    # 12. DATABASE & FINANCIAL TESTS
     # ========================================================================
     def check_schema(self):
-        """13.01. Verifies all necessary columns exist in the DataFrames."""
+        """12.01. Verifies all necessary columns exist in the DataFrames."""
         expected = {"users": {"id", "username", "role"}, "travelers": {"id", "batch_id"}, "batches": {"id", "price"}, "payments": {"id", "traveler_id", "amount", "status"}, "invoices": {"id", "traveler_id"}, "receipts": {"id", "payment_id"}}
         problems = []
         for attr, cols in expected.items():
@@ -1051,7 +890,7 @@ class SystemTestTab:
         return self._ok("Database schema", "All core tables contain required columns", "database.py")
 
     def check_database_records(self):
-        """13.02. Ensures DataFrames load correctly and reports record counts."""
+        """12.02. Ensures DataFrames load correctly and reports record counts."""
         problems = []
         for attr in ("travelers", "batches", "payments", "invoices", "receipts"):
             df = getattr(self.db, attr, None)
@@ -1061,7 +900,7 @@ class SystemTestTab:
         return self._ok("Database records", f"Loaded {len(self.db.travelers)} travelers, {len(self.db.batches)} batches, {len(self.db.payments)} payments, {len(self.db.invoices)} invoices", "database.py")
 
     def check_relationships(self):
-        """13.03. Checks for orphaned IDs in relationships (traveler->batch, payment->traveler)."""
+        """12.03. Checks for orphaned IDs in relationships (traveler->batch, payment->traveler)."""
         def ids(attr):
             df = getattr(self.db, attr, None)
             return {str(x).strip() for x in df["id"]} if df is not None and "id" in df.columns else set()
@@ -1076,7 +915,7 @@ class SystemTestTab:
         return self._ok("ID and relationship integrity", "No orphan references found", "database.py")
 
     def check_financials(self):
-        """13.04. Validates that financial columns contain non-negative finite numbers."""
+        """12.04. Validates that financial columns contain non-negative finite numbers."""
         problems = []
         for attr, cols in (("batches", ["price"]), ("payments", ["amount"]), ("invoices", ["amount", "taxable_value", "gst_amount", "tcs_amount", "total_amount", "rounded_total"])):
             df = getattr(self.db, attr, None)
@@ -1094,7 +933,7 @@ class SystemTestTab:
         return self._ok("Financial precision", "Financial columns contain valid non-negative numbers", "database.py")
 
     def check_statuses(self):
-        """13.05. Ensures payment statuses are standardized."""
+        """12.05. Ensures payment statuses are standardized."""
         df = getattr(self.db, "payments", None)
         if df is None: return self._warn("Payment status not checked", "payments dataframe unavailable", "payments_tab.py", "Confirm database.py exposes payments")
         allowed = {"completed", "pending", "failed", "refunded"}
@@ -1103,7 +942,7 @@ class SystemTestTab:
         return self._ok("Payment and invoice status", "Statuses are normalized", "payments_tab.py")
 
     def check_tax(self):
-        """13.06. Confirms Tax settings exist and are within 0-100% bounds."""
+        """12.06. Confirms Tax settings exist and are within 0-100% bounds."""
         try:
             from core.settings_manager import SettingsManager
             tax = SettingsManager(self.db).get_tax_settings()
@@ -1113,7 +952,7 @@ class SystemTestTab:
         except Exception as ex: return self._fail("Tax configuration issue", str(ex), "settings_manager.py", "Repair tax_settings.csv")
 
     def check_backups(self):
-        """13.07. Ensures backups are valid ZIPs and checks the age of the latest one."""
+        """12.07. Ensures backups are valid ZIPs and checks the age of the latest one."""
         folder = self.data_dir / "backups"
         if not folder.is_dir(): return self._warn("No backup folder", str(folder), "backups_tab.py", "Create a backup")
         try: files = list(folder.glob("*.zip"))
@@ -1127,7 +966,7 @@ class SystemTestTab:
         return self._ok("Backup integrity & age", f"{len(files)} backups readable; latest is {age_hours:.1f}h old", "backups_tab.py")
 
     # ========================================================================
-    # 14. SYSTEM, SECURITY & ENVIRONMENT TESTS
+    # 13. SYSTEM, SECURITY & ENVIRONMENT TESTS
     # ========================================================================
     def _should_scan(self, path: Path) -> bool:
         """Helper to exclude virtual environments and caches from slow scans."""
@@ -1137,7 +976,7 @@ class SystemTestTab:
         return not any(part.casefold() in excluded for part in path.parts)
 
     def check_source(self):
-        """14.01. Parses all Python files to ensure there are no syntax errors."""
+        """13.01. Parses all Python files to ensure there are no syntax errors."""
         bad, functions, all_files = [], 0, []
         for folder in self.python_roots:
             try:
@@ -1155,7 +994,7 @@ class SystemTestTab:
         return self._ok("Source syntax and functions", f"Parsed {len(set(all_files))} files and {functions} functions", "Python files")
 
     def check_ui_wiring(self):
-        """14.02. Scans Flet code for event bindings and missing setup_ui markers."""
+        """13.02. Scans Flet code for event bindings and missing setup_ui markers."""
         problems, controls, handlers, all_files = [], 0, 0, []
         for folder in self.python_roots:
             try:
@@ -1173,7 +1012,7 @@ class SystemTestTab:
         return self._ok("UI/button wiring", f"Found {controls} event bindings; {handlers} function definitions", "UI files")
 
     def check_security(self):
-        """14.03. Verifies ADMIN_API_KEY strength and fail-closed security logic."""
+        """13.03. Verifies ADMIN_API_KEY strength and fail-closed security logic."""
         key = os.getenv("ADMIN_API_KEY", "")
         if not key or len(key) < 32: return self._warn("Admin API key", "ADMIN_API_KEY missing or < 32 chars", "security.py", "Set a random 32+ char key")
         main_text = (self.project_root / "main.py").read_text(encoding="utf-8", errors="replace")
@@ -1181,7 +1020,7 @@ class SystemTestTab:
         return self._ok("Security configuration", "Admin API key length and fail-closed fallback are present", "security.py")
 
     def check_runtime_storage(self):
-        """14.04. Ensures necessary runtime directories exist and are writable."""
+        """13.04. Ensures necessary runtime directories exist and are writable."""
         data = self.data_dir
         required = {"data": data, "documents": data / "documents", "backups": data / "backups", "static downloads": self.project_root / "static" / "downloads", "flet assets": self.project_root / "flet_assets"}
         missing = [name for name, path in required.items() if not path.is_dir()]
@@ -1190,7 +1029,7 @@ class SystemTestTab:
         return self._ok("Runtime storage and exports", "All required runtime folders are present and writable", "main.py")
 
     def check_background_errors(self):
-        """14.05. Scans activity_log.csv and *.log files for recent errors."""
+        """13.05. Scans activity_log.csv and *.log files for recent errors."""
         hits, now = [], datetime.now()
         activity = self.data_dir / "activity_log.csv"
         if activity.exists():
@@ -1211,7 +1050,7 @@ class SystemTestTab:
         return self._ok("Background error scan", "No recent errors detected in logs", "logs")
 
     def check_tools_scripts(self):
-        """14.06. Verifies the integrity of the tools/ folder and its scripts."""
+        """13.06. Verifies the integrity of the tools/ folder and its scripts."""
         tools = self.project_root / "tools"
         if not tools.is_dir(): return self._warn("Tools folder missing", str(tools), "tools/", "Create the tools folder for standalone tests")
         required = ["full_functional_test.py", "full_ui_test.py", "health_check.py", "master_test.py", "security_audit.py", "test_frontpage_features.py"]
@@ -1225,7 +1064,7 @@ class SystemTestTab:
         return self._ok("Tools scripts integrity", f"Verified {len(required)} tools scripts", "tools/")
 
     def check_environment_security(self):
-        """14.07. Checks environment variables for safe production settings."""
+        """13.07. Checks environment variables for safe production settings."""
         problems = []
         if not os.getenv("ADMIN_API_KEY", "") or len(os.getenv("ADMIN_API_KEY", "")) < 32: problems.append("ADMIN_API_KEY missing or < 32 chars")
         if not os.getenv("PORT", ""): problems.append("PORT env not set")
@@ -1234,7 +1073,7 @@ class SystemTestTab:
         return self._ok("Environment security", "ADMIN_API_KEY, PORT, and DEBUG variables are safely configured", "env")
 
     def check_file_permissions(self):
-        """14.08. Audits sensitive files for world-readable/writable permissions."""
+        """13.08. Audits sensitive files for world-readable/writable permissions."""
         if os.name == "nt": return self._ok("File permissions", "Skipped on Windows", "system_test_tab.py")
         sensitive = [self.data_dir / "users.csv", self.data_dir / "travelers.csv", self.data_dir / "payments.csv", self.project_root / ".env"]
         problems = []
@@ -1249,7 +1088,7 @@ class SystemTestTab:
         return self._ok("File permissions", "Sensitive files are not world-readable or world-writable", "data/")
 
     def check_dependencies(self):
-        """14.09. Ensures required packages are listed in requirements.txt."""
+        """13.09. Ensures required packages are listed in requirements.txt."""
         req_file = self.project_root / "requirements.txt"
         if not req_file.exists(): return self._warn("requirements.txt missing", str(req_file), "requirements.txt", "Create a requirements.txt file")
         text = req_file.read_text(encoding="utf-8", errors="replace").lower()
@@ -1259,7 +1098,7 @@ class SystemTestTab:
         return self._ok("Dependencies", "All required packages are listed in requirements.txt", "requirements.txt")
 
     def check_static_assets(self):
-        """14.10. Ensures primary static assets (CSS/JS) exist recursively or inline."""
+        """13.10. Ensures primary static assets (CSS/JS) exist recursively or inline."""
         static = self.project_root / "static"
         if not static.is_dir(): 
             return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
