@@ -27,7 +27,8 @@ from decimal import Decimal
 from datetime import datetime
 from pathlib import Path
 from typing import List
-from core.helpers import get_app_base_path
+from core.helpers import (get_app_base_path, cleanup_old_downloads,
+                          cleanup_generated_staging)
 from core.database import HajDatabase
 from core.login_view import LoginView
 from core.main_window import MainWindowView
@@ -40,7 +41,7 @@ try:
         require_admin,
         SecurityHeadersMiddleware,
         sanitize_csv_cell, sanitize_row,
-        validate_upload_content,
+        validate_upload_content, validate_document_content,
         validate_length, safe_filename,
     )
     _SECURITY_AVAILABLE = True
@@ -67,6 +68,9 @@ except Exception as _sec_err:
         return os.path.basename(str(name or "upload.bin"))[:max_len]
 
     def validate_upload_content(data, allowed):
+        return False
+    def validate_document_content(data, extension,
+                                 max_bytes=25 * 1024 * 1024):
         return False
 
     def generate_token(n=32):
@@ -614,6 +618,10 @@ def _build_app() -> FastAPI:
     flet_assets_dir = os.path.join(base_path, "flet_assets")
 
     os.makedirs(downloads_dir, exist_ok=True)
+    # Clean only generated export copies; business data under data/ is never
+    # touched by these functions.
+    cleanup_old_downloads(max_age_days=7, downloads_dir=downloads_dir)
+    cleanup_generated_staging(max_age_days=1, base_path=base_path)
     os.makedirs(os.path.join(flet_assets_dir, "icons"), exist_ok=True)
 
     data_root = Path(AppState.db.data_dir if AppState.db is not None else (Path(base_path) / "data")).resolve()
@@ -1540,29 +1548,24 @@ def _build_app() -> FastAPI:
         rel = f"documents/{safe_folder}/{sub}/{fname}"
         print(f"[TRAVELER-DOC] Saved: {rel} ({len(data)} bytes)")
 
-        # Update CSV if editing an existing traveler
+        # Update the in-memory database and CSV through the database lock.
         is_edit = (mode == "edit" and traveler_id)
         if is_edit:
             try:
-                csv_path = Path(AppState.db.data_dir if AppState.db is not None else (Path(get_app_base_path()) / "data")) / "travelers.csv"
-                if csv_path.exists():
-                    import pandas as _pd
-                    df = _pd.read_csv(csv_path, dtype=str).fillna("")
-                    mask = df["id"] == traveler_id
-                    if mask.any():
-                        df.loc[mask, doc_key] = rel
-                        df.to_csv(csv_path, index=False,
-                                  encoding="utf-8-sig")
-                        if AppState.db is not None:
-                            try:
-                                if hasattr(AppState.db, "reload_all"):
-                                    AppState.db.reload_all()
-                                elif hasattr(AppState.db, "reload"):
-                                    AppState.db.reload()
-                            except Exception:
-                                pass
-            except Exception:
-                print(f"[TRAVELER-DOC] CSV update failed")
+                if AppState.db is None:
+                    raise RuntimeError("Database is not ready")
+                if not AppState.db.update_traveler_document_path(
+                        traveler_id, doc_key, rel):
+                    raise ValueError("Traveler not found")
+            except Exception as ex:
+                try:
+                    target.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                print(f"[TRAVELER-DOC] database update failed: {ex}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Traveler document reference could not be saved")
 
         return {
             "success": True,
@@ -1600,7 +1603,10 @@ def _build_app() -> FastAPI:
         documents_root = _documents_root()
         total_bytes = 0
         max_file_bytes = 15 * 1024 * 1024
-        allowed_folder_ext = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".txt", ".doc", ".docx", ".xls", ".xlsx"}
+        # Validate content signatures below; legacy .doc/.xls and arbitrary
+        # .txt files are not accepted because an extension is not proof of
+        # safe document content.
+        allowed_folder_ext = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".docx", ".xlsx"}
         # ----- Branch 1: upload launched from a specific traveler row -----
         # All extracted files land below the configured documents root.
         if traveler_id:
@@ -1629,6 +1635,10 @@ def _build_app() -> FastAPI:
                 data = await file.read()
                 if len(data) > max_file_bytes or total_bytes + len(data) > 250 * 1024 * 1024:
                     raise HTTPException(status_code=400, detail="Folder upload size limit exceeded")
+                if not validate_document_content(
+                        data, Path(str(path)).suffix,
+                        max_bytes=max_file_bytes):
+                    continue
                 total_bytes += len(data)
                 dest.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1671,6 +1681,10 @@ def _build_app() -> FastAPI:
             data = await file.read()
             if len(data) > max_file_bytes or total_bytes + len(data) > 250 * 1024 * 1024:
                 raise HTTPException(status_code=400, detail="Folder upload size limit exceeded")
+            if not validate_document_content(
+                    data, Path(str(path)).suffix,
+                    max_bytes=max_file_bytes):
+                continue
             total_bytes += len(data)
             dest.parent.mkdir(parents=True, exist_ok=True)
 
