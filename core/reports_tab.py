@@ -29,9 +29,11 @@ import time
 import base64
 import traceback
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 import flet as ft
 import pandas as pd
+from core.helpers import money_decimal
 
 try:
     from core.settings_manager import SettingsManager
@@ -350,8 +352,8 @@ class ReportsTab(ft.Column):
         try:
             if SettingsManager is not None:
                 tax = SettingsManager(self.db).get_tax_settings()
-                self._gst_rate = float(tax.get("gst_percentage", 18) or 0)
-                self._tcs_rate = float(tax.get("tcs_percentage", 0.1) or 0)
+                self._gst_rate = float(tax.get("gst_percentage", 5) or 0)
+                self._tcs_rate = float(tax.get("tcs_percentage", 2) or 0)
         except Exception as e:
             print(f"[REPORTS] tax rates: {e}")
 
@@ -625,10 +627,10 @@ class ReportsTab(ft.Column):
             payments = self.db.get_payments()
             invoices = self.db.get_invoices()
 
-            total_rev = 0.0
+            total_rev = Decimal("0.00")
             for inv in invoices:
                 try:
-                    total_rev += float(inv.get("total_amount", 0) or 0)
+                    total_rev += money_decimal(inv.get("total_amount", 0))
                 except (TypeError, ValueError):
                     pass
 
@@ -1231,16 +1233,17 @@ class ReportsTab(ft.Column):
         filtered = [p for p in payments
                     if self._in_range(p.get("payment_date"),
                                       from_dt, to_dt)]
-        total = sum(float(p.get("amount", 0) or 0) for p in filtered)
+        total = sum((money_decimal(p.get("amount", 0)) for p in filtered),
+                    Decimal("0.00"))
         by_method = {}
         for p in filtered:
             m = p.get("payment_method", "Other")
-            by_method[m] = by_method.get(m, 0) + float(
-                p.get("amount", 0) or 0)
+            by_method[m] = (by_method.get(m, Decimal("0.00"))
+                            + money_decimal(p.get("amount", 0)))
         lines = [f"FINANCIAL SUMMARY — {sd} to {ed}", "=" * 60, ""]
         lines.append(f"Total Collections : ₹{_fmt_inr_(total)}")
         lines.append(f"Number of Payments: {len(filtered)}")
-        avg = total / len(filtered) if filtered else 0
+        avg = total / Decimal(len(filtered)) if filtered else Decimal("0.00")
         lines.append(f"Average Payment   : ₹{_fmt_inr_(avg)}")
         lines.append("")
         lines.append("Payment by Method:")
@@ -1278,13 +1281,13 @@ class ReportsTab(ft.Column):
                 counts[bid] = counts.get(bid, 0) + 1
         lines = [f"BATCH UTILIZATION — {sd} to {ed}", "=" * 60, ""]
         ts = tb = 0
-        tr = 0.0
+        tr = Decimal("0.00")
         for b in batches:
             bid = str(b.get("id") or "").strip()
             booked = counts.get(bid, 0)
             total = int(b.get("total_seats", 0) or 0)
-            price = float(b.get("price", 0) or 0)
-            rev = booked * price
+            price = money_decimal(b.get("price", 0))
+            rev = Decimal(booked) * price
             ts += total
             tb += booked
             tr += rev
@@ -1311,10 +1314,11 @@ class ReportsTab(ft.Column):
         methods = {}
         for p in filtered:
             d = str(p.get("payment_date", ""))[:10]
-            daily[d] = daily.get(d, 0) + float(p.get("amount", 0) or 0)
+            daily[d] = (daily.get(d, Decimal("0.00"))
+                        + money_decimal(p.get("amount", 0)))
             m = p.get("payment_method", "Other")
-            methods[m] = methods.get(m, 0) + float(
-                p.get("amount", 0) or 0)
+            methods[m] = (methods.get(m, Decimal("0.00"))
+                          + money_decimal(p.get("amount", 0)))
         lines = [f"PAYMENT ANALYSIS — {sd} to {ed}", "=" * 60, ""]
         lines.append("Daily Collections:")
         for d in sorted(daily):
