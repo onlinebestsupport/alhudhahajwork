@@ -1,21 +1,32 @@
-The error on line 3 is happening because text from my previous message (the sentence *"Here is the summary of your system's health..."*) was accidentally copied and pasted into your `core/system_test_tab.py` file along with the code. 
-
-Python is trying to read that plain English sentence as code, which causes the `SyntaxError: unterminated string literal`.
-
-### How to fix it:
-**Delete everything** currently inside `core/system_test_tab.py` and replace it entirely with the clean code below. I have ensured this file contains **only valid Python code** with no external text, summaries, or markdown inside it.
-
-```python
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
 # Version: 2026-11-02-r18-clean-production
+# Purpose: Recorded, read-only system diagnostics. Ensures no business data
+#          (travelers, payments, etc.) is ever deleted or altered by tests.
+# 
+# TABLE OF CONTENTS:
+#   01. IMPORTS & CONSTANTS
+#   02. CLASS INITIALIZATION & PATHS
+#   03. TEST SPECIFICATIONS (Registry)
+#   04. UI CONSTRUCTION
+#   05. EXECUTION & STATE MANAGEMENT
+#   06. RESULT RENDERING & HELPERS
+#   07. PERSISTENCE (CSV History)
+#   08. DOWNLOADS & EXPORTS
+#   09. HELPER: FILE SCANNER EXCLUSIONS
+#   10. API & FRONTEND TESTS
+#   11. INVENTORY & FILESYSTEM TESTS
+#   12. DATABASE & FINANCIAL TESTS
+#   13. SYSTEM, SECURITY & ENVIRONMENT TESTS
+#   14. CLEANUP & QUARANTINE LOGIC
 # ============================================================================
 from __future__ import annotations
 
 import ast
 import asyncio
 import csv
+import io
 import json
 import os
 import shutil
@@ -48,6 +59,10 @@ class SystemTestTab:
         "manus_prompt",
     ]
 
+
+# ============================================================================
+# 02. CLASS INITIALIZATION & PATHS
+# ============================================================================
     def __init__(self, page, db, current_user):
         print(f"[SYSTEM-TEST] loaded version={self.VERSION}", flush=True)
         self.page = page
@@ -130,39 +145,39 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 02. TEST SPECIFICATIONS (Registry)
+# 03. TEST SPECIFICATIONS (Registry)
 # ============================================================================
     def _build_specs(self):
         self.test_specs = [
-            ("API contract", "main.py / security.py", self.check_api_contract),
-            ("Live API probe", "main.py / deployed URL", self.check_live_api),
-            ("Front-page integrity", "index.html / config", self.check_frontpage),
-            ("Static HTML files", "static/**/*.html", self.check_static_html),
-            ("GitHub folder layout", "core / data / static / tools", self.check_repository_layout),
-            ("Database file hygiene", "data/ root", self.check_data_file_hygiene),
-            ("Complete project inventory", "all folders / unused files", self.check_unused_files),
-            ("Database schema", "database.py", self.check_schema),
-            ("Database records", "database.py / travelers", self.check_database_records),
-            ("ID and relationship integrity", "database.py / reports", self.check_relationships),
-            ("Financial precision", "database.py / invoices", self.check_financials),
-            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),
-            ("Tax configuration", "settings_manager.py", self.check_tax),
-            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),
-            ("Source syntax and functions", "all Python files", self.check_source),
-            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),
-            ("Security configuration", "security.py / main.py", self.check_security),
-            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage),
-            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors),
-            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),
-            ("Environment security", "env variables", self.check_environment_security),
-            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions),
-            ("Dependencies check", "requirements.txt", self.check_dependencies),
-            ("Static assets presence", "static/", self.check_static_assets),
+            ("API contract", "main.py / security.py", self.check_api_contract),             # 10.01
+            ("Live API probe", "main.py / deployed URL", self.check_live_api),               # 10.02
+            ("Front-page integrity", "index.html / config", self.check_frontpage),           # 10.03
+            ("Static HTML files", "static/**/*.html", self.check_static_html),               # 10.04
+            ("GitHub folder layout", "core / data / static / tools", self.check_repository_layout), # 10.05
+            ("Database file hygiene", "data/ root", self.check_data_file_hygiene),           # 11.01
+            ("Complete project inventory", "all folders / unused files", self.check_unused_files), # 11.02
+            ("Database schema", "database.py", self.check_schema),                           # 12.01
+            ("Database records", "database.py / travelers", self.check_database_records),    # 12.02
+            ("ID and relationship integrity", "database.py / reports", self.check_relationships), # 12.03
+            ("Financial precision", "database.py / invoices", self.check_financials),        # 12.04
+            ("Payment and invoice status", "payments_tab.py / reports", self.check_statuses),# 12.05
+            ("Tax configuration", "settings_manager.py", self.check_tax),                    # 12.06
+            ("Backup integrity & age", "backups_tab.py / database.py", self.check_backups),  # 12.07
+            ("Source syntax and functions", "all Python files", self.check_source),          # 13.01
+            ("UI/button wiring", "Flet tabs and dialogs", self.check_ui_wiring),             # 13.02
+            ("Security configuration", "security.py / main.py", self.check_security),        # 13.03
+            ("Runtime storage & exports", "main.py / helpers.py / data", self.check_runtime_storage), # 13.04
+            ("Background error scan", "activity_log.csv / runtime logs", self.check_background_errors), # 13.05
+            ("Tools folder scripts", "tools/*.py", self.check_tools_scripts),                # 13.06
+            ("Environment security", "env variables", self.check_environment_security),      # 13.07
+            ("File permissions audit", "sensitive files (.env, data)", self.check_file_permissions), # 13.08
+            ("Dependencies check", "requirements.txt", self.check_dependencies),             # 13.09
+            ("Static assets presence", "static/", self.check_static_assets),                 # 13.10
         ]
 
 
 # ============================================================================
-# 03. UI CONSTRUCTION
+# 04. UI CONSTRUCTION
 # ============================================================================
     def setup_ui(self):
         cards = []
@@ -243,7 +258,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 04. EXECUTION & STATE MANAGEMENT
+# 05. EXECUTION & STATE MANAGEMENT
 # ============================================================================
     def _set_ui_running(self, running: bool):
         self._test_running = running
@@ -356,7 +371,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 05. RESULT RENDERING & HELPERS
+# 06. RESULT RENDERING & HELPERS
 # ============================================================================
     def _ok(self, title, message="No issue detected", owner="system_test_tab.py", action="No action required"):
         return {"level": "OK", "title": title, "message": message, "action": action, "owner": owner}
@@ -441,7 +456,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 06. PERSISTENCE (CSV History)
+# 07. PERSISTENCE (CSV History)
 # ============================================================================
     def _append_rows(self, filename, rows, fields):
         if not rows: return
@@ -555,7 +570,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 07. DOWNLOADS & EXPORTS
+# 08. DOWNLOADS & EXPORTS
 # ============================================================================
     def _open_download(self, filename):
         url = f"/download/{filename}"
@@ -582,7 +597,6 @@ class SystemTestTab:
             project_static.mkdir(parents=True, exist_ok=True)
             filename = f"system_test_{label}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             
-            import io
             buffer = io.StringIO(newline="")
             writer = csv.DictWriter(buffer, fieldnames=self.HISTORY_FIELDS, extrasaction="ignore")
             writer.writeheader()
@@ -631,7 +645,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 08. HELPER: FILE SCANNER EXCLUSIONS
+# 09. HELPER: FILE SCANNER EXCLUSIONS
 # ============================================================================
     def _should_scan(self, path: Path) -> bool:
         excluded = {".venv", "venv", "env", "site-packages", "dist-packages", 
@@ -641,9 +655,10 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 09. API & FRONTEND TESTS
+# 10. API & FRONTEND TESTS
 # ============================================================================
     def check_api_contract(self):
+        """10.01. Verifies required API routes exist and uploads are protected."""
         path = self.project_root / "main.py"
         if not path.exists(): return self._fail("API source missing", str(path), "main.py")
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -655,6 +670,7 @@ class SystemTestTab:
         return self._ok("API contract", "Required API routes and protected uploads verified", "main.py / security.py")
 
     def check_live_api(self):
+        """10.02. Probes the live deployment URL to ensure endpoints respond correctly."""
         base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
         if not base: return self._ok("Live API probe skipped", "PUBLIC_BASE_URL is not configured.", "main.py", "Optional: set PUBLIC_BASE_URL")
         checks = [("frontpage", "/api/frontpage", 200), ("batches", "/api/batches", 200), ("admin", "/api/admin/frontpage/diagnose", 401)]
@@ -671,6 +687,7 @@ class SystemTestTab:
         return self._ok("Live API probe", f"Checked {len(checks)} endpoints at {base}", "main.py")
 
     def check_frontpage(self):
+        """10.03. Validates index.html, robots.txt, sitemap.xml, and frontpage config."""
         root = self.project_root
         static = root / "static"
         html_path = root / "index.html" if (root / "index.html").exists() else static / "index.html"
@@ -696,6 +713,7 @@ class SystemTestTab:
             return self._fail("Front-page config error", str(ex), "frontpage_config.py", "Repair loading logic")
 
     def check_static_html(self):
+        """10.04. Scans all static HTML files for basic structural integrity."""
         static = self.project_root / "static"
         if not static.exists(): return self._fail("Static folder missing", str(static), "static/", "Deploy static folder")
         html_files = sorted(static.rglob("*.html"))
@@ -711,6 +729,7 @@ class SystemTestTab:
         return self._ok("Static HTML files", f"Checked {len(html_files)} files", "static/")
 
     def check_repository_layout(self):
+        """10.05. Verifies the expected GitHub folder structure is present."""
         expected = ["core", "data", "data/backups", "documents", "flet_assets", "logos", "seed_data", "static", "tools"]
         actual = {str(path.relative_to(self.project_root)).replace("\\", "/").casefold(): path for path in self.project_root.rglob("*") if path.is_dir()}
         missing = [name for name in expected if name.casefold() not in actual]
@@ -719,9 +738,10 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 10. INVENTORY & FILESYSTEM TESTS
+# 11. INVENTORY & FILESYSTEM TESTS
 # ============================================================================
     def check_data_file_hygiene(self):
+        """11.01. Ensures only recognized application files exist in data/ root."""
         data = self.data_dir
         if not data.exists(): return self._fail("Data folder missing", str(data), "database.py", "Repair directory")
         allowed = {"users.csv", "travelers.csv", "batches.csv", "payments.csv", "invoices.csv", "receipts.csv", "activity_log.csv", "backup_history.csv", "company_settings.csv", "id_counters.json", "tour_types.csv", "tax_settings.csv", "frontpage_config.json", "system_test_history.csv", "system_error_events.csv", "traveler_sessions.json", "_cleanup.sh", ".db.lock"}
@@ -731,6 +751,7 @@ class SystemTestTab:
         return self._ok("Database file hygiene", "Only recognized configuration and data files present", "data/")
 
     def check_unused_files(self):
+        """11.02. Generates a full inventory classifying files as used, protected, or unused."""
         root = self.project_root
         protected_names = {"data", "documents", "logos", "flet_assets", "seed_data", "backups", "downloads", "delete_quarantine"}
         generated_export_extensions = {".pdf", ".xls", ".xlsx", ".csv"}
@@ -849,9 +870,10 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 11. DATABASE & FINANCIAL TESTS
+# 12. DATABASE & FINANCIAL TESTS
 # ============================================================================
     def check_schema(self):
+        """12.01. Verifies all necessary columns exist in the DataFrames."""
         expected = {"users": {"id", "username", "role"}, "travelers": {"id", "batch_id"}, "batches": {"id", "price"}, "payments": {"id", "traveler_id", "amount", "status"}, "invoices": {"id", "traveler_id"}, "receipts": {"id", "payment_id"}}
         problems = []
         for attr, cols in expected.items():
@@ -862,6 +884,7 @@ class SystemTestTab:
         return self._ok("Database schema", "All core tables contain required columns", "database.py")
 
     def check_database_records(self):
+        """12.02. Ensures DataFrames load correctly and reports record counts."""
         problems = []
         for attr in ("travelers", "batches", "payments", "invoices", "receipts"):
             df = getattr(self.db, attr, None)
@@ -871,6 +894,7 @@ class SystemTestTab:
         return self._ok("Database records", f"Loaded {len(self.db.travelers)} travelers, {len(self.db.batches)} batches, {len(self.db.payments)} payments, {len(self.db.invoices)} invoices", "database.py")
 
     def check_relationships(self):
+        """12.03. Checks for orphaned IDs in relationships (traveler->batch, payment->traveler)."""
         def ids(attr):
             df = getattr(self.db, attr, None)
             return {str(x).strip() for x in df["id"]} if df is not None and "id" in df.columns else set()
@@ -885,6 +909,7 @@ class SystemTestTab:
         return self._ok("ID and relationship integrity", "No orphan references found", "database.py")
 
     def check_financials(self):
+        """12.04. Validates that financial columns contain non-negative finite numbers."""
         problems = []
         for attr, cols in (("batches", ["price"]), ("payments", ["amount"]), ("invoices", ["amount", "taxable_value", "gst_amount", "tcs_amount", "total_amount", "rounded_total"])):
             df = getattr(self.db, attr, None)
@@ -902,6 +927,7 @@ class SystemTestTab:
         return self._ok("Financial precision", "Financial columns contain valid non-negative numbers", "database.py")
 
     def check_statuses(self):
+        """12.05. Ensures payment statuses are standardized."""
         df = getattr(self.db, "payments", None)
         if df is None: return self._warn("Payment status not checked", "payments dataframe unavailable", "payments_tab.py", "Confirm database.py exposes payments")
         allowed = {"completed", "pending", "failed", "refunded"}
@@ -910,6 +936,7 @@ class SystemTestTab:
         return self._ok("Payment and invoice status", "Statuses are normalized", "payments_tab.py")
 
     def check_tax(self):
+        """12.06. Confirms Tax settings exist and are within 0-100% bounds."""
         try:
             from core.settings_manager import SettingsManager
             tax = SettingsManager(self.db).get_tax_settings()
@@ -919,6 +946,7 @@ class SystemTestTab:
         except Exception as ex: return self._fail("Tax configuration issue", str(ex), "settings_manager.py", "Repair tax_settings.csv")
 
     def check_backups(self):
+        """12.07. Ensures backups are valid ZIPs and checks the age of the latest one."""
         folder = self.data_dir / "backups"
         if not folder.is_dir(): return self._warn("No backup folder", str(folder), "backups_tab.py", "Create a backup")
         try: files = list(folder.glob("*.zip"))
@@ -933,9 +961,10 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 12. SYSTEM, SECURITY & ENVIRONMENT TESTS
+# 13. SYSTEM, SECURITY & ENVIRONMENT TESTS
 # ============================================================================
     def check_source(self):
+        """13.01. Parses all Python files to ensure there are no syntax errors."""
         bad, functions, all_files = [], 0, []
         for folder in self.python_roots:
             try:
@@ -953,6 +982,7 @@ class SystemTestTab:
         return self._ok("Source syntax and functions", f"Parsed {len(set(all_files))} files and {functions} functions", "Python files")
 
     def check_ui_wiring(self):
+        """13.02. Scans Flet code for event bindings and missing setup_ui markers."""
         problems, controls, handlers, all_files = [], 0, 0, []
         for folder in self.python_roots:
             try:
@@ -970,6 +1000,7 @@ class SystemTestTab:
         return self._ok("UI/button wiring", f"Found {controls} event bindings; {handlers} function definitions", "UI files")
 
     def check_security(self):
+        """13.03. Verifies ADMIN_API_KEY strength and fail-closed security logic."""
         key = os.getenv("ADMIN_API_KEY", "")
         if not key or len(key) < 32: return self._warn("Admin API key", "ADMIN_API_KEY missing or < 32 chars", "security.py", "Set a random 32+ char key")
         main_text = (self.project_root / "main.py").read_text(encoding="utf-8", errors="replace")
@@ -977,6 +1008,7 @@ class SystemTestTab:
         return self._ok("Security configuration", "Admin API key length and fail-closed fallback are present", "security.py")
 
     def check_runtime_storage(self):
+        """13.04. Ensures necessary runtime directories exist and are writable."""
         data = self.data_dir
         required = {"data": data, "documents": data / "documents", "backups": data / "backups", "static downloads": self.project_root / "static" / "downloads", "flet assets": self.project_root / "flet_assets"}
         missing = [name for name, path in required.items() if not path.is_dir()]
@@ -985,6 +1017,7 @@ class SystemTestTab:
         return self._ok("Runtime storage and exports", "All required runtime folders are present and writable", "main.py")
 
     def check_background_errors(self):
+        """13.05. Scans activity_log.csv and *.log files for recent errors."""
         hits, now = [], datetime.now()
         activity = self.data_dir / "activity_log.csv"
         if activity.exists():
@@ -1005,6 +1038,7 @@ class SystemTestTab:
         return self._ok("Background error scan", "No recent errors detected in logs", "logs")
 
     def check_tools_scripts(self):
+        """13.06. Verifies the integrity of the tools/ folder and its scripts."""
         tools = self.project_root / "tools"
         if not tools.is_dir(): return self._warn("Tools folder missing", str(tools), "tools/", "Create the tools folder for standalone tests")
         required = ["full_functional_test.py", "full_ui_test.py", "health_check.py", "master_test.py", "security_audit.py", "test_frontpage_features.py"]
@@ -1018,6 +1052,7 @@ class SystemTestTab:
         return self._ok("Tools scripts integrity", f"Verified {len(required)} tools scripts", "tools/")
 
     def check_environment_security(self):
+        """13.07. Checks environment variables for safe production settings."""
         problems = []
         if not os.getenv("ADMIN_API_KEY", "") or len(os.getenv("ADMIN_API_KEY", "")) < 32: problems.append("ADMIN_API_KEY missing or < 32 chars")
         if not os.getenv("PORT", ""): problems.append("PORT env not set")
@@ -1026,6 +1061,7 @@ class SystemTestTab:
         return self._ok("Environment security", "ADMIN_API_KEY, PORT, and DEBUG variables are safely configured", "env")
 
     def check_file_permissions(self):
+        """13.08. Audits sensitive files for world-readable/writable permissions."""
         if os.name == "nt": return self._ok("File permissions", "Skipped on Windows", "system_test_tab.py")
         sensitive = [self.data_dir / "users.csv", self.data_dir / "travelers.csv", self.data_dir / "payments.csv", self.project_root / ".env"]
         problems = []
@@ -1040,6 +1076,7 @@ class SystemTestTab:
         return self._ok("File permissions", "Sensitive files are not world-readable or world-writable", "data/")
 
     def check_dependencies(self):
+        """13.09. Ensures required packages are listed in requirements.txt."""
         req_file = self.project_root / "requirements.txt"
         if not req_file.exists(): return self._warn("requirements.txt missing", str(req_file), "requirements.txt", "Create a requirements.txt file")
         text = req_file.read_text(encoding="utf-8", errors="replace").lower()
@@ -1049,6 +1086,7 @@ class SystemTestTab:
         return self._ok("Dependencies", "All required packages are listed in requirements.txt", "requirements.txt")
 
     def check_static_assets(self):
+        """13.10. Ensures primary static assets (CSS/JS) exist recursively."""
         static = self.project_root / "static"
         if not static.is_dir(): return self._fail("Static folder missing", str(static), "static/", "Deploy the static folder")
         
@@ -1064,7 +1102,7 @@ class SystemTestTab:
 
 
 # ============================================================================
-# 13. CLEANUP & QUARANTINE LOGIC
+# 14. CLEANUP & QUARANTINE LOGIC
 # ============================================================================
     def _add_cleanup_candidates(self, paths, category, reason, protected_paths=None):
         protected_paths = protected_paths or set()
@@ -1222,4 +1260,3 @@ class SystemTestTab:
         self.notification.value = message
         self.notification.color = ft.Colors.GREEN_700 if not blocked else ft.Colors.ORANGE_700
         self.notification.update()
-```
