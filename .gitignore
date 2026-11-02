@@ -86,11 +86,12 @@ data/documents/*
 *_OLD_STALE_*.csv
 
 # =============================================================================
-# 11. Runtime quarantine and temporary test data
+# 11. Runtime quarantine, temp data, and database locks
 # =============================================================================
 /data/delete_quarantine/
 data/_test_backup_*/
 data/backups/backup_*_test_*.zip
+data/.db.lock
 
 # =============================================================================
 # 12. Production backups and generated backup archives
@@ -135,6 +136,7 @@ fix_orphan.py
 tools/type
 tools/cd
 tools/curl
+tools/railway
 
 # =============================================================================
 # 17. Test output captures
