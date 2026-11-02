@@ -942,6 +942,33 @@ class HajDatabase:
             traceback.print_exc()
             return False
 
+    def update_traveler_document_path(self, traveler_id, document_key,
+                                      relative_path):
+        """Safely update one document reference under the database lock."""
+        allowed = {
+            "passport_scan", "aadhaar_scan", "pan_scan",
+            "vaccine_scan", "photo",
+        }
+        key = str(document_key or "").strip()
+        if key not in allowed:
+            raise ValueError("Invalid traveler document field")
+        tid = str(traveler_id or "").strip()
+        path = str(relative_path or "").strip()
+        if not tid or not path or ".." in Path(path).parts:
+            raise ValueError("Invalid traveler document reference")
+        with self._lock:
+            mask = self.travelers["id"].astype(str).str.strip() == tid
+            if not mask.any():
+                return False
+            previous = self.travelers.copy()
+            try:
+                self.travelers.loc[mask, key] = path
+                self._save_df(self.travelers, "travelers.csv")
+                return True
+            except Exception:
+                self.travelers = previous
+                raise
+
     def delete_traveler(self, traveler_id):
         mask = self.travelers['id'].astype(str) == str(traveler_id)
         if not mask.any():
