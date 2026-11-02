@@ -843,6 +843,10 @@ class SystemTestTab:
         self.cleanup_checks = {}
         self.inventory_summary.controls.clear()
         inventory_items=[item for item in self.cleanup_candidates if item.get("category") == "inventory"]
+        expected_folders = [
+            "core", "data", "data/backups", "documents", "flet_assets",
+            "logos", "seed_data", "static", "tools",
+        ]
         groups={}
         for item in inventory_items:
             try: folder=str(Path(item["path"]).relative_to(self.project_root).parts[0])
@@ -850,17 +854,59 @@ class SystemTestTab:
             group=groups.setdefault(folder, {"total":0,"protected":0,"used":0,"unused":0,"oldest":0})
             group["total"]+=1; group["protected"]+=int(item.get("protected",False)); group["used"]+=int(item.get("used",False)); group["unused"]+=int(not item.get("protected",False)); group["oldest"]=max(group["oldest"], int(item.get("age_days",0)))
         if groups:
-            for folder, group in sorted(groups.items(), key=lambda item:item[0].casefold()):
-                self.inventory_summary.controls.append(ft.Text(f"{folder}/ — {group['total']} total • {group['protected']} protected • {group['used']} used • {group['unused']} unused candidates • oldest modified {group['oldest']} days", size=10, color="#334155"))
+            # Render every top-level folder as an independent summary row.
+            # This makes the inventory usable on mobile and prevents files from
+            # different folders appearing as one indistinguishable list.
+            summary_names = list(expected_folders)
+            summary_names.extend(folder for folder in groups if folder not in summary_names)
+            for folder in sorted(summary_names, key=str.casefold):
+                group = groups.get(folder, {"total": 0, "protected": 0,
+                                             "used": 0, "unused": 0,
+                                             "oldest": 0})
+                self.inventory_summary.controls.append(
+                    ft.Container(
+                        content=ft.Text(
+                            f"{folder}/ — {group['total']} total • "
+                            f"{group['protected']} protected • "
+                            f"{group['used']} used • "
+                            f"{group['unused']} unused candidates • "
+                            f"oldest modified {group['oldest']} days",
+                            size=10, color="#334155"),
+                        padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+                        bgcolor="#f1f5f9",
+                        border_radius=5,
+                    ))
         else:
             self.inventory_summary.controls.append(ft.Text("Folder summary appears after running Complete project file inventory.", size=10, color="#64748b"))
         if not self.cleanup_candidates:
             self.cleanup_column.controls.append(ft.Text("Run Complete project file inventory to list every file.", size=10, color="#64748b"))
         else:
-            for item in sorted(self.cleanup_candidates, key=lambda x: str(x["path"]).casefold()):
-                path=str(item["path"]); protected=bool(item.get("protected")); age=int(item.get("age_days",0)); classification=item.get("classification", "review candidate")
-                label=f"{'PROTECTED — ' if protected else 'UNUSED CANDIDATE — '}{item['category'].upper()}: {path} — {classification}; modified {age} days ago"
-                checkbox=ft.Checkbox(label=label, value=False, disabled=protected); self.cleanup_checks[path]=checkbox; self.cleanup_column.controls.append(checkbox)
+            grouped_items = {}
+            for item in self.cleanup_candidates:
+                try:
+                    folder = str(Path(item["path"]).relative_to(self.project_root).parts[0])
+                except Exception:
+                    folder = "."
+                grouped_items.setdefault(folder, []).append(item)
+            for folder in sorted(grouped_items, key=str.casefold):
+                group = groups.get(folder, {"total": 0, "protected": 0,
+                                             "used": 0, "unused": 0,
+                                             "oldest": 0})
+                self.cleanup_column.controls.append(
+                    ft.Container(
+                        content=ft.Text(
+                            f"{folder}/ — {group['total']} files; "
+                            f"{group['protected']} protected; "
+                            f"{group['unused']} review candidates",
+                            size=11, weight=ft.FontWeight.BOLD,
+                            color="#0f172a"),
+                        padding=ft.Padding.only(top=8, bottom=3),
+                    ))
+                for item in sorted(grouped_items[folder],
+                                   key=lambda x: str(x["path"]).casefold()):
+                    path=str(item["path"]); protected=bool(item.get("protected")); age=int(item.get("age_days",0)); classification=item.get("classification", "review candidate")
+                    label=f"{path} — {classification} — {age} days old"
+                    checkbox=ft.Checkbox(label=label, value=False, disabled=protected); self.cleanup_checks[path]=checkbox; self.cleanup_column.controls.append(checkbox)
         self.inventory_summary.update(); self.cleanup_column.update()
         self._refresh_quarantine_ui()
 
