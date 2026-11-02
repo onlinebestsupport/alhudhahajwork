@@ -356,7 +356,7 @@ def test_travelers(db, test_batch):
         template["passport_no"] = f"TESTPP{TEST_TS}"
         if test_batch:
             template["batch_id"] = test_batch["id"]
-        template["phone"] = "9999999999"
+        template["mobile"] = "9999999999"
         template["email"] = "test@test.com"
 
         adder = getattr(db, "add_traveler", None)
