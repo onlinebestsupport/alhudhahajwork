@@ -149,6 +149,33 @@ def validate_upload_content(data: bytes, allowed_mimes: set, max_bytes: int = 25
     return sniff_mime(bytes(data)) in set(allowed_mimes or set())
 
 
+def validate_document_content(data: bytes, extension: str,
+                              max_bytes: int = 25 * 1024 * 1024) -> bool:
+    """Validate common document uploads by extension and file signature.
+
+    Modern .docx/.xlsx files are ZIP containers. Legacy .doc/.xls files are
+    intentionally rejected because an extension alone cannot safely identify
+    their binary content.
+    """
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        return False
+    if len(data) > max_bytes:
+        return False
+    ext = str(extension or "").lower()
+    if ext in {".doc", ".xls"}:
+        return False
+    if ext in {".docx", ".xlsx"}:
+        return bytes(data).startswith(b"PK\x03\x04")
+    allowed = {
+        ".jpg": {"image/jpeg"}, ".jpeg": {"image/jpeg"},
+        ".png": {"image/png"}, ".gif": {"image/gif"},
+        ".bmp": {"image/bmp"}, ".webp": {"image/webp"},
+        ".pdf": {"application/pdf"},
+    }
+    return ext in allowed and validate_upload_content(
+        data, allowed[ext], max_bytes=max_bytes)
+
+
 def validate_length(value: str, field_name: str, min_len: int = 0, max_len: int = 1000) -> str:
     s = "" if value is None else str(value).strip()
     if len(s) < min_len:
