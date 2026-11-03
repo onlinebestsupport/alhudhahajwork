@@ -261,7 +261,7 @@ class SystemTestTab:
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.REFRESH, size=18), ft.Text("Refresh")], tight=True), on_click=self.refresh_status, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.HISTORY, size=18), ft.Text("Last Run")], tight=True), on_click=self.show_last_run, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=18), ft.Text("CSV")], tight=True), on_click=self.download_current_csv, bgcolor=ft.Colors.GREEN_50, color=ft.Colors.GREEN_900),
-                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.CONTENT_COPY, size=18), ft.Text("Manus TXT")], tight=True), on_click=self.download_manus_prompt, bgcolor=ft.Colors.AMBER_50, color=ft.Colors.AMBER_900),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.CONTENT_COPY, size=18), ft.Text("Correction Codes")], tight=True), on_click=self.download_manus_prompt, bgcolor=ft.Colors.AMBER_50, color=ft.Colors.AMBER_900),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DESCRIPTION, size=18), ft.Text("Audit TXT")], tight=True), on_click=self.download_audit_report, bgcolor=ft.Colors.TEAL_50, color=ft.Colors.TEAL_900),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CLEAR_ALL, size=18), ft.Text("Clear Screen")], tight=True), on_click=lambda e: self.clear_screen(), bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP, size=18), ft.Text("Reset")], tight=True), on_click=lambda e: self.confirm_reset_csv_history(), bgcolor=ft.Colors.RED_50, color=ft.Colors.RED_900),
