@@ -65,6 +65,7 @@ class SystemTestTab:
     # ========================================================================
     # 02. CLASS INITIALIZATION & PATHS
     # ========================================================================
+    # FUNC 02.01 — CLASS INITIALIZATION & PATHS: __init__()
     def __init__(self, page, db, current_user):
         print(f"[SYSTEM-TEST] loaded version={self.VERSION}", flush=True)
         self.page = page
@@ -109,28 +110,34 @@ class SystemTestTab:
         self.setup_ui()
         self._load_previous_notification()
 
+    # FUNC 02.02 — CLASS INITIALIZATION & PATHS: build()
     def build(self):
         return self.root
 
     @property
+    # FUNC 02.03 — CLASS INITIALIZATION & PATHS: data_dir()
     def data_dir(self):
         return Path(getattr(self.db, "data_dir", Path("data"))).resolve()
 
     @property
+    # FUNC 02.04 — CLASS INITIALIZATION & PATHS: source_root()
     def source_root(self):
         return Path(__file__).resolve().parent
 
     @property
+    # FUNC 02.05 — CLASS INITIALIZATION & PATHS: project_root()
     def project_root(self):
         candidate = self.source_root.parent
         return candidate if (candidate / "main.py").exists() else self.source_root
 
     @property
+    # FUNC 02.06 — CLASS INITIALIZATION & PATHS: python_roots()
     def python_roots(self):
         roots = [self.project_root, self.source_root]
         return list(dict.fromkeys(r for r in roots if r.exists()))
 
     @property
+    # FUNC 02.07 — CLASS INITIALIZATION & PATHS: diagnostics_dir()
     def diagnostics_dir(self):
         path = self.data_dir / "system_tests"
         path.mkdir(parents=True, exist_ok=True)
@@ -143,12 +150,14 @@ class SystemTestTab:
         return path
 
     @property
+    # FUNC 02.08 — CLASS INITIALIZATION & PATHS: export_dir()
     def export_dir(self):
         path = self.diagnostics_dir / "exports"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     @property
+    # FUNC 02.09 — CLASS INITIALIZATION & PATHS: quarantine_dir()
     def quarantine_dir(self):
         path = self.data_dir / "delete_quarantine"
         path.mkdir(parents=True, exist_ok=True)
@@ -157,6 +166,7 @@ class SystemTestTab:
     # ========================================================================
     # 03. TEST SPECIFICATIONS (Registry)
     # ========================================================================
+    # FUNC 03.01 — TEST SPECIFICATIONS (Registry): _build_specs()
     def _build_specs(self):
         self.test_specs = [
             # --- 11. API & Frontend ---
@@ -198,6 +208,7 @@ class SystemTestTab:
     # ========================================================================
     # 04. UI CONSTRUCTION
     # ========================================================================
+    # FUNC 04.01 — UI CONSTRUCTION: setup_ui()
     def setup_ui(self):
         cards = []
         for title, owner, fn in self.test_specs:
@@ -296,6 +307,7 @@ class SystemTestTab:
     # ========================================================================
     # 05. PERSISTENCE (CSV History)
     # ========================================================================
+    # FUNC 05.01 — PERSISTENCE (CSV History): _append_rows()
     def _append_rows(self, filename, rows, fields):
         if not rows: return
         path = self.diagnostics_dir / filename
@@ -319,6 +331,7 @@ class SystemTestTab:
                 try: tmp.unlink()
                 except OSError: pass
 
+    # FUNC 05.02 — PERSISTENCE (CSV History): _history()
     def _history(self):
         path = self.diagnostics_dir / self.HISTORY_FILE
         if not path.exists(): return []
@@ -327,6 +340,7 @@ class SystemTestTab:
                 return list(csv.DictReader(f))
         except Exception: return []
 
+    # FUNC 05.03 — PERSISTENCE (CSV History): _load_previous_notification()
     def _load_previous_notification(self):
         rows = self._history()
         if not rows:
@@ -344,6 +358,7 @@ class SystemTestTab:
         self.history_label.value = f"Recorded runs: {len({r.get('run_id') for r in rows if r.get('run_id')})}"
         self.summary.value = f"Previous run: {recent[-1].get('timestamp', '')} • {len(recent)} checks"
 
+    # FUNC 05.04 — PERSISTENCE (CSV History): _record()
     def _record(self, results, run_id):
         results = [self._prepare_result(r, run_id) for r in results]
         now = datetime.now().isoformat(timespec="seconds")
@@ -352,6 +367,7 @@ class SystemTestTab:
         errors = [r for r in rows if r.get("level") in {"FAIL", "WARN"}]
         self._append_rows(self.ERROR_FILE, errors, self.HISTORY_FIELDS)
 
+    # FUNC 05.05 — PERSISTENCE (CSV History): confirm_reset_csv_history()
     def confirm_reset_csv_history(self, e=None):
         dialog = ft.AlertDialog(
             modal=True,
@@ -364,6 +380,7 @@ class SystemTestTab:
         )
         self.page.show_dialog(dialog)
 
+    # FUNC 05.06 — PERSISTENCE (CSV History): reset_csv_history()
     def reset_csv_history(self, e=None):
         try:
             directory = self.diagnostics_dir
@@ -390,12 +407,14 @@ class SystemTestTab:
     # ========================================================================
     # 06. MANUS PROMPT & RESULT PREPARATION
     # ========================================================================
+    # FUNC 06.01 — MANUS PROMPT & RESULT PREPARATION: _plain_language()
     def _plain_language(self, result):
         level, title, message = result.get("level", "FAIL"), result.get("title", "System check"), result.get("message", "")
         if level == "OK": return f"Good news: the {title.lower()} check passed."
         if level == "WARN": return f"Warning: The system found something to review in {title.lower()}. Details: {message}"
         return f"Problem found in {title.lower()}. This area may not work correctly. Details: {message}"
 
+    # FUNC 06.02 — MANUS PROMPT & RESULT PREPARATION: _manus_prompt()
     def _manus_prompt(self, result, run_id=""):
         level = result.get("level", "FAIL")
         return (
@@ -411,6 +430,7 @@ class SystemTestTab:
             "preserve existing data, and run the relevant tests."
         )
 
+    # FUNC 06.03 — MANUS PROMPT & RESULT PREPARATION: _prepare_result()
     def _prepare_result(self, result, run_id=""):
         result = dict(result)
         result["plain_language"] = self._plain_language(result)
@@ -422,6 +442,7 @@ class SystemTestTab:
     # ========================================================================
     # 07. EXECUTION & STATE MANAGEMENT
     # ========================================================================
+    # FUNC 07.01 — EXECUTION & STATE MANAGEMENT: _set_ui_running()
     def _set_ui_running(self, running: bool):
         self._test_running = running
         if hasattr(self, "btn_run_all") and self.btn_run_all:
@@ -447,6 +468,7 @@ class SystemTestTab:
             self.notification.update()
         except Exception: pass
 
+    # FUNC 07.02 — EXECUTION & STATE MANAGEMENT: _show_progress()
     def _show_progress(self, completed, total, title):
         fraction = min(1, completed / total) if total else 1
         elapsed = time.perf_counter() - self._progress_started if self._progress_started else 0
@@ -457,6 +479,7 @@ class SystemTestTab:
             self.progress_text.update()
         except Exception: pass
 
+    # FUNC 07.03 — EXECUTION & STATE MANAGEMENT: _run_specs_sync()
     def _run_specs_sync(self, selected=None):
         specs = selected or self.test_specs
         results = []
@@ -467,6 +490,7 @@ class SystemTestTab:
             results.append(result)
         return results
 
+    # FUNC 07.04 — EXECUTION & STATE MANAGEMENT: _run_spec_with_timeout()
     async def _run_spec_with_timeout(self, spec):
         title = spec[0] or getattr(spec[2], "__name__", "selected test")
         try:
@@ -476,11 +500,13 @@ class SystemTestTab:
         except Exception as ex:
             return [self._fail("Test failed", repr(ex), "system_test_tab.py", "Review named check")]
 
+    # FUNC 07.05 — EXECUTION & STATE MANAGEMENT: run_all()
     def run_all(self, e=None):
         if self._test_running: return
         self._set_ui_running(True)
         self.page.run_task(self._run_all_async)
 
+    # FUNC 07.06 — EXECUTION & STATE MANAGEMENT: _run_all_async()
     async def _run_all_async(self):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         results = []
@@ -503,11 +529,13 @@ class SystemTestTab:
         finally:
             self._set_ui_running(False)
 
+    # FUNC 07.07 — EXECUTION & STATE MANAGEMENT: run_one()
     def run_one(self, fn):
         if self._test_running: return
         self._set_ui_running(True)
         self.page.run_task(self._run_one_async, fn)
 
+    # FUNC 07.08 — EXECUTION & STATE MANAGEMENT: _run_one_async()
     async def _run_one_async(self, fn):
         run_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
         try:
@@ -524,6 +552,7 @@ class SystemTestTab:
         finally:
             self._set_ui_running(False)
 
+    # FUNC 07.09 — EXECUTION & STATE MANAGEMENT: _safe_call()
     def _safe_call(self, fn):
         try:
             result = fn()
@@ -534,6 +563,7 @@ class SystemTestTab:
     # ========================================================================
     # 08. SCREEN CONTROLS
     # ========================================================================
+    # FUNC 08.01 — SCREEN CONTROLS: clear_screen()
     def clear_screen(self):
         if self._test_running:
             self.notification.value = "A test is running. Clear Screen is available after it finishes."
@@ -554,6 +584,7 @@ class SystemTestTab:
             try: control.update()
             except Exception: pass
 
+    # FUNC 08.02 — SCREEN CONTROLS: refresh_status()
     def refresh_status(self, e=None):
         if self._test_running: return
         self._load_previous_notification()
@@ -562,6 +593,7 @@ class SystemTestTab:
         self.notification.color = ft.Colors.GREEN_700
         self.notification.update()
 
+    # FUNC 08.03 — SCREEN CONTROLS: show_last_run()
     def show_last_run(self, e=None):
         rows = self._history()
         if not rows:
@@ -576,6 +608,7 @@ class SystemTestTab:
     # ========================================================================
     # 09. DOWNLOADS & EXPORTS
     # ========================================================================
+    # FUNC 09.01 — DOWNLOADS & EXPORTS: _open_download()
     def _open_download(self, filename):
         url = f"/download/{filename}"
         public_base = (os.getenv("PUBLIC_BASE_URL") or "").strip().rstrip("/")
@@ -591,6 +624,7 @@ class SystemTestTab:
         except Exception: pass
         return url
 
+    # FUNC 09.02 — DOWNLOADS & EXPORTS: _export_csv()
     def _export_csv(self, rows, label):
         if not rows:
             self.notification.value = "Nothing to download."
@@ -617,6 +651,7 @@ class SystemTestTab:
             self.notification.color = ft.Colors.RED_700
         self.notification.update()
 
+    # FUNC 09.03 — DOWNLOADS & EXPORTS: download_current_csv()
     def download_current_csv(self, e=None):
         rows = self.last_results
         if not rows:
@@ -624,9 +659,11 @@ class SystemTestTab:
             if history: rows = [row for row in history if row.get("run_id") == history[-1].get("run_id")]
         self._export_csv(rows, "current_run")
 
+    # FUNC 09.04 — DOWNLOADS & EXPORTS: download_history_csv()
     def download_history_csv(self, e=None):
         self._export_csv(self._history(), "history")
 
+    # FUNC 09.05 — DOWNLOADS & EXPORTS: download_manus_prompt()
     def download_manus_prompt(self, e=None):
         rows = self.last_results or self._history()
         if not rows: return
@@ -647,6 +684,7 @@ class SystemTestTab:
             self.notification.color = ft.Colors.RED_700
         self.notification.update()
 
+    # FUNC 09.06 — DOWNLOADS & EXPORTS: download_audit_report()
     def download_audit_report(self, e=None):
         """Generates and downloads a plain-text version of the Document Upload Audit Report."""
         report_path = self.project_root / "DOCUMENT_UPLOAD_AUDIT_REPORT.md"
@@ -685,6 +723,7 @@ class SystemTestTab:
     # ========================================================================
     # 10. RESULT RENDERING & HELPERS
     # ========================================================================
+    # FUNC 10.01 — RESULT RENDERING & HELPERS: _render_results()
     def _render_results(self, results):
         self.results_column.controls.clear()
         passed = sum(r.get("level") == "OK" for r in results)
@@ -728,18 +767,22 @@ class SystemTestTab:
         try: self._refresh_cleanup_ui()
         except Exception: pass
 
+    # FUNC 10.02 — RESULT RENDERING & HELPERS: _ok()
     def _ok(self, title, message="No issue detected", owner="system_test_tab.py", action="No action required"):
         return {"level": "OK", "title": title, "message": message, "action": action, "owner": owner}
 
+    # FUNC 10.03 — RESULT RENDERING & HELPERS: _warn()
     def _warn(self, title, message, owner, action):
         return {"level": "WARN", "title": title, "message": message, "action": action, "owner": owner}
 
+    # FUNC 10.04 — RESULT RENDERING & HELPERS: _fail()
     def _fail(self, title, message, owner, action="Open the named file and correct the condition"):
         return {"level": "FAIL", "title": title, "message": message, "action": action, "owner": owner}
 
     # ========================================================================
     # 11. API & FRONTEND TESTS
     # ========================================================================
+    # FUNC 11.01 — API & FRONTEND TESTS: check_api_contract()
     def check_api_contract(self):
         """11.01. Verify required API routes exist and uploads are protected."""
         path = self.project_root / "main.py"
@@ -752,6 +795,7 @@ class SystemTestTab:
             return self._fail("Folder upload lacks auth", "The folder upload route lacks Depends(require_admin)", "main.py", "Require admin authentication")
         return self._ok("API contract", "Required API routes and protected uploads verified", "main.py / security.py")
 
+    # FUNC 11.02 — API & FRONTEND TESTS: check_live_api()
     def check_live_api(self):
         """11.02. Probes the live deployment URL to ensure endpoints respond correctly."""
         base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
@@ -769,6 +813,7 @@ class SystemTestTab:
         if failures: return self._fail("Live API probe failed", "; ".join(failures), "main.py", "Inspect deployment logs")
         return self._ok("Live API probe", f"Checked {len(checks)} endpoints at {base}", "main.py")
 
+    # FUNC 11.03 — API & FRONTEND TESTS: check_frontpage()
     def check_frontpage(self):
         """11.03. Validates index.html, robots.txt, sitemap.xml, and frontpage config."""
         root = self.project_root
@@ -795,6 +840,7 @@ class SystemTestTab:
         except Exception as ex:
             return self._fail("Front-page config error", str(ex), "frontpage_config.py", "Repair loading logic")
 
+    # FUNC 11.04 — API & FRONTEND TESTS: check_static_html()
     def check_static_html(self):
         """11.04. Scans all static HTML files for basic structural integrity."""
         static = self.project_root / "static"
@@ -811,6 +857,7 @@ class SystemTestTab:
         if bad: return self._fail("Static HTML issue", " ; ".join(bad[:5]), "static/", "Fix markup")
         return self._ok("Static HTML files", f"Checked {len(html_files)} files", "static/")
 
+    # FUNC 11.05 — API & FRONTEND TESTS: check_repository_layout()
     def check_repository_layout(self):
         """11.05. Verifies the expected GitHub folder structure is present."""
         expected = ["core", "data", "data/backups", "documents", "flet_assets", "logos", "seed_data", "static", "tools"]
@@ -822,6 +869,7 @@ class SystemTestTab:
     # ========================================================================
     # 12. INVENTORY & FILESYSTEM TESTS
     # ========================================================================
+    # FUNC 12.01 — INVENTORY & FILESYSTEM TESTS: check_data_file_hygiene()
     def check_data_file_hygiene(self):
         """12.01. Ensures only recognized application files exist in data/ root."""
         data = self.data_dir
@@ -832,6 +880,7 @@ class SystemTestTab:
         if candidates: return self._warn("Unrecognized data files", ", ".join(p.name for p in candidates[:5]), "data/", "Review checkboxes")
         return self._ok("Database file hygiene", "Only recognized configuration and data files present", "data/")
 
+    # FUNC 12.02 — INVENTORY & FILESYSTEM TESTS: check_unused_files()
     def check_unused_files(self):
         """12.02. Generates a full inventory and provides a git rm command."""
         root = self.project_root
@@ -965,6 +1014,7 @@ class SystemTestTab:
     # ========================================================================
     # 13. CLEANUP & QUARANTINE LOGIC
     # ========================================================================
+    # FUNC 13.01 — CLEANUP & QUARANTINE LOGIC: _add_cleanup_candidates()
     def _add_cleanup_candidates(self, paths, category, reason, protected_paths=None):
         protected_paths = protected_paths or set()
         for path in paths:
@@ -978,6 +1028,7 @@ class SystemTestTab:
                 "used": info.get("used", False), "age_days": info.get("age_days", 0)
             })
 
+    # FUNC 13.02 — CLEANUP & QUARANTINE LOGIC: _refresh_cleanup_ui()
     def _refresh_cleanup_ui(self):
         self.cleanup_column.controls.clear()
         self.cleanup_checks = {}
@@ -1041,6 +1092,7 @@ class SystemTestTab:
         except Exception: pass
         self._refresh_quarantine_ui()
 
+    # FUNC 13.03 — CLEANUP & QUARANTINE LOGIC: _refresh_quarantine_ui()
     def _refresh_quarantine_ui(self):
         self.quarantine_column.controls.clear()
         self.quarantine_checks = {}
@@ -1056,6 +1108,7 @@ class SystemTestTab:
             self.quarantine_column.update()
         except Exception: pass
 
+    # FUNC 13.04 — CLEANUP & QUARANTINE LOGIC: delete_selected_cleanup()
     def delete_selected_cleanup(self, e=None):
         if not self.cleanup_confirmation.value:
             self.notification.value = "Move blocked: tick the quarantine confirmation checkbox first."
@@ -1091,6 +1144,7 @@ class SystemTestTab:
         self.notification.color = ft.Colors.GREEN_700 if not blocked else ft.Colors.ORANGE_700
         self.notification.update()
 
+    # FUNC 13.05 — CLEANUP & QUARANTINE LOGIC: delete_quarantine_files()
     def delete_quarantine_files(self, e=None):
         if not self.permanent_confirmation.value:
             self.notification.value = "Deletion blocked: tick the quarantine confirmation checkbox first."
@@ -1125,6 +1179,7 @@ class SystemTestTab:
     # ========================================================================
     # 14. DATABASE & FINANCIAL TESTS
     # ========================================================================
+    # FUNC 14.01 — DATABASE & FINANCIAL TESTS: check_schema()
     def check_schema(self):
         """14.01. Verifies all necessary columns exist in the DataFrames."""
         expected = {"users": {"id", "username", "role"}, "travelers": {"id", "batch_id"}, "batches": {"id", "price"}, "payments": {"id", "traveler_id", "amount", "status"}, "invoices": {"id", "traveler_id"}, "receipts": {"id", "payment_id"}}
@@ -1136,6 +1191,7 @@ class SystemTestTab:
         if problems: return self._fail("Database schema mismatch", "; ".join(problems), "database.py", "Repair columns")
         return self._ok("Database schema", "All core tables contain required columns", "database.py")
 
+    # FUNC 14.02 — DATABASE & FINANCIAL TESTS: check_database_records()
     def check_database_records(self):
         """14.02. Ensures DataFrames load correctly and reports record counts."""
         problems = []
@@ -1146,6 +1202,7 @@ class SystemTestTab:
         if problems: return self._fail("Database record load issue", "; ".join(problems), "database.py", "Reload CSV")
         return self._ok("Database records", f"Loaded {len(self.db.travelers)} travelers, {len(self.db.batches)} batches, {len(self.db.payments)} payments, {len(self.db.invoices)} invoices", "database.py")
 
+    # FUNC 14.03 — DATABASE & FINANCIAL TESTS: check_receipt_reconciliation()
     def check_receipt_reconciliation(self):
         """14.03. Check receipt/payment linkage without modifying either CSV."""
         payments = getattr(self.db, "payments", None)
@@ -1200,6 +1257,7 @@ class SystemTestTab:
             return self._fail("Receipt/payment mismatch", detail + "; " + "; ".join(problems[:6]), "database.py / payments_tab.py / receipts_tab.py", "Review duplicate, orphan, or missing receipt references before deleting anything")
         return self._ok("Receipt reconciliation", detail + "; all completed payments have one receipt and no orphan links", "database.py / payments_tab.py / receipts_tab.py")
 
+    # FUNC 14.04 — DATABASE & FINANCIAL TESTS: check_relationships()
     def check_relationships(self):
         """14.04. Checks for orphaned IDs in relationships (traveler->batch, payment->traveler)."""
         def ids(attr):
@@ -1215,6 +1273,7 @@ class SystemTestTab:
         if problems: return self._fail("Relationship integrity issue", "; ".join(problems), "database.py", "Correct orphan IDs")
         return self._ok("ID and relationship integrity", "No orphan references found", "database.py")
 
+    # FUNC 14.05 — DATABASE & FINANCIAL TESTS: check_financials()
     def check_financials(self):
         """14.05. Validates that financial columns contain non-negative finite numbers."""
         problems = []
@@ -1233,6 +1292,7 @@ class SystemTestTab:
         if problems: return self._fail("Financial value issue", "; ".join(problems[:5]), "database.py", "Correct invalid amounts")
         return self._ok("Financial precision", "Financial columns contain valid non-negative numbers", "database.py")
 
+    # FUNC 14.06 — DATABASE & FINANCIAL TESTS: check_statuses()
     def check_statuses(self):
         """14.06. Ensures payment statuses are standardized."""
         df = getattr(self.db, "payments", None)
@@ -1242,15 +1302,22 @@ class SystemTestTab:
         if bad: return self._fail("Unknown payment status", ", ".join(bad[:5]), "payments_tab.py", "Normalize statuses")
         return self._ok("Payment and invoice status", "Statuses are normalized", "payments_tab.py")
 
+    # FUNC 14.07 — DATABASE & FINANCIAL TESTS: check_document_upload_persistence()
     def check_document_upload_persistence(self):
         """14.07. Verify the upload route uses the locked database reference update."""
         main_path = self.project_root / "main.py"
         db_path = self.project_root / "core" / "database.py"
+        if not db_path.exists():
+            db_path = self.project_root / "database.py"
         security_path = self.project_root / "core" / "security.py"
+        if not security_path.exists():
+            security_path = self.project_root / "security.py"
         main = main_path.read_text(encoding="utf-8", errors="replace") if main_path.exists() else ""
         db = db_path.read_text(encoding="utf-8", errors="replace") if db_path.exists() else ""
         security = security_path.read_text(encoding="utf-8", errors="replace") if security_path.exists() else ""
         report = self.project_root / "DOCUMENT_UPLOAD_AUDIT_REPORT.md"
+        if not report.exists():
+            report = self.data_dir / "DOCUMENT_UPLOAD_AUDIT_REPORT.md"
         missing = []
         if "update_traveler_document_path" not in main: missing.append("main.py locked update call")
         if "def update_traveler_document_path" not in db: missing.append("database.py locked method")
@@ -1261,6 +1328,7 @@ class SystemTestTab:
             return self._fail("Document upload persistence check failed", "; ".join(missing), "main.py / database.py / security.py", "Deploy the corrected upload files and audit report")
         return self._ok("Document upload persistence", "Upload references use the locked database method, signature validation, and the audit report is present", "main.py / database.py / security.py")
 
+    # FUNC 14.08 — DATABASE & FINANCIAL TESTS: check_tax()
     def check_tax(self):
         """14.08. Confirms Tax settings exist and are within 0-100% bounds."""
         try:
@@ -1271,6 +1339,7 @@ class SystemTestTab:
             return self._ok("Tax configuration", f"GST {gst}% • TCS {tcs}%", "settings_manager.py")
         except Exception as ex: return self._fail("Tax configuration issue", str(ex), "settings_manager.py", "Repair tax_settings.csv")
 
+    # FUNC 14.09 — DATABASE & FINANCIAL TESTS: check_backups()
     def check_backups(self):
         """14.09. Ensures backups are valid ZIPs and checks the age of the latest one."""
         folder = self.data_dir / "backups"
@@ -1288,6 +1357,7 @@ class SystemTestTab:
     # ========================================================================
     # 15. SYSTEM, SECURITY & ENVIRONMENT TESTS
     # ========================================================================
+    # FUNC 15.01 — SYSTEM, SECURITY & ENVIRONMENT TESTS: _should_scan()
     def _should_scan(self, path: Path) -> bool:
         """Helper to exclude virtual environments and caches from slow scans."""
         excluded = {".venv", "venv", "env", "site-packages", "dist-packages", 
@@ -1295,6 +1365,7 @@ class SystemTestTab:
                     "node_modules", "data", "documents", "logos", "flet_assets", "seed_data"}
         return not any(part.casefold() in excluded for part in path.parts)
 
+    # FUNC 15.02 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_source()
     def check_source(self):
         """15.01. Parses all Python files to ensure there are no syntax errors."""
         bad, functions, all_files = [], 0, []
@@ -1313,6 +1384,7 @@ class SystemTestTab:
         if bad: return self._fail("Source syntax issue", ", ".join(bad), "Python files", "Fix syntax errors")
         return self._ok("Source syntax and functions", f"Parsed {len(set(all_files))} files and {functions} functions", "Python files")
 
+    # FUNC 15.03 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_ui_wiring()
     def check_ui_wiring(self):
         """15.02. Scans Flet code for event bindings and missing setup_ui markers."""
         problems, controls, handlers, all_files = [], 0, 0, []
@@ -1331,6 +1403,7 @@ class SystemTestTab:
         if problems: return self._warn("UI wiring review", "; ".join(problems), "UI files", "Review named modules")
         return self._ok("UI/button wiring", f"Found {controls} event bindings; {handlers} function definitions", "UI files")
 
+    # FUNC 15.04 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_security()
     def check_security(self):
         """15.03. Verifies ADMIN_API_KEY strength and fail-closed security logic."""
         key = os.getenv("ADMIN_API_KEY", "")
@@ -1339,6 +1412,7 @@ class SystemTestTab:
         if "Security service unavailable" not in main_text: return self._fail("Security fallback missing", "main.py does not fail closed on security import failure", "main.py", "Keep endpoints returning 503")
         return self._ok("Security configuration", "Admin API key length and fail-closed fallback are present", "security.py")
 
+    # FUNC 15.05 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_runtime_storage()
     def check_runtime_storage(self):
         """15.04. Ensures necessary runtime directories exist and are writable."""
         data = self.data_dir
@@ -1348,6 +1422,7 @@ class SystemTestTab:
         if not os.access(str(data), os.W_OK): return self._fail("Data folder not writable", str(data), "database.py", "Mount writable volume")
         return self._ok("Runtime storage and exports", "All required runtime folders are present and writable", "main.py")
 
+    # FUNC 15.06 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_background_errors()
     def check_background_errors(self):
         """15.05. Scans activity_log.csv and *.log files for recent errors."""
         hits, now = [], datetime.now()
@@ -1369,6 +1444,7 @@ class SystemTestTab:
         if hits: return self._warn("Background errors detected", " ; ".join(hits[-5:]), "logs", "Open logs and fix responsible modules")
         return self._ok("Background error scan", "No recent errors detected in logs", "logs")
 
+    # FUNC 15.07 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_tools_scripts()
     def check_tools_scripts(self):
         """15.06. Verifies the integrity of the tools/ folder and its scripts."""
         tools = self.project_root / "tools"
@@ -1383,6 +1459,7 @@ class SystemTestTab:
         if bad: return self._fail("Tools syntax error", ", ".join(bad), "tools/", "Fix syntax in the listed tools scripts")
         return self._ok("Tools scripts integrity", f"Verified {len(required)} tools scripts", "tools/")
 
+    # FUNC 15.08 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_environment_security()
     def check_environment_security(self):
         """15.07. Checks environment variables for safe production settings."""
         problems = []
@@ -1392,6 +1469,7 @@ class SystemTestTab:
         if problems: return self._warn("Environment security issues", "; ".join(problems), "env", "Review environment variables for production readiness")
         return self._ok("Environment security", "ADMIN_API_KEY, PORT, and DEBUG variables are safely configured", "env")
 
+    # FUNC 15.09 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_file_permissions()
     def check_file_permissions(self):
         """15.08. Audits sensitive files for world-readable/writable permissions."""
         if os.name == "nt": return self._ok("File permissions", "Skipped on Windows", "system_test_tab.py")
@@ -1407,6 +1485,7 @@ class SystemTestTab:
         if problems: return self._warn("File permission issues", "; ".join(problems), "data/", "Restrict file permissions (chmod 600)")
         return self._ok("File permissions", "Sensitive files are not world-readable or world-writable", "data/")
 
+    # FUNC 15.10 — SYSTEM, SECURITY & ENVIRONMENT TESTS: check_dependencies()
     def check_dependencies(self):
         """15.09. Ensures required packages are listed in requirements.txt."""
         req_file = self.project_root / "requirements.txt"
@@ -1420,9 +1499,10 @@ class SystemTestTab:
     # ========================================================================
     # 16. DEEP INTEGRATION & NETWORK TESTS
     # ========================================================================
+    # FUNC 16.01 — DEEP INTEGRATION & NETWORK TESTS: check_security_headers()
     def check_security_headers(self):
         """16.01. Verifies HSTS and other critical security headers are present."""
-        url = "https://alhudhahaj.work/"
+        url = os.getenv("PUBLIC_BASE_URL", "https://alhudhahaj.work").strip().rstrip("/") or "https://alhudhahaj.work"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "AlhudhaDiagnostics/1.0"})
             with urllib.request.urlopen(req, timeout=10) as res:
@@ -1446,14 +1526,19 @@ class SystemTestTab:
         except Exception as ex:
             return self._fail("Header check failed", f"Could not reach {url}: {ex}", "Network", "Check if the site is online")
 
+    # FUNC 16.02 — DEEP INTEGRATION & NETWORK TESTS: check_mobile_responsive()
     def check_mobile_responsive(self):
         """16.02. Verifies viewport tags and media queries exist for mobile rendering."""
         static = self.project_root / "static"
         pages = ["index.html", "traveler.html"]
         problems = []
         for page in pages:
-            path = static / page
-            if not path.exists(): continue
+            path = self.project_root / page
+            if not path.exists():
+                path = static / page
+            if not path.exists():
+                problems.append(f"{page}: file not found")
+                continue
             text = path.read_text(encoding="utf-8", errors="replace").lower()
             if "width=device-width" not in text:
                 problems.append(f"{page}: missing viewport meta tag")
@@ -1464,6 +1549,7 @@ class SystemTestTab:
             return self._warn("Mobile Responsiveness", "; ".join(problems), "static/", "Ensure viewport tags and media queries are present")
         return self._ok("Mobile Responsiveness", "Viewport tags and media queries are present", "static/")
 
+    # FUNC 16.03 — DEEP INTEGRATION & NETWORK TESTS: check_frontpage_deep_config()
     def check_frontpage_deep_config(self):
         """16.03. Verifies the frontpage config has all required sections."""
         path = self.data_dir / "frontpage_config.json"
@@ -1479,6 +1565,7 @@ class SystemTestTab:
         except Exception as ex:
             return self._fail("Config syntax error", str(ex), "frontpage_config.json", "Fix JSON formatting")
 
+    # FUNC 16.04 — DEEP INTEGRATION & NETWORK TESTS: check_public_pages()
     def check_public_pages(self):
         """16.04. Verifies public pages (home, traveler, robots.txt) load successfully."""
         urls = ["https://alhudhahaj.work/", "https://alhudhahaj.work/traveler", "https://alhudhahaj.work/robots.txt"]
