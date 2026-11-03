@@ -1,7 +1,7 @@
 # ============================================================================
 # core/system_test_tab.py — Professional Super-Admin Diagnostics Console
 # ============================================================================
-# Version: 2026-11-03-r2-master-merged
+# Version: 2026-11-03-r3-audit-txt-export
 # Purpose: Recorded, read-only system diagnostics. Ensures no business data
 #          (travelers, payments, etc.) is ever deleted or altered by tests.
 # 
@@ -14,7 +14,7 @@
 #   06. MANUS PROMPT & RESULT PREPARATION
 #   07. EXECUTION & STATE MANAGEMENT (Button Disabling)
 #   08. SCREEN CONTROLS (Clear / Refresh / Show Last Run)
-#   09. DOWNLOADS & EXPORTS
+#   09. DOWNLOADS & EXPORTS (CSV, Manus, Audit TXT)
 #   10. RESULT RENDERING & HELPERS
 #   11. API & FRONTEND TESTS (11.01 – 11.05)
 #   12. INVENTORY & FILESYSTEM TESTS (12.01 – 12.02)
@@ -51,7 +51,7 @@ import flet as ft
 class SystemTestTab:
     """Diagnostics console. Tests never create, edit, or delete business records."""
 
-    VERSION = "2026-11-03-r2-master-merged"
+    VERSION = "2026-11-03-r3-audit-txt-export"
     HISTORY_FILE = "system_test_history.csv"
     ERROR_FILE = "system_error_events.csv"
     MAX_HISTORY = 5000
@@ -251,6 +251,7 @@ class SystemTestTab:
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.HISTORY, size=18), ft.Text("Last Run")], tight=True), on_click=self.show_last_run, bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DOWNLOAD, size=18), ft.Text("CSV")], tight=True), on_click=self.download_current_csv, bgcolor=ft.Colors.GREEN_50, color=ft.Colors.GREEN_900),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CONTENT_COPY, size=18), ft.Text("Manus TXT")], tight=True), on_click=self.download_manus_prompt, bgcolor=ft.Colors.AMBER_50, color=ft.Colors.AMBER_900),
+                    ft.Button(content=ft.Row([ft.Icon(ft.Icons.DESCRIPTION, size=18), ft.Text("Audit TXT")], tight=True), on_click=self.download_audit_report, bgcolor=ft.Colors.TEAL_50, color=ft.Colors.TEAL_900),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.CLEAR_ALL, size=18), ft.Text("Clear Screen")], tight=True), on_click=lambda e: self.clear_screen(), bgcolor=ft.Colors.WHITE, color=ft.Colors.BLUE_GREY_800),
                     ft.Button(content=ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP, size=18), ft.Text("Reset")], tight=True), on_click=lambda e: self.confirm_reset_csv_history(), bgcolor=ft.Colors.RED_50, color=ft.Colors.RED_900),
                 ], spacing=10, wrap=True),
@@ -646,6 +647,41 @@ class SystemTestTab:
             self.notification.color = ft.Colors.RED_700
         self.notification.update()
 
+    def download_audit_report(self, e=None):
+        """Generates and downloads a plain-text version of the Document Upload Audit Report."""
+        report_path = self.project_root / "DOCUMENT_UPLOAD_AUDIT_REPORT.md"
+        
+        if report_path.exists():
+            content = report_path.read_text(encoding="utf-8", errors="replace")
+        else:
+            content = (
+                "ALHUDHA HAJ TRAVEL SYSTEM\n"
+                "DOCUMENT UPLOAD AUDIT REPORT\n"
+                "=====================================\n\n"
+                "This is a placeholder for the Document Upload Audit Report.\n"
+                "The system expects this file to document the security and\n"
+                "persistence mechanisms for traveler document uploads.\n\n"
+                "Key Reference Points:\n"
+                "1. main.py: /api/admin/traveler/upload-doc endpoint.\n"
+                "2. database.py: update_traveler_document_path method.\n"
+                "3. security.py: validate_document_content validation.\n"
+            )
+        
+        try:
+            project_static = self.project_root / "static" / "downloads"
+            project_static.mkdir(parents=True, exist_ok=True)
+            filename = f"document_upload_audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            target = project_static / filename
+            target.write_text(content, encoding="utf-8")
+            
+            download_url = self._open_download(filename)
+            self.notification.value = f"Audit report downloaded: {filename}"
+            self.notification.color = ft.Colors.GREEN_700
+        except Exception as ex:
+            self.notification.value = f"Audit download failed: {ex}"
+            self.notification.color = ft.Colors.RED_700
+        self.notification.update()
+
     # ========================================================================
     # 10. RESULT RENDERING & HELPERS
     # ========================================================================
@@ -720,7 +756,6 @@ class SystemTestTab:
         """11.02. Probes the live deployment URL to ensure endpoints respond correctly."""
         base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
         if not base: return self._ok("Live API probe skipped", "PUBLIC_BASE_URL is not configured.", "main.py", "Optional: set PUBLIC_BASE_URL")
-        # FIXED: 5s per endpoint (3 × 5s = 15s, well under 25s timeout)
         checks = [("frontpage", "/api/frontpage", 200), ("batches", "/api/batches", 200), ("admin", "/api/admin/frontpage/diagnose", 401)]
         failures = []
         for name, route, expected in checks:
