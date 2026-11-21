@@ -83,8 +83,8 @@ _ACTIVE_BATCH_STATUSES = {'active', 'open', 'closing soon'}
 PERMISSION_CATALOG = [
     "view_dashboard", "manage_travelers", "manage_batches",
     "manage_payments", "manage_invoices", "manage_receipts",
-    "view_reports", "manage_users", "manage_backups",
-    "manage_settings",
+    "view_reports", "manage_users", "manage_frontpage",
+    "manage_backups", "manage_data_admin", "manage_system_tests",
 ]
 
 ROLE_DEFAULT_PERMISSIONS = {
@@ -856,6 +856,11 @@ class HajDatabase:
             raise
 
     def update_traveler(self, traveler_id, traveler_data):
+        """Update a traveler while coordinating with uploads and backups."""
+        with self._lock:
+            return self._update_traveler_unlocked(traveler_id, traveler_data)
+
+    def _update_traveler_unlocked(self, traveler_id, traveler_data):
         try:
             mask = self.travelers['id'].astype(str) == str(traveler_id)
             if not mask.any():
@@ -1525,6 +1530,24 @@ class HajDatabase:
                 self.receipts['payment_id'].astype(str).str.strip() == str(payment_id).strip()
             ].to_dict('records')
         return self.receipts.to_dict('records')
+
+    def delete_receipt(self, receipt_id):
+        """Delete one receipt through the database lock; keep its payment."""
+        rid = str(receipt_id or '').strip()
+        if not rid:
+            raise ValueError("Receipt ID is required")
+        with self._lock:
+            mask = self.receipts['id'].astype(str).str.strip() == rid
+            if not mask.any():
+                raise ValueError(f"Receipt not found: {rid}")
+            previous = self.receipts.copy()
+            try:
+                self.receipts = self.receipts.loc[~mask].copy()
+                self._save_df(self.receipts, "receipts.csv")
+                return True
+            except Exception:
+                self.receipts = previous
+                raise
 
     # =================================================================================
     # 2.10 — REPORTS & DASHBOARD
