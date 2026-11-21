@@ -46,10 +46,12 @@ PERMISSION_CATALOG = [
     ("manage_payments",  "💰", "Manage Payments"),
     ("manage_invoices",  "📄", "Manage Invoices"),
     ("manage_receipts",  "🧾", "Manage Receipts"),
-    ("view_reports",     "📈", "View Reports"),
-    ("manage_users",     "👤", "Manage Users"),
-    ("manage_backups",   "💾", "Manage Backups"),
-    ("manage_settings",  "⚙️", "Manage Settings"),
+    ("view_reports",      "📈", "View Reports"),
+    ("manage_users",      "👤", "Manage Users"),
+    ("manage_frontpage",  "🌐", "Front Page"),
+    ("manage_backups",    "💾", "Manage Backups"),
+    ("manage_data_admin", "🗄️", "Data Admin"),
+    ("manage_system_tests","🧪", "System Tests"),
 ]
 
 ROLE_DEFAULT_PERMISSIONS = {
