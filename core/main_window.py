@@ -108,13 +108,13 @@ ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": {
         "view_dashboard", "manage_travelers", "manage_batches",
         "manage_payments", "manage_invoices", "manage_receipts",
-        "view_reports", "manage_users", "manage_backups",
-        "manage_settings",
+        "view_reports", "manage_users", "manage_frontpage",
+        "manage_backups", "manage_data_admin", "manage_system_tests",
     },
     "admin": {
         "view_dashboard", "manage_travelers", "manage_batches",
         "manage_payments", "manage_invoices", "manage_receipts",
-        "view_reports", "manage_backups", "manage_settings",
+        "view_reports", "manage_frontpage", "manage_backups",
     },
     "staff": {
         "view_dashboard", "manage_travelers", "manage_payments",
@@ -477,13 +477,13 @@ class MainWindowView:
             ("👤 Users",     ft.Icons.PERSON,    "users_tab",
              "manage_users",     UsersTab),
             ("🌐 Front Page", ft.Icons.PUBLIC,   "frontpage_tab",
-             "manage_settings",  FrontPageSettingsTab),
+             "manage_frontpage", FrontPageSettingsTab),
             ("💾 Backup",    ft.Icons.BACKUP,    "backup_tab",
              "manage_backups",   BackupTab),
             ("🗄️ Data Admin", ft.Icons.STORAGE, "data_admin_tab",
-             "manage_settings",  DataAdminTab),
+             "manage_data_admin", DataAdminTab),
             ("🧪 System Tests", ft.Icons.HEALTH_AND_SAFETY, "system_test_tab",
-             "manage_settings",  SystemTestTab),
+             "manage_system_tests", SystemTestTab),
         ]
 
         print(f"[MAIN] user='{user_name}' role='{user_role}'")
