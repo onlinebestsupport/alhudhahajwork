@@ -17,6 +17,7 @@ import shutil
 import traceback
 import zipfile
 import asyncio
+import tempfile
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -25,11 +26,13 @@ import flet as ft
 import pandas as pd
 
 try:
-    from core.helpers import send_file_to_user
+    from core.helpers import send_file_to_user, get_app_base_path
 except ImportError:
     # §1.1 — Fallback if helper module missing (keeps UI usable)
     def send_file_to_user(page, path, label="Download"):
         return None
+    def get_app_base_path():
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # §1.2 — Responsive breakpoint (px). Below this we stack the toolbar vertically.
@@ -111,7 +114,10 @@ class DataAdminTab:
         self.page_ref = page
         self.db = db
         self.current_user = current_user or {}
-        self.data_dir = Path(getattr(db, "data_dir", Path("/app/data"))).resolve()
+        configured_data_dir = getattr(db, "data_dir", None)
+        self.data_dir = Path(
+            configured_data_dir or (Path(get_app_base_path()) / "data")
+        ).resolve()
         self.documents_dir = (self.data_dir / "documents").resolve()
 
         # UI handles filled by setup_ui()
@@ -357,7 +363,7 @@ class DataAdminTab:
                         ], spacing=6),
                         ft.Text(
                             "Each card below represents one CSV "
-                            "file in /app/data. Download to view "
+                            f"file in {self.data_dir}. Download to view "
                             "in Excel, or upload to replace.",
                             size=10, color=ft.Colors.GREY_600,
                             italic=True),
@@ -708,7 +714,7 @@ class DataAdminTab:
                         ft.Text("📁 File:  activity_log.csv",
                                 size=11, color="#991b1b"),
                         ft.Text("💾 Backup:  will be saved to "
-                                "/app/data/backups/",
+                                f"{self.data_dir / 'backups'}",
                                 size=11, color="#991b1b"),
                     ], spacing=4),
                     padding=10, bgcolor="#fee2e2", border_radius=6,
@@ -882,7 +888,7 @@ class DataAdminTab:
 
         blocks.append(ft.Text(
             "⚠️ A timestamped backup of each replaced file will be "
-            "saved to /app/data/backups/ before overwrite.",
+            f"saved to {self.data_dir / 'backups'} before overwrite.",
             size=10, italic=True, color=ft.Colors.GREY_600))
 
         dlg = ft.AlertDialog(
@@ -1023,7 +1029,10 @@ class DataAdminTab:
     # =============================================================================
     def export_all_zip(self, e=None):
         try:
-            out_dir = Path("/tmp/alhudha_exports")
+            # Export archives are disposable runtime artifacts, not business
+            # data. tempfile.gettempdir() is portable across Windows/macOS/
+            # Linux and keeps Railway's persistent volume limited to /app/data.
+            out_dir = Path(tempfile.gettempdir()) / "alhudha_exports"
             out_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             bundle = out_dir / f"alhudha_full_db_{stamp}.zip"
@@ -1177,7 +1186,7 @@ class DataAdminTab:
                     content=ft.Text(
                         f"Current: {current_rows} rows\n\n"
                         f"⚠️ A timestamped backup will be created "
-                        f"in /app/data/backups/ before replacing.",
+                        f"in {self.data_dir / 'backups'} before replacing.",
                         size=11, color="#991b1b"),
                     padding=10, bgcolor="#fee2e2", border_radius=6),
             ], spacing=6, tight=True),
@@ -1652,7 +1661,7 @@ class DataAdminTab:
                             ft.Colors.ORANGE_700)
                 return
 
-            out_dir = Path("/tmp/alhudha_docs")
+            out_dir = Path(tempfile.gettempdir()) / "alhudha_docs"
             out_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             bundle = out_dir / f"traveler_documents_{stamp}.zip"
@@ -1697,7 +1706,7 @@ class DataAdminTab:
                             ft.Colors.ORANGE_700)
                 return
 
-            out_dir = Path("/tmp/alhudha_docs")
+            out_dir = Path(tempfile.gettempdir()) / "alhudha_docs"
             out_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             bundle = out_dir / f"{folder_name}_{stamp}.zip"
