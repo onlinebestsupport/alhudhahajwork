@@ -155,9 +155,8 @@ class HajDatabase:
         self._initialize_defaults()
         self._ensure_permissions_column()
 
-        # Legacy pending payment rows are receipts in this application and
-        # must be normalized to the canonical completed/Paid state. This also
-        # creates missing receipts without duplicating existing receipts.
+        # Legacy pending rows represent received installments. Normalize them
+        # to Paid; only a fully settled traveler is Completed.
         self._migrate_pending_payments_to_completed()
 
         # Reconcile stored seats with actual bookings on boot
@@ -1156,19 +1155,19 @@ class HajDatabase:
     # 2.7 — PAYMENTS
     # =================================================================================
     def _migrate_pending_payments_to_completed(self):
-        """Normalize legacy pending payment rows to canonical completed."""
+        """Normalize legacy pending payment rows to the Paid installment state."""
         if self.payments.empty or 'status' not in self.payments.columns:
             return
         statuses = self.payments['status'].astype(str).str.strip().str.lower()
-        mask = statuses.isin({'pending', 'paid'})
+        mask = statuses.isin({'pending'})
         if not mask.any():
             return
         changed = self.payments.loc[mask].copy()
-        self.payments.loc[mask, 'status'] = 'completed'
+        self.payments.loc[mask, 'status'] = 'paid'
         self._save_df(self.payments, "payments.csv")
         for _, row in changed.iterrows():
             self._generate_receipt(row.to_dict())
-        print(f"[DB] Migrated {len(changed)} legacy payment(s) to completed/Paid")
+        print(f"[DB] Migrated {len(changed)} legacy payment(s) to Paid")
 
     def get_payments(self, traveler_id=None):
         if traveler_id:
@@ -1226,8 +1225,9 @@ class HajDatabase:
             [self.payments, pd.DataFrame([payment_data])], ignore_index=True)
         self._save_df(self.payments, "payments.csv")
 
-        # receipts only for completed payments
-        if str(payment_data.get('status', '')).strip().lower() == 'completed':
+        # Both Paid installments and Completed final payments are received
+        # money and must have receipts.
+        if str(payment_data.get('status', '')).strip().lower() in {'paid', 'completed'}:
             self._generate_receipt(payment_data)
 
         # reconcile linked invoice
@@ -1263,6 +1263,28 @@ class HajDatabase:
                         updates[field] = current.get(field, '')
                 else:
                     updates[field] = current.get(field, '')
+
+            # Received payments use Paid for installments and Completed only
+            # when the traveler's full package balance is settled. Do not
+            # override failed/refunded records selected by an administrator.
+            if updates.get('status') in {'paid', 'completed'}:
+                traveler_id = str(current.get('traveler_id', '') or '').strip()
+                traveler = self.get_traveler_by_id(traveler_id)
+                batch = (self.get_batch_by_id(traveler.get('batch_id'))
+                         if traveler and traveler.get('batch_id') else None)
+                package_total = _money(batch.get('price', 0)) if batch else Decimal('0.00')
+                if package_total > 0:
+                    other_paid = Decimal('0.00')
+                    for idx, row in self.payments.iterrows():
+                        if idx == self.payments.index[mask][0]:
+                            continue
+                        if (str(row.get('traveler_id', '')).strip() == traveler_id
+                                and str(row.get('status', '')).strip().lower()
+                                in {'paid', 'completed'}):
+                            other_paid += _money(row.get('amount', 0))
+                    updates['status'] = (
+                        'completed' if other_paid + _money(updates.get('amount', 0))
+                        + Decimal('0.01') >= package_total else 'paid')
 
             for key, value in updates.items():
                 self.payments.loc[mask, key] = value
@@ -1311,15 +1333,15 @@ class HajDatabase:
         return datetime.now().isoformat()
 
     def _validate_status(self, status):
-        valid_statuses = ['completed', 'pending', 'failed', 'refunded']
+        valid_statuses = ['completed', 'paid', 'failed', 'refunded']
         if status is None:
-            return 'completed'
+            return 'paid'
         status_str = str(status).lower().strip()
-        # "Paid" is the user-facing label; keep ``completed`` canonical so
-        # receipt generation and invoice reconciliation remain unchanged.
-        if status_str == 'paid':
-            return 'completed'
-        return status_str if status_str in valid_statuses else 'pending'
+        # Pending is the legacy name for a received installment that did not
+        # fully settle the traveler account.
+        if status_str == 'pending':
+            return 'paid'
+        return status_str if status_str in valid_statuses else 'paid'
 
     def _convert_invoice_id(self, invoice_id):
         if not invoice_id:
@@ -1416,7 +1438,7 @@ class HajDatabase:
                     (self.payments['invoice_id'].astype(str)
                      == str(invoice_id))
                     & (self.payments['status'].astype(str).str.lower()
-                       == 'completed')
+                       .isin(['paid', 'completed']))
                 )
                 for _, row in self.payments.loc[pm].iterrows():
                     try:
@@ -1488,9 +1510,8 @@ class HajDatabase:
         self._save_df(self.invoices, "invoices.csv")
 
         # If a payment was recorded before its invoice existed, link the
-        # oldest unlinked pending payment for this traveler to the new invoice
-        # and mark it completed. The normal receipt/reconciliation path then
-        # keeps the Payments tab, receipt, and invoice data consistent.
+        # oldest unlinked legacy installment to the new invoice. It remains
+        # Paid unless it completes the traveler's full package balance.
         if not self.payments.empty:
             payment_status = self.payments['status'].astype(str).str.strip().str.lower()
             traveler_match = (
@@ -1502,14 +1523,26 @@ class HajDatabase:
             if len(candidates) > 0:
                 payment_index = candidates[0]
                 self.payments.loc[payment_index, 'invoice_id'] = invoice_id
-                self.payments.loc[payment_index, 'status'] = 'completed'
+                traveler_payments = self.payments[
+                    (self.payments['traveler_id'].astype(str).str.strip()
+                     == str(traveler_id).strip())
+                    & self.payments['status'].astype(str).str.lower()
+                    .isin(['paid', 'completed'])]
+                paid_total = sum(
+                    (_money(v) for v in traveler_payments['amount']),
+                    Decimal('0.00'))
+                batch = self.get_batch_by_id(batch_id) if batch_id else None
+                package_total = _money(batch.get('price', 0)) if batch else Decimal('0.00')
+                self.payments.loc[payment_index, 'status'] = (
+                    'completed' if package_total > 0 and
+                    paid_total + Decimal('0.01') >= package_total else 'paid')
                 self._save_df(self.payments, "payments.csv")
                 self._generate_receipt(
                     self.payments.loc[payment_index].to_dict())
                 self._recalculate_invoice_status(invoice_id)
                 print(f"[DB] Linked payment "
                       f"{self.payments.loc[payment_index, 'id']} to invoice "
-                      f"{invoice_id} as completed/Paid")
+                      f"{invoice_id} as {self.payments.loc[payment_index, 'status']}")
         return invoice_id
 
     def delete_invoice(self, invoice_id):
@@ -1624,7 +1657,7 @@ class HajDatabase:
         statuses = self.batches['status'].astype(str).str.strip().str.lower()
         active_batches = int(statuses.isin(_ACTIVE_BATCH_STATUSES).sum())
         pending_inv = self.invoices['status'].astype(str).str.strip().str.lower()
-        completed = (self.payments[self.payments['status'].astype(str).str.strip().str.lower() == 'completed']
+        completed = (self.payments[self.payments['status'].astype(str).str.strip().str.lower().isin(['paid', 'completed'])]
                      if not self.payments.empty and 'status' in self.payments.columns else self.payments)
         return {
             'total_travelers': len(self.travelers),
@@ -1640,7 +1673,7 @@ class HajDatabase:
     def get_financial_report(self, start_date=None, end_date=None):
         payments = self.payments.copy()
         if 'status' in payments.columns:
-            payments = payments[payments['status'].astype(str).str.strip().str.lower() == 'completed']
+            payments = payments[payments['status'].astype(str).str.strip().str.lower().isin(['paid', 'completed'])]
         if start_date:
             payments = payments[payments['payment_date'] >= start_date]
         if end_date:
