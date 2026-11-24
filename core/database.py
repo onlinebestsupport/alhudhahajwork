@@ -1293,8 +1293,12 @@ class HajDatabase:
     def _validate_status(self, status):
         valid_statuses = ['completed', 'pending', 'failed', 'refunded']
         if status is None:
-            return 'pending'
+            return 'completed'
         status_str = str(status).lower().strip()
+        # "Paid" is the user-facing label; keep ``completed`` canonical so
+        # receipt generation and invoice reconciliation remain unchanged.
+        if status_str == 'paid':
+            return 'completed'
         return status_str if status_str in valid_statuses else 'pending'
 
     def _convert_invoice_id(self, invoice_id):
