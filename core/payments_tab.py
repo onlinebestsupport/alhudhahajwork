@@ -145,12 +145,15 @@ class PaymentEditDialog:
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
-                ft.dropdown.Option(key="completed", text="completed"),
-                ft.dropdown.Option(key="pending", text="pending"),
+                # Keep ``completed`` as the stored value because receipts and
+                # invoice reconciliation use it; show the business label
+                # "Paid" to the user.
+                ft.dropdown.Option(key="completed", text="Paid"),
+                ft.dropdown.Option(key="pending", text="Pending"),
                 ft.dropdown.Option(key="failed", text="failed"),
                 ft.dropdown.Option(key="refunded", text="refunded"),
             ],
-            value=str(self.payment_data.get('status', 'pending')),
+            value=str(self.payment_data.get('status') or 'completed'),
             height=48, text_size=12)
         self.notes_field = self._field(
             label="Notes",
@@ -220,7 +223,7 @@ class PaymentEditDialog:
                 'payment_date': (self.date_field.value or '')[:10],
                 'payment_method': self.method_dropdown.value or 'Cash',
                 'transaction_id': (self.trans_field.value or '').strip(),
-                'status': self.status_dropdown.value or 'pending',
+            'status': self.status_dropdown.value or 'completed',
                 'notes': (self.notes_field.value or '').strip(),
             }
 
@@ -328,7 +331,7 @@ class PaymentsTab:
     def setup_ui(self):
         stat_configs = [
             ("total",           "💰 Total",       "#3498db"),
-            ("completed",       "✅ Completed",   "#27ae60"),
+            ("completed",       "✅ Paid",        "#27ae60"),
             ("pending",         "⏳ Pending",     "#f39c12"),
             ("receipts",        "🧾 Receipts",    "#9b59b6"),
             ("package_pending", "📦 Pkg Pend",    "#e74c3c"),
@@ -386,7 +389,7 @@ class PaymentsTab:
             label="Status",
             options=[
                 ft.dropdown.Option(key="All", text="All"),
-                ft.dropdown.Option(key="completed", text="Completed"),
+                ft.dropdown.Option(key="completed", text="Paid"),
                 ft.dropdown.Option(key="pending", text="Pending"),
                 ft.dropdown.Option(key="failed", text="Failed"),
                 ft.dropdown.Option(key="refunded", text="Refunded"),
@@ -608,10 +611,12 @@ class PaymentsTab:
             traveler_name = self.travelers.get(tid, 'Unknown')
             amount_text = f"₹{money_decimal(p.get('amount', 0)):,.0f}"
             method = str(p.get('payment_method', ''))
-            status = str(p.get('status', 'pending'))
-            status_color = ("#27ae60" if status.strip().lower() == "completed"
-                            else "#f39c12" if status == "pending"
-                            else "#e74c3c" if status == "failed"
+            status = str(p.get('status', 'completed'))
+            status_key = status.strip().lower()
+            status_label = "Paid" if status_key == "completed" else status.title()
+            status_color = ("#27ae60" if status_key == "completed"
+                            else "#f39c12" if status_key == "pending"
+                            else "#e74c3c" if status_key == "failed"
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
             receipt = self.receipts.get(pid)
@@ -715,7 +720,7 @@ class PaymentsTab:
                         ft.DataCell(ft.Text(amount_text, size=10,
                                             weight=ft.FontWeight.BOLD)),
                         ft.DataCell(ft.Text(method[:12], size=10)),
-                        ft.DataCell(ft.Text(status, size=10,
+                        ft.DataCell(ft.Text(status_label, size=10,
                                             color=status_color,
                                             weight=ft.FontWeight.BOLD)),
                         ft.DataCell(ft.Text(txn, size=10)),
