@@ -495,7 +495,7 @@ class InvoicesTab:
             for p in self.db.get_payments():
                 tid = str(p.get('traveler_id') or '').strip()
                 status = str(p.get('status', '')).strip().lower()
-                if tid and status == 'completed':
+                if tid and status in {'paid', 'completed'}:
                     self.traveler_paid[tid] = (
                         self.traveler_paid.get(tid, 0)
                         + _money(p.get('amount', 0) or 0))
@@ -3320,4 +3320,4 @@ class ManualInvoiceDialog:
 
 # =================================================================================
 # SECTION 14 END (FLET 1.0.0 VERSION) — v4.5
-# =================================================================================
+# ==========================================
