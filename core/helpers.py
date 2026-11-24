@@ -277,6 +277,7 @@ def send_file_to_user(page, filepath, label="Download"):
         or os.getenv("RAILWAY_ENVIRONMENT")
         or os.getenv("RENDER")
         or os.getenv("FLY_APP_NAME")
+        or getattr(page, "web", False)
     )
 
     if is_web:
@@ -316,7 +317,10 @@ def send_file_to_user(page, filepath, label="Download"):
     try:
         if page is not None:
             try:
-                page.url = f"file://{os.path.abspath(filepath)}"
+                # Path.as_uri() emits a valid file URI on both POSIX and
+                # Windows (including drive letters and path separators).
+                from pathlib import Path
+                page.url = Path(filepath).resolve().as_uri()
             except Exception:
                 pass
     except Exception as ex:
