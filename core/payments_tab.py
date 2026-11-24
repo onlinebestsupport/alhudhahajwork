@@ -145,15 +145,12 @@ class PaymentEditDialog:
         self.status_dropdown = ft.Dropdown(
             label="Status",
             options=[
-                # Keep ``completed`` as the stored value because receipts and
-                # invoice reconciliation use it; show the business label
-                # "Paid" to the user.
-                ft.dropdown.Option(key="completed", text="Paid"),
-                ft.dropdown.Option(key="pending", text="Pending"),
-                ft.dropdown.Option(key="failed", text="failed"),
-                ft.dropdown.Option(key="refunded", text="refunded"),
+                ft.dropdown.Option(key="completed", text="Completed"),
+                ft.dropdown.Option(key="paid", text="Paid"),
+                ft.dropdown.Option(key="failed", text="Failed"),
+                ft.dropdown.Option(key="refunded", text="Refunded"),
             ],
-            value=str(self.payment_data.get('status') or 'completed'),
+            value=str(self.payment_data.get('status') or 'paid'),
             height=48, text_size=12)
         self.notes_field = self._field(
             label="Notes",
@@ -223,7 +220,7 @@ class PaymentEditDialog:
                 'payment_date': (self.date_field.value or '')[:10],
                 'payment_method': self.method_dropdown.value or 'Cash',
                 'transaction_id': (self.trans_field.value or '').strip(),
-            'status': self.status_dropdown.value or 'completed',
+                'status': self.status_dropdown.value or 'paid',
                 'notes': (self.notes_field.value or '').strip(),
             }
 
@@ -331,8 +328,8 @@ class PaymentsTab:
     def setup_ui(self):
         stat_configs = [
             ("total",           "💰 Total",       "#3498db"),
-            ("completed",       "✅ Paid",        "#27ae60"),
-            ("pending",         "⏳ Pending",     "#f39c12"),
+            ("completed",       "✅ Completed",    "#27ae60"),
+            ("paid",            "💰 Paid",         "#2ecc71"),
             ("receipts",        "🧾 Receipts",    "#9b59b6"),
             ("package_pending", "📦 Pkg Pend",    "#e74c3c"),
             ("invoice_pending", "📄 Inv Pend",    "#e67e22"),
@@ -389,8 +386,8 @@ class PaymentsTab:
             label="Status",
             options=[
                 ft.dropdown.Option(key="All", text="All"),
-                ft.dropdown.Option(key="completed", text="Paid"),
-                ft.dropdown.Option(key="pending", text="Pending"),
+                ft.dropdown.Option(key="completed", text="Completed"),
+                ft.dropdown.Option(key="paid", text="Paid"),
                 ft.dropdown.Option(key="failed", text="Failed"),
                 ft.dropdown.Option(key="refunded", text="Refunded"),
             ],
@@ -597,7 +594,8 @@ class PaymentsTab:
         traveler_paid = {}
         for p in payments:
             tid = p.get('traveler_id')
-            if tid:
+            status_key = str(p.get('status', '')).strip().lower()
+            if tid and status_key in {'paid', 'completed'}:
                 traveler_paid[tid] = (
                     traveler_paid.get(tid, Decimal('0.00'))
                     + money_decimal(p.get('amount', 0)))
@@ -613,9 +611,9 @@ class PaymentsTab:
             method = str(p.get('payment_method', ''))
             status = str(p.get('status', 'completed'))
             status_key = status.strip().lower()
-            status_label = "Paid" if status_key == "completed" else status.title()
+            status_label = status.title()
             status_color = ("#27ae60" if status_key == "completed"
-                            else "#f39c12" if status_key == "pending"
+                            else "#2ecc71" if status_key == "paid"
                             else "#e74c3c" if status_key == "failed"
                             else "#95a5a6")
             txn = str(p.get('transaction_id', '') or '')[:12]
@@ -831,7 +829,7 @@ class PaymentsTab:
             f"Method:  {payment.get('payment_method', 'N/A')}\n"
             f"Transaction ID:  {payment.get('transaction_id', 'N/A')}\n"
             f"Invoice No:  {inv_no}\n"
-            f"Status:  {payment.get('status', 'completed')}\n"
+            f"Status:  {str(payment.get('status', 'paid')).title()}\n"
             f"\nPAYMENT SUMMARY\n"
             f"  Total Package:  ₹{batch_price:,.2f}\n"
             f"  Total Paid:  ₹{total_paid:,.2f}\n"
@@ -964,7 +962,7 @@ class PaymentsTab:
                 ["Payment Method:", payment.get('payment_method', 'N/A')],
                 ["Transaction ID:", payment.get('transaction_id', 'N/A')],
                 ["Invoice No:", inv_no],
-                ["Status:", payment.get('status', 'completed')],
+                ["Status:", str(payment.get('status', 'paid')).title()],
                 ["", ""],
                 ["📊 PAYMENT SUMMARY", ""],
                 ["Total Package:", f"₹{batch_price:,.2f}"],
@@ -1052,7 +1050,7 @@ class PaymentsTab:
                         Decimal('0.00'))
         pending = sum((money_decimal(p.get('amount', 0))
                        for p in self.payments
-                       if str(p.get('status', '')).strip().lower() == 'pending'),
+                       if str(p.get('status', '')).strip().lower() == 'paid'),
                       Decimal('0.00'))
         receipt_count = len(self.receipts)
 
@@ -1092,7 +1090,7 @@ class PaymentsTab:
 
         self.stat_labels['total'].value = _short(total)
         self.stat_labels['completed'].value = _short(completed)
-        self.stat_labels['pending'].value = _short(pending)
+        self.stat_labels['paid'].value = _short(pending)
         self.stat_labels['receipts'].value = str(receipt_count)
         self.stat_labels['package_pending'].value = _short(
             total_package_pending)
@@ -1495,7 +1493,10 @@ class PaymentDialog:
                 'batch_id': batch_id,
                 'amount': amount,
                 'payment_method': self.method_dropdown.value or 'Cash',
-                'status': 'completed',
+                # An installment is Paid; the final installment is Completed.
+                'status': ('completed' if batch_price > 0 and
+                           total_paid + amount + Decimal('0.01') >= batch_price
+                           else 'paid'),
                 'transaction_id': trans_id,
                 'invoice_id': invoice_id,
                 'notes': (self.notes_field.value or '').strip(),
