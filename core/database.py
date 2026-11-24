@@ -155,6 +155,11 @@ class HajDatabase:
         self._initialize_defaults()
         self._ensure_permissions_column()
 
+        # Legacy pending payment rows are receipts in this application and
+        # must be normalized to the canonical completed/Paid state. This also
+        # creates missing receipts without duplicating existing receipts.
+        self._migrate_pending_payments_to_completed()
+
         # Reconcile stored seats with actual bookings on boot
         self._reconcile_all_batch_seats()
 
@@ -1150,6 +1155,21 @@ class HajDatabase:
     # =================================================================================
     # 2.7 — PAYMENTS
     # =================================================================================
+    def _migrate_pending_payments_to_completed(self):
+        """Normalize legacy pending payment rows to canonical completed."""
+        if self.payments.empty or 'status' not in self.payments.columns:
+            return
+        statuses = self.payments['status'].astype(str).str.strip().str.lower()
+        mask = statuses.isin({'pending', 'paid'})
+        if not mask.any():
+            return
+        changed = self.payments.loc[mask].copy()
+        self.payments.loc[mask, 'status'] = 'completed'
+        self._save_df(self.payments, "payments.csv")
+        for _, row in changed.iterrows():
+            self._generate_receipt(row.to_dict())
+        print(f"[DB] Migrated {len(changed)} legacy payment(s) to completed/Paid")
+
     def get_payments(self, traveler_id=None):
         if traveler_id:
             return self.payments[
@@ -1466,6 +1486,30 @@ class HajDatabase:
         self.invoices = pd.concat(
             [self.invoices, pd.DataFrame([invoice_data])], ignore_index=True)
         self._save_df(self.invoices, "invoices.csv")
+
+        # If a payment was recorded before its invoice existed, link the
+        # oldest unlinked pending payment for this traveler to the new invoice
+        # and mark it completed. The normal receipt/reconciliation path then
+        # keeps the Payments tab, receipt, and invoice data consistent.
+        if not self.payments.empty:
+            payment_status = self.payments['status'].astype(str).str.strip().str.lower()
+            traveler_match = (
+                self.payments['traveler_id'].astype(str).str.strip()
+                == str(traveler_id).strip())
+            unlinked = self.payments['invoice_id'].astype(str).str.strip() == ''
+            pending = payment_status.isin({'pending', 'paid'})
+            candidates = self.payments.index[traveler_match & unlinked & pending]
+            if len(candidates) > 0:
+                payment_index = candidates[0]
+                self.payments.loc[payment_index, 'invoice_id'] = invoice_id
+                self.payments.loc[payment_index, 'status'] = 'completed'
+                self._save_df(self.payments, "payments.csv")
+                self._generate_receipt(
+                    self.payments.loc[payment_index].to_dict())
+                self._recalculate_invoice_status(invoice_id)
+                print(f"[DB] Linked payment "
+                      f"{self.payments.loc[payment_index, 'id']} to invoice "
+                      f"{invoice_id} as completed/Paid")
         return invoice_id
 
     def delete_invoice(self, invoice_id):
