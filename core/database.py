@@ -39,6 +39,11 @@ except ImportError:
     fcntl = None
 
 try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
+
+try:
     from werkzeug.security import generate_password_hash, check_password_hash
     _WERKZEUG_OK = True
 except Exception:
@@ -187,6 +192,15 @@ class HajDatabase:
                 self._fh = open(self.path, "a+")
                 if fcntl is not None:
                     fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+                elif msvcrt is not None:
+                    # Windows has no fcntl.flock(). Lock one byte in the
+                    # companion file so separate processes still serialize
+                    # CSV replacement and ID-counter updates.
+                    self._fh.seek(0)
+                    self._fh.write("0")
+                    self._fh.flush()
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
             except Exception:
                 self.thread_lock.release()
                 raise
@@ -198,6 +212,12 @@ class HajDatabase:
                     if fcntl is not None:
                         try:
                             fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                        except Exception:
+                            pass
+                    elif msvcrt is not None:
+                        try:
+                            self._fh.seek(0)
+                            msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
                         except Exception:
                             pass
                     self._fh.close()
