@@ -26,6 +26,8 @@ from datetime import datetime
 
 import flet as ft
 
+from core.helpers import responsive_dialog_size
+
 try:
     from core.captcha import (
         generate_math_captcha,
@@ -410,6 +412,7 @@ class LoginView:
             expand=True,
         )
 
+        card_width, _ = responsive_dialog_size(self.page, 420, 520)
         card = ft.Container(
             content=ft.Column([
                 ft.Container(content=logo, width=100, height=100,
@@ -434,7 +437,7 @@ class LoginView:
             ], spacing=6,
                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                tight=True),
-            width=420,
+            width=card_width,
             padding=ft.Padding.symmetric(horizontal=32, vertical=32),
             bgcolor=ft.Colors.WHITE,
             border_radius=18,
