@@ -26,13 +26,17 @@ import flet as ft
 import pandas as pd
 
 try:
-    from core.helpers import send_file_to_user, get_app_base_path
+    from core.helpers import (send_file_to_user, get_app_base_path,
+                              responsive_dialog_size)
 except ImportError:
     # §1.1 — Fallback if helper module missing (keeps UI usable)
     def send_file_to_user(page, path, label="Download"):
         return None
     def get_app_base_path():
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    def responsive_dialog_size(page, desktop_width, desktop_height,
+                               **kwargs):
+        return desktop_width, desktop_height
 
 
 # §1.2 — Responsive breakpoint (px). Below this we stack the toolbar vertically.
@@ -891,6 +895,7 @@ class DataAdminTab:
             f"saved to {self.data_dir / 'backups'} before overwrite.",
             size=10, italic=True, color=ft.Colors.GREY_600))
 
+        dlg_w, dlg_h = responsive_dialog_size(self.page_ref, 520, 460)
         dlg = ft.AlertDialog(
             modal=True,
             title=ft.Row([
@@ -901,7 +906,7 @@ class DataAdminTab:
             content=ft.Container(
                 content=ft.Column(blocks, spacing=4,
                                   scroll=ft.ScrollMode.AUTO),
-                width=520, height=460, padding=4),
+                width=dlg_w, height=dlg_h, padding=4),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"), on_click=cancel),
                 ft.Button(
@@ -2088,6 +2093,7 @@ class DataAdminTab:
                     ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
                 )
 
+            dlg_w, dlg_h = responsive_dialog_size(self.page_ref, 600, 450)
             dlg = ft.AlertDialog(
                 modal=True,
                 title=ft.Row([
@@ -2096,7 +2102,7 @@ class DataAdminTab:
                 ], spacing=8),
                 content=ft.Container(
                     content=ft.Column(rows, spacing=4, scroll=ft.ScrollMode.AUTO),
-                    width=600, height=450, padding=4
+                    width=dlg_w, height=dlg_h, padding=4
                 ),
                 actions=[
                     ft.TextButton(content=ft.Text("Close"), on_click=lambda e: self.page_ref.pop_dialog())
