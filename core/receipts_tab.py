@@ -32,6 +32,7 @@ from core.helpers import (
     number_to_words_indian,
     format_currency_indian,
     send_file_to_user,
+    responsive_dialog_size,
 )
 
 
@@ -794,13 +795,15 @@ class ReceiptsTab:
             f"  Invoice Pending:   ₹{inv_pending:>14,.2f}  (with GST)"
         )
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 520, 460)
+
         dialog = ft.AlertDialog(
             title=ft.Text(f"🧾 Receipt: {receipt.get('receipt_no', '')}",
                           weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(
                 content=ft.Text(details, size=11,
                                 font_family="Consolas", selectable=True),
-                width=520, height=460, padding=10),
+                width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
