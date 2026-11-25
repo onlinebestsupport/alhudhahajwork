@@ -36,6 +36,7 @@ from core.helpers import (
     to_decimal,
     money_decimal,
     send_file_to_user,
+    responsive_dialog_size,
 )
 from core.settings_manager import SettingsManager
 
@@ -183,12 +184,14 @@ class PaymentEditDialog:
             scroll=ft.ScrollMode.AUTO,
         )
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 520, 560)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Edit Payment",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=520, height=560, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self._close()),
@@ -1285,12 +1288,14 @@ class PaymentDialog:
             scroll=ft.ScrollMode.AUTO,
         )
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 540, 640)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("💰 Record Payment",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=540, height=640, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self._close()),
