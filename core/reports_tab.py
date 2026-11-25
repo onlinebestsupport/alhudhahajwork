@@ -641,7 +641,11 @@ class ReportsTab(ft.Column):
             if "batches" in self._hub_stat_labels:
                 self._hub_stat_labels["batches"].value = str(len(batches))
             if "payments" in self._hub_stat_labels:
-                self._hub_stat_labels["payments"].value = str(len(payments))
+                collected_count = sum(
+                    1 for p in payments
+                    if str(p.get("status", "")).strip().lower()
+                    in {"paid", "completed"})
+                self._hub_stat_labels["payments"].value = str(collected_count)
             if "invoices" in self._hub_stat_labels:
                 self._hub_stat_labels["invoices"].value = str(len(invoices))
             if "revenue" in self._hub_stat_labels:
@@ -1004,7 +1008,7 @@ class ReportsTab(ft.Column):
         total_paid = sum(
             _f(p.get("amount", 0)) for p in payments
             if str(p.get("status", "") or "").strip().lower()
-            == "completed")
+            in {"paid", "completed"})
         inv_base = 0.0
         inv_disc = 0.0
         inv_taxable = 0.0
@@ -1062,7 +1066,7 @@ class ReportsTab(ft.Column):
                     size=10,
                     color=("#059669" if str(
                         p.get("status", "") or "").strip().lower()
-                        == "completed" else "#d97706"))),
+                        in {"paid", "completed"} else "#d97706"))),
             ]))
 
         self._single_kpi["invoiced"].value = f"₹{_fmt_inr_(package)}"
@@ -1231,7 +1235,9 @@ class ReportsTab(ft.Column):
         to_dt = _parse_ui_date(ed)
         payments = self.db.get_payments()
         filtered = [p for p in payments
-                    if self._in_range(p.get("payment_date"),
+                    if str(p.get("status", "")).strip().lower()
+                    in {"paid", "completed"}
+                    and self._in_range(p.get("payment_date"),
                                       from_dt, to_dt)]
         total = sum((money_decimal(p.get("amount", 0)) for p in filtered),
                     Decimal("0.00"))
@@ -1308,7 +1314,9 @@ class ReportsTab(ft.Column):
         to_dt = _parse_ui_date(ed)
         payments = self.db.get_payments()
         filtered = [p for p in payments
-                    if self._in_range(p.get("payment_date"),
+                    if str(p.get("status", "")).strip().lower()
+                    in {"paid", "completed"}
+                    and self._in_range(p.get("payment_date"),
                                       from_dt, to_dt)]
         daily = {}
         methods = {}
