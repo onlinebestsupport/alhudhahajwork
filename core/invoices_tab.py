@@ -25,6 +25,7 @@ from core.helpers import (
     number_to_words_indian,
     format_currency_indian,
     send_file_to_user,
+    responsive_dialog_size,
 )
 from core.settings_manager import SettingsManager
 from core.company_settings_dialog import CompanySettingsDialog
@@ -1853,12 +1854,14 @@ class InvoiceDialog:
             scroll=ft.ScrollMode.AUTO,
         )
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 560, 680)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("📄 Generate Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=560, height=680, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2391,12 +2394,14 @@ class InvoiceModifyDialog:
                 self.notes_field,
             ], spacing=10, scroll=ft.ScrollMode.AUTO)
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 520, 620)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("✏️ Modify Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=520, height=620, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -2771,12 +2776,14 @@ class InvoiceDetailsDialog:
                         color=ft.Colors.GREY_600),
             ], spacing=6, scroll=ft.ScrollMode.AUTO)
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 520, 560)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"📄 {inv.get('invoice_no', 'Invoice')}",
                           weight=ft.FontWeight.BOLD, size=14),
             content=ft.Container(content=content,
-                                 width=520, height=560, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.Button(content=ft.Text("Close"),
                           on_click=lambda e: self.page.pop_dialog(),
@@ -3022,12 +3029,14 @@ class ManualInvoiceDialog:
             scroll=ft.ScrollMode.AUTO,
         )
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 760, 680)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text("🧾 Manual Invoice",
                           weight=ft.FontWeight.BOLD, size=15),
             content=ft.Container(content=content,
-                                 width=760, height=680, padding=10),
+                                 width=dialog_w, height=dialog_h, padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
                               on_click=lambda e: self.page.pop_dialog()),
@@ -3320,4 +3329,4 @@ class ManualInvoiceDialog:
 
 # =================================================================================
 # SECTION 14 END (FLET 1.0.0 VERSION) — v4.5
-# ==========================================
+# =================================================================================
