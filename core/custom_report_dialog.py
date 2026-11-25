@@ -466,7 +466,7 @@ class ColumnOrderDialog:
 
         pw = self.page.width or 400
         ph = self.page.height or 700
-        dlg_w = max(300, min(480, pw - 30))
+        dlg_w = max(280, min(480, pw - 30))
         dlg_h = max(400, min(560, ph - 100))
 
         content = ft.Container(
@@ -1410,7 +1410,7 @@ class CustomReportDialog:
         self.payment_status_filter = ft.Dropdown(
             label="Pay Status",
             options=[ft.dropdown.Option(x) for x in
-                     ["All", "completed", "pending", "failed", "refunded"]],
+                     ["All", "completed", "paid", "failed", "refunded"]],
             value="All", text_size=12, content_padding=8)
 
         # v1.5 — _field helper for amount inputs too
@@ -2184,7 +2184,8 @@ class CustomReportDialog:
             total_paid_by_traveler = {}
             for p in self.payment_data:
                 tid = p.get('traveler_id')
-                if tid:
+                if (tid and self._norm_status(p.get('status'))
+                        in {'paid', 'completed'}):
                     try:
                         total_paid_by_traveler[tid] = (
                             total_paid_by_traveler.get(tid, 0.0)
@@ -2522,8 +2523,12 @@ class CustomReportDialog:
                     else:
                         row[label] = ''
 
+            settled_payments = [
+                p for p in payments
+                if self._norm_status(p.get('status'))
+                in {'paid', 'completed'}]
             total_paid = sum(
-                float(p.get('amount', 0) or 0) for p in payments)
+                float(p.get('amount', 0) or 0) for p in settled_payments)
             overflow = payments[max_slots:]
             ov_total = sum(
                 float(p.get('amount', 0) or 0) for p in overflow)
@@ -2543,7 +2548,7 @@ class CustomReportDialog:
                 pending_with_tax_total += share['total']
 
             payment_without_tax_total = sum(
-                float(p.get('amount', 0) or 0) for p in payments)
+                float(p.get('amount', 0) or 0) for p in settled_payments)
 
             traveler_entry = self.traveler_invoice_data.get(
                 traveler_id, {})
