@@ -16,6 +16,7 @@ from core.frontpage_config import (
     DEFAULT_CONFIG, load_config, save_config, _deep_merge,
     gallery_dir, gallery_summary,
     MAX_PACKAGES_SHOWN_DEFAULT)
+from core.helpers import responsive_dialog_size
 
 
 # =================================================================================
@@ -761,7 +762,9 @@ class FrontPageSettingsTab:
             ], spacing=8),
             content=ft.Container(
                 content=body,
-                width=580, height=460, padding=8,
+                width=responsive_dialog_size(self.page_ref, 580, 460)[0],
+                height=responsive_dialog_size(self.page_ref, 580, 460)[1],
+                padding=8,
             ),
             actions=[
                 ft.TextButton(
