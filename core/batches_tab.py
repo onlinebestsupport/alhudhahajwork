@@ -26,6 +26,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import pandas as pd
 
+from core.helpers import responsive_dialog_size
+
 try:
     from core.settings_manager import SettingsManager
 except ImportError:
@@ -1113,11 +1115,12 @@ class BatchFormDialog:
             ], spacing=12, scroll=ft.ScrollMode.AUTO)
 
         title = "✏️ Edit Batch" if self.is_edit else "➕ Create New Batch"
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 600, 560)
 
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(title, weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content, width=600, height=560,
+            content=ft.Container(content=content, width=dialog_w, height=dialog_h,
                                  padding=10),
             actions=[
                 ft.TextButton(content=ft.Text("Cancel"),
@@ -1441,12 +1444,14 @@ class BatchViewDialog:
                 + ("..." if len(names) > 5 else "")),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
+        dialog_w, dialog_h = responsive_dialog_size(self.page, 480, 500)
+
         self.dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(f"📦 {b.get('batch_name', 'Batch')}",
                           weight=ft.FontWeight.BOLD, size=15),
-            content=ft.Container(content=content, width=480,
-                                 height=500, padding=10),
+            content=ft.Container(content=content, width=dialog_w,
+                                 height=dialog_h, padding=10),
             actions=[ft.Button(content=ft.Text("Close"),
                                on_click=lambda e: self.page.pop_dialog(),
                                bgcolor=ft.Colors.BLUE_700,
