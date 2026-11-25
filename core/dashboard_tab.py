@@ -626,8 +626,10 @@ class DashboardTab:
                 return str(row.get("status", "")).strip().lower()
             total_seats = sum(int(_dec(b.get("total_seats"))) for b in batches)
             available_seats = sum(int(_dec(b.get("available_seats"))) for b in batches)
-            completed_payments = [p for p in payments if _status(p) == "completed"]
-            total_payments = sum((_dec(p.get("amount")) for p in completed_payments), Decimal("0"))
+            collected_payments = [p for p in payments
+                                  if _status(p) in {"paid", "completed"}]
+            total_payments = sum((_dec(p.get("amount"))
+                                 for p in collected_payments), Decimal("0"))
 
             batch_prices = {_id(b.get("id")): _dec(b.get("price")) for b in batches}
             traveler_batch_map = {}
@@ -637,7 +639,7 @@ class DashboardTab:
                     traveler_batch_map[tid] = {"batch_id": bid, "price": batch_prices[bid]}
 
             traveler_paid = {}
-            for p in completed_payments:
+            for p in collected_payments:
                 tid = _id(p.get("traveler_id"))
                 if tid:
                     traveler_paid[tid] = traveler_paid.get(tid, Decimal("0")) + _dec(p.get("amount"))
@@ -957,7 +959,8 @@ class DashboardTab:
                                             errors="coerce")
         cutoff = datetime.now() - timedelta(days=days)
         if "status" in df.columns:
-            df = df[df["status"].astype(str).str.strip().str.lower() == "completed"]
+            df = df[df["status"].astype(str).str.strip().str.lower()
+                    .isin(["paid", "completed"])]
         recent = df[df["payment_date"] >= cutoff]
         if recent.empty:
             return pd.DataFrame()
