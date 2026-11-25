@@ -54,6 +54,33 @@ def get_app_base_path():
     return os.path.dirname(here)
 
 
+def responsive_dialog_size(page, desktop_width, desktop_height,
+                           min_width=280, min_height=260,
+                           horizontal_margin=24, vertical_margin=120):
+    """Return dialog dimensions that fit desktop and mobile browser viewports.
+
+    Flet AlertDialog content containers keep an explicit width on web/mobile.
+    Without narrowing that width, edit forms are clipped on 320–430px phones.
+    The content of the dialogs remains vertically scrollable at the call site.
+    """
+    try:
+        page_width = float(getattr(page, "width", 0) or 0)
+    except (TypeError, ValueError):
+        page_width = 0
+    try:
+        page_height = float(getattr(page, "height", 0) or 0)
+    except (TypeError, ValueError):
+        page_height = 0
+
+    if page_width > 0 and page_width < 700:
+        width = max(min_width, int(page_width - horizontal_margin))
+        height = (max(min_height, int(page_height - vertical_margin))
+                  if page_height > 0 else None)
+        return width, height
+
+    return desktop_width, desktop_height
+
+
 # =================================================================================
 # Decimal helpers — shared by financial tabs and reports
 # =================================================================================
