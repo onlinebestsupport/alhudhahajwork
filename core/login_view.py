@@ -293,6 +293,7 @@ class LoginView:
             autofocus=True,
             text_size=13,
             height=56,
+            expand=True,
             on_submit=lambda e: self._do_login(None),
         )
 
@@ -305,6 +306,7 @@ class LoginView:
             can_reveal_password=True,
             text_size=13,
             height=56,
+            expand=True,
             on_submit=lambda e: self._do_login(None),
         )
 
@@ -364,6 +366,7 @@ class LoginView:
             keyboard_type=ft.KeyboardType.NUMBER,
             text_size=13,
             height=56,
+            expand=True,
             on_submit=lambda e: self._do_login(None),
         )
 
@@ -412,7 +415,17 @@ class LoginView:
             expand=True,
         )
 
-        card_width, _ = responsive_dialog_size(self.page, 420, 520)
+        page_width = getattr(self.page, "width", None) or 0
+        platform = str(getattr(self.page, "platform", "")).lower()
+        mobile_platform = any(
+            token in platform for token in ("android", "ios", "mobile"))
+        is_narrow = mobile_platform or (0 < page_width < 700)
+        if is_narrow:
+            card_width = max(260, int(page_width) - 24) if page_width else 280
+            card_padding = ft.Padding.symmetric(horizontal=12, vertical=20)
+        else:
+            card_width, _ = responsive_dialog_size(self.page, 420, 520)
+            card_padding = ft.Padding.symmetric(horizontal=32, vertical=32)
         card = ft.Container(
             content=ft.Column([
                 ft.Container(content=logo, width=100, height=100,
@@ -438,7 +451,7 @@ class LoginView:
                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                tight=True),
             width=card_width,
-            padding=ft.Padding.symmetric(horizontal=32, vertical=32),
+            padding=card_padding,
             bgcolor=ft.Colors.WHITE,
             border_radius=18,
             border=ft.Border.all(1, "#e2e8f0"),
