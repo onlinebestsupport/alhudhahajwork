@@ -1430,7 +1430,7 @@ class TravelerDialog:
 
         page_w = getattr(self.page, "width", None) or 900
         page_h = getattr(self.page, "height", None) or 700
-        dialog_w = min(850, max(320, int(page_w) - 32))
+        dialog_w = min(850, max(280, int(page_w) - 32))
         dialog_h = min(580, max(280, int(page_h) - 120))
 
         self.dialog = ft.AlertDialog(
