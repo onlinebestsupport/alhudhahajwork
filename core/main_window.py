@@ -25,6 +25,8 @@ import asyncio
 import json
 from datetime import datetime
 
+from core.helpers import responsive_dialog_size
+
 try:
     from core.dashboard_tab import DashboardTab
 except ImportError:
@@ -285,6 +287,8 @@ class MainWindowView:
                         lines.append(
                             f"  • {f['name']} — {f['size_bytes']} bytes — "
                             f"{f['modified'][:19]}")
+                dialog_w, dialog_h = responsive_dialog_size(
+                    self.page, 600, 520)
                 d = ft.AlertDialog(
                     title=ft.Row([
                         ft.Icon(ft.Icons.FOLDER, color="#0ea5e9"),
@@ -296,7 +300,8 @@ class MainWindowView:
                                         size=11,
                                         selectable=True,
                                         font_family="Consolas"),
-                        width=600,
+                        width=dialog_w,
+                        height=dialog_h,
                         padding=10),
                     actions=[
                         ft.TextButton(
