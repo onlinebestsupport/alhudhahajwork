@@ -2011,11 +2011,23 @@ class InvoiceDialog:
 
             if batch:
                 price = _money(batch.get('price', 0) or 0)
+                received = sum(
+                    (_money(p.get('amount', 0) or 0)
+                     for p in self.db.get_payments(traveler_id=tid)
+                     if str(p.get('status', '')).strip().lower()
+                     in {'paid', 'completed', 'pending'}),
+                    Decimal('0.00'))
                 self.batch_label.value = (
                     f"📦 {batch.get('batch_name', '')} | "
-                    f"Price: ₹{price:,.2f}")
+                    f"Price: ₹{price:,.2f} | Received: ₹{received:,.2f}")
                 self.amount_field.value = str(price)
-                self.generate_btn.disabled = price <= 0
+                fully_paid = price > 0 and received + Decimal('0.01') >= price
+                self.generate_btn.disabled = not fully_paid
+                if not fully_paid:
+                    self.traveler_info.value = (
+                        f"⚠️ {name} has Paid/advance payments only. "
+                        "Complete the package payment before creating a tax invoice.")
+                    self.traveler_info.color = ft.Colors.ORANGE_700
             elif bid:
                 self.batch_label.value = f"Batch not found: {bid}"
                 self.amount_field.value = "0"
@@ -2182,6 +2194,20 @@ class InvoiceDialog:
             amount = Decimal('0.00')
         if amount <= 0:
             self._snack("⚠️ Amount must be greater than zero")
+            return
+
+        batch = self.db.get_batch_by_id(bid)
+        package_total = _money(batch.get('price', 0) or 0) if batch else Decimal('0.00')
+        received = sum(
+            (_money(p.get('amount', 0) or 0)
+             for p in self.db.get_payments(traveler_id=tid)
+             if str(p.get('status', '')).strip().lower()
+             in {'paid', 'completed', 'pending'}),
+            Decimal('0.00'))
+        if package_total <= 0 or received + Decimal('0.01') < package_total:
+            self._snack(
+                f"⚠️ Tax invoice requires Completed status. "
+                f"Received ₹{received:,.2f} of ₹{package_total:,.2f}")
             return
             
         try:
