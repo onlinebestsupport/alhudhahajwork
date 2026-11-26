@@ -478,7 +478,7 @@ class PaymentsTab:
                 ft.DataColumn(ft.Text("Txn ID", size=11)),
                 ft.DataColumn(ft.Text("Receipt", size=11)),
                 ft.DataColumn(ft.Text("Invoice", size=11)),
-                ft.DataColumn(ft.Text("Pkg Pend", size=11)),
+                ft.DataColumn(ft.Text("Package Balance", size=11)),
                 ft.DataColumn(ft.Text("Inv Pend", size=11)),
                 ft.DataColumn(ft.Text("Actions", size=11)),
             ],
@@ -509,9 +509,9 @@ class PaymentsTab:
                                  bgcolor=ft.Colors.WHITE, border_radius=10),
                     ft.Container(
                         content=ft.Column([
-                            ft.Text("💡 Tap a row to SELECT it, then use "
-                                    "toolbar 📄 PDF / 🖨️ Print. "
-                                    "Use ✏️ icon in Actions column to edit.",
+                            ft.Text("💡 Paid = advance/partial; Completed = "
+                                    "full package payment. Package Balance "
+                                    "shows the traveler total.",
                                     size=10,
                                     color=ft.Colors.GREY_600,
                                     italic=True),
@@ -635,8 +635,11 @@ class PaymentsTab:
         if payments is None:
             payments = self.payments
 
+        # Package completion is a traveler-level fact. It must use every
+        # received installment, not just rows left in the current Paid,
+        # Completed, method, or search filter.
         traveler_paid = {}
-        for p in payments:
+        for p in self.payments:
             tid = p.get('traveler_id')
             status_key = str(p.get('status', '')).strip().lower()
             if tid and status_key in {'paid', 'completed'}:
@@ -677,7 +680,7 @@ class PaymentsTab:
 
             if batch_price > 0:
                 if package_pending <= 0:
-                    pkg_txt = "✅ Paid"
+                    pkg_txt = "✅ Fully Paid"
                     pkg_color = "#27ae60"
                 else:
                     pkg_txt = f"₹{package_pending:,.0f}"
@@ -1443,7 +1446,9 @@ class PaymentDialog:
         try:
             payments = self.db.get_payments(traveler_id=tid)
             total_paid = sum((money_decimal(p.get('amount', 0))
-                              for p in payments), Decimal('0.00'))
+                              for p in payments
+                              if str(p.get('status', '')).strip().lower()
+                              in {'paid', 'completed'}), Decimal('0.00'))
         except Exception:
             total_paid = Decimal('0.00')
         self._total_paid = total_paid
