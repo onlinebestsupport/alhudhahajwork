@@ -26,7 +26,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import pandas as pd
 
-from core.helpers import responsive_dialog_size
+from core.helpers import responsive_dialog_size, log_exception
 
 try:
     from core.settings_manager import SettingsManager
@@ -469,7 +469,8 @@ class BatchesTab:
             if self.root is not None:
                 self.root.update()
         except Exception as e:
-            print(f"[BATCHES] _safe_update failed: {e}")
+            log_exception("BATCHES", "root.update", e,
+                          root_type=type(self.root).__name__)
 
     def _update_table_and_pagination(self):
         for ctrl in (self.table, self.pagination_label, self.prev_btn,
@@ -478,8 +479,9 @@ class BatchesTab:
                 continue
             try:
                 ctrl.update()
-            except Exception:
-                pass
+            except Exception as ex:
+                log_exception("BATCHES", "control.update", ex,
+                              control_type=type(ctrl).__name__)
 
     def load_tour_types_and_years(self):
         try:
