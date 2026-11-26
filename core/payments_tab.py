@@ -313,20 +313,26 @@ class PaymentsTab:
             if self.root is not None:
                 self.root.update()
         except Exception as e:
-            print(f"[PAYMENTS] _safe_update failed: {e}")
+            import traceback
+            print(f"[PAYMENTS][ROOT_UPDATE_ERROR] {e}", flush=True)
+            traceback.print_exc()
 
     def _update_table_only(self):
         """Leaf-only update — does NOT touch the search field's ancestors."""
         try:
             if self.table is not None:
                 self.table.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            import traceback
+            print(f"[PAYMENTS][TABLE_UPDATE_ERROR] {ex}", flush=True)
+            traceback.print_exc()
         try:
             if self.selection_label is not None:
                 self.selection_label.update()
-        except Exception:
-            pass
+        except Exception as ex:
+            import traceback
+            print(f"[PAYMENTS][SELECTION_UPDATE_ERROR] {ex}", flush=True)
+            traceback.print_exc()
 
     def setup_ui(self):
         stat_configs = [
@@ -588,6 +594,15 @@ class PaymentsTab:
                 return search in tname or search in txn
             filtered = [p for p in filtered if match(p)]
 
+        # A filter change can hide the previously selected row. Do not leave
+        # the toolbar referring to a payment that is no longer visible.
+        if (self._selected_payment_id
+                and not any(p.get('id') == self._selected_payment_id
+                            for p in filtered)):
+            self._selected_payment_id = None
+            if self.selection_label is not None:
+                self.selection_label.value = ""
+
         self.display_payments(filtered)
 
     def display_payments(self, payments=None):
@@ -756,8 +771,21 @@ class PaymentsTab:
             else:
                 self.selection_label.value = ""
 
-        self.display_payments()
-        self._update_table_only()  # v1.8
+        # Preserve the active status/method/search filters after selection.
+        # Re-rendering with display_payments() without arguments would reset a
+        # Paid/Completed filtered view back to all payment rows.
+        try:
+            self._apply_filters_internal()
+            self._update_table_only()  # v1.8
+        except Exception as ex:
+            import traceback
+            print(
+                f"[PAYMENTS][FILTER_VIEW_ERROR] selection="
+                f"{self._selected_payment_id!r} "
+                f"status={getattr(self.status_filter, 'value', None)!r} "
+                f"method={getattr(self.method_filter, 'value', None)!r}: {ex}",
+                flush=True)
+            traceback.print_exc()
 
     def _get_selected_payment(self):
         if not self._selected_payment_id:
@@ -773,8 +801,18 @@ class PaymentsTab:
 
     # v1.8 — leaf-only update (search box safe)
     def filter_payments(self, e=None):
-        self._apply_filters_internal()
-        self._update_table_only()
+        try:
+            self._apply_filters_internal()
+            self._update_table_only()
+        except Exception as ex:
+            import traceback
+            print(
+                f"[PAYMENTS][FILTER_VIEW_ERROR] status="
+                f"{getattr(self.status_filter, 'value', None)!r} "
+                f"method={getattr(self.method_filter, 'value', None)!r} "
+                f"search={getattr(self.search_input, 'value', None)!r}: {ex}",
+                flush=True)
+            traceback.print_exc()
 
     def add_payment(self, e):
         dlg = PaymentDialog(self.page, self.db, self.current_user,
