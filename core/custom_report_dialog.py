@@ -1,4 +1,4 @@
-=================================================================================
+# =================================================================================
 # SECTION 17 — CUSTOM REPORT DIALOG (FLET 1.0, MOBILE-RESPONSIVE)
 # =================================================================================
 # v1.6 — 2026-10-26
@@ -2535,8 +2535,8 @@ class CustomReportDialog:
 
             pending_payments = []
             for p in payments:
-                p_status = str(p.get('status', '')).lower()
-                if p_status != 'pending':
+                p_status = self._norm_status(p.get('status'))
+                if p_status not in {'paid', 'completed'}:
                     continue
                 if self._is_invoice_paid_for_payment(p, traveler_id):
                     continue
