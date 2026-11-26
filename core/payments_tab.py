@@ -1326,7 +1326,7 @@ class PaymentDialog:
             height=48, text_size=12)
 
         self.generate_invoice_check = ft.Checkbox(
-            label="Generate Invoice (GST/TCS applied)",
+            label="Create tax invoice before full payment (MOEA/Haj/Umrah)",
             value=False)
 
         self.notes_field = self._field(
@@ -1533,7 +1533,9 @@ class PaymentDialog:
             try:
                 payments = self.db.get_payments(traveler_id=tid)
                 total_paid = sum((money_decimal(p.get('amount', 0))
-                                  for p in payments), Decimal('0.00'))
+                                  for p in payments
+                                  if str(p.get('status', '')).strip().lower()
+                                  in {'paid', 'completed'}), Decimal('0.00'))
             except Exception:
                 total_paid = Decimal('0.00')
 
@@ -1545,7 +1547,15 @@ class PaymentDialog:
                 return
 
             invoice_id = ''
-            if self.generate_invoice_check.value and batch_id:
+            existing_invoice = next(
+                (inv for inv in self.db.get_invoices(traveler_id=tid)
+                 if str(inv.get('status', '')).strip().lower() == 'pending'),
+                None)
+            if existing_invoice:
+                # Once a pre-payment invoice exists, all later installments
+                # must remain on the same account automatically.
+                invoice_id = str(existing_invoice.get('id') or '')
+            elif self.generate_invoice_check.value and batch_id:
                 tax = self.settings_manager.get_tax_settings()
                 try:
                     gst_rate = money_decimal(tax.get('gst_percentage', 5))
@@ -1555,7 +1565,8 @@ class PaymentDialog:
                     tcs_rate = Decimal('2.00')
                 try:
                     invoice_id = self.db.generate_invoice(
-                        tid, batch_id, amount, gst_rate, tcs_rate)
+                        tid, batch_id, batch_price, gst_rate, tcs_rate,
+                        allow_pre_payment=True)
                 except Exception as inv_ex:
                     print(f"[INVOICE] failed: {inv_ex}")
 
