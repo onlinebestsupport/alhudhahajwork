@@ -457,6 +457,14 @@ class BatchesTab:
         if time.time() < self._typing_until:
             print("[BATCHES] _safe_update SKIPPED (typing)")
             return
+        # refresh() may run before this tab is mounted under the page.
+        # Flet's update() raises for unattached controls, so skip that
+        # construction-time refresh and let the mounted tab update later.
+        control = self.root
+        while control is not None and not isinstance(control, ft.Page):
+            control = getattr(control, "parent", None)
+        if control is None:
+            return
         try:
             if self.root is not None:
                 self.root.update()
