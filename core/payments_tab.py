@@ -37,6 +37,7 @@ from core.helpers import (
     money_decimal,
     send_file_to_user,
     responsive_dialog_size,
+    log_exception,
 )
 from core.settings_manager import SettingsManager
 
@@ -310,13 +311,20 @@ class PaymentsTab:
         if time.time() < self._typing_until:
             print("[PAYMENTS] _safe_update SKIPPED (typing)")
             return
+        # refresh() can run while the tab is being constructed, before its
+        # root control has been mounted under a Page. Calling update() then
+        # makes Flet raise "Control must be added to the page first".
+        control = self.root
+        while control is not None and not isinstance(control, ft.Page):
+            control = getattr(control, "parent", None)
+        if control is None:
+            return
         try:
             if self.root is not None:
                 self.root.update()
         except Exception as e:
-            import traceback
-            print(f"[PAYMENTS][ROOT_UPDATE_ERROR] {e}", flush=True)
-            traceback.print_exc()
+            log_exception("PAYMENTS", "root.update", e,
+                          root_type=type(self.root).__name__)
 
     def _update_table_only(self):
         """Leaf-only update — does NOT touch the search field's ancestors."""
@@ -324,16 +332,14 @@ class PaymentsTab:
             if self.table is not None:
                 self.table.update()
         except Exception as ex:
-            import traceback
-            print(f"[PAYMENTS][TABLE_UPDATE_ERROR] {ex}", flush=True)
-            traceback.print_exc()
+            log_exception("PAYMENTS", "table.update", ex,
+                          control_type=type(self.table).__name__)
         try:
             if self.selection_label is not None:
                 self.selection_label.update()
         except Exception as ex:
-            import traceback
-            print(f"[PAYMENTS][SELECTION_UPDATE_ERROR] {ex}", flush=True)
-            traceback.print_exc()
+            log_exception("PAYMENTS", "selection_label.update", ex,
+                          control_type=type(self.selection_label).__name__)
 
     def setup_ui(self):
         stat_configs = [
