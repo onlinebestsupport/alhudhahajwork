@@ -1423,7 +1423,10 @@ class HajDatabase:
         try:
             inv_row = self.invoices.loc[inv_mask].iloc[0]
             try:
-                inv_amount = _money(inv_row.get('rounded_total', 0))
+                # Payment amounts are package-price amounts before GST/TCS.
+                # Use the invoice base amount for settlement status; the
+                # rounded total remains the accounting/display amount.
+                inv_amount = _money(inv_row.get('amount', 0))
             except (ValueError, TypeError):
                 inv_amount = Decimal('0.00')
             if inv_amount <= 0:
@@ -1461,7 +1464,37 @@ class HajDatabase:
 
     def generate_invoice(self, traveler_id, batch_id, amount,
                          gst_percentage=5, tcs_percentage=2,
-                         discount_percentage=0.0, discount_amount=None):
+                         discount_percentage=0.0, discount_amount=None,
+                         payment_amount=None, allow_pre_payment=False):
+        """Create a tax invoice for a paid traveler or authorized prepayment.
+
+        Manual invoice creation remains Completed-only. The payment dialog may
+        pass ``allow_pre_payment=True`` when its explicit invoice toggle is
+        enabled for MOEA/Haj/Umrah pre-payment invoicing.
+        """
+        traveler = self.get_traveler_by_id(traveler_id)
+        if not traveler or not batch_id:
+            raise ValueError("Invoice requires a traveler with an assigned batch")
+        batch = self.get_batch_by_id(batch_id)
+        package_total = _money(batch.get('price', 0)) if batch else Decimal('0.00')
+        received = Decimal('0.00')
+        if not self.payments.empty:
+            traveler_mask = (self.payments['traveler_id'].astype(str).str.strip()
+                             == str(traveler_id).strip())
+            received_rows = self.payments.loc[
+                traveler_mask
+                & self.payments['status'].astype(str).str.strip().str.lower()
+                .isin(['paid', 'completed', 'pending'])]
+            for _, row in received_rows.iterrows():
+                received += _money(row.get('amount', 0))
+        if payment_amount is not None:
+            received += _money(payment_amount)
+        if (not allow_pre_payment and
+                (package_total <= 0 or received + Decimal('0.01') < package_total)):
+            raise ValueError(
+                f"Tax invoice requires Completed status: received "
+                f"₹{received:,.2f} of package ₹{package_total:,.2f}")
+
         year = datetime.now().year
         prefix = 'HAJ'
         if batch_id:
@@ -1476,6 +1509,11 @@ class HajDatabase:
         invoice_no = (f"INV-{datetime.now().strftime('%Y%m')}-"
                       f"{len(self.invoices)+1:04d}")
         amount = _money(amount)
+        if allow_pre_payment:
+            # A pre-payment tax invoice represents the whole travel package,
+            # while the linked payment records show what has actually been
+            # collected so far.
+            amount = package_total
         gst_percentage = max(Decimal('0'), min(Decimal('100'), _decimal(gst_percentage, Decimal('5'))))
         tcs_percentage = max(Decimal('0'), min(Decimal('100'), _decimal(tcs_percentage, Decimal('2'))))
         if discount_amount is not None:
@@ -1509,9 +1547,8 @@ class HajDatabase:
             [self.invoices, pd.DataFrame([invoice_data])], ignore_index=True)
         self._save_df(self.invoices, "invoices.csv")
 
-        # If a payment was recorded before its invoice existed, link the
-        # oldest unlinked legacy installment to the new invoice. It remains
-        # Paid unless it completes the traveler's full package balance.
+        # Link every prior received payment without an invoice to this invoice.
+        # This keeps advance and later payments on the same account.
         if not self.payments.empty:
             payment_status = self.payments['status'].astype(str).str.strip().str.lower()
             traveler_match = (
@@ -1521,28 +1558,14 @@ class HajDatabase:
             pending = payment_status.isin({'pending', 'paid'})
             candidates = self.payments.index[traveler_match & unlinked & pending]
             if len(candidates) > 0:
-                payment_index = candidates[0]
-                self.payments.loc[payment_index, 'invoice_id'] = invoice_id
-                traveler_payments = self.payments[
-                    (self.payments['traveler_id'].astype(str).str.strip()
-                     == str(traveler_id).strip())
-                    & self.payments['status'].astype(str).str.lower()
-                    .isin(['paid', 'completed'])]
-                paid_total = sum(
-                    (_money(v) for v in traveler_payments['amount']),
-                    Decimal('0.00'))
-                batch = self.get_batch_by_id(batch_id) if batch_id else None
-                package_total = _money(batch.get('price', 0)) if batch else Decimal('0.00')
-                self.payments.loc[payment_index, 'status'] = (
-                    'completed' if package_total > 0 and
-                    paid_total + Decimal('0.01') >= package_total else 'paid')
+                self.payments.loc[candidates, 'invoice_id'] = invoice_id
                 self._save_df(self.payments, "payments.csv")
-                self._generate_receipt(
-                    self.payments.loc[payment_index].to_dict())
+                for payment_index in candidates:
+                    self._generate_receipt(
+                        self.payments.loc[payment_index].to_dict())
                 self._recalculate_invoice_status(invoice_id)
-                print(f"[DB] Linked payment "
-                      f"{self.payments.loc[payment_index, 'id']} to invoice "
-                      f"{invoice_id} as {self.payments.loc[payment_index, 'status']}")
+                print(f"[DB] Linked {len(candidates)} payment(s) to invoice "
+                      f"{invoice_id}")
         return invoice_id
 
     def delete_invoice(self, invoice_id):
@@ -1823,6 +1846,20 @@ class HajDatabase:
               f"{len(self.payments)} payments, {len(self.invoices)} invoices, "
               f"{len(self.receipts)} receipts")
 
+    def reload_all_if_changed(self):
+        """Reload CSV-backed tables only when a file changed on disk."""
+        filenames = (
+            "users.csv", "travelers.csv", "batches.csv", "payments.csv",
+            "invoices.csv", "receipts.csv", "activity_log.csv",
+            "backup_history.csv", "company_settings.csv",
+        )
+        if not any(self.has_csv_changed(name) for name in filenames):
+            return False
+        self.reload_all()
+        for name in filenames:
+            self.mark_csv_as_read(name)
+        return True
+
     def reload_payments(self):
         self.payments = self._load_df("payments.csv")
         return self.payments
@@ -1873,7 +1910,7 @@ class HajDatabase:
             return 0
 
     def has_csv_changed(self, filename):
-        return self._csv_mtime(filename) > self._csv_snapshots.get(filename, 0)
+        return self._csv_mtime(filename) != self._csv_snapshots.get(filename, 0)
 
     def mark_csv_as_read(self, filename):
         self._csv_snapshots[filename] = self._csv_mtime(filename)
