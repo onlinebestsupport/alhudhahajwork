@@ -340,6 +340,12 @@ class PaymentsTab:
         except Exception as ex:
             log_exception("PAYMENTS", "selection_label.update", ex,
                           control_type=type(self.selection_label).__name__)
+        try:
+            if self.filter_summary is not None:
+                self.filter_summary.update()
+        except Exception as ex:
+            log_exception("PAYMENTS", "filter_summary.update", ex,
+                          control_type=type(self.filter_summary).__name__)
 
     def setup_ui(self):
         stat_configs = [
@@ -592,16 +598,18 @@ class PaymentsTab:
 
         search = (self.search_input.value or "").strip().lower() \
             if self.search_input else ""
-        status = (self.status_filter.value or "All") \
+        status = str((self.status_filter.value or "All")).strip() \
             if self.status_filter else "All"
-        method = (self.method_filter.value or "All") \
+        method = str((self.method_filter.value or "All")).strip() \
             if self.method_filter else "All"
+        status_is_all = status.casefold() == "all"
+        method_is_all = method.casefold() == "all"
 
         filtered = self.payments
-        if status != "All":
+        if not status_is_all:
             filtered = [p for p in filtered
                         if _status_key(p.get('status')) == _status_key(status)]
-        if method != "All":
+        if not method_is_all:
             filtered = [p for p in filtered
                         if _method_key(p.get('payment_method')) == _method_key(method)]
         if search:
@@ -624,13 +632,17 @@ class PaymentsTab:
             if self.selection_label is not None:
                 self.selection_label.value = ""
 
+        print(f"[PAYMENTS][FILTER] status={status!r} method={method!r} "
+              f"search={search!r} matched={len(filtered)}/{len(self.payments)}",
+              flush=True)
+
         self.display_payments(filtered)
         if self.filter_summary is not None:
             active = []
-            if status != "All":
+            if not status_is_all:
                 shown_status = "Paid" if _status_key(status) == "paid" else status.title()
                 active.append(f"Status: {shown_status}")
-            if method != "All":
+            if not method_is_all:
                 active.append(f"Method: {method}")
             if search:
                 active.append(f"Search: {search}")
@@ -1612,8 +1624,10 @@ class PaymentDialog:
             if new_pending < 0:
                 new_pending = 0
 
-            print(f"[PAYMENT] Recorded: ₹{amount:,.2f}, "
-                  f"Total: ₹{new_total:,.2f}, Pending: ₹{new_pending:,.2f}")
+            print(f"[PAYMENT] Recorded: id={pid!r} traveler={tid!r} "
+                  f"amount=₹{amount:,.2f} status={self.payment_data['status']!r} "
+                  f"total=₹{new_total:,.2f} pending=₹{new_pending:,.2f} "
+                  f"invoice_id={invoice_id!r}", flush=True)
 
             self._typing_until = 0.0
             self.page.pop_dialog()
@@ -1622,8 +1636,8 @@ class PaymentDialog:
             if self.on_save:
                 self.on_save()
         except Exception as ex:
-            import traceback
-            traceback.print_exc()
+            log_exception("PAYMENTS", "payment_dialog.save", ex,
+                          traveler_id=self.payment_data.get('traveler_id'))
             self._snack(f"❌ {ex}")
 
     def _close(self):
