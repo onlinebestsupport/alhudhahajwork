@@ -406,7 +406,9 @@ class ReportsTab(ft.Column):
                 return
 
             try:
-                if hasattr(self.db, "reload_all"):
+                if hasattr(self.db, "reload_all_if_changed"):
+                    self.db.reload_all_if_changed()
+                elif hasattr(self.db, "reload_all"):
                     self.db.reload_all()
                 elif hasattr(self.db, "reload"):
                     self.db.reload()
