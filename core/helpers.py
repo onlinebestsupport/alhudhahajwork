@@ -14,8 +14,29 @@ import shutil
 import base64
 import asyncio
 import inspect
+import traceback
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+
+
+def log_exception(component, operation, exc, **context):
+    """Write an actionable exception diagnostic to Railway/Uvicorn logs.
+
+    Expected lifecycle skips should not call this helper. Unexpected errors
+    should include a stable component/operation label and safe context so a
+    Railway log entry identifies where the failure occurred.
+    """
+    details = " ".join(
+        f"{key}={value!r}" for key, value in context.items()
+        if value is not None
+    )
+    suffix = f" {details}" if details else ""
+    print(
+        f"[ERROR][{component}][{operation}] "
+        f"{type(exc).__name__}: {exc}{suffix}",
+        flush=True,
+    )
+    traceback.print_exc()
 
 
 # =================================================================================
