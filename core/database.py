@@ -158,6 +158,9 @@ class HajDatabase:
         # Legacy pending rows represent received installments. Normalize them
         # to Paid; only a fully settled traveler is Completed.
         self._migrate_pending_payments_to_completed()
+        # Correct older rows written before the Paid/Completed distinction was
+        # enforced. Failed/Refunded rows remain excluded from settlement.
+        self._reconcile_payment_statuses()
 
         # Reconcile stored seats with actual bookings on boot
         self._reconcile_all_batch_seats()
@@ -1169,6 +1172,63 @@ class HajDatabase:
             self._generate_receipt(row.to_dict())
         print(f"[DB] Migrated {len(changed)} legacy payment(s) to Paid")
 
+    def _reconcile_payment_statuses(self):
+        """Enforce the package-level meaning of Paid and Completed.
+
+        Paid means an installment was received while a package balance remains.
+        Completed is assigned only to the received installment that reaches the
+        traveler's batch price. Failed and Refunded rows never contribute to
+        the cumulative settlement amount and are left unchanged.
+        """
+        if self.payments.empty or 'status' not in self.payments.columns:
+            return
+
+        traveler_batch = {}
+        for _, traveler in self.travelers.iterrows():
+            tid = str(traveler.get('id', '') or '').strip()
+            bid = str(traveler.get('batch_id', '') or '').strip()
+            if tid:
+                traveler_batch[tid] = bid
+
+        batch_price = {}
+        for _, batch in self.batches.iterrows():
+            bid = str(batch.get('id', '') or '').strip()
+            if bid:
+                batch_price[bid] = _money(batch.get('price', 0))
+
+        changed = 0
+        received_statuses = {'paid', 'completed', 'pending'}
+        grouped = self.payments.groupby('traveler_id', sort=False)
+        for traveler_id, group in grouped:
+            tid = str(traveler_id or '').strip()
+            total = batch_price.get(traveler_batch.get(tid, ''),
+                                    Decimal('0.00'))
+            if total <= 0:
+                continue
+
+            # CSV/DataFrame order is the established payment order. It keeps
+            # the final-status decision stable even when dates are blank or
+            # manually edited.
+            cumulative = Decimal('0.00')
+            for idx in group.index:
+                current = str(self.payments.at[idx, 'status'] or '').strip().lower()
+                if current not in received_statuses:
+                    continue
+                amount = _money(self.payments.at[idx, 'amount'])
+                cumulative += amount
+                desired = ('completed'
+                           if cumulative + Decimal('0.01') >= total
+                           else 'paid')
+                if current != desired:
+                    self.payments.at[idx, 'status'] = desired
+                    changed += 1
+
+        if changed:
+            self._save_df(self.payments, "payments.csv")
+            print(f"[DB][PAYMENT_STATUS_RECONCILE] corrected {changed} "
+                  "row(s): Paid=installment, Completed=full package",
+                  flush=True)
+
     def get_payments(self, traveler_id=None):
         if traveler_id:
             return self.payments[
@@ -1230,6 +1290,8 @@ class HajDatabase:
         if str(payment_data.get('status', '')).strip().lower() in {'paid', 'completed'}:
             self._generate_receipt(payment_data)
 
+        self._reconcile_payment_statuses()
+
         # reconcile linked invoice
         if invoice_id:
             self._recalculate_invoice_status(invoice_id)
@@ -1289,6 +1351,7 @@ class HajDatabase:
             for key, value in updates.items():
                 self.payments.loc[mask, key] = value
             self._save_df(self.payments, "payments.csv")
+            self._reconcile_payment_statuses()
 
             new_invoice_id = str(updates.get('invoice_id', '') or '').strip()
             if old_invoice_id:
