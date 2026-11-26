@@ -293,6 +293,7 @@ class PaymentsTab:
         self.table = None
         self.root = None
         self.selection_label = None
+        self.filter_summary = None
 
         self._selected_payment_id = None
         # v1.8 — typing guard
@@ -494,6 +495,9 @@ class PaymentsTab:
                                        color=ft.Colors.BLUE_700,
                                        weight=ft.FontWeight.BOLD,
                                        italic=True)
+        self.filter_summary = ft.Text("", size=10,
+                                      color=ft.Colors.GREY_700,
+                                      italic=True)
 
         self.root = ft.Container(
             content=ft.Column(
@@ -511,6 +515,7 @@ class PaymentsTab:
                                     size=10,
                                     color=ft.Colors.GREY_600,
                                     italic=True),
+                            self.filter_summary,
                             self.selection_label,
                             ft.Row([self.table],
                                    scroll=ft.ScrollMode.ADAPTIVE),
@@ -572,6 +577,13 @@ class PaymentsTab:
 
     # v1.8 — filter logic without UI
     def _apply_filters_internal(self):
+        def _status_key(value):
+            key = str(value or "").strip().lower().replace(" ", "_")
+            return "paid" if key == "pending" else key
+
+        def _method_key(value):
+            return " ".join(str(value or "").strip().lower().split())
+
         search = (self.search_input.value or "").strip().lower() \
             if self.search_input else ""
         status = (self.status_filter.value or "All") \
@@ -582,16 +594,19 @@ class PaymentsTab:
         filtered = self.payments
         if status != "All":
             filtered = [p for p in filtered
-                        if str(p.get('status', '')).strip().lower() == str(status).strip().lower()]
+                        if _status_key(p.get('status')) == _status_key(status)]
         if method != "All":
             filtered = [p for p in filtered
-                        if str(p.get('payment_method', '')) == method]
+                        if _method_key(p.get('payment_method')) == _method_key(method)]
         if search:
             def match(p):
-                tname = self.travelers.get(
-                    p.get('traveler_id', ''), '').lower()
-                txn = str(p.get('transaction_id', '') or '').lower()
-                return search in tname or search in txn
+                tname = " ".join(self.travelers.get(
+                    p.get('traveler_id', ''), '').lower().split())
+                txn = str(p.get('transaction_id', '') or '').lower().strip()
+                payment_id = str(p.get('id', '') or '').lower().strip()
+                invoice_id = str(p.get('invoice_id', '') or '').lower().strip()
+                return (search in tname or search in txn
+                        or search in payment_id or search in invoice_id)
             filtered = [p for p in filtered if match(p)]
 
         # A filter change can hide the previously selected row. Do not leave
@@ -604,6 +619,17 @@ class PaymentsTab:
                 self.selection_label.value = ""
 
         self.display_payments(filtered)
+        if self.filter_summary is not None:
+            active = []
+            if status != "All":
+                shown_status = "Paid" if _status_key(status) == "paid" else status.title()
+                active.append(f"Status: {shown_status}")
+            if method != "All":
+                active.append(f"Method: {method}")
+            if search:
+                active.append(f"Search: {search}")
+            scope = " • ".join(active) if active else "All payments"
+            self.filter_summary.value = f"Showing {len(filtered)} payment(s) — {scope}"
 
     def display_payments(self, payments=None):
         if payments is None:
@@ -1083,8 +1109,11 @@ class PaymentsTab:
             self._snack(f"❌ {ex}")
 
     def update_summary_stats(self):
-        total = sum((money_decimal(p.get('amount', 0)) for p in self.payments),
-                    Decimal('0.00'))
+        received_statuses = {'paid', 'completed'}
+        received = sum((money_decimal(p.get('amount', 0))
+                        for p in self.payments
+                        if str(p.get('status', '')).strip().lower()
+                        in received_statuses), Decimal('0.00'))
         completed = sum((money_decimal(p.get('amount', 0))
                          for p in self.payments
                          if str(p.get('status', '')).strip().lower() == 'completed'),
@@ -1098,7 +1127,8 @@ class PaymentsTab:
         traveler_paid = {}
         for p in self.payments:
             tid = p.get('traveler_id')
-            if tid:
+            status_key = str(p.get('status', '')).strip().lower()
+            if tid and status_key in received_statuses:
                 traveler_paid[tid] = (
                     traveler_paid.get(tid, Decimal('0.00'))
                     + money_decimal(p.get('amount', 0)))
@@ -1129,7 +1159,9 @@ class PaymentsTab:
                 return f"₹{n/1000:.1f}K"
             return f"₹{n:,.0f}"
 
-        self.stat_labels['total'].value = _short(total)
+        # Total means money actually received; failed/refunded rows must not
+        # inflate the dashboard financial summary.
+        self.stat_labels['total'].value = _short(received)
         self.stat_labels['completed'].value = _short(completed)
         self.stat_labels['paid'].value = _short(pending)
         self.stat_labels['receipts'].value = str(receipt_count)
