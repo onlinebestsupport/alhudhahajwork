@@ -116,17 +116,20 @@ except ImportError:
 ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": {
         "view_dashboard", "manage_travelers", "manage_batches",
+        "manage_passport_reader",
         "manage_payments", "manage_invoices", "manage_receipts",
         "view_reports", "manage_users", "manage_frontpage",
         "manage_backups", "manage_data_admin", "manage_system_tests",
     },
     "admin": {
         "view_dashboard", "manage_travelers", "manage_batches",
+        "manage_passport_reader",
         "manage_payments", "manage_invoices", "manage_receipts",
         "view_reports", "manage_frontpage", "manage_backups",
     },
     "staff": {
-        "view_dashboard", "manage_travelers", "manage_payments",
+        "view_dashboard", "manage_travelers", "manage_passport_reader",
+        "manage_payments",
         "manage_receipts", "view_reports",
     },
     "viewer": {"view_dashboard", "view_reports"},
@@ -442,8 +445,8 @@ class MainWindowView:
                                 weight=ft.FontWeight.BOLD,
                                 color=ft.Colors.GREY_700,
                                 text_align=ft.TextAlign.CENTER),
-                        ft.Text("This section will be migrated soon.",
-                                size=12, color=ft.Colors.GREY_500,
+                        ft.Text("Tab unavailable. Check Railway logs for TAB_BUILD_FAILED.",
+                                size=12, color=ft.Colors.RED_700,
                                 text_align=ft.TextAlign.CENTER),
                     ],
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -451,7 +454,9 @@ class MainWindowView:
                     spacing=10),
                 alignment=ft.Alignment.CENTER,
                 expand=True,
-                padding=30)
+                padding=30,
+                bgcolor=ft.Colors.WHITE,
+                border=ft.Border.all(1, "#fecaca"))
 
         def build_tab_content(cls, plain_label, icon, attr_name):
             if cls is None:
@@ -499,7 +504,7 @@ class MainWindowView:
             ("👥 Travelers", ft.Icons.PEOPLE,    "travelers_tab",
              "manage_travelers", TravelersTab),
             ("🛂 Passport Reader", getattr(ft.Icons, "DOCUMENT_SCANNER", ft.Icons.DESCRIPTION),
-             "passport_reader_tab", "manage_travelers", PassportReaderTab),
+             "passport_reader_tab", "manage_passport_reader", PassportReaderTab),
             ("📦 Batches",   ft.Icons.INVENTORY, "batches_tab",
              "manage_batches",   BatchesTab),
             ("💰 Payments",  ft.Icons.PAYMENTS,  "payments_tab",
