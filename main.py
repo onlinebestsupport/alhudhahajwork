@@ -32,6 +32,7 @@ from core.helpers import (get_app_base_path, cleanup_old_downloads,
 from core.database import HajDatabase
 from core.login_view import LoginView
 from core.main_window import MainWindowView
+from core.runtime_logging import log_event, APP_BUILD_ID
 
 # ---- Security module ----
 try:
@@ -116,6 +117,8 @@ def _detect_platform() -> str:
 
 
 PLATFORM = _detect_platform()
+log_event("BOOT", "APPLICATION_SOURCE", platform=PLATFORM,
+          build=APP_BUILD_ID, entrypoint=__file__)
 
 
 def _is_https_request(request: Request) -> bool:
