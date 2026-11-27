@@ -210,7 +210,15 @@ class LoginView:
         platform = str(getattr(self.page, "platform", "")).lower()
         mobile_platform = any(
             token in platform for token in ("android", "ios", "mobile"))
-        self.is_narrow = mobile_platform or (0 < page_width < 700)
+        # Flet web can report width=0 while the first frame is being built.
+        # Treat an unknown width as mobile-safe instead of selecting a fixed
+        # desktop layout that can hide controls behind the iOS/Android keyboard.
+        self.is_narrow = mobile_platform or (not page_width) or page_width < 700
+        print(
+            f"[LOGIN][VIEWPORT] web={getattr(self.page, 'web', None)!r} "
+            f"platform={platform or 'unknown'} width={page_width!r} "
+            f"height={getattr(self.page, 'height', None)!r} "
+            f"narrow={self.is_narrow}")
 
         self._build()
 
@@ -299,7 +307,9 @@ class LoginView:
             # Do not open the software keyboard automatically on mobile Safari
             # or Chrome.  Autofocus scrolls the Flet canvas and can hide the
             # submit control from both sighted users and screen readers.
-            autofocus=not self.is_narrow,
+            # Never autofocus a login field in web mode. Safari and Chrome may
+            # open the software keyboard before the submit button is visible.
+            autofocus=False,
             text_size=13,
             height=56,
             expand=True,
@@ -406,14 +416,10 @@ class LoginView:
             expand=True,
             tooltip="Submit admin login",
         )
-        self.login_btn = ft.Semantics(
-            content=login_button,
-            label="Login",
-            hint_text="Submit the admin login form",
-            button=True,
-            focusable=True,
-            expand=True,
-        )
+        # Text-labelled Flet buttons already expose proper web semantics.
+        # Avoid an extra Semantics wrapper, which has inconsistent layout
+        # behavior across Flet 1.x web builds.
+        self.login_btn = login_button
 
         home_button = ft.Button(
             content="Home",
@@ -429,14 +435,7 @@ class LoginView:
             expand=True,
             tooltip="Return to home page",
         )
-        home_btn = ft.Semantics(
-            content=home_button,
-            label="Home",
-            hint_text="Return to the public home page",
-            button=True,
-            focusable=True,
-            expand=True,
-        )
+        home_btn = home_button
 
         action_controls = [self.login_btn, home_btn]
         if self.is_narrow:
