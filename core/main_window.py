@@ -26,6 +26,7 @@ import json
 from datetime import datetime
 
 from core.helpers import responsive_dialog_size
+from core.runtime_logging import log_event, log_exception, APP_BUILD_ID
 
 try:
     from core.dashboard_tab import DashboardTab
@@ -181,12 +182,17 @@ class MainWindowView:
         self._clock_running = False
         self._refresh_running = False
         self.root = None
+        log_event("MAIN", "ADMIN_SHELL_INIT", db=self.db,
+                  user_role=self.current_user.get("role", "unknown"),
+                  build=APP_BUILD_ID)
 
     # =============================================================================
     # Navigation callback
     # =============================================================================
     def _on_navigate(self, tab_name, action=None):
         print(f"[NAV] _on_navigate(tab_name='{tab_name}', action={action})")
+        log_event("NAV", "TAB_NAVIGATE", db=self.db, tab=tab_name,
+                  action=action)
         try:
             if self.tabs_control is None:
                 self._show_snack("⚠️ Tabs not initialized yet")
@@ -224,9 +230,14 @@ class MainWindowView:
                             fn(None)
                         except Exception as ex:
                             print(f"[NAV] {tab_name}.{method_name} failed: {ex}")
+                            log_exception("NAV", "TAB_ACTION_FAILED", ex,
+                                          db=self.db, tab=tab_name,
+                                          method=method_name)
                         break
         except Exception as ex:
             print(f"[NAV] _on_navigate failed: {ex}")
+            log_exception("NAV", "TAB_NAVIGATE_FAILED", ex, db=self.db,
+                          tab=tab_name, action=action)
             self._show_snack(f"⚠️ Navigation error: {ex}")
 
     # =============================================================================
@@ -445,9 +456,13 @@ class MainWindowView:
         def build_tab_content(cls, plain_label, icon, attr_name):
             if cls is None:
                 print(f"[TAB] {plain_label}: no module (placeholder shown)")
+                log_event("TAB", "TAB_MODULE_MISSING", level="ERROR", db=self.db,
+                          tab=plain_label, attribute=attr_name)
                 return make_placeholder(plain_label, icon)
             try:
                 print(f"[TAB] {plain_label}: building...")
+                log_event("TAB", "TAB_BUILD_START", db=self.db,
+                          tab=plain_label, attribute=attr_name)
 
                 if cls is DashboardTab:
                     instance = cls(
@@ -463,11 +478,16 @@ class MainWindowView:
                 content = instance.build()
                 print(f"[TAB] {plain_label}: ✅ SUCCESS "
                       f"({type(content).__name__})")
+                log_event("TAB", "TAB_BUILD_SUCCESS", db=self.db,
+                          tab=plain_label, attribute=attr_name,
+                          content_type=type(content).__name__)
                 return content
             except Exception as ex:
                 import traceback
                 print(f"[TAB] {plain_label}: ❌ FAILED: {ex}")
                 traceback.print_exc()
+                log_exception("TAB", "TAB_BUILD_FAILED", ex, db=self.db,
+                              tab=plain_label, attribute=attr_name)
                 # Keep the shell usable, but expose the concrete constructor
                 # failure in the tab so Railway diagnostics are actionable.
                 return make_placeholder(
@@ -531,6 +551,8 @@ class MainWindowView:
                 make_placeholder("No Access", ft.Icons.LOCK)))
 
         print(f"[MAIN] showing {len(tab_labels)} tab(s)")
+        log_event("MAIN", "ADMIN_TABS_READY", db=self.db,
+                  tab_count=len(tab_labels), tabs=[label for label, _, _ in tab_labels])
 
         tab_bar_items = [ft.Tab(label=label)
                          for label, _, _ in tab_labels]
@@ -588,6 +610,8 @@ class MainWindowView:
             self.page.run_task(self._auto_refresh_loop)
         except Exception as ex:
             print(f"[MAIN] run_task failed: {ex}")
+            log_exception("MAIN", "BACKGROUND_TASK_START_FAILED", ex,
+                          db=self.db)
 
         return self.root
 
@@ -642,22 +666,31 @@ class MainWindowView:
                     self.refresh_all()
                 except Exception as ex:
                     print(f"[AUTO REFRESH] {ex}")
+                    log_exception("MAIN", "AUTO_REFRESH_FAILED", ex,
+                                  db=self.db)
         except Exception as ex:
             print(f"[AUTO REFRESH] stopped: {ex}")
+            log_exception("MAIN", "AUTO_REFRESH_STOPPED", ex, db=self.db)
         finally:
             self._refresh_running = False
 
     def refresh_all(self):
+        log_event("MAIN", "REFRESH_ALL_START", db=self.db)
         for name in ('dashboard_tab', 'travelers_tab', 'passport_reader_tab', 'batches_tab',
                      'payments_tab', 'receipts_tab', 'invoices_tab',
                      'reports_tab', 'users_tab', 'frontpage_tab',
-                     'backup_tab', 'data_admin_tab'):
+                     'backup_tab', 'data_admin_tab', 'system_test_tab'):
             tab = getattr(self, name, None)
             if tab is not None and hasattr(tab, 'refresh'):
                 try:
                     tab.refresh()
+                    log_event("TAB", "TAB_REFRESH_SUCCESS", db=self.db,
+                              tab=name)
                 except Exception as ex:
                     print(f"[REFRESH {name}] {ex}")
+                    log_exception("TAB", "TAB_REFRESH_FAILED", ex,
+                                  db=self.db, tab=name)
+        log_event("MAIN", "REFRESH_ALL_COMPLETE", db=self.db)
 
     def refresh_dashboard(self):
         self.refresh_all()
