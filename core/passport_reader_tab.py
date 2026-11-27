@@ -20,6 +20,7 @@ import flet as ft
 
 from core.helpers import send_file_to_user
 from core.passport_reader import scan_travelers
+from core.runtime_logging import log_event, log_exception
 
 
 # [2.1] PassportReaderTab — responsive admin tab
@@ -80,6 +81,7 @@ class PassportReaderTab:
 
     # [2.8] scan — read scans without modifying traveler records
     def scan(self, e=None):
+        log_event("PASSPORT_READER", "SCAN_START", db=self.db)
         try:
             self.status.value = "Reading passport scans… this may take time for PDF files."
             self.status.update()
@@ -89,8 +91,11 @@ class PassportReaderTab:
             self.status.value = f"Read {len(self.rows)} traveler record(s): {valid} MRZ-validated, {review} require manual review. No traveler CSV fields were changed."
             self._render()
             self.status.update()
+            log_event("PASSPORT_READER", "SCAN_SUCCESS", db=self.db,
+                      row_count=len(self.rows), validated=valid, review=review)
         except Exception as ex:
             traceback.print_exc()
+            log_exception("PASSPORT_READER", "SCAN_FAILED", ex, db=self.db)
             self.status.value = f"Passport scan failed: {ex}"
             self.status.update()
 
@@ -102,8 +107,11 @@ class PassportReaderTab:
 
     # [2.10] export — create CSV, Excel, or PDF download
     def export(self, kind):
+        log_event("PASSPORT_READER", "EXPORT_START", db=self.db, kind=kind)
         rows = self._export_rows()
         if not rows:
+            log_event("PASSPORT_READER", "EXPORT_SKIPPED_NO_ROWS", db=self.db,
+                      kind=kind)
             return
         # Keep generated artifacts on the same durable Railway volume as the
         # database and source documents.
@@ -147,5 +155,10 @@ class PassportReaderTab:
                 self.page.launch_url(url)
             self.status.value = f"Exported {len(rows)} rows to {path.name}."
             self.status.update()
+            log_event("PASSPORT_READER", "EXPORT_SUCCESS", db=self.db,
+                      kind=kind, row_count=len(rows), path=str(path))
         except Exception as ex:
-            traceback.print_exc(); self.status.value = f"Export failed: {ex}"; self.status.update()
+            traceback.print_exc()
+            log_exception("PASSPORT_READER", "EXPORT_FAILED", ex, db=self.db,
+                          kind=kind, path=str(path))
+            self.status.value = f"Export failed: {ex}"; self.status.update()
