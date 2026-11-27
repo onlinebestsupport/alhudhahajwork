@@ -475,7 +475,7 @@ class MainWindowView:
              "view_dashboard",   DashboardTab),
             ("👥 Travelers", ft.Icons.PEOPLE,    "travelers_tab",
              "manage_travelers", TravelersTab),
-            ("🛂 Passport Reader", ft.Icons.DOCUMENT_SCANNER,
+            ("🛂 Passport Reader", getattr(ft.Icons, "DOCUMENT_SCANNER", ft.Icons.DESCRIPTION),
              "passport_reader_tab", "manage_travelers", PassportReaderTab),
             ("📦 Batches",   ft.Icons.INVENTORY, "batches_tab",
              "manage_batches",   BatchesTab),
