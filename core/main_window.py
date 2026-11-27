@@ -681,6 +681,14 @@ class MainWindowView:
                      'reports_tab', 'users_tab', 'frontpage_tab',
                      'backup_tab', 'data_admin_tab', 'system_test_tab'):
             tab = getattr(self, name, None)
+            if tab is None:
+                log_event("TAB", "TAB_REFRESH_SKIPPED_NOT_INITIALIZED",
+                          db=self.db, tab=name)
+                continue
+            if not hasattr(tab, 'refresh'):
+                log_event("TAB", "TAB_REFRESH_SKIPPED_NO_METHOD",
+                          db=self.db, tab=name)
+                continue
             if tab is not None and hasattr(tab, 'refresh'):
                 try:
                     tab.refresh()
