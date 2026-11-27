@@ -468,7 +468,10 @@ class MainWindowView:
                 import traceback
                 print(f"[TAB] {plain_label}: ❌ FAILED: {ex}")
                 traceback.print_exc()
-                return make_placeholder(f"{plain_label} (error)", icon)
+                # Keep the shell usable, but expose the concrete constructor
+                # failure in the tab so Railway diagnostics are actionable.
+                return make_placeholder(
+                    f"{plain_label} unavailable: {type(ex).__name__}", icon)
 
         TAB_DEFINITIONS = [
             ("📊 Dashboard", ft.Icons.DASHBOARD, "dashboard_tab",
