@@ -42,7 +42,8 @@ except ImportError:
 PERMISSION_CATALOG = [
     ("view_dashboard",   "📊", "View Dashboard"),
     ("manage_travelers", "👥", "Manage Travelers"),
-    ("manage_batches",   "📦", "Manage Batches"),
+    ("manage_passport_reader", "🛂", "Passport Reader"),
+    ("manage_batches",    "📦", "Manage Batches"),
     ("manage_payments",  "💰", "Manage Payments"),
     ("manage_invoices",  "📄", "Manage Invoices"),
     ("manage_receipts",  "🧾", "Manage Receipts"),
@@ -59,6 +60,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     "admin":       {p[0] for p in PERMISSION_CATALOG
                     if p[0] != "manage_users"},
     "staff":       {"view_dashboard", "manage_travelers",
+                    "manage_passport_reader",
                     "manage_payments", "manage_receipts",
                     "view_reports"},
     "viewer":      {"view_dashboard", "view_reports"},
