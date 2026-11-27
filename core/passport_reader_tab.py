@@ -46,6 +46,14 @@ class PassportReaderTab:
     def build(self):
         return self.root
 
+    # [2.4a] refresh — redraw existing results without an automatic OCR scan
+    def refresh(self):
+        """Refresh the visible table only; scanning remains an explicit action."""
+        if self.rows:
+            self._render()
+        log_event("PASSPORT_READER", "REFRESH_VISIBLE_ONLY", db=self.db,
+                  row_count=len(self.rows))
+
     # [2.4] _button — create labeled touch-friendly action button
     def _button(self, label, icon, color, handler):
         return ft.Button(content=ft.Row([ft.Icon(icon, size=15, color=ft.Colors.WHITE), ft.Text(label, size=11, color=ft.Colors.WHITE)], spacing=5, tight=True), on_click=handler, height=38, bgcolor=color)
