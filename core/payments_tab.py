@@ -328,6 +328,11 @@ class PaymentsTab:
 
     def _update_table_only(self):
         """Leaf-only update — does NOT touch the search field's ancestors."""
+        control = self.root
+        while control is not None and not isinstance(control, ft.Page):
+            control = getattr(control, "parent", None)
+        if control is None:
+            return
         try:
             if self.table is not None:
                 self.table.update()
