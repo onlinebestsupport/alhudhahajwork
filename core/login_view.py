@@ -206,6 +206,12 @@ class LoginView:
         self._typing_until = 0.0
         self._login_attempts = []
 
+        page_width = getattr(self.page, "width", None) or 0
+        platform = str(getattr(self.page, "platform", "")).lower()
+        mobile_platform = any(
+            token in platform for token in ("android", "ios", "mobile"))
+        self.is_narrow = mobile_platform or (0 < page_width < 700)
+
         self._build()
 
     # -----------------------------------------------------------------------------
@@ -290,7 +296,10 @@ class LoginView:
             label="Username",
             hint_text="Enter username",
             prefix_icon=ft.Icons.PERSON_OUTLINE,
-            autofocus=True,
+            # Do not open the software keyboard automatically on mobile Safari
+            # or Chrome.  Autofocus scrolls the Flet canvas and can hide the
+            # submit control from both sighted users and screen readers.
+            autofocus=not self.is_narrow,
             text_size=13,
             height=56,
             expand=True,
@@ -383,44 +392,61 @@ class LoginView:
             "", size=11, color=ft.Colors.RED_500,
             text_align=ft.TextAlign.CENTER)
 
-        self.login_btn = ft.Button(
-            content=ft.Row([
-                ft.Icon(ft.Icons.LOGIN, size=18, color=ft.Colors.WHITE),
-                ft.Text("Login", size=14,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.WHITE),
-            ], spacing=8, alignment=ft.MainAxisAlignment.CENTER,
-               tight=True),
+        login_button = ft.Button(
+            content="Login",
+            icon=ft.Icons.LOGIN,
+            icon_color=ft.Colors.WHITE,
+            color=ft.Colors.WHITE,
             on_click=self._do_login,
             height=48,
+            min_height=48,
             bgcolor="#1e3c72",
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)),
             expand=True,
+            tooltip="Submit admin login",
+        )
+        self.login_btn = ft.Semantics(
+            content=login_button,
+            label="Login",
+            hint_text="Submit the admin login form",
+            button=True,
+            focusable=True,
+            expand=True,
         )
 
-        home_btn = ft.Button(
-            content=ft.Row([
-                ft.Icon(ft.Icons.HOME, size=16, color=ft.Colors.WHITE),
-                ft.Text("Home", size=13,
-                        weight=ft.FontWeight.BOLD,
-                        color=ft.Colors.WHITE),
-            ], spacing=6, alignment=ft.MainAxisAlignment.CENTER,
-               tight=True),
+        home_button = ft.Button(
+            content="Home",
+            icon=ft.Icons.HOME,
+            icon_color=ft.Colors.WHITE,
+            color=ft.Colors.WHITE,
             on_click=self._go_home,
             height=48,
+            min_height=48,
             bgcolor="#7f8c8d",
             style=ft.ButtonStyle(
                 shape=ft.RoundedRectangleBorder(radius=10)),
             expand=True,
+            tooltip="Return to home page",
+        )
+        home_btn = ft.Semantics(
+            content=home_button,
+            label="Home",
+            hint_text="Return to the public home page",
+            button=True,
+            focusable=True,
+            expand=True,
         )
 
+        action_controls = [self.login_btn, home_btn]
+        if self.is_narrow:
+            action_area = ft.Column(action_controls, spacing=10,
+                                    tight=True, expand=True)
+        else:
+            action_area = ft.Row(action_controls, spacing=10)
+
         page_width = getattr(self.page, "width", None) or 0
-        platform = str(getattr(self.page, "platform", "")).lower()
-        mobile_platform = any(
-            token in platform for token in ("android", "ios", "mobile"))
-        is_narrow = mobile_platform or (0 < page_width < 700)
-        if is_narrow:
+        if self.is_narrow:
             card_width = max(260, int(page_width) - 24) if page_width else 280
             card_padding = ft.Padding.symmetric(horizontal=12, vertical=20)
         else:
@@ -442,7 +468,7 @@ class LoginView:
                 ft.Container(height=8),
                 self.status_label,
                 ft.Container(height=8),
-                ft.Row([self.login_btn, home_btn], spacing=10),
+                action_area,
                 ft.Container(height=8),
                 ft.Text(f"© {datetime.now().year} Alhudha Travel · v3.0",
                         size=10, color=ft.Colors.GREY_500,
