@@ -27,7 +27,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps, ImageFilter
 
-from core.helpers import get_app_base_path, log_exception
+from core.helpers import get_app_base_path
+from core.runtime_logging import log_event, log_exception
 
 _EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _MRZ_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<"
@@ -56,27 +57,39 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
         docs = (base / "data" / "documents").resolve()
         legacy_docs = (base / "documents").resolve()
     found = []
-    stored = _clean(traveler.get("passport_scan"))
-    if stored:
-        candidate = Path(stored.replace("\\", "/"))
-        if not candidate.is_absolute():
-            candidate = (base / candidate).resolve()
-        if candidate.is_file() and candidate.suffix.lower() in _EXTENSIONS:
-            found.append(candidate)
-    folder = docs / _folder_id(traveler.get("id")) / "passports"
-    if folder.is_dir():
-        found.extend(p for p in sorted(folder.rglob("*"))
-                     if p.is_file() and p.suffix.lower() in _EXTENSIONS)
-    # Legacy/mismatched folder names: only match the exact traveler token.
-    token = _folder_id(traveler.get("id"))
-    if token:
-        for p in docs.glob(f"**/{token}/passports/*"):
-            if p.is_file() and p.suffix.lower() in _EXTENSIONS:
-                found.append(p)
-        # Compatibility only: do not write or migrate legacy files here.
-        for p in legacy_docs.glob(f"**/{token}/passports/*"):
-            if p.is_file() and p.suffix.lower() in _EXTENSIONS:
-                found.append(p)
+    # Both columns exist in the persisted CSV. Older records use
+    # passport_scan; newer document-management flows may use
+    # passport_scan_path. Resolve Windows separators without writing/migrating.
+    stored_values = {
+        _clean(traveler.get("passport_scan")),
+        _clean(traveler.get("passport_scan_path")),
+    }
+    for stored in stored_values - {""}:
+        normalized = stored.replace("\\", "/")
+        raw = Path(normalized)
+        candidates = [raw] if raw.is_absolute() else [base / raw,
+                                                        base.parent / raw]
+        for candidate in candidates:
+            candidate = candidate.resolve()
+            if candidate.is_file() and candidate.suffix.lower() in _EXTENSIONS:
+                found.append(candidate)
+
+    # Folder layout used by Data Admin: documents/<traveler-token>/passports.
+    tokens = {_folder_id(traveler.get("id"))}
+    file_reference = _clean(traveler.get("file_reference"))
+    if file_reference:
+        tokens.add(_folder_id(file_reference))
+    for token in {token for token in tokens if token}:
+        for documents_root in (docs, legacy_docs):
+            folder = documents_root / token / "passports"
+            if folder.is_dir():
+                found.extend(p for p in sorted(folder.rglob("*"))
+                             if p.is_file() and p.suffix.lower() in _EXTENSIONS)
+            # Compatibility for an additional nesting level used by older
+            # imports; only exact token folder names are accepted.
+            for p in documents_root.glob(f"**/{token}/passports/*"):
+                if p.is_file() and p.suffix.lower() in _EXTENSIONS:
+                    found.append(p)
     unique = []
     seen = set()
     for p in found:
@@ -86,6 +99,10 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
                 unique.append(p); seen.add(p)
         except OSError:
             pass
+    log_event("PASSPORT_READER", "DISCOVERY_RESULT",
+              traveler_id=_clean(traveler.get("id")),
+              base=str(base), documents=str(docs), legacy_documents=str(legacy_docs),
+              file_count=len(unique), files=[str(path) for path in unique])
     return unique
 
 
@@ -263,9 +280,12 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
 # [1.14] scan_travelers — scan every traveler without database writes
 def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
     rows = []
+    found_count = 0
+    missing_count = 0
     for traveler in travelers:
         files = discover_passport_files(traveler, data_dir)
         if not files:
+            missing_count += 1
             rows.append({
                 "traveler_id": _clean(traveler.get("id")),
                 "traveler_name": " ".join(x for x in [_clean(traveler.get("first_name")), _clean(traveler.get("last_name"))] if x),
@@ -273,5 +293,9 @@ def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
                 "review_reason": "Passport PDF/JPEG not found", "mrz_valid": False,
             })
         else:
+            found_count += 1
             rows.append(read_passport(traveler, files[0], files))
+    log_event("PASSPORT_READER", "DISCOVERY_SUMMARY",
+              traveler_count=len(travelers), found=found_count,
+              missing=missing_count, data_dir=str(data_dir or ""))
     return rows
