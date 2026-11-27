@@ -38,6 +38,12 @@ except ImportError:
     TravelersTab = None
 
 try:
+    from core.passport_reader_tab import PassportReaderTab
+except ImportError as _e:
+    print(f"[IMPORT] core.passport_reader_tab failed: {_e}")
+    PassportReaderTab = None
+
+try:
     from core.batches_tab import BatchesTab
 except ImportError:
     BatchesTab = None
@@ -469,6 +475,8 @@ class MainWindowView:
              "view_dashboard",   DashboardTab),
             ("👥 Travelers", ft.Icons.PEOPLE,    "travelers_tab",
              "manage_travelers", TravelersTab),
+            ("🛂 Passport Reader", ft.Icons.DOCUMENT_SCANNER,
+             "passport_reader_tab", "manage_travelers", PassportReaderTab),
             ("📦 Batches",   ft.Icons.INVENTORY, "batches_tab",
              "manage_batches",   BatchesTab),
             ("💰 Payments",  ft.Icons.PAYMENTS,  "payments_tab",
@@ -637,7 +645,7 @@ class MainWindowView:
             self._refresh_running = False
 
     def refresh_all(self):
-        for name in ('dashboard_tab', 'travelers_tab', 'batches_tab',
+        for name in ('dashboard_tab', 'travelers_tab', 'passport_reader_tab', 'batches_tab',
                      'payments_tab', 'receipts_tab', 'invoices_tab',
                      'reports_tab', 'users_tab', 'frontpage_tab',
                      'backup_tab', 'data_admin_tab'):
