@@ -24,6 +24,15 @@ from core.passport_reader import scan_travelers
 
 # [2.1] PassportReaderTab — responsive admin tab
 class PassportReaderTab:
+    # [2.2a] _icon — resolve icon names across Flet 1.x releases
+    @staticmethod
+    def _icon(name, fallback="DESCRIPTION"):
+        icons = getattr(ft, "Icons", None)
+        value = getattr(icons, name, None) if icons is not None else None
+        if value is not None:
+            return value
+        return getattr(icons, fallback, "description") if icons is not None else "description"
+
     # [2.2] __init__ — initialize read-only tab state
     def __init__(self, page: ft.Page, db, current_user):
         self.page, self.db, self.current_user = page, db, current_user
@@ -43,9 +52,9 @@ class PassportReaderTab:
     # [2.5] _build — assemble responsive tab layout
     def _build(self):
         return ft.Container(content=ft.Column([
-            ft.Row([ft.Text("🛂 Passport Reader", size=18, weight=ft.FontWeight.BOLD, color="#1e3a8a"), ft.Container(expand=True), self._button("Scan PDF/JPEG", ft.Icons.DOCUMENT_SCANNER, "#2563eb", self.scan)], wrap=True),
+            ft.Row([ft.Text("🛂 Passport Reader", size=18, weight=ft.FontWeight.BOLD, color="#1e3a8a"), ft.Container(expand=True), self._button("Scan PDF/JPEG", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan)], wrap=True),
             ft.Text("Reads the first passport PDF/JPEG in each traveler folder. MRZ check digits are validated; every non-validated result must be manually checked against the scan before ticket or visa use.", size=11, color="#64748b"),
-            ft.Row([self._button("CSV", ft.Icons.DOWNLOAD, "#0f766e", lambda e: self.export("csv")), self._button("Excel", ft.Icons.TABLE_VIEW, "#15803d", lambda e: self.export("xlsx")), self._button("PDF", ft.Icons.PICTURE_AS_PDF, "#b91c1c", lambda e: self.export("pdf"))], wrap=True, spacing=6),
+            ft.Row([self._button("CSV", self._icon("DOWNLOAD"), "#0f766e", lambda e: self.export("csv")), self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"), "#15803d", lambda e: self.export("xlsx")), self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"), "#b91c1c", lambda e: self.export("pdf"))], wrap=True, spacing=6),
             self.status,
             ft.Container(content=self.table, expand=True, border=ft.Border.all(1, "#cbd5e1"), padding=6),
         ], spacing=8, expand=True), padding=12, expand=True)
