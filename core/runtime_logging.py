@@ -61,6 +61,17 @@ def log_event(component: str, event: str, *, level: str = "INFO",
         with (log_dir / "admin_runtime.log").open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
     except Exception as log_error:
+        # Local sandboxes may not have /app. Railway still uses /app/data;
+        # only the non-Railway fallback moves to the project-local data folder.
+        if str(data_dir) == "/app/data":
+            try:
+                local_dir = Path.cwd() / "data" / "logs"
+                local_dir.mkdir(parents=True, exist_ok=True)
+                with (local_dir / "admin_runtime.log").open("a", encoding="utf-8") as handle:
+                    handle.write(line + "\n")
+                return
+            except Exception:
+                pass
         # Logging must never break the admin UI; stdout remains the fallback.
         print(f"[APP_LOG][LOGGER_ERROR] {type(log_error).__name__}: {log_error}",
               flush=True)
