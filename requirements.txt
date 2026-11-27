@@ -33,6 +33,10 @@ openpyxl~=3.1
 # ---- Image processing ----
 Pillow~=10.0
 
+# ---- Passport scan OCR (MRZ validation for PDF/JPEG scans) ----
+pytesseract~=0.3
+pdf2image~=1.17
+
 # ---- File uploads (required for FastAPI File/Form) ----
 # Needed by /api/admin/gallery/upload — the gallery feature in the front page
 python-multipart>=0.0.9
