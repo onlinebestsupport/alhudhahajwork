@@ -45,6 +45,8 @@ class PassportReaderTab:
         self.travelers = []
         self._traveler_by_id = {}
         self._scan_running = False
+        self.subtab_selector = None
+        self.subtab_content = None
         self.traveler_search = ft.TextField(
             label="Search traveler / passport / mobile",
             hint_text="Type a name, ID, passport number, or mobile",
@@ -142,30 +144,73 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
                   traveler_id=str(self.traveler_dropdown.value or ""))
 
+    # [2.4g] _set_subtab — switch reader/results content without swipe tabs
+    def _set_subtab(self, key):
+        if self.subtab_content is None:
+            return
+        if key == "results":
+            self.subtab_content.content = self._results_panel
+        else:
+            self.subtab_content.content = self._reader_panel
+            key = "reader"
+        try:
+            self.subtab_content.update()
+            self.subtab_selector.value = key
+            self.subtab_selector.update()
+        except Exception:
+            pass
+        log_event("PASSPORT_READER", "SUBTAB_SELECTED", db=self.db,
+                  subtab=key)
+
     # [2.4] _button — create labeled touch-friendly action button
     def _button(self, label, icon, color, handler):
         return ft.Button(content=ft.Row([ft.Icon(icon, size=15, color=ft.Colors.WHITE), ft.Text(label, size=11, color=ft.Colors.WHITE)], spacing=5, tight=True), on_click=handler, height=38, bgcolor=color)
 
     # [2.5] _build — assemble responsive tab layout
     def _build(self):
-        return ft.Container(content=ft.Column([
-            # Do not use an expanding spacer in this mobile TabBarView row.
-            # Some Flet Web versions allocate the whole row to the spacer and
-            # collapse the action controls into the grey viewport surface.
-            ft.Row([ft.Text("🛂 Passport Reader", size=18, weight=ft.FontWeight.BOLD, color="#1e3a8a"), self._button("Scan PDF/JPEG", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan)], wrap=True, spacing=8),
-            ft.Text("Reads the first passport PDF/JPEG in each traveler folder. MRZ check digits are validated; every non-validated result must be manually checked against the scan before ticket or visa use.", size=11, color="#64748b"),
-            ft.ResponsiveRow([
-                ft.Container(content=self.traveler_search, col={"xs": 12, "md": 5}),
-                ft.Container(content=self.traveler_dropdown, col={"xs": 12, "md": 7}),
-            ], spacing=8, run_spacing=8),
+        header = ft.Text("🛂 Passport Reader", size=18,
+                         weight=ft.FontWeight.BOLD, color="#1e3a8a")
+        description = ft.Text(
+            "Mixed Files mode reads every PDF, JPEG, and PNG in the selected traveler folder as one ordered passport-page set. Verify all OCR against the original scan.",
+            size=11, color="#64748b")
+        selector_row = ft.ResponsiveRow([
+            ft.Container(content=self.traveler_search, col={"xs": 12, "md": 5}),
+            ft.Container(content=self.traveler_dropdown, col={"xs": 12, "md": 7}),
+        ], spacing=8, run_spacing=8)
+        self._reader_panel = ft.Column([
+            description,
+            selector_row,
             ft.Row([
                 self._button("Read Selected", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan),
                 self._button("Read All", self._icon("FOLDER_OPEN"), "#475569", lambda e: self.scan(e, all_travelers=True)),
             ], wrap=True, spacing=6),
-            ft.Row([self._button("CSV", self._icon("DOWNLOAD"), "#0f766e", lambda e: self.export("csv")), self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"), "#15803d", lambda e: self.export("xlsx")), self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"), "#b91c1c", lambda e: self.export("pdf"))], wrap=True, spacing=6),
+        ], spacing=8, scroll=ft.ScrollMode.AUTO)
+        self._results_panel = ft.Column([
+            ft.Row([
+                self._button("CSV", self._icon("DOWNLOAD"), "#0f766e", lambda e: self.export("csv")),
+                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"), "#15803d", lambda e: self.export("xlsx")),
+                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"), "#b91c1c", lambda e: self.export("pdf")),
+            ], wrap=True, spacing=6),
             self.status,
-            ft.Container(content=self.table, height=360, bgcolor="#ffffff", border=ft.Border.all(1, "#cbd5e1"), padding=6),
-        ], spacing=8, scroll=ft.ScrollMode.AUTO), padding=12, bgcolor="#ffffff", expand=True)
+            ft.Container(content=self.table, height=360,
+                         bgcolor="#ffffff", border=ft.Border.all(1, "#cbd5e1"), padding=6),
+        ], spacing=8, scroll=ft.ScrollMode.AUTO)
+        self.subtab_selector = ft.Dropdown(
+            label="Passport Reader section",
+            options=[
+                ft.dropdown.Option(key="reader", text="Mixed Files Reader"),
+                ft.dropdown.Option(key="results", text="Results & Downloads"),
+            ], value="reader", dense=True, expand=True)
+        self.subtab_selector.on_change = lambda e: self._set_subtab(
+            self.subtab_selector.value)
+        self.subtab_content = ft.Container(content=self._reader_panel,
+                                            expand=True)
+        return ft.Container(content=ft.Column([
+            ft.Row([header], wrap=True),
+            self.subtab_selector,
+            self.subtab_content,
+        ], spacing=8, scroll=ft.ScrollMode.AUTO),
+            padding=12, bgcolor="#ffffff", expand=True)
 
     # [2.6] _cell — create a compact table cell
     def _cell(self, value, width=130):
@@ -196,6 +241,7 @@ class PassportReaderTab:
             ("Page 1", row.get("page_1_status")),
             ("Last page", row.get("last_page_status")),
             ("Source file", Path(str(row.get("source_file", "")).replace("\\", "/")).name),
+            ("All source files", row.get("source_files") or row.get("source_file")),
             ("Page 1 OCR text", row.get("page_1_ocr")),
             ("Last page OCR text", row.get("last_page_ocr")),
             ("Review reason", row.get("review_reason")),
@@ -203,7 +249,11 @@ class PassportReaderTab:
         details = [
             ft.Row([
                 ft.Container(content=ft.Text(label, size=10, weight=ft.FontWeight.BOLD), width=105),
-                ft.Text(str(value or "—"), size=10, selectable=True, expand=True),
+                ft.Text(
+                    (str(value or "—")[:1800] + "…"
+                     if label.endswith("OCR text") and len(str(value or "")) > 1800
+                     else str(value or "—")),
+                    size=10, selectable=True, expand=True),
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
             for label, value in values
         ]
@@ -261,6 +311,7 @@ class PassportReaderTab:
         self.status.value = (
             f"Reading {len(targets)} traveler passport folder(s) in the background…")
         self._status_update()
+        self._set_subtab("results")
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
                   selected_traveler=selected_id or "ALL",
                   traveler_count=len(targets))
@@ -288,7 +339,11 @@ class PassportReaderTab:
                 self.status.value = (
                     f"Reading passport records… {index}/{total} completed. "
                     f"{len(self.rows)} result(s) available.")
-                self._render()
+                # Rebuild the growing OCR cards in bounded batches. Updating
+                # dozens of large cards after every file can overload a mobile
+                # WebSocket and look like an unexpected logout.
+                if index == 1 or index % 5 == 0 or index == total:
+                    self._render()
                 self._status_update()
                 await asyncio.sleep(0)
             valid = sum(1 for r in self.rows if r.get("status") == "VALIDATED")
@@ -328,7 +383,7 @@ class PassportReaderTab:
         out = Path(self.db.data_dir) / "exports" / "passport_reader"
         out.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fields = ["traveler_id", "traveler_name", "passport_no", "surname", "given_names", "nationality", "date_of_birth", "sex", "passport_expiry", "issuing_country", "pages_read", "page_1_status", "last_page_status", "status", "mrz_valid", "review_required", "review_reason", "source_file", "page_1_ocr", "last_page_ocr", "page_ocr"]
+        fields = ["traveler_id", "traveler_name", "passport_no", "surname", "given_names", "nationality", "date_of_birth", "sex", "passport_expiry", "issuing_country", "pages_read", "page_1_status", "last_page_status", "status", "mrz_valid", "review_required", "review_reason", "source_file", "source_files", "page_1_ocr", "last_page_ocr", "page_ocr"]
         path = out / f"passport_reader_{stamp}.{kind}"
         try:
             if kind == "csv":
@@ -366,7 +421,8 @@ class PassportReaderTab:
                     story.append(PageBreak())
                     traveler_title = xml_escape(str(r.get("traveler_name") or r.get("traveler_id") or "Unknown traveler"))
                     source_name = Path(str(r.get("source_file", "")).replace("\\", "/")).name
-                    story.append(Paragraph(f"{traveler_title} — source: {xml_escape(source_name)}", styles["Heading2"]))
+                    source_list = xml_escape(str(r.get("source_files") or source_name).replace("\\", "/")).replace("\n", "<br/>")
+                    story.append(Paragraph(f"{traveler_title} — source files:<br/>{source_list}", styles["Heading2"]))
                     page_blob = str(r.get("page_ocr") or "").strip()
                     if not page_blob:
                         page_blob = "--- PAGE 1 ---\n" + str(r.get("page_1_ocr") or "")
