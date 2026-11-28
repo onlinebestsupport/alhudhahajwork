@@ -210,13 +210,14 @@ def _ocr_page_image(image) -> str:
     except ImportError as ex:
         raise RuntimeError("OCR engine unavailable: install pytesseract and tesseract") from ex
     enhanced = _enhance_image(image)
-    full_text = pytesseract.image_to_string(enhanced, config="--oem 3 --psm 6")
+    full_text = pytesseract.image_to_string(enhanced, lang="eng",
+                                            config="--oem 3 --psm 6")
     # The MRZ is normally at the bottom of the biographical page. A separate
     # whitelist pass reduces I/1, O/0, and punctuation substitutions.
     crop = enhanced.crop((0, int(enhanced.height * 0.70),
                           enhanced.width, enhanced.height))
     mrz_text = pytesseract.image_to_string(
-        crop,
+        crop, lang="eng",
         config=("--oem 3 --psm 6 "
                 "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"),
     )
@@ -294,7 +295,7 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
         "review_reason": "", "ocr_text": "", "mrz_valid": False,
         "pages_read": "", "page_1_status": "NOT READ",
         "last_page_status": "NOT READ", "page_1_ocr": "",
-        "last_page_ocr": "",
+        "last_page_ocr": "", "page_2_ocr": "",
         "page_ocr": "",
     }
     try:
@@ -311,6 +312,8 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
             row["page_1_status"] = "READ"
             row["last_page_ocr"] = page_texts[-1][1][:6000]
             row["last_page_status"] = "READ"
+            if len(page_texts) > 1:
+                row["page_2_ocr"] = page_texts[1][1][:6000]
             row["page_ocr"] = "\n\n".join(
                 f"--- {label.upper()} ---\n{text[:6000]}"
                 for label, text in page_texts
