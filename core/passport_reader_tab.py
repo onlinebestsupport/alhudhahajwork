@@ -37,7 +37,6 @@ _SUBTAB_ITEMS = [
 ]
 
 
-# [2.0] _scan_worker
 def _scan_worker(traveler, data_dir, result_queue):
     try:
         result_queue.put({"ok": True,
@@ -92,7 +91,6 @@ def _scan_folder_isolated(folder, timeout_seconds=600):
     return _run_isolated(_folder_worker, (folder,), timeout_seconds)
 
 
-# [2.1] PassportReaderTab
 class PassportReaderTab:
     @staticmethod
     def _icon(name, fallback="DESCRIPTION"):
@@ -103,7 +101,6 @@ class PassportReaderTab:
         return getattr(icons, fallback, "description") if icons is not None \
             else "description"
 
-    # [2.2] __init__
     def __init__(self, page: ft.Page, db, current_user):
         self.page, self.db, self.current_user = page, db, current_user
         log_event("PASSPORT_READER", "INIT_START", db=self.db)
@@ -144,11 +141,9 @@ class PassportReaderTab:
         self.root = self._build()
         log_event("PASSPORT_READER", "INIT_COMPLETE", db=self.db)
 
-    # [2.3] build
     def build(self):
         return self.root
 
-    # [2.4a] refresh
     def refresh(self):
         try:
             if self.rows:
@@ -173,7 +168,6 @@ class PassportReaderTab:
         except Exception:
             pass
 
-    # [2.4b] _load_traveler_choices
     def _load_traveler_choices(self):
         try:
             raw = self.db.get_travelers()
@@ -207,7 +201,6 @@ class PassportReaderTab:
         except Exception:
             pass
 
-    # [2.4c] _filter_travelers — auto-select the single visible option
     def _filter_travelers(self, e=None):
         needle = str(self.traveler_search.value or "").strip().lower()
         rows = self.travelers if not needle else [
@@ -239,7 +232,6 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
                   traveler_id=val.strip())
 
-    # [2.4d] _set_subtab — swap visible panel and restyle container buttons
     def _set_subtab(self, key):
         if self.subtab_content is None:
             return
@@ -269,7 +261,6 @@ class PassportReaderTab:
             except Exception:
                 pass
 
-    # [2.4e] _button
     def _button(self, label, icon, color, handler):
         return ft.Button(
             content=ft.Row([
@@ -278,7 +269,6 @@ class PassportReaderTab:
             ], spacing=5, tight=True),
             on_click=handler, height=38, bgcolor=color)
 
-    # [2.5] _build — visible sub-tab strip built from Containers only
     def _build(self):
         log_event("PASSPORT_READER", "BUILD_START", db=self.db)
 
@@ -332,7 +322,6 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-        # Build the always-visible sub-tab strip from Containers.
         for key, label in _SUBTAB_ITEMS:
             chip = ft.Container(
                 content=ft.Text(label, size=12, color="#1e3a8a",
@@ -340,7 +329,7 @@ class PassportReaderTab:
                 on_click=lambda e, k=key: self._set_subtab(k),
                 bgcolor="#e2e8f0",
                 border_radius=6,
-                padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                padding=8,
                 data=key,
             )
             self._subtab_buttons[key] = chip
@@ -405,7 +394,6 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-    # [2.6] _cell
     def _cell(self, value, width=130):
         return ft.Container(
             content=ft.Text(str(value or ""), size=10, selectable=True,
@@ -513,7 +501,6 @@ class PassportReaderTab:
     def _render(self):
         self._render_rows(self.rows, self.table)
 
-    # [2.8] scan — read selected or all travelers
     def scan(self, e=None, all_travelers=False):
         log_event("PASSPORT_READER", "SCAN_CLICKED", db=self.db,
                   all_travelers=all_travelers,
@@ -642,7 +629,6 @@ class PassportReaderTab:
         finally:
             self._scan_running = False
 
-    # [2.9] verify_local_folder
     def verify_local_folder(self, e=None):
         folder = str(self.local_folder_path.value or "").strip()
         if not folder:
@@ -675,7 +661,6 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "VERIFY_LOCAL_FOLDER", db=self.db,
                   folder=folder, file_count=len(files))
 
-    # [2.9a] scan_local_folder
     def scan_local_folder(self, e=None):
         if self._local_scan_running:
             self.local_status.value = ("A folder read is already running. "
@@ -736,7 +721,6 @@ class PassportReaderTab:
         finally:
             self._local_scan_running = False
 
-    # [2.9b] clear helpers
     def _clear_reader(self, e=None):
         self.rows = []
         self.table.controls.clear()
@@ -757,7 +741,6 @@ class PassportReaderTab:
         self.local_status.value = "Local folder results cleared."
         self._local_status_update()
 
-    # [2.10] export
     def _export_fields(self):
         return ["traveler_id", "traveler_name", "passport_no", "surname",
                 "given_names", "nationality", "date_of_birth", "sex",
