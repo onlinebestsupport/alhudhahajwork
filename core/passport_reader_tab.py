@@ -445,7 +445,6 @@ class PassportReaderTab:
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
         back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
-        # 1. Base Data (Prioritize MRZ values)
         data = {
             "traveler": row.get("traveler_name") or row.get("traveler_id"),
             "type": row.get("document_code") or "P", 
@@ -471,7 +470,6 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
-        # 2. Front extraction (Fallback for MRZ and Find POB, POI, Date of Issue)
         if front:
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: 
@@ -504,7 +502,6 @@ class PassportReaderTab:
                 except Exception:
                     data["date_of_issue"] = parsed_dates[0]
 
-        # Fallback Date of Issue
         if not data["date_of_issue"] and data["expiry"]:
             try:
                 exp_dt = datetime.strptime(data["expiry"], "%d-%m-%Y")
@@ -513,8 +510,7 @@ class PassportReaderTab:
             except Exception:
                 pass
 
-        # Reconstruct MRZ if missing
-        if not data["mrz"] or "W584" not in data["mrz"]:
+        if not data["mrz"] or "<" not in data["mrz"]:
             dob_parts = data["dob"].split("-") if data["dob"] else []
             dob_mrz = dob_parts[2][2:] + dob_parts[1] + dob_parts[0] if len(dob_parts) == 3 else "800101"
             exp_parts = data["expiry"].split("-") if data["expiry"] else []
@@ -523,13 +519,11 @@ class PassportReaderTab:
             given_mrz = data["given_names"].replace(" ", "<")
             data["mrz"] = f"P<{data['code']}{surname_mrz}<<{given_mrz}<<<<<<<<<<<<<<<<<<{data['passport_no']}<0{data['code']}{dob_mrz}{data['sex']}{exp_mrz}..."
 
-        # 3. Back extraction (Targeted Labels)
         if back:
             data["father"] = self._extract_back_field(r"Name of Father", back)
             data["mother"] = self._extract_back_field(r"Name of Mother", back)
             data["spouse"] = self._extract_back_field(r"Name of Spouse", back)
 
-            # Address
             lines = [l.strip() for l in back.splitlines() if l.strip()]
             addr_lines = []
             capturing = False
@@ -545,7 +539,6 @@ class PassportReaderTab:
             if addr_lines:
                 data["address"] = self._clean_ocr_noise(", ".join(addr_lines))
 
-            # Old Passport & File No
             m = re.search(r"([A-Z]\d{7})\s+(\d{2}/\d{2}/\d{4})\s+([A-Z]+)", back)
             if m: data["old_passport"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
             
