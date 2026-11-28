@@ -354,7 +354,10 @@ class PassportReaderTab:
         self.status.value = (
             f"Reading {len(targets)} traveler passport folder(s) in the background…")
         self._status_update()
-        self._set_subtab("results")
+        # Read Selected remains on the reader screen; Read All opens the
+        # accumulated results screen so progress and downloads are visible.
+        if all_travelers:
+            self._set_subtab("results")
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
                   selected_traveler=selected_id or "ALL",
                   traveler_count=len(targets))
@@ -373,8 +376,10 @@ class PassportReaderTab:
             # Process one traveler at a time instead of keeping the WebSocket
             # silent while a large Read All batch performs OCR. This also makes
             # partial results visible and allows the user to see progress.
-            self.rows = []
+            if len(targets) > 1:
+                self.rows = []
             total = len(targets)
+            no_file_count = 0
             for index, traveler in enumerate(targets, start=1):
                 traveler_id = str(traveler.get("id", ""))
                 log_event("PASSPORT_READER", "SCAN_PROGRESS_START", db=self.db,
@@ -393,14 +398,25 @@ class PassportReaderTab:
                         "review_required": True,
                         "review_reason": worker_error,
                     }]
+                if len(targets) == 1 and rows:
+                    self.rows = [r for r in self.rows
+                                 if str(r.get("traveler_id", "")) != traveler_id]
                 self.rows.extend(rows)
+                row_status = str(rows[0].get("status", "")) if rows else "NO SCAN"
+                if row_status == "NO SCAN":
+                    no_file_count += 1
+                    log_event("PASSPORT_READER", "NO_FILES_IN_FOLDER", db=self.db,
+                              traveler_index=index, traveler_total=total,
+                              traveler_id=traveler_id,
+                              message="No PDF/JPEG/PNG files inside passport folder")
                 log_event("PASSPORT_READER", "SCAN_PROGRESS_COMPLETE", db=self.db,
                           traveler_index=index, traveler_total=total,
                           traveler_id=traveler_id,
                           result_status=str(rows[0].get("status", "")) if rows else "NO_RESULT")
                 self.status.value = (
                     f"Reading passport records… {index}/{total} completed. "
-                    f"{len(self.rows)} result(s) available.")
+                    f"{no_file_count} folder(s) have no passport files. "
+                    f"{len(self.rows)} result(s) accumulated.")
                 # Rebuild the growing OCR cards in bounded batches. Updating
                 # dozens of large cards after every file can overload a mobile
                 # WebSocket and look like an unexpected logout.
@@ -413,9 +429,12 @@ class PassportReaderTab:
             errors = sum(1 for r in self.rows if r.get("status") == "ERROR")
             self.status.value = (
                 f"Read {len(self.rows)} traveler record(s): {valid} MRZ-validated, "
-                f"{review} require review, {errors} OCR errors. "
+                f"{review} require review, {errors} OCR errors, "
+                f"{no_file_count} folder(s) with no passport files. "
                 "No traveler CSV fields were changed.")
             self._render()
+            if len(targets) == 1:
+                self._set_subtab("reader")
             self._status_update()
             log_event("PASSPORT_READER", "SCAN_SUCCESS", db=self.db,
                       row_count=len(self.rows), validated=valid,
@@ -445,7 +464,7 @@ class PassportReaderTab:
         out = Path(self.db.data_dir) / "exports" / "passport_reader"
         out.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fields = ["traveler_id", "traveler_name", "passport_no", "surname", "given_names", "nationality", "date_of_birth", "sex", "passport_expiry", "issuing_country", "pages_read", "page_1_status", "last_page_status", "status", "mrz_valid", "review_required", "review_reason", "source_file", "source_files", "page_1_ocr", "last_page_ocr", "page_ocr"]
+        fields = ["traveler_id", "traveler_name", "passport_no", "surname", "given_names", "nationality", "date_of_birth", "sex", "passport_expiry", "issuing_country", "pages_read", "page_1_status", "last_page_status", "status", "mrz_valid", "review_required", "review_reason", "source_file", "source_files", "page_1_ocr", "page_2_ocr", "last_page_ocr", "page_ocr"]
         path = out / f"passport_reader_{stamp}.{kind}"
         try:
             if kind == "csv":
@@ -471,33 +490,46 @@ class PassportReaderTab:
                 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
                 styles = getSampleStyleSheet(); doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=8*mm, rightMargin=8*mm, topMargin=8*mm, bottomMargin=8*mm)
                 visible = ["traveler_name", "passport_no", "surname", "given_names", "date_of_birth", "passport_expiry", "nationality", "pages_read", "page_1_status", "last_page_status", "status", "review_reason"]
-                labels = ["Traveler", "Passport", "Surname", "Given names", "DOB", "Expiry", "Nationality", "Pages read", "Page 1", "Last page", "Status", "Review"]
+                labels = ["Traveler", "Passport No.", "Surname", "Given Name(s)", "Date of Birth", "Date of Expiry", "Nationality", "Pages read", "Page 1", "Page 2 / last", "Status", "Review"]
                 data = [[Paragraph(x, styles["BodyText"]) for x in labels]]
                 for r in rows: data.append([Paragraph(str(r.get(k, "") or ""), styles["BodyText"]) for k in visible])
                 table = Table(data, repeatRows=1, colWidths=[30*mm, 22*mm, 24*mm, 30*mm, 20*mm, 20*mm, 22*mm, 28*mm, 18*mm, 18*mm, 20*mm, 48*mm])
                 table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1e3a8a")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("GRID", (0,0), (-1,-1), .25, colors.grey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("FONTSIZE", (0,0), (-1,-1), 7), ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")])]))
-                story = [Paragraph("Passport Reader — summary and page-by-page OCR", styles["Title"]),
-                         Paragraph("OCR is assistive only. Verify every value against the original passport scan before ticket or visa issuance.", styles["BodyText"]),
+                story = [Paragraph("Passport Reader — passport fields and page-by-page reading", styles["Title"]),
+                         Paragraph("English OCR only. Verify every value against the original passport scan before ticket or visa issuance.", styles["BodyText"]),
                          Spacer(1, 4), table]
                 for row_index, r in enumerate(rows):
                     story.append(PageBreak())
                     traveler_title = xml_escape(str(r.get("traveler_name") or r.get("traveler_id") or "Unknown traveler"))
-                    source_name = Path(str(r.get("source_file", "")).replace("\\", "/")).name
-                    source_list = xml_escape(str(r.get("source_files") or source_name).replace("\\", "/")).replace("\n", "<br/>")
-                    story.append(Paragraph(f"{traveler_title} — source files:<br/>{source_list}", styles["Heading2"]))
-                    page_blob = str(r.get("page_ocr") or "").strip()
-                    if not page_blob:
-                        page_blob = "--- PAGE 1 ---\n" + str(r.get("page_1_ocr") or "")
-                        if r.get("last_page_ocr") and r.get("last_page_ocr") != r.get("page_1_ocr"):
-                            page_blob += "\n\n--- LAST PAGE ---\n" + str(r.get("last_page_ocr"))
-                    sections = re.split(r"(?=---\s*PAGE[_ ]\d+\s*---)", page_blob, flags=re.IGNORECASE)
-                    sections = [section.strip() for section in sections if section.strip()]
-                    for section in sections:
-                        header, _, body = section.partition("\n")
-                        story.append(Paragraph(xml_escape(header), styles["Heading3"]))
-                        body = body.strip() or "No OCR text captured for this page."
-                        story.append(Paragraph(xml_escape(body).replace("\n", "<br/>"), styles["BodyText"]))
-                        story.append(Spacer(1, 8))
+                    story.append(Paragraph(f"{traveler_title} — Page 1", styles["Heading2"]))
+                    page1_fields = [
+                        ("Surname", r.get("surname")),
+                        ("Given Name(s)", r.get("given_names")),
+                        ("Passport No.", r.get("passport_no")),
+                        ("Nationality", r.get("nationality")),
+                        ("Date of Birth", r.get("date_of_birth")),
+                        ("Sex", r.get("sex")),
+                        ("Date of Expiry", r.get("passport_expiry")),
+                        ("Issuing Country", r.get("issuing_country")),
+                    ]
+                    story.append(Table([[Paragraph(xml_escape(str(k)), styles["BodyText"]),
+                                         Paragraph(xml_escape(str(v or "")), styles["BodyText"])]
+                                        for k, v in page1_fields], colWidths=[42*mm, 90*mm],
+                                        style=TableStyle([("GRID", (0,0), (-1,-1), .25, colors.grey),
+                                                          ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#e2e8f0")),
+                                                          ("VALIGN", (0,0), (-1,-1), "TOP")])) )
+                    story.append(Spacer(1, 8))
+                    page1 = str(r.get("page_1_ocr") or "").strip()
+                    page1 = "\n".join(line.strip() for line in page1.splitlines()
+                                        if line.strip() and not line.strip().startswith("[MRZ OCR]"))
+                    story.append(Paragraph("Page 1 — English OCR labels and printed text", styles["Heading3"]))
+                    story.append(Paragraph(xml_escape(page1 or "No Page 1 OCR text captured.").replace("\n", "<br/>"), styles["BodyText"]))
+                    story.append(Spacer(1, 8))
+                    story.append(Paragraph("Page 2 — passport-printed text", styles["Heading2"]))
+                    page2 = str(r.get("page_2_ocr") or r.get("last_page_ocr") or "").strip()
+                    page2 = "\n".join(line.strip() for line in page2.splitlines()
+                                        if line.strip() and not line.strip().startswith("[MRZ OCR]"))
+                    story.append(Paragraph(xml_escape(page2 or "No Page 2 OCR text captured.").replace("\n", "<br/>"), styles["BodyText"]))
                 doc.build(story)
             url = send_file_to_user(self.page, str(path), f"Passport Reader {kind.upper()}")
             if url:
