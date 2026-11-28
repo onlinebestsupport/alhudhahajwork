@@ -333,9 +333,17 @@ class PassportReaderTab:
             self.rows = []
             total = len(targets)
             for index, traveler in enumerate(targets, start=1):
+                traveler_id = str(traveler.get("id", ""))
+                log_event("PASSPORT_READER", "SCAN_PROGRESS_START", db=self.db,
+                          traveler_index=index, traveler_total=total,
+                          traveler_id=traveler_id)
                 rows = await asyncio.to_thread(
                     scan_travelers, [traveler], self.db.data_dir)
                 self.rows.extend(rows)
+                log_event("PASSPORT_READER", "SCAN_PROGRESS_COMPLETE", db=self.db,
+                          traveler_index=index, traveler_total=total,
+                          traveler_id=traveler_id,
+                          result_status=str(rows[0].get("status", "")) if rows else "NO_RESULT")
                 self.status.value = (
                     f"Reading passport records… {index}/{total} completed. "
                     f"{len(self.rows)} result(s) available.")
