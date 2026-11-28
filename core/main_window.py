@@ -527,11 +527,31 @@ class MainWindowView:
              "manage_system_tests", SystemTestTab),
         ]
 
+        # Verify that every tab permission is represented in Users controls.
+        try:
+            from core.users_tab import PERMISSION_CATALOG as USER_PERMISSIONS
+            tab_permissions = {perm for _, _, _, perm, _ in TAB_DEFINITIONS}
+            user_permissions = {perm for perm, _, _ in USER_PERMISSIONS}
+            missing_in_users = sorted(tab_permissions - user_permissions)
+            unused_user_permissions = sorted(user_permissions - tab_permissions)
+            log_event(
+                "MAIN", "TAB_PERMISSION_REGISTRY_CHECK",
+                level="ERROR" if missing_in_users else "INFO", db=self.db,
+                missing_in_users=missing_in_users,
+                unused_user_permissions=unused_user_permissions,
+                tab_count=len(TAB_DEFINITIONS))
+        except Exception as ex:
+            log_exception("MAIN", "TAB_PERMISSION_REGISTRY_CHECK_FAILED", ex,
+                          db=self.db)
+
         print(f"[MAIN] user='{user_name}' role='{user_role}'")
 
         tab_labels = []
         for label, icon, attr_name, perm_key, cls in TAB_DEFINITIONS:
-            if not _user_has_permission(self.current_user, perm_key):
+            allowed = _user_has_permission(self.current_user, perm_key)
+            log_event("TAB", "TAB_ACCESS_DECISION", db=self.db,
+                      tab=label, permission=perm_key, allowed=allowed)
+            if not allowed:
                 print(f"[TAB] {label.strip()}: ⛔ denied")
                 continue
 
