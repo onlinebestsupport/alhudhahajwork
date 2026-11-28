@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import csv
 import asyncio
+import multiprocessing
 import os
+import queue
 import re
 import traceback
 from datetime import datetime
@@ -25,6 +27,47 @@ import flet as ft
 from core.helpers import send_file_to_user
 from core.passport_reader import scan_travelers
 from core.runtime_logging import log_event, log_exception
+
+
+# [2.0] _scan_worker — run native OCR/PDF work outside the long-lived Flet process
+def _scan_worker(traveler, data_dir, result_queue):
+    """Process one traveler and exit, releasing Tesseract/Pillow native memory."""
+    try:
+        result_queue.put({"ok": True, "rows": scan_travelers([traveler], data_dir)})
+    except Exception as ex:
+        result_queue.put({"ok": False, "error": f"{type(ex).__name__}: {ex}"})
+
+
+def _scan_one_isolated(traveler, data_dir, timeout_seconds=240):
+    """Return one traveler result from a disposable process.
+
+    Tesseract and PDF rasterization can retain native allocations that Python
+    garbage collection does not promptly return on Railway. A process boundary
+    makes Read All bounded by one traveler rather than by the whole batch.
+    """
+    # fork avoids re-importing the Flet application on Railway/Linux; spawn is
+    # required on Windows and remains safe because this target is top-level.
+    context_name = "spawn" if os.name == "nt" else "fork"
+    context = multiprocessing.get_context(context_name)
+    result_queue = context.Queue(maxsize=1)
+    process = context.Process(target=_scan_worker,
+                              args=(traveler, data_dir, result_queue))
+    process.start()
+    process.join(timeout_seconds)
+    if process.is_alive():
+        process.terminate()
+        process.join(10)
+        return [], f"OCR timeout after {timeout_seconds}s"
+    try:
+        payload = result_queue.get(timeout=5)
+    except (queue.Empty, OSError, EOFError):
+        payload = {"ok": False, "error": f"OCR worker exited with code {process.exitcode}"}
+    finally:
+        result_queue.close()
+        result_queue.join_thread()
+    if not payload.get("ok"):
+        return [], payload.get("error", "OCR worker failed")
+    return payload.get("rows", []), ""
 
 
 # [2.1] PassportReaderTab — responsive admin tab
@@ -337,8 +380,19 @@ class PassportReaderTab:
                 log_event("PASSPORT_READER", "SCAN_PROGRESS_START", db=self.db,
                           traveler_index=index, traveler_total=total,
                           traveler_id=traveler_id)
-                rows = await asyncio.to_thread(
-                    scan_travelers, [traveler], self.db.data_dir)
+                rows, worker_error = await asyncio.to_thread(
+                    _scan_one_isolated, traveler, self.db.data_dir)
+                if worker_error:
+                    log_event("PASSPORT_READER", "SCAN_WORKER_FAILED", db=self.db,
+                              traveler_index=index, traveler_total=total,
+                              traveler_id=traveler_id, error=worker_error)
+                    rows = [{
+                        "traveler_id": traveler_id,
+                        "traveler_name": " ".join(str(traveler.get(k, "") or "").strip() for k in ("first_name", "last_name")).strip(),
+                        "source_file": "", "status": "ERROR",
+                        "review_required": True,
+                        "review_reason": worker_error,
+                    }]
                 self.rows.extend(rows)
                 log_event("PASSPORT_READER", "SCAN_PROGRESS_COMPLETE", db=self.db,
                           traveler_index=index, traveler_total=total,
