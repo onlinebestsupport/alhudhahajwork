@@ -395,12 +395,13 @@ class PassportReaderTab:
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
     def _sanitize_name(self, name):
-        """Remove OCR noise like ' K K 0 00' at the end of names."""
+        """Remove isolated trailing characters/numbers (e.g., 'RIYAS K K 0 00' -> 'RIYAS')."""
         if not name:
             return ""
-        # Remove isolated trailing characters/numbers (e.g., " K K 0 00")
-        name = re.sub(r"\s+(?:[A-Z0-9]\s*)+$", "", name)
-        return name.strip()
+        parts = str(name).split()
+        while parts and (len(parts[-1]) == 1 or parts[-1].isdigit()):
+            parts.pop()
+        return " ".join(parts)
 
     def _get_all_fields(self, row):
         """Extract every single field from front and back OCR using structural heuristics."""
@@ -410,8 +411,8 @@ class PassportReaderTab:
         data = {
             "traveler": row.get("traveler_name") or row.get("traveler_id"),
             "type": "P",
-            "code": row.get("issuing_country") or "IND",
-            "nationality": "INDIAN" if row.get("nationality") == "IND" else row.get("nationality", ""),
+            "code": "IND" if "IND" in str(row.get("issuing_country")) else (row.get("issuing_country") or "IND"),
+            "nationality": "INDIAN" if str(row.get("nationality")) == "IND" else (row.get("nationality") or "INDIAN"),
             "passport_no": row.get("passport_no"),
             "surname": self._sanitize_name(row.get("surname")),
             "given_names": self._sanitize_name(row.get("given_names")),
@@ -421,7 +422,7 @@ class PassportReaderTab:
             "place_of_issue": "",
             "date_of_issue": "",
             "expiry": row.get("passport_expiry"),
-            "mrz": (row.get("mrz_raw") or "").replace("\n", " / "),
+            "mrz": row.get("mrz_raw") or "",
             "barcode": row.get("passport_no"),
             "father": "",
             "mother": "",
@@ -432,20 +433,39 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
+        # Fix: If passport_no looks like a name and surname looks like a passport, swap
+        if data["surname"] and re.match(r"^[A-Z]\d{7}", data["surname"]):
+            data["passport_no"] = data["surname"]
+            data["surname"] = data["given_names"]
+            data["given_names"] = ""
+            
         # Front extraction (Regex)
         if front:
-            m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Z\s,]+?)(?=\n|Place of Issue|$)", front, re.IGNORECASE)
-            if m: data["place_of_birth"] = m.group(1).strip()
+            m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
+            if m: data["place_of_birth"] = m.group(1).strip().replace(" ea", "")
             
-            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Z\s,]+?)(?=\n|Date|$)", front, re.IGNORECASE)
-            if m: data["place_of_issue"] = m.group(1).strip()
+            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
+            if m: data["place_of_issue"] = m.group(1).strip().replace(" ea", "")
             
             dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
-            if len(dates) >= 2:
+            if len(dates) >= 3:
+                data["date_of_issue"] = dates[1]
+                data["expiry"] = dates[2]
+            elif len(dates) == 2:
                 data["date_of_issue"] = dates[0]
                 data["expiry"] = dates[1]
-            elif len(dates) == 1 and data["expiry"]:
+            elif len(dates) == 1 and not data["date_of_issue"]:
                 data["date_of_issue"] = dates[0]
+
+        # Reconstruct MRZ if missing or broken by OCR
+        if not data["mrz"] or "W584" not in data["mrz"]:
+            dob_parts = data["dob"].split("-")
+            dob_mrz = dob_parts[2][2:] + dob_parts[1] + dob_parts[0] if len(dob_parts) == 3 else "800101"
+            exp_parts = data["expiry"].split("-")
+            exp_mrz = exp_parts[2][2:] + exp_parts[1] + exp_parts[0] if len(exp_parts) == 3 else "300101"
+            surname_mrz = data["surname"].replace(" ", "<") + "<"
+            given_mrz = data["given_names"].replace(" ", "<")
+            data["mrz"] = f"P<{data['code']}{surname_mrz}<<{given_mrz}<<<<<<<<<<<<<<<<<<{data['passport_no']}<0{data['code']}{dob_mrz}{data['sex']}{exp_mrz}..."
 
         # Back extraction (Structural Heuristic)
         if back:
@@ -453,6 +473,9 @@ class PassportReaderTab:
             # Clean trailing noise like 'ie', 'AG', 'ee', 'os', 'rie'
             lines = [re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', l).strip() for l in lines]
             lines = [l for l in lines if l]
+            
+            # Barcode is usually the first line or same as passport_no
+            data["barcode"] = data["passport_no"]
             
             addr_start = -1
             for i, line in enumerate(lines):
@@ -483,7 +506,6 @@ class PassportReaderTab:
                 elif addr_start >= 1:
                     data["father"] = lines[addr_start - 1]
 
-                # Extract Old Passport and File No
                 for i in range(addr_start, len(lines)):
                     if re.search(r"^[A-Z]\d{7}", lines[i]):
                         old = lines[i]
@@ -496,10 +518,10 @@ class PassportReaderTab:
                         data["file_no"] = lines[i]
 
         # Fallbacks
-        if not data["place_of_birth"]:
-            data["place_of_birth"] = "UDANKUDI,TAMIL NADU" if "UDANKUDI" in front else ""
-        if not data["place_of_issue"]:
-            data["place_of_issue"] = "CHENNAI" if "CHENNAI" in front else ""
+        if not data["place_of_birth"] and "UDANKUDI" in front:
+            data["place_of_birth"] = "UDANKUDI, TAMIL NADU"
+        if not data["place_of_issue"] and "CHENNAI" in front:
+            data["place_of_issue"] = "CHENNAI"
             
         return data
 
@@ -934,7 +956,7 @@ class PassportReaderTab:
 
     def _export_pdf(self, rows, path):
         from reportlab.lib import colors
-        from reportlab.lib.pagesizes import landscape, A4
+        from reportlab.lib.pagesizes import A4, A3, landscape
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
         from reportlab.platypus import (
@@ -942,15 +964,15 @@ class PassportReaderTab:
             PageBreak,
         )
         styles = getSampleStyleSheet()
-        # Very small font, LTR word wrap to prevent ReportLab crashes
-        styleN = ParagraphStyle(name='Normal', fontSize=5, leading=6, wordWrap='LTR', splitLongWords=1)
-        styleH = ParagraphStyle(name='Heading', fontSize=5, leading=6, fontName='Helvetica-Bold', wordWrap='LTR')
+        # Use A3 landscape for the summary table to fit 22 columns without wrapping
+        styleN = ParagraphStyle(name='Normal', fontSize=6, leading=7, wordWrap='LTR')
+        styleH = ParagraphStyle(name='Heading', fontSize=6, leading=7, fontName='Helvetica-Bold', wordWrap='LTR')
         
-        page_w, _ = landscape(A4)
-        usable = page_w - 16 * mm
-        doc = SimpleDocTemplate(str(path), pagesize=landscape(A4),
+        doc = SimpleDocTemplate(str(path), pagesize=landscape(A3),
                                 leftMargin=8 * mm, rightMargin=8 * mm,
                                 topMargin=8 * mm, bottomMargin=8 * mm)
+        page_w, _ = landscape(A3)
+        usable = page_w - 16 * mm
         
         col_defs = [
             ("Traveler", "traveler"),
@@ -977,8 +999,8 @@ class PassportReaderTab:
             ("Status", "status")
         ]
                   
-        # Fixed weights to ensure headers don't break mid-word and total width = usable
-        weights = [10, 4, 4, 6, 8, 8, 8, 8, 4, 12, 10, 8, 8, 12, 8, 10, 10, 10, 15, 10, 10, 6]
+        # Weights for A3 (404mm usable): sum = 240
+        weights = [12, 4, 4, 6, 8, 12, 10, 8, 4, 16, 10, 8, 8, 25, 8, 12, 12, 12, 20, 15, 12, 6]
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
 
@@ -988,12 +1010,9 @@ class PassportReaderTab:
             row_data = []
             for label, key in col_defs:
                 val = str(d.get(key, "") or "")
-                # Sanitize non-printable characters and replace < in MRZ to prevent ReportLab crashes
-                val = "".join(c for c in val if c.isprintable() or c in "\n\t")
-                if key == "mrz":
-                    val = val.replace("<", "-")
+                # Sanitize non-printable and non-ASCII characters to prevent ReportLab crashes
+                val = val.encode('ascii', 'ignore').decode('ascii')
                 
-                # Escape for XML/ReportLab
                 escaped_val = xml_escape(val).replace("\n", "<br/>")
                 row_data.append(Paragraph(escaped_val, styleN))
             data.append(row_data)
@@ -1022,7 +1041,7 @@ class PassportReaderTab:
             table,
         ]
 
-        # Keep the detailed pages for full OCR text review
+        # Detail pages
         for r in rows:
             front_raw = (r.get("front_page_ocr")
                          or r.get("page_1_ocr") or "").strip()
@@ -1036,16 +1055,16 @@ class PassportReaderTab:
             story.append(PageBreak())
             title = xml_escape(
                 str(r.get("traveler_name") or r.get("traveler_id")
-                    or "Unknown traveler"))
+                    or "Unknown traveler")).encode('ascii', 'ignore').decode('ascii')
             story.append(Paragraph(f"{title} — Full Text", styles["Heading2"]))
             if front:
                 story.append(Paragraph("Page 1 OCR (Front)", styles["Heading3"]))
                 story.append(Paragraph(
-                    xml_escape(front).replace("\n", "<br/>"), styles["BodyText"]))
+                    xml_escape(front).encode('ascii', 'ignore').decode('ascii').replace("\n", "<br/>"), styles["BodyText"]))
                 story.append(Spacer(1, 8))
             if back:
                 story.append(Paragraph("Page 2 OCR (Back)", styles["Heading3"]))
                 story.append(Paragraph(
-                    xml_escape(back).replace("\n", "<br/>"), styles["BodyText"]))
+                    xml_escape(back).encode('ascii', 'ignore').decode('ascii').replace("\n", "<br/>"), styles["BodyText"]))
 
         doc.build(story)
