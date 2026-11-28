@@ -119,6 +119,9 @@ def _detect_platform() -> str:
 PLATFORM = _detect_platform()
 log_event("BOOT", "APPLICATION_SOURCE", platform=PLATFORM,
           build=APP_BUILD_ID, entrypoint=__file__)
+log_event("BOOT", "OCR_DEPENDENCY_CHECK",
+          tesseract_path=shutil.which("tesseract"),
+          pdfinfo_path=shutil.which("pdfinfo"))
 
 
 def _is_https_request(request: Request) -> bool:
