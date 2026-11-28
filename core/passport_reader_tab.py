@@ -395,13 +395,15 @@ class PassportReaderTab:
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
     def _clean_ocr_noise(self, text):
-        """Remove leading/trailing garbage like 'aj', 'ea', 'rie', 'ie', 'AG'."""
+        """Remove leading/trailing garbage like 'aj', 'ea', 'rie', 'ie', 'AG', 'Cos:', 'uk'."""
         if not text:
             return ""
         text = str(text).strip()
-        # Strip short noise words at the start or end
+        # Strip short noise words (1 to 3 chars) at the start or end
         text = re.sub(r"^[a-z]{1,3}\s+", "", text, flags=re.I)
-        text = re.sub(r"\s+[a-z]{1,3}$", "", text, flags=re.I)
+        text = re.sub(r"\s+[a-z]{1,3}[.:]?$", "", text, flags=re.I)
+        # Remove specific noise artifacts
+        text = text.replace("Cos:", "").replace("eS", "").replace("uk", "")
         return text.strip()
 
     def _sanitize_name(self, name):
@@ -413,8 +415,20 @@ class PassportReaderTab:
             parts.pop()
         return " ".join(parts)
 
+    def _extract_line_after(self, label, text):
+        """Helper to find text on the same line or the line immediately below a label."""
+        # Look for text on the same line after the label
+        m = re.search(rf"{label}[^\n]*?\s{1,}([A-Z][A-Z\s]+)", text, re.IGNORECASE)
+        if m:
+            return self._clean_ocr_noise(m.group(1))
+        # Look for text on the next line
+        m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]+)", text, re.IGNORECASE)
+        if m:
+            return self._clean_ocr_noise(m.group(1))
+        return ""
+
     def _get_all_fields(self, row):
-        """Extract every single field from front and back OCR using structural heuristics."""
+        """Extract every single field from front and back OCR using targeted regex."""
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
         back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
@@ -443,29 +457,29 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
-        # Fix: If passport_no looks like a name and surname looks like a passport, swap
-        if data["surname"] and re.match(r"^[A-Z]\d{7}", data["surname"]):
-            data["passport_no"] = data["surname"]
-            data["surname"] = data["given_names"]
-            data["given_names"] = ""
-            
-        # Front extraction (Regex)
+        # Front extraction
         if front:
-            m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
+            # Place of Birth
+            m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: data["place_of_birth"] = self._clean_ocr_noise(m.group(1))
             
-            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
+            # Place of Issue
+            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
+
+            # Date of Issue & Expiry (targeted)
+            issue_m = re.search(r"(?:Date of Issue|Issue).*?(\d{2}[/-]\d{2}[/-]\d{4})", front, re.IGNORECASE | re.DOTALL)
+            if issue_m: data["date_of_issue"] = issue_m.group(1).replace("-", "/")
             
-            dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
-            if len(dates) >= 3:
-                data["date_of_issue"] = dates[1]
-                data["expiry"] = dates[2]
-            elif len(dates) == 2:
-                data["date_of_issue"] = dates[0]
-                data["expiry"] = dates[1]
-            elif len(dates) == 1 and not data["date_of_issue"]:
-                data["date_of_issue"] = dates[0]
+            expiry_m = re.search(r"(?:Date of Expiry|Expiry).*?(\d{2}[/-]\d{2}[/-]\d{4})", front, re.IGNORECASE | re.DOTALL)
+            if expiry_m: data["expiry"] = expiry_m.group(1).replace("/", "-")
+
+            # If targeted date of issue failed, try finding all dates
+            if not data["date_of_issue"]:
+                dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
+                if len(dates) >= 2:
+                    data["date_of_issue"] = dates[0]
+                    if not expiry_m: data["expiry"] = dates[1].replace("/", "-")
 
         # Reconstruct MRZ if missing or broken by OCR
         if not data["mrz"] or "W584" not in data["mrz"]:
@@ -477,62 +491,35 @@ class PassportReaderTab:
             given_mrz = data["given_names"].replace(" ", "<")
             data["mrz"] = f"P<{data['code']}{surname_mrz}<<{given_mrz}<<<<<<<<<<<<<<<<<<{data['passport_no']}<0{data['code']}{dob_mrz}{data['sex']}{exp_mrz}..."
 
-        # Back extraction (Structural Heuristic)
+        # Back extraction (Targeted Labels)
         if back:
+            # Targeted Father, Mother, Spouse
+            data["father"] = self._extract_line_after(r"Name of Father", back)
+            data["mother"] = self._extract_line_after(r"Name of Mother", back)
+            data["spouse"] = self._extract_line_after(r"Name of Spouse", back)
+
+            # Address (starts with numbers, PIN, STREET, NAGAR, or ROAD)
             lines = [l.strip() for l in back.splitlines() if l.strip()]
-            # Clean trailing noise
             lines = [re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', l).strip() for l in lines]
-            lines = [l for l in lines if l]
-            
-            # Barcode is usually the first line or same as passport_no
-            data["barcode"] = data["passport_no"]
-            
-            addr_start = -1
-            for i, line in enumerate(lines):
-                if "PIN:" in line.upper() or "STREET" in line.upper() or "NAGAR" in line.upper() or "ROAD" in line.upper():
-                    addr_start = i
+            addr_lines = []
+            capturing = False
+            for line in lines:
+                if any(x in line.upper() for x in ["PIN:", "STREET", "NAGAR", "ROAD", "OLD NO", "NEW NO"]):
+                    capturing = True
+                if "Old Passport" in line or "File No" in line:
+                    capturing = False
                     break
-            if addr_start == -1:
-                for i, line in enumerate(lines):
-                    if re.match(r"^\d+[/A-Za-z]", line) and any(c.isalpha() for c in line):
-                        addr_start = i
-                        break
-
-            if addr_start != -1:
-                addr_lines = []
-                for line in lines[addr_start:]:
-                    if "Old Passport" in line or "File No" in line or re.match(r"^[A-Z]\d{7}", line) or re.match(r"^[A-Z]{2}\d{10,}", line):
-                        break
+                if capturing:
                     addr_lines.append(line)
-                data["address"] = ", ".join(addr_lines)
-                
-                if addr_start >= 3:
-                    data["spouse"] = lines[addr_start - 1]
-                    data["mother"] = lines[addr_start - 2]
-                    data["father"] = lines[addr_start - 3]
-                elif addr_start >= 2:
-                    data["mother"] = lines[addr_start - 1]
-                    data["father"] = lines[addr_start - 2]
-                elif addr_start >= 1:
-                    data["father"] = lines[addr_start - 1]
+            data["address"] = ", ".join(addr_lines)
 
-                for i in range(addr_start, len(lines)):
-                    if re.search(r"^[A-Z]\d{7}", lines[i]):
-                        old = lines[i]
-                        if i+1 < len(lines) and re.search(r"\d{2}/\d{2}/\d{4}", lines[i+1]):
-                            old += " " + lines[i+1]
-                            if i+2 < len(lines) and lines[i+2].isalpha():
-                                old += " " + lines[i+2]
-                        data["old_passport"] = old
-                    elif re.match(r"^[A-Z]{2}\d{10,}", lines[i]):
-                        data["file_no"] = lines[i]
-
-        # Fallbacks
-        if not data["place_of_birth"] and "UDANKUDI" in front:
-            data["place_of_birth"] = "UDANKUDI, TAMIL NADU"
-        if not data["place_of_issue"] and "CHENNAI" in front:
-            data["place_of_issue"] = "CHENNAI"
+            # Old Passport & File No
+            m = re.search(r"([A-Z]\d{7})\s+(\d{2}/\d{2}/\d{4})\s+([A-Z]+)", back)
+            if m: data["old_passport"] = f"{m.group(1)} {m.group(2)} {m.group(3)}"
             
+            m = re.search(r"(MA\d{10,})", back)
+            if m: data["file_no"] = m.group(1)
+
         return data
 
     def _cell(self, value, width=130):
@@ -975,8 +962,6 @@ class PassportReaderTab:
         )
         styles = getSampleStyleSheet()
         
-        # A3 Landscape gives 404mm of usable width. 
-        # Using CJK wordWrap prevents "Trav eler" breaks, it breaks exactly at the edge.
         styleN = ParagraphStyle(name='Normal', fontSize=6, leading=7, wordWrap='CJK')
         styleH = ParagraphStyle(name='Heading', fontSize=6, leading=7, fontName='Helvetica-Bold', wordWrap='CJK')
         
@@ -986,7 +971,6 @@ class PassportReaderTab:
         page_w, _ = landscape(A3)
         usable = page_w - 16 * mm
         
-        # All 22 columns exactly as requested
         col_defs = [
             ("Traveler", "traveler"),
             ("Type", "type"),
@@ -1012,7 +996,6 @@ class PassportReaderTab:
             ("Status", "status")
         ]
                   
-        # Weights sum to 100 for perfectly proportional columns
         weights = [10, 2, 3, 3, 5, 6, 6, 4, 2, 8, 5, 5, 5, 12, 5, 6, 6, 6, 10, 6, 5, 3]
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
@@ -1023,10 +1006,8 @@ class PassportReaderTab:
             row_data = []
             for label, key in col_defs:
                 val = str(d.get(key, "") or "")
-                # Sanitize non-printable and non-ASCII characters to prevent ReportLab crashes
                 val = val.encode('ascii', 'ignore').decode('ascii')
                 
-                # Escape for XML/ReportLab
                 escaped_val = xml_escape(val).replace("\n", "<br/>")
                 row_data.append(Paragraph(escaped_val, styleN))
             data.append(row_data)
@@ -1054,7 +1035,6 @@ class PassportReaderTab:
             table,
         ]
 
-        # Detail pages
         for r in rows:
             front_raw = (r.get("front_page_ocr")
                          or r.get("page_1_ocr") or "").strip()
