@@ -1,6 +1,6 @@
 # Alhudha Haj Travel System — Railway OCR-capable runtime
 # Install system executables explicitly because pytesseract alone is only a Python wrapper.
-FROM python:3.13-slim
+FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -13,7 +13,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
-    && pip install -r /app/requirements.txt
+    && pip install --prefer-binary -r /app/requirements.txt
 
 COPY . /app
 
