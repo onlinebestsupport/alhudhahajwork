@@ -7,6 +7,7 @@
 #   2.2  Responsive controls and table rendering
 #   2.3  Read-only scan action and status reporting
 #   2.4  CSV/Excel/PDF export actions
+#   2.5  Mobile swipe-safe result cards
 # ===============================================================================
 from __future__ import annotations
 
@@ -168,10 +169,64 @@ class PassportReaderTab:
     def _cell(self, value, width=130):
         return ft.Container(content=ft.Text(str(value or ""), size=10, selectable=True, max_lines=3, overflow=ft.TextOverflow.ELLIPSIS), width=width, padding=4)
 
-    # [2.7] _render — render page coverage and validation rows
+    # [2.6a] _is_mobile — choose a swipe-safe result layout
+    def _is_mobile(self):
+        try:
+            width = float(getattr(self.page, "width", 0) or 0)
+        except (TypeError, ValueError):
+            width = 0
+        platform = str(getattr(self.page, "platform", "")).lower()
+        return width == 0 or width < 700 or any(
+            token in platform for token in ("ios", "android", "mobile"))
+
+    # [2.6b] _mobile_card — render all passport details vertically
+    def _mobile_card(self, row):
+        status = str(row.get("status", ""))
+        color = "#166534" if status == "VALIDATED" else "#b45309" if status == "REVIEW" else "#b91c1c"
+        values = [
+            ("Traveler", row.get("traveler_name") or row.get("traveler_id")),
+            ("Passport", row.get("passport_no")),
+            ("Name from MRZ", f"{row.get('surname', '')} {row.get('given_names', '')}".strip()),
+            ("Date of birth", row.get("date_of_birth")),
+            ("Expiry", row.get("passport_expiry")),
+            ("Nationality", row.get("nationality")),
+            ("Pages read", row.get("pages_read")),
+            ("Page 1", row.get("page_1_status")),
+            ("Last page", row.get("last_page_status")),
+            ("Source file", Path(str(row.get("source_file", "")).replace("\\", "/")).name),
+            ("Review reason", row.get("review_reason")),
+        ]
+        details = [
+            ft.Row([
+                ft.Container(content=ft.Text(label, size=10, weight=ft.FontWeight.BOLD), width=105),
+                ft.Text(str(value or "—"), size=10, selectable=True, expand=True),
+            ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
+            for label, value in values
+        ]
+        details.insert(0, ft.Text(status or "UNKNOWN", size=13,
+                                  weight=ft.FontWeight.BOLD, color=color))
+        return ft.Container(content=ft.Column(details, spacing=4),
+                            bgcolor="#f8fafc", border=ft.Border.all(1, "#cbd5e1"),
+                            border_radius=8, padding=8)
+
+    # [2.7] _render — render swipe-safe mobile cards or desktop table
     def _render(self):
         self.table.controls.clear()
         headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB", "Expiry", "Nationality", "Pages read", "Page 1", "Last page", "File", "Status", "Review reason"]
+        if self._is_mobile():
+            log_event("PASSPORT_READER", "MOBILE_RESULTS_RENDER", db=self.db,
+                      row_count=len(self.rows))
+            self.table.controls.append(ft.Text(
+                "Passport results — scroll vertically; horizontal swipes are disabled in this view.",
+                size=10, color="#475569"))
+            self.table.controls.extend(self._mobile_card(row) for row in self.rows)
+            try:
+                self.table.update()
+            except Exception:
+                pass
+            return
+        log_event("PASSPORT_READER", "DESKTOP_RESULTS_RENDER", db=self.db,
+                  row_count=len(self.rows))
         self.table.controls.append(ft.Row([self._cell(h, 135) for h in headers], wrap=False, scroll=ft.ScrollMode.AUTO))
         for r in self.rows:
             status = r.get("status", "")
