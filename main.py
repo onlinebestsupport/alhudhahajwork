@@ -292,6 +292,7 @@ async def _save_session(page, user, max_retries=3):
     uid = user.get("id")
     if not uid:
         return
+    connection_store_saved = False
     try:
         page.session.store.set("admin_user_id", str(uid))
         page.session.store.set("admin_username",
@@ -299,22 +300,25 @@ async def _save_session(page, user, max_retries=3):
         page.session.store.set("admin_role",
                                str(user.get("role", "")))
         print(f"[SESSION] Saved to page.session.store: {uid}")
-        return
+        connection_store_saved = True
     except Exception as ex:
         print(f"[SESSION] page.session.store write failed: {ex}")
-    for attempt in range(max_retries):
-        try:
-            storage = getattr(page, "client_storage", None)
-            if storage is None:
+    # Also persist outside the current WebSocket. page.session.store is lost
+    # when Railway restarts the container or the mobile browser reconnects.
+    storage = getattr(page, "client_storage", None)
+    if storage is not None:
+        for attempt in range(max_retries):
+            try:
+                result = storage.set(SESSION_KEY, str(uid))
+                if asyncio.iscoroutine(result):
+                    await result
+                print(f"[SESSION] Saved via client_storage: {uid}")
                 return
-            result = storage.set(SESSION_KEY, str(uid))
-            if asyncio.iscoroutine(result):
-                await result
-            print(f"[SESSION] Saved via client_storage: {uid}")
-            return
-        except Exception as e:
-            print(f"[SESSION] client_storage attempt {attempt + 1}: {e}")
-            await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"[SESSION] client_storage attempt {attempt + 1}: {e}")
+                await asyncio.sleep(0.3)
+    if not connection_store_saved:
+        print("[SESSION] WARNING: no session store was available")
 
 
 async def _load_session(page, max_retries=4):
@@ -327,12 +331,7 @@ async def _load_session(page, max_retries=4):
                     print(f"[SESSION] Restored from page.session.store: {uid}")
                     return user
                 else:
-                    print(f"[SESSION] uid={uid} not found, clearing")
-                    try:
-                        page.session.store.remove("admin_user_id")
-                    except Exception:
-                        pass
-                    return None
+                    print(f"[SESSION] uid={uid} not found in database; trying client storage")
     except Exception as ex:
         print(f"[SESSION] page.session.store read failed: {ex}")
     for attempt in range(max_retries):
