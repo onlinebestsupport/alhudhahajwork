@@ -249,10 +249,14 @@ class MainWindowView:
         if not self.admin_tab_views or not (0 <= index < len(self.admin_tab_views)):
             return
         self.admin_tab_content.content = self.admin_tab_views[index]
-        if self.admin_tab_selector is not None:
-            self.admin_tab_selector.value = self.admin_tab_labels[index]
+        for i, button in enumerate(self.admin_tab_buttons):
             try:
-                self.admin_tab_selector.update()
+                button.style = ft.ButtonStyle(
+                    color=ft.Colors.BLUE_900 if i == index else ft.Colors.BLUE_GREY_700,
+                    bgcolor=ft.Colors.BLUE_50 if i == index else ft.Colors.WHITE,
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=8),
+                )
+                button.update()
             except Exception:
                 pass
         try:
@@ -601,7 +605,8 @@ class MainWindowView:
         # Do not use ft.Tabs/ft.TabBarView here. Flet's TabBarView treats a
         # horizontal touch that starts inside a table as tab navigation. On
         # mobile Safari/Chrome that can expose the public page or reconnect to
-        # login. A dropdown keeps navigation compact and swipe-neutral.
+        # login. A scrollable header row preserves the earlier visual design,
+        # while the content host below remains swipe-neutral.
         self.admin_tab_labels = [label for label, _, _ in tab_labels]
         self.admin_tab_views = [
             ft.Container(content=view, expand=True, padding=0)
@@ -611,19 +616,21 @@ class MainWindowView:
         self.admin_tab_content = ft.Container(
             content=self.admin_tab_views[0], expand=True, padding=0)
         self.admin_tab_buttons = []
-        self.admin_tab_selector = ft.Dropdown(
-            label="Admin section",
-            options=[ft.dropdown.Option(key=label, text=label)
-                     for label in self.admin_tab_labels],
-            value=self.admin_tab_labels[0],
-            dense=True,
-            expand=True,
+        for index, (label, _, _) in enumerate(tab_labels):
+            button = ft.TextButton(
+                content=ft.Text(label, size=11),
+                on_click=lambda e, i=index: self._select_admin_tab(i),
+            )
+            self.admin_tab_buttons.append(button)
+        tab_bar = ft.Container(
+            content=ft.Row(self.admin_tab_buttons, spacing=2, tight=True,
+                           scroll=ft.ScrollMode.AUTO),
+            height=48, bgcolor=ft.Colors.WHITE,
+            border=ft.Border(bottom=ft.BorderSide(1, ft.Colors.GREY_300)),
         )
-        self.admin_tab_selector.on_change = lambda e: self._select_admin_tab(
-            self.admin_tab_labels.index(self.admin_tab_selector.value))
         self.tabs_control = ft.Container(
             content=ft.Column([
-                self.admin_tab_selector,
+                tab_bar,
                 self.admin_tab_content,
             ], expand=True, spacing=0),
             expand=True,
