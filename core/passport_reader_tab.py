@@ -37,7 +37,7 @@ _SUBTAB_ITEMS = [
 ]
 
 
-# [2.0] _scan_worker — isolated traveler scan
+# [2.0] _scan_worker
 def _scan_worker(traveler, data_dir, result_queue):
     try:
         result_queue.put({"ok": True,
@@ -56,7 +56,6 @@ def _folder_worker(folder, result_queue):
 
 
 def _run_isolated(target, args, timeout_seconds):
-    """Return (rows, error) from a disposable process with safe queue drain."""
     context_name = "spawn" if os.name == "nt" else "fork"
     context = multiprocessing.get_context(context_name)
     result_queue = context.Queue(maxsize=1)
@@ -107,6 +106,7 @@ class PassportReaderTab:
     # [2.2] __init__
     def __init__(self, page: ft.Page, db, current_user):
         self.page, self.db, self.current_user = page, db, current_user
+        log_event("PASSPORT_READER", "INIT_START", db=self.db)
         self.rows = []
         self.local_rows = []
         self.travelers = []
@@ -142,6 +142,7 @@ class PassportReaderTab:
             hint_text="e.g. /app/data/passport_import or C:/passports",
             dense=True, expand=True)
         self.root = self._build()
+        log_event("PASSPORT_READER", "INIT_COMPLETE", db=self.db)
 
     # [2.3] build
     def build(self):
@@ -215,8 +216,6 @@ class PassportReaderTab:
                 ("id", "first_name", "last_name", "passport_no", "mobile")
             ).lower()]
         self._set_traveler_options(rows)
-        # If filtering leaves a single candidate, auto-select it so
-        # "search → Read Selected" works without an explicit tap.
         if len(rows) == 1:
             only_id = str(rows[0].get("id", "")).strip()
             if only_id:
@@ -240,7 +239,7 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
                   traveler_id=val.strip())
 
-    # [2.4d] _set_subtab — switch visible panel and highlight the button
+    # [2.4d] _set_subtab — swap visible panel and restyle container buttons
     def _set_subtab(self, key):
         if self.subtab_content is None:
             return
@@ -250,33 +249,39 @@ class PassportReaderTab:
         if key not in panels or panels[key] is None:
             key = "reader"
         self._active_subtab = key
-        self.subtab_content.content = panels[key]
         try:
+            self.subtab_content.content = panels[key]
             self.subtab_content.update()
         except Exception:
             pass
+        self._restyle_subtab_buttons()
+        log_event("PASSPORT_READER", "SUBTAB_SELECTED", db=self.db,
+                  subtab=key)
+
+    def _restyle_subtab_buttons(self):
         for k, btn in self._subtab_buttons.items():
             try:
-                btn.bgcolor = "#2563eb" if k == key else None
-                btn.content.color = (ft.Colors.WHITE if k == key
-                                     else "#1e3a8a")
+                is_active = (k == self._active_subtab)
+                btn.bgcolor = "#2563eb" if is_active else "#e2e8f0"
+                if isinstance(btn.content, ft.Text):
+                    btn.content.color = "#ffffff" if is_active else "#1e3a8a"
                 btn.update()
             except Exception:
                 pass
-        log_event("PASSPORT_READER", "SUBTAB_SELECTED", db=self.db,
-                  subtab=key)
 
     # [2.4e] _button
     def _button(self, label, icon, color, handler):
         return ft.Button(
             content=ft.Row([
-                ft.Icon(icon, size=15, color=ft.Colors.WHITE),
-                ft.Text(label, size=11, color=ft.Colors.WHITE),
+                ft.Icon(icon, size=15, color="#ffffff"),
+                ft.Text(label, size=11, color="#ffffff"),
             ], spacing=5, tight=True),
             on_click=handler, height=38, bgcolor=color)
 
-    # [2.5] _build — visible sub-tab strip replaces the dropdown
+    # [2.5] _build — visible sub-tab strip built from Containers only
     def _build(self):
+        log_event("PASSPORT_READER", "BUILD_START", db=self.db)
+
         header = ft.Text("🛂 Passport Reader", size=18,
                          weight=ft.FontWeight.BOLD, color="#1e3a8a")
         description = ft.Text(
@@ -289,6 +294,7 @@ class PassportReaderTab:
             ft.Container(content=self.traveler_dropdown,
                          col={"xs": 12, "md": 7}),
         ], spacing=8, run_spacing=8)
+
         self._reader_panel = ft.Column([
             description,
             selector_row,
@@ -326,39 +332,34 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-        # Visible sub-tab strip — all three are always on screen.
+        # Build the always-visible sub-tab strip from Containers.
         for key, label in _SUBTAB_ITEMS:
-            btn = ft.TextButton(
-                content=ft.Text(label, size=12,
-                                color="#1e3a8a",
+            chip = ft.Container(
+                content=ft.Text(label, size=12, color="#1e3a8a",
                                 weight=ft.FontWeight.BOLD),
                 on_click=lambda e, k=key: self._set_subtab(k),
-                style=ft.ButtonStyle(
-                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
-                ),
+                bgcolor="#e2e8f0",
+                border_radius=6,
+                padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                data=key,
             )
-            self._subtab_buttons[key] = btn
-        # Highlight the initial tab
-        try:
-            self._subtab_buttons["reader"].bgcolor = "#2563eb"
-            self._subtab_buttons["reader"].content.color = ft.Colors.WHITE
-        except Exception:
-            pass
+            self._subtab_buttons[key] = chip
         subtab_row = ft.Row(list(self._subtab_buttons.values()),
-                            wrap=True, spacing=4)
+                            wrap=True, spacing=6)
 
         self.subtab_content = ft.Container(content=self._reader_panel,
                                             expand=True)
-        return ft.Container(content=ft.Column([
+        self._active_subtab = "reader"
+        self._restyle_subtab_buttons()
+
+        root = ft.Container(content=ft.Column([
             ft.Row([header], wrap=True),
-            ft.Container(content=subtab_row,
-                         bgcolor="#f1f5f9",
-                         border_radius=8,
-                         padding=ft.padding.symmetric(horizontal=6,
-                                                       vertical=4)),
+            subtab_row,
             self.subtab_content,
         ], spacing=8, scroll=ft.ScrollMode.AUTO),
             padding=12, bgcolor="#ffffff", expand=True)
+        log_event("PASSPORT_READER", "BUILD_COMPLETE", db=self.db)
+        return root
 
     def _build_local_panel(self):
         return ft.Column([
@@ -375,8 +376,7 @@ class PassportReaderTab:
                              col={"xs": 12, "md": 9}),
                 ft.Container(
                     content=self._button("Verify Files",
-                                         self._icon("CHECK_CIRCLE",
-                                                    "CHECK"),
+                                         self._icon("CHECK_CIRCLE", "CHECK"),
                                          "#0891b2",
                                          self.verify_local_folder),
                     col={"xs": 12, "md": 3}),
@@ -487,8 +487,6 @@ class PassportReaderTab:
         table.controls.append(ft.Row([self._cell(h, 135) for h in headers],
                                      wrap=False, scroll=ft.ScrollMode.AUTO))
         for r in rows:
-            status = str(r.get("status", ""))
-            color = _STATUS_COLOR.get(status, "#b91c1c")
             values = [
                 r.get("traveler_name") or r.get("traveler_id"),
                 r.get("passport_no"),
@@ -500,7 +498,7 @@ class PassportReaderTab:
                 r.get("front_status") or r.get("page_1_status"),
                 r.get("back_status") or r.get("last_page_status"),
                 Path(r.get("source_file", "")).name,
-                status,
+                r.get("status"),
                 r.get("review_reason"),
             ]
             table.controls.append(ft.Row(
@@ -515,19 +513,15 @@ class PassportReaderTab:
     def _render(self):
         self._render_rows(self.rows, self.table)
 
-    # [2.8] scan — Read Selected / Read All with full selection logging
+    # [2.8] scan — read selected or all travelers
     def scan(self, e=None, all_travelers=False):
-        # Log every click first so failures are always visible in the log.
         log_event("PASSPORT_READER", "SCAN_CLICKED", db=self.db,
                   all_travelers=all_travelers,
                   dropdown_value=str(self.traveler_dropdown.value or ""))
-
         if self._scan_running:
             self.status.value = "A passport scan is already running. Please wait."
             self._status_update()
             return
-
-        # Resolve the selection from every plausible source.
         selected_id = ""
         try:
             if e is not None and hasattr(e, "control"):
@@ -538,30 +532,22 @@ class PassportReaderTab:
             pass
         if not selected_id:
             selected_id = str(self.traveler_dropdown.value or "").strip()
-
-        # Auto-select the only visible option when the user hasn't tapped it.
         if not all_travelers and not selected_id:
             opts = getattr(self.traveler_dropdown, "options", []) or []
             if len(opts) == 1:
                 selected_id = str(getattr(opts[0], "key", "") or "").strip()
                 if selected_id:
                     self.traveler_dropdown.value = selected_id
-                    log_event("PASSPORT_READER",
-                              "SCAN_AUTO_SELECTED_ONLY_OPTION",
-                              db=self.db, selected_id=selected_id)
-
         log_event("PASSPORT_READER", "SCAN_SELECTION_RESOLVED",
                   db=self.db, selected_id=selected_id,
                   all_travelers=all_travelers,
                   known_ids_count=len(self._traveler_by_id))
-
         if not all_travelers and not selected_id:
             self.status.value = "Select a traveler from the dropdown before reading."
             self._status_update()
             log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION",
                       db=self.db)
             return
-
         if all_travelers:
             targets = self.travelers
         else:
@@ -570,22 +556,18 @@ class PassportReaderTab:
                 log_event("PASSPORT_READER", "SCAN_SELECTION_MISSING",
                           db=self.db, selected_id=selected_id,
                           sample_ids=list(self._traveler_by_id.keys())[:5])
-                self.status.value = (
-                    f"Traveler '{selected_id}' not found. "
-                    "Click Refresh and try again.")
+                self.status.value = (f"Traveler '{selected_id}' not found. "
+                                     "Click Refresh and try again.")
                 self._status_update()
                 return
             targets = [traveler]
-
         if not targets:
             self.status.value = "No travelers available to read."
             self._status_update()
             return
-
         self._scan_running = True
-        self.status.value = (
-            f"Reading {len(targets)} traveler passport folder(s) "
-            "in the background…")
+        self.status.value = (f"Reading {len(targets)} traveler passport "
+                             "folder(s) in the background…")
         self._status_update()
         if all_travelers:
             self._set_subtab("results")
@@ -696,8 +678,8 @@ class PassportReaderTab:
     # [2.9a] scan_local_folder
     def scan_local_folder(self, e=None):
         if self._local_scan_running:
-            self.local_status.value = (
-                "A folder read is already running. Please wait.")
+            self.local_status.value = ("A folder read is already running. "
+                                       "Please wait.")
             self._local_status_update()
             return
         folder = str(self.local_folder_path.value or "").strip()
