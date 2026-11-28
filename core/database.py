@@ -87,6 +87,7 @@ _ACTIVE_BATCH_STATUSES = {'active', 'open', 'closing soon'}
 
 PERMISSION_CATALOG = [
     "view_dashboard", "manage_travelers", "manage_batches",
+    "manage_passport_reader",
     "manage_payments", "manage_invoices", "manage_receipts",
     "view_reports", "manage_users", "manage_frontpage",
     "manage_backups", "manage_data_admin", "manage_system_tests",
@@ -96,6 +97,7 @@ ROLE_DEFAULT_PERMISSIONS = {
     "super_admin": set(PERMISSION_CATALOG),
     "admin":       set(p for p in PERMISSION_CATALOG if p != "manage_users"),
     "staff":       {"view_dashboard", "manage_travelers",
+                    "manage_passport_reader",
                     "manage_payments", "manage_receipts", "view_reports"},
     "viewer":      {"view_dashboard", "view_reports"},
 }
