@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import asyncio
 import os
 import traceback
 from datetime import datetime
@@ -38,6 +39,25 @@ class PassportReaderTab:
     def __init__(self, page: ft.Page, db, current_user):
         self.page, self.db, self.current_user = page, db, current_user
         self.rows = []
+        self.travelers = []
+        self._traveler_by_id = {}
+        self._scan_running = False
+        self.traveler_search = ft.TextField(
+            label="Search traveler / passport / mobile",
+            hint_text="Type a name, ID, passport number, or mobile",
+            dense=True,
+            on_change=self._filter_travelers,
+        )
+        self.traveler_dropdown = ft.Dropdown(
+            label="Traveler passport folder",
+            hint_text="Select one traveler to read",
+            options=[],
+            dense=True,
+            expand=True,
+        )
+        # Flet 1.1.x does not accept on_change in Dropdown.__init__.
+        self.traveler_dropdown.on_change = self._selected_traveler_changed
+        self._load_traveler_choices()
         self.table = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
         self.status = ft.Text("No scan run yet. Results are read-only until reviewed.", size=11, color="#475569")
         self.root = self._build()
@@ -54,6 +74,71 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "REFRESH_VISIBLE_ONLY", db=self.db,
                   row_count=len(self.rows))
 
+    # [2.4aa] _status_update — update safely before/after page attachment
+    def _status_update(self):
+        try:
+            self.status.update()
+        except Exception as ex:
+            log_event("PASSPORT_READER", "STATUS_UPDATE_SKIPPED",
+                      db=self.db, error_type=type(ex).__name__)
+
+    # [2.4b] _load_traveler_choices — load searchable read-only selector data
+    def _load_traveler_choices(self):
+        try:
+            raw = self.db.get_travelers()
+            self.travelers = [dict(row) for row in raw]
+            self._traveler_by_id = {
+                str(row.get("id", "")).strip(): row for row in self.travelers
+                if str(row.get("id", "")).strip()
+            }
+            self._set_traveler_options(self.travelers)
+            log_event("PASSPORT_READER", "TRAVELER_CHOICES_LOADED",
+                      db=self.db, traveler_count=len(self.travelers))
+        except Exception as ex:
+            log_exception("PASSPORT_READER", "TRAVELER_CHOICES_FAILED", ex,
+                          db=self.db)
+
+    # [2.4c] _traveler_label — produce a useful mobile dropdown label
+    def _traveler_label(self, row):
+        traveler_id = str(row.get("id", "")).strip()
+        name = " ".join(str(row.get(key, "") or "").strip()
+                        for key in ("first_name", "last_name")).strip()
+        passport = str(row.get("passport_no", "") or "").strip()
+        return " · ".join(part for part in (name, passport, traveler_id)
+                          if part) or traveler_id
+
+    # [2.4d] _set_traveler_options — update dropdown without starting a scan
+    def _set_traveler_options(self, rows):
+        self.traveler_dropdown.options = [
+            ft.dropdown.Option(
+                key=str(row.get("id", "")).strip(),
+                text=self._traveler_label(row))
+            for row in rows if str(row.get("id", "")).strip()
+        ]
+        try:
+            self.traveler_dropdown.update()
+        except Exception:
+            pass
+
+    # [2.4e] _filter_travelers — filter by ID, name, passport, or mobile
+    def _filter_travelers(self, e=None):
+        needle = str(self.traveler_search.value or "").strip().lower()
+        if not needle:
+            rows = self.travelers
+        else:
+            rows = [row for row in self.travelers if needle in " ".join(
+                str(row.get(key, "") or "") for key in
+                ("id", "first_name", "last_name", "passport_no", "mobile")
+            ).lower()]
+        self._set_traveler_options(rows)
+        log_event("PASSPORT_READER", "TRAVELER_FILTER", db=self.db,
+                  query=needle, match_count=len(rows))
+
+    # [2.4f] _selected_traveler_changed — log selected traveler only
+    def _selected_traveler_changed(self, e=None):
+        log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
+                  traveler_id=str(self.traveler_dropdown.value or ""))
+
     # [2.4] _button — create labeled touch-friendly action button
     def _button(self, label, icon, color, handler):
         return ft.Button(content=ft.Row([ft.Icon(icon, size=15, color=ft.Colors.WHITE), ft.Text(label, size=11, color=ft.Colors.WHITE)], spacing=5, tight=True), on_click=handler, height=38, bgcolor=color)
@@ -66,6 +151,14 @@ class PassportReaderTab:
             # collapse the action controls into the grey viewport surface.
             ft.Row([ft.Text("🛂 Passport Reader", size=18, weight=ft.FontWeight.BOLD, color="#1e3a8a"), self._button("Scan PDF/JPEG", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan)], wrap=True, spacing=8),
             ft.Text("Reads the first passport PDF/JPEG in each traveler folder. MRZ check digits are validated; every non-validated result must be manually checked against the scan before ticket or visa use.", size=11, color="#64748b"),
+            ft.ResponsiveRow([
+                ft.Container(content=self.traveler_search, col={"xs": 12, "md": 5}),
+                ft.Container(content=self.traveler_dropdown, col={"xs": 12, "md": 7}),
+            ], spacing=8, run_spacing=8),
+            ft.Row([
+                self._button("Read Selected", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan),
+                self._button("Read All", self._icon("FOLDER_OPEN"), "#475569", lambda e: self.scan(e, all_travelers=True)),
+            ], wrap=True, spacing=6),
             ft.Row([self._button("CSV", self._icon("DOWNLOAD"), "#0f766e", lambda e: self.export("csv")), self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"), "#15803d", lambda e: self.export("xlsx")), self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"), "#b91c1c", lambda e: self.export("pdf"))], wrap=True, spacing=6),
             self.status,
             ft.Container(content=self.table, height=360, bgcolor="#ffffff", border=ft.Border.all(1, "#cbd5e1"), padding=6),
@@ -90,30 +183,64 @@ class PassportReaderTab:
         except Exception:
             pass
 
-    # [2.8] scan — read scans without modifying traveler records
-    def scan(self, e=None):
-        log_event("PASSPORT_READER", "SCAN_START", db=self.db)
+    # [2.8] scan — queue selected/all scans without blocking the WebSocket
+    def scan(self, e=None, all_travelers=False):
+        if self._scan_running:
+            self.status.value = "A passport scan is already running. Please wait."
+            self._status_update()
+            return
+        selected_id = str(self.traveler_dropdown.value or "").strip()
+        if not all_travelers and not selected_id:
+            self.status.value = "Select a traveler from the dropdown before reading."
+            self._status_update()
+            log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION",
+                      db=self.db)
+            return
+        targets = (self.travelers if all_travelers else
+                   [self._traveler_by_id[selected_id]])
+        self._scan_running = True
+        self.status.value = (
+            f"Reading {len(targets)} traveler passport folder(s) in the background…")
+        self._status_update()
+        log_event("PASSPORT_READER", "SCAN_START", db=self.db,
+                  selected_traveler=selected_id or "ALL",
+                  traveler_count=len(targets))
         try:
-            self.status.value = "Reading passport scans… this may take time for PDF files."
-            self.status.update()
-            self.rows = scan_travelers(self.db.get_travelers(), self.db.data_dir)
+            self.page.run_task(self._scan_background, targets)
+        except Exception as ex:
+            self._scan_running = False
+            log_exception("PASSPORT_READER", "SCAN_QUEUE_FAILED", ex,
+                          db=self.db)
+            self.status.value = f"Passport scan could not start: {ex}"
+            self._status_update()
+
+    # [2.8a] _scan_background — OCR outside the Flet event loop
+    async def _scan_background(self, targets):
+        try:
+            self.rows = await asyncio.to_thread(
+                scan_travelers, targets, self.db.data_dir)
             valid = sum(1 for r in self.rows if r.get("status") == "VALIDATED")
             review = len(self.rows) - valid
-            self.status.value = f"Read {len(self.rows)} traveler record(s): {valid} MRZ-validated, {review} require manual review. No traveler CSV fields were changed."
+            errors = sum(1 for r in self.rows if r.get("status") == "ERROR")
+            self.status.value = (
+                f"Read {len(self.rows)} traveler record(s): {valid} MRZ-validated, "
+                f"{review} require review, {errors} OCR errors. "
+                "No traveler CSV fields were changed.")
             self._render()
-            self.status.update()
+            self._status_update()
             log_event("PASSPORT_READER", "SCAN_SUCCESS", db=self.db,
-                      row_count=len(self.rows), validated=valid, review=review)
+                      row_count=len(self.rows), validated=valid,
+                      review=review, errors=errors)
         except Exception as ex:
             traceback.print_exc()
             log_exception("PASSPORT_READER", "SCAN_FAILED", ex, db=self.db)
             self.status.value = f"Passport scan failed: {ex}"
-            self.status.update()
+            self._status_update()
+        finally:
+            self._scan_running = False
 
     # [2.9] _export_rows — ensure current results exist
     def _export_rows(self):
-        if not self.rows:
-            self.scan()
         return self.rows
 
     # [2.10] export — create CSV, Excel, or PDF download
@@ -165,11 +292,11 @@ class PassportReaderTab:
             if url:
                 self.page.launch_url(url)
             self.status.value = f"Exported {len(rows)} rows to {path.name}."
-            self.status.update()
+            self._status_update()
             log_event("PASSPORT_READER", "EXPORT_SUCCESS", db=self.db,
                       kind=kind, row_count=len(rows), path=str(path))
         except Exception as ex:
             traceback.print_exc()
             log_exception("PASSPORT_READER", "EXPORT_FAILED", ex, db=self.db,
                           kind=kind, path=str(path))
-            self.status.value = f"Export failed: {ex}"; self.status.update()
+            self.status.value = f"Export failed: {ex}"; self._status_update()
