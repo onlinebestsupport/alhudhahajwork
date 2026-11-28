@@ -30,8 +30,14 @@ _STATUS_COLOR = {
     "NO SCAN": "#b91c1c",
 }
 
+_SUBTAB_ITEMS = [
+    ("reader", "📁 Mixed Files"),
+    ("local", "💻 Local Folder"),
+    ("results", "📊 Results & Downloads"),
+]
 
-# [2.0] _scan_worker — run native OCR/PDF work outside the long-lived process
+
+# [2.0] _scan_worker — isolated traveler scan
 def _scan_worker(traveler, data_dir, result_queue):
     try:
         result_queue.put({"ok": True,
@@ -87,7 +93,7 @@ def _scan_folder_isolated(folder, timeout_seconds=600):
     return _run_isolated(_folder_worker, (folder,), timeout_seconds)
 
 
-# [2.1] PassportReaderTab — responsive admin tab
+# [2.1] PassportReaderTab
 class PassportReaderTab:
     @staticmethod
     def _icon(name, fallback="DESCRIPTION"):
@@ -107,8 +113,10 @@ class PassportReaderTab:
         self._traveler_by_id = {}
         self._scan_running = False
         self._local_scan_running = False
-        self.subtab_selector = None
+        self._active_subtab = "reader"
+        self._subtab_buttons = {}
         self.subtab_content = None
+
         self.traveler_search = ft.TextField(
             label="Search traveler / passport / mobile",
             hint_text="Type a name, ID, passport number, or mobile",
@@ -119,6 +127,7 @@ class PassportReaderTab:
             options=[], dense=True, expand=True)
         self.traveler_dropdown.on_change = self._selected_traveler_changed
         self._load_traveler_choices()
+
         self.table = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
         self.local_table = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO,
                                       expand=True)
@@ -126,7 +135,7 @@ class PassportReaderTab:
             "No scan run yet. Results are read-only until reviewed.",
             size=11, color="#475569")
         self.local_status = ft.Text(
-            "Enter a folder path or use Verify Files first.",
+            "Enter a folder path, click Verify Files, then Read Folder.",
             size=11, color="#475569")
         self.local_folder_path = ft.TextField(
             label="Folder path on server",
@@ -134,16 +143,19 @@ class PassportReaderTab:
             dense=True, expand=True)
         self.root = self._build()
 
-    # [2.3] build — return tab root control
+    # [2.3] build
     def build(self):
         return self.root
 
-    # [2.4a] refresh — redraw visible tables only
+    # [2.4a] refresh
     def refresh(self):
-        if self.rows:
-            self._render_rows(self.rows, self.table)
-        if self.local_rows:
-            self._render_rows(self.local_rows, self.local_table)
+        try:
+            if self.rows:
+                self._render_rows(self.rows, self.table)
+            if self.local_rows:
+                self._render_rows(self.local_rows, self.local_table)
+        except Exception as ex:
+            log_exception("PASSPORT_READER", "REFRESH_FAILED", ex, db=self.db)
         log_event("PASSPORT_READER", "REFRESH_VISIBLE_ONLY", db=self.db,
                   row_count=len(self.rows),
                   local_row_count=len(self.local_rows))
@@ -151,9 +163,8 @@ class PassportReaderTab:
     def _status_update(self):
         try:
             self.status.update()
-        except Exception as ex:
-            log_event("PASSPORT_READER", "STATUS_UPDATE_SKIPPED",
-                      db=self.db, error_type=type(ex).__name__)
+        except Exception:
+            pass
 
     def _local_status_update(self):
         try:
@@ -171,7 +182,8 @@ class PassportReaderTab:
                 if str(row.get("id", "")).strip()}
             self._set_traveler_options(self.travelers)
             log_event("PASSPORT_READER", "TRAVELER_CHOICES_LOADED",
-                      db=self.db, traveler_count=len(self.travelers))
+                      db=self.db, traveler_count=len(self.travelers),
+                      by_id_count=len(self._traveler_by_id))
         except Exception as ex:
             log_exception("PASSPORT_READER", "TRAVELER_CHOICES_FAILED", ex,
                           db=self.db)
@@ -194,6 +206,7 @@ class PassportReaderTab:
         except Exception:
             pass
 
+    # [2.4c] _filter_travelers — auto-select the single visible option
     def _filter_travelers(self, e=None):
         needle = str(self.traveler_search.value or "").strip().lower()
         rows = self.travelers if not needle else [
@@ -202,31 +215,58 @@ class PassportReaderTab:
                 ("id", "first_name", "last_name", "passport_no", "mobile")
             ).lower()]
         self._set_traveler_options(rows)
+        # If filtering leaves a single candidate, auto-select it so
+        # "search → Read Selected" works without an explicit tap.
+        if len(rows) == 1:
+            only_id = str(rows[0].get("id", "")).strip()
+            if only_id:
+                self.traveler_dropdown.value = only_id
+                try:
+                    self.traveler_dropdown.update()
+                except Exception:
+                    pass
         log_event("PASSPORT_READER", "TRAVELER_FILTER", db=self.db,
                   query=needle, match_count=len(rows))
 
     def _selected_traveler_changed(self, e=None):
+        val = ""
+        try:
+            if e is not None and hasattr(e, "control"):
+                val = str(getattr(e.control, "value", "") or "")
+        except Exception:
+            pass
+        if not val:
+            val = str(self.traveler_dropdown.value or "")
         log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
-                  traveler_id=str(self.traveler_dropdown.value or ""))
+                  traveler_id=val.strip())
 
+    # [2.4d] _set_subtab — switch visible panel and highlight the button
     def _set_subtab(self, key):
         if self.subtab_content is None:
             return
-        panels = {"results": self._results_panel,
-                  "local": self._local_panel,
-                  "reader": self._reader_panel}
-        key = key if key in panels else "reader"
+        panels = {"results": getattr(self, "_results_panel", None),
+                  "local": getattr(self, "_local_panel", None),
+                  "reader": getattr(self, "_reader_panel", None)}
+        if key not in panels or panels[key] is None:
+            key = "reader"
+        self._active_subtab = key
         self.subtab_content.content = panels[key]
         try:
             self.subtab_content.update()
-            self.subtab_selector.value = key
-            self.subtab_selector.update()
         except Exception:
             pass
+        for k, btn in self._subtab_buttons.items():
+            try:
+                btn.bgcolor = "#2563eb" if k == key else None
+                btn.content.color = (ft.Colors.WHITE if k == key
+                                     else "#1e3a8a")
+                btn.update()
+            except Exception:
+                pass
         log_event("PASSPORT_READER", "SUBTAB_SELECTED", db=self.db,
                   subtab=key)
 
-    # [2.4] _button — labeled touch-friendly action button
+    # [2.4e] _button
     def _button(self, label, icon, color, handler):
         return ft.Button(
             content=ft.Row([
@@ -235,7 +275,7 @@ class PassportReaderTab:
             ], spacing=5, tight=True),
             on_click=handler, height=38, bgcolor=color)
 
-    # [2.5] _build — assemble responsive tab layout
+    # [2.5] _build — visible sub-tab strip replaces the dropdown
     def _build(self):
         header = ft.Text("🛂 Passport Reader", size=18,
                          weight=ft.FontWeight.BOLD, color="#1e3a8a")
@@ -253,10 +293,12 @@ class PassportReaderTab:
             description,
             selector_row,
             ft.Row([
-                self._button("Read Selected", self._icon("DOCUMENT_SCANNER"),
+                self._button("Read Selected",
+                             self._icon("DOCUMENT_SCANNER"),
                              "#2563eb", self.scan),
                 self._button("Read All", self._icon("FOLDER_OPEN"),
-                             "#475569", lambda e: self.scan(e, all_travelers=True)),
+                             "#475569",
+                             lambda e: self.scan(e, all_travelers=True)),
                 self._button("Refresh", self._icon("REFRESH", "SYNC"),
                              "#64748b", lambda e: self.refresh()),
                 self._button("Clear", self._icon("DELETE", "CLEAR"),
@@ -270,9 +312,11 @@ class PassportReaderTab:
             ft.Row([
                 self._button("CSV", self._icon("DOWNLOAD"), "#0f766e",
                              lambda e: self.export("csv")),
-                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"),
+                self._button("Excel",
+                             self._icon("TABLE_VIEW", "GRID_VIEW"),
                              "#15803d", lambda e: self.export("xlsx")),
-                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
+                self._button("PDF",
+                             self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
                              "#b91c1c", lambda e: self.export("pdf")),
             ], wrap=True, spacing=6),
             self.status,
@@ -282,20 +326,36 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-        self.subtab_selector = ft.Dropdown(
-            label="Passport Reader section",
-            options=[
-                ft.dropdown.Option(key="reader", text="Mixed Files Reader"),
-                ft.dropdown.Option(key="local", text="Local Folder Reader"),
-                ft.dropdown.Option(key="results", text="Results & Downloads"),
-            ], value="reader", dense=True, expand=True)
-        self.subtab_selector.on_change = lambda e: self._set_subtab(
-            self.subtab_selector.value)
+        # Visible sub-tab strip — all three are always on screen.
+        for key, label in _SUBTAB_ITEMS:
+            btn = ft.TextButton(
+                content=ft.Text(label, size=12,
+                                color="#1e3a8a",
+                                weight=ft.FontWeight.BOLD),
+                on_click=lambda e, k=key: self._set_subtab(k),
+                style=ft.ButtonStyle(
+                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                ),
+            )
+            self._subtab_buttons[key] = btn
+        # Highlight the initial tab
+        try:
+            self._subtab_buttons["reader"].bgcolor = "#2563eb"
+            self._subtab_buttons["reader"].content.color = ft.Colors.WHITE
+        except Exception:
+            pass
+        subtab_row = ft.Row(list(self._subtab_buttons.values()),
+                            wrap=True, spacing=4)
+
         self.subtab_content = ft.Container(content=self._reader_panel,
                                             expand=True)
         return ft.Container(content=ft.Column([
             ft.Row([header], wrap=True),
-            self.subtab_selector,
+            ft.Container(content=subtab_row,
+                         bgcolor="#f1f5f9",
+                         border_radius=8,
+                         padding=ft.padding.symmetric(horizontal=6,
+                                                       vertical=4)),
             self.subtab_content,
         ], spacing=8, scroll=ft.ScrollMode.AUTO),
             padding=12, bgcolor="#ffffff", expand=True)
@@ -305,9 +365,11 @@ class PassportReaderTab:
             ft.Text("Local Folder Reader — reads an arbitrary system folder.",
                     size=12, weight=ft.FontWeight.BOLD, color="#1e3a8a"),
             ft.Text(
-                "Verifies and reads every PDF/JPEG/PNG in the folder below at "
-                "once. Not linked to a Haj traveler; separate CSV/Excel/PDF "
-                "downloads are available below.", size=11, color="#64748b"),
+                "Use this for non-Haj passports stored on the server or a "
+                "mounted Windows share. Verifies every PDF/JPEG/PNG in the "
+                "folder, then reads them all at once. Downloads below are "
+                "separate from the traveler results.", size=11,
+                color="#64748b"),
             ft.ResponsiveRow([
                 ft.Container(content=self.local_folder_path,
                              col={"xs": 12, "md": 9}),
@@ -315,7 +377,8 @@ class PassportReaderTab:
                     content=self._button("Verify Files",
                                          self._icon("CHECK_CIRCLE",
                                                     "CHECK"),
-                                         "#0891b2", self.verify_local_folder),
+                                         "#0891b2",
+                                         self.verify_local_folder),
                     col={"xs": 12, "md": 3}),
             ], spacing=8, run_spacing=8),
             ft.Row([
@@ -324,10 +387,12 @@ class PassportReaderTab:
                              "#2563eb", self.scan_local_folder),
                 self._button("CSV", self._icon("DOWNLOAD"), "#0f766e",
                              lambda e: self.export("csv", local=True)),
-                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"),
+                self._button("Excel",
+                             self._icon("TABLE_VIEW", "GRID_VIEW"),
                              "#15803d",
                              lambda e: self.export("xlsx", local=True)),
-                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
+                self._button("PDF",
+                             self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
                              "#b91c1c",
                              lambda e: self.export("pdf", local=True)),
                 self._button("Clear", self._icon("DELETE", "CLEAR"),
@@ -342,10 +407,11 @@ class PassportReaderTab:
 
     # [2.6] _cell
     def _cell(self, value, width=130):
-        return ft.Container(content=ft.Text(str(value or ""), size=10,
-                                            selectable=True, max_lines=3,
-                                            overflow=ft.TextOverflow.ELLIPSIS),
-                            width=width, padding=4)
+        return ft.Container(
+            content=ft.Text(str(value or ""), size=10, selectable=True,
+                            max_lines=3,
+                            overflow=ft.TextOverflow.ELLIPSIS),
+            width=width, padding=4)
 
     def _is_mobile(self):
         try:
@@ -356,7 +422,6 @@ class PassportReaderTab:
         return width == 0 or width < 700 or any(
             token in platform for token in ("ios", "android", "mobile"))
 
-    # [2.6b] _mobile_card — Front/Back only
     def _mobile_card(self, row):
         status = str(row.get("status", ""))
         color = _STATUS_COLOR.get(status, "#b91c1c")
@@ -404,7 +469,6 @@ class PassportReaderTab:
                             border=ft.Border.all(1, "#cbd5e1"),
                             border_radius=8, padding=8)
 
-    # [2.7] _render_rows — shared renderer for traveler & local tables
     def _render_rows(self, rows, table):
         table.controls.clear()
         headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB",
@@ -451,23 +515,77 @@ class PassportReaderTab:
     def _render(self):
         self._render_rows(self.rows, self.table)
 
-    # [2.8] scan — traveler scan
+    # [2.8] scan — Read Selected / Read All with full selection logging
     def scan(self, e=None, all_travelers=False):
+        # Log every click first so failures are always visible in the log.
+        log_event("PASSPORT_READER", "SCAN_CLICKED", db=self.db,
+                  all_travelers=all_travelers,
+                  dropdown_value=str(self.traveler_dropdown.value or ""))
+
         if self._scan_running:
             self.status.value = "A passport scan is already running. Please wait."
             self._status_update()
             return
-        selected_id = str(self.traveler_dropdown.value or "").strip()
+
+        # Resolve the selection from every plausible source.
+        selected_id = ""
+        try:
+            if e is not None and hasattr(e, "control"):
+                ctrl_val = getattr(e.control, "value", None)
+                if ctrl_val:
+                    selected_id = str(ctrl_val).strip()
+        except Exception:
+            pass
+        if not selected_id:
+            selected_id = str(self.traveler_dropdown.value or "").strip()
+
+        # Auto-select the only visible option when the user hasn't tapped it.
+        if not all_travelers and not selected_id:
+            opts = getattr(self.traveler_dropdown, "options", []) or []
+            if len(opts) == 1:
+                selected_id = str(getattr(opts[0], "key", "") or "").strip()
+                if selected_id:
+                    self.traveler_dropdown.value = selected_id
+                    log_event("PASSPORT_READER",
+                              "SCAN_AUTO_SELECTED_ONLY_OPTION",
+                              db=self.db, selected_id=selected_id)
+
+        log_event("PASSPORT_READER", "SCAN_SELECTION_RESOLVED",
+                  db=self.db, selected_id=selected_id,
+                  all_travelers=all_travelers,
+                  known_ids_count=len(self._traveler_by_id))
+
         if not all_travelers and not selected_id:
             self.status.value = "Select a traveler from the dropdown before reading."
             self._status_update()
-            log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION", db=self.db)
+            log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION",
+                      db=self.db)
             return
-        targets = (self.travelers if all_travelers
-                   else [self._traveler_by_id[selected_id]])
+
+        if all_travelers:
+            targets = self.travelers
+        else:
+            traveler = self._traveler_by_id.get(selected_id)
+            if not traveler:
+                log_event("PASSPORT_READER", "SCAN_SELECTION_MISSING",
+                          db=self.db, selected_id=selected_id,
+                          sample_ids=list(self._traveler_by_id.keys())[:5])
+                self.status.value = (
+                    f"Traveler '{selected_id}' not found. "
+                    "Click Refresh and try again.")
+                self._status_update()
+                return
+            targets = [traveler]
+
+        if not targets:
+            self.status.value = "No travelers available to read."
+            self._status_update()
+            return
+
         self._scan_running = True
         self.status.value = (
-            f"Reading {len(targets)} traveler passport folder(s) in the background…")
+            f"Reading {len(targets)} traveler passport folder(s) "
+            "in the background…")
         self._status_update()
         if all_travelers:
             self._set_subtab("results")
@@ -478,7 +596,8 @@ class PassportReaderTab:
             self.page.run_task(self._scan_background, targets)
         except Exception as ex:
             self._scan_running = False
-            log_exception("PASSPORT_READER", "SCAN_QUEUE_FAILED", ex, db=self.db)
+            log_exception("PASSPORT_READER", "SCAN_QUEUE_FAILED", ex,
+                          db=self.db)
             self.status.value = f"Passport scan could not start: {ex}"
             self._status_update()
 
@@ -518,10 +637,11 @@ class PassportReaderTab:
                 await asyncio.sleep(0)
             valid = sum(1 for r in self.rows
                         if r.get("status") in ("MRZ_OK", "VALIDATED"))
-            review = len(self.rows) - valid
+            review = sum(1 for r in self.rows
+                         if r.get("status") == "REVIEW")
             errors = sum(1 for r in self.rows if r.get("status") == "ERROR")
             self.status.value = (
-                f"Read {len(self.rows)} traveler record(s): {valid} MRZ-validated, "
+                f"Read {len(self.rows)} traveler record(s): {valid} MRZ-valid, "
                 f"{review} require review, {errors} OCR errors, "
                 f"{no_file_count} folder(s) with no passport files. "
                 "No traveler CSV fields were changed.")
@@ -540,7 +660,7 @@ class PassportReaderTab:
         finally:
             self._scan_running = False
 
-    # [2.9] verify_local_folder — list & sanity-check files before OCR
+    # [2.9] verify_local_folder
     def verify_local_folder(self, e=None):
         folder = str(self.local_folder_path.value or "").strip()
         if not folder:
@@ -550,7 +670,8 @@ class PassportReaderTab:
         try:
             files = discover_files_in_folder(folder)
         except Exception as ex:
-            log_exception("PASSPORT_READER", "VERIFY_FOLDER_FAILED", ex, db=self.db)
+            log_exception("PASSPORT_READER", "VERIFY_FOLDER_FAILED", ex,
+                          db=self.db)
             self.local_status.value = f"Verify failed: {ex}"
             self._local_status_update()
             return
@@ -561,7 +682,8 @@ class PassportReaderTab:
             lines = [f"Verified {len(files)} file(s) in {folder}:"]
             for p in files[:20]:
                 try:
-                    lines.append(f"  • {p.name} ({p.stat().st_size // 1024} KB)")
+                    lines.append(
+                        f"  • {p.name} ({p.stat().st_size // 1024} KB)")
                 except OSError:
                     lines.append(f"  • {p.name} (unreadable)")
             if len(files) > 20:
@@ -571,10 +693,11 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "VERIFY_LOCAL_FOLDER", db=self.db,
                   folder=folder, file_count=len(files))
 
-    # [2.9a] scan_local_folder — read every file in the folder at once
+    # [2.9a] scan_local_folder
     def scan_local_folder(self, e=None):
         if self._local_scan_running:
-            self.local_status.value = "A folder read is already running. Please wait."
+            self.local_status.value = (
+                "A folder read is already running. Please wait.")
             self._local_status_update()
             return
         folder = str(self.local_folder_path.value or "").strip()
@@ -591,8 +714,8 @@ class PassportReaderTab:
             self.page.run_task(self._local_scan_background, folder)
         except Exception as ex:
             self._local_scan_running = False
-            log_exception("PASSPORT_READER", "LOCAL_SCAN_QUEUE_FAILED",
-                          ex, db=self.db)
+            log_exception("PASSPORT_READER", "LOCAL_SCAN_QUEUE_FAILED", ex,
+                          db=self.db)
             self.local_status.value = f"Folder scan could not start: {ex}"
             self._local_status_update()
 
@@ -615,16 +738,17 @@ class PassportReaderTab:
             errors = sum(1 for s in statuses if s == "ERROR")
             no_scan = sum(1 for s in statuses if s == "NO SCAN")
             self.local_status.value = (
-                f"Read {len(rows)} file set(s): {valid} MRZ-validated, "
+                f"Read {len(rows)} file set(s): {valid} MRZ-valid, "
                 f"{review} review, {errors} errors, {no_scan} no-scan. "
-                "Download CSV/Excel/PDF to share these results.")
+                "Use CSV / Excel / PDF below to download.")
             self._local_status_update()
             log_event("PASSPORT_READER", "LOCAL_SCAN_SUCCESS", db=self.db,
                       folder=folder, row_count=len(rows),
                       validated=valid, review=review, errors=errors)
         except Exception as ex:
             traceback.print_exc()
-            log_exception("PASSPORT_READER", "LOCAL_SCAN_FAILED", ex, db=self.db)
+            log_exception("PASSPORT_READER", "LOCAL_SCAN_FAILED", ex,
+                          db=self.db)
             self.local_status.value = f"Folder scan failed: {ex}"
             self._local_status_update()
         finally:
@@ -651,7 +775,7 @@ class PassportReaderTab:
         self.local_status.value = "Local folder results cleared."
         self._local_status_update()
 
-    # [2.10] export — CSV/Excel/PDF for traveler OR local-folder rows
+    # [2.10] export
     def _export_fields(self):
         return ["traveler_id", "traveler_name", "passport_no", "surname",
                 "given_names", "nationality", "date_of_birth", "sex",
@@ -668,8 +792,8 @@ class PassportReaderTab:
                   kind=kind, local=local)
         rows = self.local_rows if local else self.rows
         if not rows:
-            log_event("PASSPORT_READER", "EXPORT_SKIPPED_NO_ROWS",
-                      db=self.db, kind=kind, local=local)
+            log_event("PASSPORT_READER", "EXPORT_SKIPPED_NO_ROWS", db=self.db,
+                      kind=kind, local=local)
             (self.local_status if local else self.status).value = \
                 "Nothing to export — run a scan first."
             (self._local_status_update if local else self._status_update)()
@@ -704,8 +828,9 @@ class PassportReaderTab:
                 ws.freeze_panes = "A2"
                 for col in ws.columns:
                     ws.column_dimensions[col[0].column_letter].width = \
-                        min(42, max(14,
-                                    max(len(str(x.value or "")) for x in col) + 2))
+                        min(42,
+                            max(14,
+                                max(len(str(x.value or "")) for x in col) + 2))
                 wb.save(path)
             else:
                 self._export_pdf(rows, path)
@@ -733,7 +858,6 @@ class PassportReaderTab:
                 f"Export failed: {ex}"
             (self._local_status_update if local else self._status_update)()
 
-    # [2.10a] _export_pdf — dynamic columns, no blank pages, no MRZ noise
     def _export_pdf(self, rows, path):
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import landscape, A4
@@ -801,8 +925,8 @@ class PassportReaderTab:
              [colors.white, colors.HexColor("#f8fafc")]),
         ]))
         story = [
-            Paragraph("Passport Reader — passport fields and page-by-page reading",
-                      styles["Title"]),
+            Paragraph("Passport Reader — passport fields and page-by-page "
+                      "reading", styles["Title"]),
             Paragraph(
                 "English OCR only. 'OK' means MRZ check digits and nationality "
                 "passed, not that names are correct. Verify every value against "
@@ -820,7 +944,7 @@ class PassportReaderTab:
             front = strip_mrz_text(front_raw)
             back = strip_mrz_text(back_raw)
             if not front and not back:
-                continue   # skip blank NO SCAN / ERROR detail pages
+                continue
             story.append(PageBreak())
             title = xml_escape(
                 str(r.get("traveler_name") or r.get("traveler_id")
@@ -852,8 +976,8 @@ class PassportReaderTab:
                 "Front — English OCR labels and printed text",
                 styles["Heading3"]))
             story.append(Paragraph(
-                xml_escape(front or "No Front OCR text captured.").replace(
-                    "\n", "<br/>"), styles["BodyText"]))
+                xml_escape(front or "No Front OCR text captured.")
+                .replace("\n", "<br/>"), styles["BodyText"]))
             if back:
                 story.append(Spacer(1, 8))
                 story.append(Paragraph("Back — printed text",
