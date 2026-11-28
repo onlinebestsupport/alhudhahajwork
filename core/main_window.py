@@ -1,4 +1,4 @@
-# =================================================================================
+=================================================================================
 # SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW (MOBILE-RESPONSIVE)
 # =================================================================================
 # v2.5 — CRITICAL FIX: clock loop no longer calls page.update()
@@ -181,6 +181,10 @@ class MainWindowView:
 
         self.tab_instances = {}
         self.tabs_control = None
+        self.admin_tab_content = None
+        self.admin_tab_buttons = []
+        self.admin_tab_labels = []
+        self.admin_tab_views = []
         self.status_time_label = None
         self._clock_running = False
         self._refresh_running = False
@@ -201,11 +205,7 @@ class MainWindowView:
                 self._show_snack("⚠️ Tabs not initialized yet")
                 return
             idx = None
-            try:
-                tab_bar = self.tabs_control.content.controls[0]
-                visible_labels = [t.label for t in tab_bar.tabs]
-            except Exception:
-                visible_labels = []
+            visible_labels = self.admin_tab_labels
             for i, lbl in enumerate(visible_labels):
                 plain = lbl.split(" ", 1)[-1] if " " in lbl else lbl
                 if plain == tab_name:
@@ -214,8 +214,8 @@ class MainWindowView:
             if idx is None:
                 self._show_snack(f"⚠️ '{tab_name}' tab is not visible")
                 return
-            self.tabs_control.selected_index = idx
-            # v2.5 — leaf update only on tabs_control
+            self._select_admin_tab(idx)
+            # v2.5 — leaf update only on the custom admin tab shell.
             try:
                 self.tabs_control.update()
             except Exception:
@@ -242,6 +242,30 @@ class MainWindowView:
             log_exception("NAV", "TAB_NAVIGATE_FAILED", ex, db=self.db,
                           tab=tab_name, action=action)
             self._show_snack(f"⚠️ Navigation error: {ex}")
+
+    # =============================================================================
+    # _select_admin_tab — switch tabs without a swipe-enabled TabBarView
+    # =============================================================================
+    def _select_admin_tab(self, index):
+        if not self.admin_tab_views or not (0 <= index < len(self.admin_tab_views)):
+            return
+        self.admin_tab_content.content = self.admin_tab_views[index]
+        for i, button in enumerate(self.admin_tab_buttons):
+            try:
+                button.style = ft.ButtonStyle(
+                    color=ft.Colors.WHITE if i == index else ft.Colors.BLUE_900,
+                    bgcolor=ft.Colors.BLUE_800 if i == index else ft.Colors.WHITE,
+                    padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+                )
+                button.update()
+            except Exception:
+                pass
+        try:
+            self.admin_tab_content.update()
+        except Exception:
+            pass
+        log_event("NAV", "ADMIN_TAB_SELECTED", db=self.db,
+                  index=index, tab=self.admin_tab_labels[index])
 
     # =============================================================================
     # build()
@@ -579,30 +603,37 @@ class MainWindowView:
         log_event("MAIN", "ADMIN_TABS_READY", db=self.db,
                   tab_count=len(tab_labels), tabs=[label for label, _, _ in tab_labels])
 
-        tab_bar_items = [ft.Tab(label=label)
-                         for label, _, _ in tab_labels]
-        tab_views = [view for _, _, view in tab_labels]
+        # Do not use ft.Tabs/ft.TabBarView here. Flet's TabBarView treats a
+        # horizontal touch that starts inside a table as tab navigation. On
+        # mobile Safari/Chrome that can expose the public page or reconnect to
+        # login. Explicit buttons preserve navigation while making tab content
+        # swipe-neutral.
+        self.admin_tab_labels = [label for label, _, _ in tab_labels]
+        self.admin_tab_views = [
+            ft.Container(content=view, expand=True, padding=0)
+            for _, _, view in tab_labels
+        ]
 
-        self.tabs_control = ft.Tabs(
-            selected_index=0,
-            animation_duration=200,
-            length=len(tab_labels),
+        self.admin_tab_content = ft.Container(
+            content=self.admin_tab_views[0], expand=True, padding=0)
+        self.admin_tab_buttons = []
+        for index, (label, _, _) in enumerate(tab_labels):
+            button = ft.TextButton(
+                content=ft.Text(label, size=11),
+                on_click=lambda e, i=index: self._select_admin_tab(i),
+            )
+            self.admin_tab_buttons.append(button)
+        self.tabs_control = ft.Container(
+            content=ft.Column([
+                ft.Row(self.admin_tab_buttons, spacing=4,
+                       scroll=ft.ScrollMode.AUTO),
+                self.admin_tab_content,
+            ], expand=True, spacing=0),
             expand=True,
-            content=ft.Column(
-                expand=True,
-                spacing=0,
-                controls=[
-                    ft.TabBar(
-                        tabs=tab_bar_items,
-                        scrollable=True,
-                    ),
-                    ft.TabBarView(
-                        expand=True,
-                        controls=[
-                            ft.Container(content=v, expand=True, padding=0)
-                            for v in tab_views
-                        ]),
-                ]))
+        )
+        self._select_admin_tab(0)
+        log_event("MAIN", "ADMIN_TAB_SHELL_READY", db=self.db,
+                  tab_count=len(self.admin_tab_labels), swipe_navigation=False)
 
         # =====================================================================
         # STATUS BAR
