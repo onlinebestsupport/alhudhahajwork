@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 # [1.1] Build fingerprint — lets Railway logs prove which source is running
-APP_BUILD_ID = "2026-11-28-read-all-worker-session-v2"
+APP_BUILD_ID = "2026-11-28-passport-fields-progress-v3"
 
 
 # [1.2] _safe — convert diagnostic values without exposing secrets
