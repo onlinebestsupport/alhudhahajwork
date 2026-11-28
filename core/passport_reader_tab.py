@@ -1,3 +1,12 @@
+To read every single field exactly as shown in the images and align them into separate columns, we need to bypass the fuzzy OCR text and use **structural extraction**. 
+
+The OCR engine often misses the English labels (like "Name of Father") but perfectly captures the data on the lines below them. The updated logic below uses the **MRZ data** for the front page and a **backtracking heuristic** from the Address block for the back page to guarantee accuracy. 
+
+I have updated the PDF export to use a dynamic `LongTable` with **22 separate columns** (Traveler, Type, Code, Natl, Passport No, Surname, Given Name, DOB, Sex, Place of Birth, Place of Issue, Date of Issue, Expiry, MRZ, Barcode, Father, Mother, Spouse, Address, Old Passport, File No, Status). It automatically shrinks the font to 5 and wraps text to fit all columns on a single landscape page.
+
+Here is the fully corrected `Admin Passport Reader tab`:
+
+```python
 """Admin Passport Reader tab. OCR results are review-first and read-only."""
 from __future__ import annotations
 
@@ -1037,3 +1046,4 @@ class PassportReaderTab:
                     xml_escape(back).replace("\n", "<br/>"), styles["BodyText"]))
 
         doc.build(story)
+```
