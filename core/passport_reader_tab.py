@@ -1,14 +1,4 @@
 """Admin Passport Reader tab. OCR results are review-first and read-only."""
-# ===============================================================================
-# SECTION 2 — PASSPORT READER ADMIN TAB
-# ===============================================================================
-# Maintenance index
-#   2.1  PassportReaderTab initialization and public build
-#   2.2  Responsive controls and table rendering
-#   2.3  Read-only scan action and status reporting
-#   2.4  CSV/Excel/PDF export actions
-#   2.5  Mobile swipe-safe result cards
-# ===============================================================================
 from __future__ import annotations
 
 import csv
@@ -25,104 +15,139 @@ from xml.sax.saxutils import escape as xml_escape
 import flet as ft
 
 from core.helpers import send_file_to_user
-from core.passport_reader import scan_travelers
+from core.passport_reader import (
+    scan_travelers, read_folder, discover_files_in_folder,
+    strip_mrz_text,
+)
 from core.runtime_logging import log_event, log_exception
 
+_MRZ_LINE_RE = re.compile(r"^[A-Z0-9<]{30,}$")
+_STATUS_PDF = {"MRZ_OK": "OK", "VALIDATED": "OK",
+               "REVIEW": "REVIEW", "ERROR": "ERROR", "NO SCAN": "NO SCAN"}
+_STATUS_COLOR = {
+    "MRZ_OK": "#166534", "VALIDATED": "#166534",
+    "REVIEW": "#b45309", "ERROR": "#b91c1c",
+    "NO SCAN": "#b91c1c",
+}
 
-# [2.0] _scan_worker — run native OCR/PDF work outside the long-lived Flet process
+
+# [2.0] _scan_worker — run native OCR/PDF work outside the long-lived process
 def _scan_worker(traveler, data_dir, result_queue):
-    """Process one traveler and exit, releasing Tesseract/Pillow native memory."""
     try:
-        result_queue.put({"ok": True, "rows": scan_travelers([traveler], data_dir)})
+        result_queue.put({"ok": True,
+                          "rows": scan_travelers([traveler], data_dir)})
     except Exception as ex:
-        result_queue.put({"ok": False, "error": f"{type(ex).__name__}: {ex}"})
+        result_queue.put({"ok": False,
+                          "error": f"{type(ex).__name__}: {ex}"})
 
 
-def _scan_one_isolated(traveler, data_dir, timeout_seconds=240):
-    """Return one traveler result from a disposable process.
+def _folder_worker(folder, result_queue):
+    try:
+        result_queue.put({"ok": True, "rows": read_folder(folder)})
+    except Exception as ex:
+        result_queue.put({"ok": False,
+                          "error": f"{type(ex).__name__}: {ex}"})
 
-    Tesseract and PDF rasterization can retain native allocations that Python
-    garbage collection does not promptly return on Railway. A process boundary
-    makes Read All bounded by one traveler rather than by the whole batch.
-    """
-    # fork avoids re-importing the Flet application on Railway/Linux; spawn is
-    # required on Windows and remains safe because this target is top-level.
+
+def _run_isolated(target, args, timeout_seconds):
+    """Return (rows, error) from a disposable process with safe queue drain."""
     context_name = "spawn" if os.name == "nt" else "fork"
     context = multiprocessing.get_context(context_name)
     result_queue = context.Queue(maxsize=1)
-    process = context.Process(target=_scan_worker,
-                              args=(traveler, data_dir, result_queue))
+    process = context.Process(target=target, args=(*args, result_queue))
     process.start()
-    process.join(timeout_seconds)
+    payload = None
+    try:
+        payload = result_queue.get(timeout=timeout_seconds)
+    except queue.Empty:
+        pass
+    process.join(5)
     if process.is_alive():
         process.terminate()
-        process.join(10)
-        return [], f"OCR timeout after {timeout_seconds}s"
+        process.join(5)
+        if payload is None:
+            return [], f"OCR timeout after {timeout_seconds}s"
+    if payload is None:
+        return [], f"OCR worker exited with code {process.exitcode}"
     try:
-        payload = result_queue.get(timeout=5)
-    except (queue.Empty, OSError, EOFError):
-        payload = {"ok": False, "error": f"OCR worker exited with code {process.exitcode}"}
-    finally:
         result_queue.close()
         result_queue.join_thread()
+    except Exception:
+        pass
     if not payload.get("ok"):
         return [], payload.get("error", "OCR worker failed")
     return payload.get("rows", []), ""
 
 
+def _scan_one_isolated(traveler, data_dir, timeout_seconds=360):
+    return _run_isolated(_scan_worker, (traveler, data_dir), timeout_seconds)
+
+
+def _scan_folder_isolated(folder, timeout_seconds=600):
+    return _run_isolated(_folder_worker, (folder,), timeout_seconds)
+
+
 # [2.1] PassportReaderTab — responsive admin tab
 class PassportReaderTab:
-    # [2.2a] _icon — resolve icon names across Flet 1.x releases
     @staticmethod
     def _icon(name, fallback="DESCRIPTION"):
         icons = getattr(ft, "Icons", None)
         value = getattr(icons, name, None) if icons is not None else None
         if value is not None:
             return value
-        return getattr(icons, fallback, "description") if icons is not None else "description"
+        return getattr(icons, fallback, "description") if icons is not None \
+            else "description"
 
-    # [2.2] __init__ — initialize read-only tab state
+    # [2.2] __init__
     def __init__(self, page: ft.Page, db, current_user):
         self.page, self.db, self.current_user = page, db, current_user
         self.rows = []
+        self.local_rows = []
         self.travelers = []
         self._traveler_by_id = {}
         self._scan_running = False
+        self._local_scan_running = False
         self.subtab_selector = None
         self.subtab_content = None
         self.traveler_search = ft.TextField(
             label="Search traveler / passport / mobile",
             hint_text="Type a name, ID, passport number, or mobile",
-            dense=True,
-            on_change=self._filter_travelers,
-        )
+            dense=True, on_change=self._filter_travelers)
         self.traveler_dropdown = ft.Dropdown(
             label="Traveler passport folder",
             hint_text="Select one traveler to read",
-            options=[],
-            dense=True,
-            expand=True,
-        )
-        # Flet 1.1.x does not accept on_change in Dropdown.__init__.
+            options=[], dense=True, expand=True)
         self.traveler_dropdown.on_change = self._selected_traveler_changed
         self._load_traveler_choices()
         self.table = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO, expand=True)
-        self.status = ft.Text("No scan run yet. Results are read-only until reviewed.", size=11, color="#475569")
+        self.local_table = ft.Column(spacing=4, scroll=ft.ScrollMode.AUTO,
+                                      expand=True)
+        self.status = ft.Text(
+            "No scan run yet. Results are read-only until reviewed.",
+            size=11, color="#475569")
+        self.local_status = ft.Text(
+            "Enter a folder path or use Verify Files first.",
+            size=11, color="#475569")
+        self.local_folder_path = ft.TextField(
+            label="Folder path on server",
+            hint_text="e.g. /app/data/passport_import or C:/passports",
+            dense=True, expand=True)
         self.root = self._build()
 
     # [2.3] build — return tab root control
     def build(self):
         return self.root
 
-    # [2.4a] refresh — redraw existing results without an automatic OCR scan
+    # [2.4a] refresh — redraw visible tables only
     def refresh(self):
-        """Refresh the visible table only; scanning remains an explicit action."""
         if self.rows:
-            self._render()
+            self._render_rows(self.rows, self.table)
+        if self.local_rows:
+            self._render_rows(self.local_rows, self.local_table)
         log_event("PASSPORT_READER", "REFRESH_VISIBLE_ONLY", db=self.db,
-                  row_count=len(self.rows))
+                  row_count=len(self.rows),
+                  local_row_count=len(self.local_rows))
 
-    # [2.4aa] _status_update — update safely before/after page attachment
     def _status_update(self):
         try:
             self.status.update()
@@ -130,15 +155,20 @@ class PassportReaderTab:
             log_event("PASSPORT_READER", "STATUS_UPDATE_SKIPPED",
                       db=self.db, error_type=type(ex).__name__)
 
-    # [2.4b] _load_traveler_choices — load searchable read-only selector data
+    def _local_status_update(self):
+        try:
+            self.local_status.update()
+        except Exception:
+            pass
+
+    # [2.4b] _load_traveler_choices
     def _load_traveler_choices(self):
         try:
             raw = self.db.get_travelers()
             self.travelers = [dict(row) for row in raw]
             self._traveler_by_id = {
                 str(row.get("id", "")).strip(): row for row in self.travelers
-                if str(row.get("id", "")).strip()
-            }
+                if str(row.get("id", "")).strip()}
             self._set_traveler_options(self.travelers)
             log_event("PASSPORT_READER", "TRAVELER_CHOICES_LOADED",
                       db=self.db, traveler_count=len(self.travelers))
@@ -146,7 +176,6 @@ class PassportReaderTab:
             log_exception("PASSPORT_READER", "TRAVELER_CHOICES_FAILED", ex,
                           db=self.db)
 
-    # [2.4c] _traveler_label — produce a useful mobile dropdown label
     def _traveler_label(self, row):
         traveler_id = str(row.get("id", "")).strip()
         name = " ".join(str(row.get(key, "") or "").strip()
@@ -155,26 +184,20 @@ class PassportReaderTab:
         return " · ".join(part for part in (name, passport, traveler_id)
                           if part) or traveler_id
 
-    # [2.4d] _set_traveler_options — update dropdown without starting a scan
     def _set_traveler_options(self, rows):
         self.traveler_dropdown.options = [
-            ft.dropdown.Option(
-                key=str(row.get("id", "")).strip(),
-                text=self._traveler_label(row))
-            for row in rows if str(row.get("id", "")).strip()
-        ]
+            ft.dropdown.Option(key=str(row.get("id", "")).strip(),
+                               text=self._traveler_label(row))
+            for row in rows if str(row.get("id", "")).strip()]
         try:
             self.traveler_dropdown.update()
         except Exception:
             pass
 
-    # [2.4e] _filter_travelers — filter by ID, name, passport, or mobile
     def _filter_travelers(self, e=None):
         needle = str(self.traveler_search.value or "").strip().lower()
-        if not needle:
-            rows = self.travelers
-        else:
-            rows = [row for row in self.travelers if needle in " ".join(
+        rows = self.travelers if not needle else [
+            row for row in self.travelers if needle in " ".join(
                 str(row.get(key, "") or "") for key in
                 ("id", "first_name", "last_name", "passport_no", "mobile")
             ).lower()]
@@ -182,20 +205,18 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "TRAVELER_FILTER", db=self.db,
                   query=needle, match_count=len(rows))
 
-    # [2.4f] _selected_traveler_changed — log selected traveler only
     def _selected_traveler_changed(self, e=None):
         log_event("PASSPORT_READER", "TRAVELER_SELECTED", db=self.db,
                   traveler_id=str(self.traveler_dropdown.value or ""))
 
-    # [2.4g] _set_subtab — switch reader/results content without swipe tabs
     def _set_subtab(self, key):
         if self.subtab_content is None:
             return
-        if key == "results":
-            self.subtab_content.content = self._results_panel
-        else:
-            self.subtab_content.content = self._reader_panel
-            key = "reader"
+        panels = {"results": self._results_panel,
+                  "local": self._local_panel,
+                  "reader": self._reader_panel}
+        key = key if key in panels else "reader"
+        self.subtab_content.content = panels[key]
         try:
             self.subtab_content.update()
             self.subtab_selector.value = key
@@ -205,43 +226,67 @@ class PassportReaderTab:
         log_event("PASSPORT_READER", "SUBTAB_SELECTED", db=self.db,
                   subtab=key)
 
-    # [2.4] _button — create labeled touch-friendly action button
+    # [2.4] _button — labeled touch-friendly action button
     def _button(self, label, icon, color, handler):
-        return ft.Button(content=ft.Row([ft.Icon(icon, size=15, color=ft.Colors.WHITE), ft.Text(label, size=11, color=ft.Colors.WHITE)], spacing=5, tight=True), on_click=handler, height=38, bgcolor=color)
+        return ft.Button(
+            content=ft.Row([
+                ft.Icon(icon, size=15, color=ft.Colors.WHITE),
+                ft.Text(label, size=11, color=ft.Colors.WHITE),
+            ], spacing=5, tight=True),
+            on_click=handler, height=38, bgcolor=color)
 
     # [2.5] _build — assemble responsive tab layout
     def _build(self):
         header = ft.Text("🛂 Passport Reader", size=18,
                          weight=ft.FontWeight.BOLD, color="#1e3a8a")
         description = ft.Text(
-            "Mixed Files mode reads every PDF, JPEG, and PNG in the selected traveler folder as one ordered passport-page set. Verify all OCR against the original scan.",
-            size=11, color="#64748b")
+            "Mixed Files mode reads every PDF, JPEG, and PNG in the selected "
+            "traveler folder as one ordered passport-page set. Verify all OCR "
+            "against the original scan.", size=11, color="#64748b")
         selector_row = ft.ResponsiveRow([
-            ft.Container(content=self.traveler_search, col={"xs": 12, "md": 5}),
-            ft.Container(content=self.traveler_dropdown, col={"xs": 12, "md": 7}),
+            ft.Container(content=self.traveler_search,
+                         col={"xs": 12, "md": 5}),
+            ft.Container(content=self.traveler_dropdown,
+                         col={"xs": 12, "md": 7}),
         ], spacing=8, run_spacing=8)
         self._reader_panel = ft.Column([
             description,
             selector_row,
             ft.Row([
-                self._button("Read Selected", self._icon("DOCUMENT_SCANNER"), "#2563eb", self.scan),
-                self._button("Read All", self._icon("FOLDER_OPEN"), "#475569", lambda e: self.scan(e, all_travelers=True)),
+                self._button("Read Selected", self._icon("DOCUMENT_SCANNER"),
+                             "#2563eb", self.scan),
+                self._button("Read All", self._icon("FOLDER_OPEN"),
+                             "#475569", lambda e: self.scan(e, all_travelers=True)),
+                self._button("Refresh", self._icon("REFRESH", "SYNC"),
+                             "#64748b", lambda e: self.refresh()),
+                self._button("Clear", self._icon("DELETE", "CLEAR"),
+                             "#b91c1c", self._clear_reader),
             ], wrap=True, spacing=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
+
+        self._local_panel = self._build_local_panel()
+
         self._results_panel = ft.Column([
             ft.Row([
-                self._button("CSV", self._icon("DOWNLOAD"), "#0f766e", lambda e: self.export("csv")),
-                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"), "#15803d", lambda e: self.export("xlsx")),
-                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"), "#b91c1c", lambda e: self.export("pdf")),
+                self._button("CSV", self._icon("DOWNLOAD"), "#0f766e",
+                             lambda e: self.export("csv")),
+                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"),
+                             "#15803d", lambda e: self.export("xlsx")),
+                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
+                             "#b91c1c", lambda e: self.export("pdf")),
             ], wrap=True, spacing=6),
             self.status,
             ft.Container(content=self.table, height=360,
-                         bgcolor="#ffffff", border=ft.Border.all(1, "#cbd5e1"), padding=6),
+                         bgcolor="#ffffff",
+                         border=ft.Border.all(1, "#cbd5e1"),
+                         padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
+
         self.subtab_selector = ft.Dropdown(
             label="Passport Reader section",
             options=[
                 ft.dropdown.Option(key="reader", text="Mixed Files Reader"),
+                ft.dropdown.Option(key="local", text="Local Folder Reader"),
                 ft.dropdown.Option(key="results", text="Results & Downloads"),
             ], value="reader", dense=True, expand=True)
         self.subtab_selector.on_change = lambda e: self._set_subtab(
@@ -255,11 +300,53 @@ class PassportReaderTab:
         ], spacing=8, scroll=ft.ScrollMode.AUTO),
             padding=12, bgcolor="#ffffff", expand=True)
 
-    # [2.6] _cell — create a compact table cell
-    def _cell(self, value, width=130):
-        return ft.Container(content=ft.Text(str(value or ""), size=10, selectable=True, max_lines=3, overflow=ft.TextOverflow.ELLIPSIS), width=width, padding=4)
+    def _build_local_panel(self):
+        return ft.Column([
+            ft.Text("Local Folder Reader — reads an arbitrary system folder.",
+                    size=12, weight=ft.FontWeight.BOLD, color="#1e3a8a"),
+            ft.Text(
+                "Verifies and reads every PDF/JPEG/PNG in the folder below at "
+                "once. Not linked to a Haj traveler; separate CSV/Excel/PDF "
+                "downloads are available below.", size=11, color="#64748b"),
+            ft.ResponsiveRow([
+                ft.Container(content=self.local_folder_path,
+                             col={"xs": 12, "md": 9}),
+                ft.Container(
+                    content=self._button("Verify Files",
+                                         self._icon("CHECK_CIRCLE",
+                                                    "CHECK"),
+                                         "#0891b2", self.verify_local_folder),
+                    col={"xs": 12, "md": 3}),
+            ], spacing=8, run_spacing=8),
+            ft.Row([
+                self._button("Read Folder",
+                             self._icon("DOCUMENT_SCANNER"),
+                             "#2563eb", self.scan_local_folder),
+                self._button("CSV", self._icon("DOWNLOAD"), "#0f766e",
+                             lambda e: self.export("csv", local=True)),
+                self._button("Excel", self._icon("TABLE_VIEW", "GRID_VIEW"),
+                             "#15803d",
+                             lambda e: self.export("xlsx", local=True)),
+                self._button("PDF", self._icon("PICTURE_AS_PDF", "DESCRIPTION"),
+                             "#b91c1c",
+                             lambda e: self.export("pdf", local=True)),
+                self._button("Clear", self._icon("DELETE", "CLEAR"),
+                             "#b91c1c", self._clear_local),
+            ], wrap=True, spacing=6),
+            self.local_status,
+            ft.Container(content=self.local_table, height=360,
+                         bgcolor="#ffffff",
+                         border=ft.Border.all(1, "#cbd5e1"),
+                         padding=6),
+        ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-    # [2.6a] _is_mobile — choose a swipe-safe result layout
+    # [2.6] _cell
+    def _cell(self, value, width=130):
+        return ft.Container(content=ft.Text(str(value or ""), size=10,
+                                            selectable=True, max_lines=3,
+                                            overflow=ft.TextOverflow.ELLIPSIS),
+                            width=width, padding=4)
+
     def _is_mobile(self):
         try:
             width = float(getattr(self.page, "width", 0) or 0)
@@ -269,32 +356,42 @@ class PassportReaderTab:
         return width == 0 or width < 700 or any(
             token in platform for token in ("ios", "android", "mobile"))
 
-    # [2.6b] _mobile_card — render all passport details vertically
+    # [2.6b] _mobile_card — Front/Back only
     def _mobile_card(self, row):
         status = str(row.get("status", ""))
-        color = "#166534" if status == "VALIDATED" else "#b45309" if status == "REVIEW" else "#b91c1c"
+        color = _STATUS_COLOR.get(status, "#b91c1c")
         values = [
             ("Traveler", row.get("traveler_name") or row.get("traveler_id")),
             ("Passport", row.get("passport_no")),
-            ("Name from MRZ", f"{row.get('surname', '')} {row.get('given_names', '')}".strip()),
+            ("Name from MRZ",
+             f"{row.get('surname', '')} {row.get('given_names', '')}".strip()),
             ("Date of birth", row.get("date_of_birth")),
             ("Expiry", row.get("passport_expiry")),
             ("Nationality", row.get("nationality")),
             ("Pages read", row.get("pages_read")),
-            ("Page 1", row.get("page_1_status")),
-            ("Last page", row.get("last_page_status")),
-            ("Source file", Path(str(row.get("source_file", "")).replace("\\", "/")).name),
-            ("All source files", row.get("source_files") or row.get("source_file")),
-            ("Page 1 OCR text", row.get("page_1_ocr")),
-            ("Last page OCR text", row.get("last_page_ocr")),
+            ("Front", row.get("front_status") or row.get("page_1_status")),
+            ("Back", row.get("back_status") or row.get("last_page_status")),
+            ("Source file",
+             Path(str(row.get("source_file", "")).replace("\\", "/")).name),
+            ("All source files",
+             row.get("source_files") or row.get("source_file")),
+            ("Front OCR text",
+             strip_mrz_text(row.get("front_page_ocr")
+                            or row.get("page_1_ocr") or "")),
+            ("Back OCR text",
+             strip_mrz_text(row.get("back_page_ocr")
+                            or row.get("last_page_ocr") or "")),
             ("Review reason", row.get("review_reason")),
         ]
         details = [
             ft.Row([
-                ft.Container(content=ft.Text(label, size=10, weight=ft.FontWeight.BOLD), width=105),
+                ft.Container(content=ft.Text(label, size=10,
+                                              weight=ft.FontWeight.BOLD),
+                             width=105),
                 ft.Text(
                     (str(value or "—")[:1800] + "…"
-                     if label.endswith("OCR text") and len(str(value or "")) > 1800
+                     if label.endswith("OCR text")
+                     and len(str(value or "")) > 1800
                      else str(value or "—")),
                     size=10, selectable=True, expand=True),
             ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.START)
@@ -303,39 +400,58 @@ class PassportReaderTab:
         details.insert(0, ft.Text(status or "UNKNOWN", size=13,
                                   weight=ft.FontWeight.BOLD, color=color))
         return ft.Container(content=ft.Column(details, spacing=4),
-                            bgcolor="#f8fafc", border=ft.Border.all(1, "#cbd5e1"),
+                            bgcolor="#f8fafc",
+                            border=ft.Border.all(1, "#cbd5e1"),
                             border_radius=8, padding=8)
 
-    # [2.7] _render — render swipe-safe mobile cards or desktop table
-    def _render(self):
-        self.table.controls.clear()
-        headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB", "Expiry", "Nationality", "Pages read", "Page 1", "Last page", "File", "Status", "Review reason"]
+    # [2.7] _render_rows — shared renderer for traveler & local tables
+    def _render_rows(self, rows, table):
+        table.controls.clear()
+        headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB",
+                   "Expiry", "Nationality", "Pages read", "Front", "Back",
+                   "File", "Status", "Review reason"]
         if self._is_mobile():
-            log_event("PASSPORT_READER", "MOBILE_RESULTS_RENDER", db=self.db,
-                      row_count=len(self.rows))
-            self.table.controls.append(ft.Text(
-                "Passport results — scroll vertically; horizontal swipes are disabled in this view.",
+            table.controls.append(ft.Text(
+                "Results — scroll vertically; horizontal swipes are disabled.",
                 size=10, color="#475569"))
-            self.table.controls.extend(self._mobile_card(row) for row in self.rows)
+            table.controls.extend(self._mobile_card(r) for r in rows)
             try:
-                self.table.update()
+                table.update()
             except Exception:
                 pass
             return
-        log_event("PASSPORT_READER", "DESKTOP_RESULTS_RENDER", db=self.db,
-                  row_count=len(self.rows))
-        self.table.controls.append(ft.Row([self._cell(h, 135) for h in headers], wrap=False, scroll=ft.ScrollMode.AUTO))
-        for r in self.rows:
-            status = r.get("status", "")
-            color = "#166534" if status == "VALIDATED" else "#b45309" if status == "REVIEW" else "#b91c1c"
-            values = [r.get("traveler_name") or r.get("traveler_id"), r.get("passport_no"), f"{r.get('surname','')} {r.get('given_names','')}".strip(), r.get("date_of_birth"), r.get("passport_expiry"), r.get("nationality"), r.get("pages_read"), r.get("page_1_status"), r.get("last_page_status"), Path(r.get("source_file", "")).name, status, r.get("review_reason")]
-            self.table.controls.append(ft.Row([self._cell(v) for v in values], wrap=False, scroll=ft.ScrollMode.AUTO, vertical_alignment=ft.CrossAxisAlignment.START))
+        table.controls.append(ft.Row([self._cell(h, 135) for h in headers],
+                                     wrap=False, scroll=ft.ScrollMode.AUTO))
+        for r in rows:
+            status = str(r.get("status", ""))
+            color = _STATUS_COLOR.get(status, "#b91c1c")
+            values = [
+                r.get("traveler_name") or r.get("traveler_id"),
+                r.get("passport_no"),
+                f"{r.get('surname','')} {r.get('given_names','')}".strip(),
+                r.get("date_of_birth"),
+                r.get("passport_expiry"),
+                r.get("nationality"),
+                r.get("pages_read"),
+                r.get("front_status") or r.get("page_1_status"),
+                r.get("back_status") or r.get("last_page_status"),
+                Path(r.get("source_file", "")).name,
+                status,
+                r.get("review_reason"),
+            ]
+            table.controls.append(ft.Row(
+                [self._cell(v) for v in values],
+                wrap=False, scroll=ft.ScrollMode.AUTO,
+                vertical_alignment=ft.CrossAxisAlignment.START))
         try:
-            self.table.update()
+            table.update()
         except Exception:
             pass
 
-    # [2.8] scan — queue selected/all scans without blocking the WebSocket
+    def _render(self):
+        self._render_rows(self.rows, self.table)
+
+    # [2.8] scan — traveler scan
     def scan(self, e=None, all_travelers=False):
         if self._scan_running:
             self.status.value = "A passport scan is already running. Please wait."
@@ -345,17 +461,14 @@ class PassportReaderTab:
         if not all_travelers and not selected_id:
             self.status.value = "Select a traveler from the dropdown before reading."
             self._status_update()
-            log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION",
-                      db=self.db)
+            log_event("PASSPORT_READER", "SCAN_SKIPPED_NO_SELECTION", db=self.db)
             return
-        targets = (self.travelers if all_travelers else
-                   [self._traveler_by_id[selected_id]])
+        targets = (self.travelers if all_travelers
+                   else [self._traveler_by_id[selected_id]])
         self._scan_running = True
         self.status.value = (
             f"Reading {len(targets)} traveler passport folder(s) in the background…")
         self._status_update()
-        # Read Selected remains on the reader screen; Read All opens the
-        # accumulated results screen so progress and downloads are visible.
         if all_travelers:
             self._set_subtab("results")
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
@@ -365,35 +478,26 @@ class PassportReaderTab:
             self.page.run_task(self._scan_background, targets)
         except Exception as ex:
             self._scan_running = False
-            log_exception("PASSPORT_READER", "SCAN_QUEUE_FAILED", ex,
-                          db=self.db)
+            log_exception("PASSPORT_READER", "SCAN_QUEUE_FAILED", ex, db=self.db)
             self.status.value = f"Passport scan could not start: {ex}"
             self._status_update()
 
-    # [2.8a] _scan_background — OCR outside the Flet event loop
     async def _scan_background(self, targets):
         try:
-            # Process one traveler at a time instead of keeping the WebSocket
-            # silent while a large Read All batch performs OCR. This also makes
-            # partial results visible and allows the user to see progress.
             if len(targets) > 1:
                 self.rows = []
             total = len(targets)
             no_file_count = 0
             for index, traveler in enumerate(targets, start=1):
                 traveler_id = str(traveler.get("id", ""))
-                log_event("PASSPORT_READER", "SCAN_PROGRESS_START", db=self.db,
-                          traveler_index=index, traveler_total=total,
-                          traveler_id=traveler_id)
                 rows, worker_error = await asyncio.to_thread(
                     _scan_one_isolated, traveler, self.db.data_dir)
                 if worker_error:
-                    log_event("PASSPORT_READER", "SCAN_WORKER_FAILED", db=self.db,
-                              traveler_index=index, traveler_total=total,
-                              traveler_id=traveler_id, error=worker_error)
                     rows = [{
                         "traveler_id": traveler_id,
-                        "traveler_name": " ".join(str(traveler.get(k, "") or "").strip() for k in ("first_name", "last_name")).strip(),
+                        "traveler_name": " ".join(
+                            str(traveler.get(k, "") or "").strip()
+                            for k in ("first_name", "last_name")).strip(),
                         "source_file": "", "status": "ERROR",
                         "review_required": True,
                         "review_reason": worker_error,
@@ -402,29 +506,18 @@ class PassportReaderTab:
                     self.rows = [r for r in self.rows
                                  if str(r.get("traveler_id", "")) != traveler_id]
                 self.rows.extend(rows)
-                row_status = str(rows[0].get("status", "")) if rows else "NO SCAN"
-                if row_status == "NO SCAN":
+                if rows and rows[0].get("status") == "NO SCAN":
                     no_file_count += 1
-                    log_event("PASSPORT_READER", "NO_FILES_IN_FOLDER", db=self.db,
-                              traveler_index=index, traveler_total=total,
-                              traveler_id=traveler_id,
-                              message="No PDF/JPEG/PNG files inside passport folder")
-                log_event("PASSPORT_READER", "SCAN_PROGRESS_COMPLETE", db=self.db,
-                          traveler_index=index, traveler_total=total,
-                          traveler_id=traveler_id,
-                          result_status=str(rows[0].get("status", "")) if rows else "NO_RESULT")
                 self.status.value = (
                     f"Reading passport records… {index}/{total} completed. "
                     f"{no_file_count} folder(s) have no passport files. "
                     f"{len(self.rows)} result(s) accumulated.")
-                # Rebuild the growing OCR cards in bounded batches. Updating
-                # dozens of large cards after every file can overload a mobile
-                # WebSocket and look like an unexpected logout.
                 if index == 1 or index % 5 == 0 or index == total:
                     self._render()
                 self._status_update()
                 await asyncio.sleep(0)
-            valid = sum(1 for r in self.rows if r.get("status") == "VALIDATED")
+            valid = sum(1 for r in self.rows
+                        if r.get("status") in ("MRZ_OK", "VALIDATED"))
             review = len(self.rows) - valid
             errors = sum(1 for r in self.rows if r.get("status") == "ERROR")
             self.status.value = (
@@ -447,99 +540,325 @@ class PassportReaderTab:
         finally:
             self._scan_running = False
 
-    # [2.9] _export_rows — ensure current results exist
-    def _export_rows(self):
-        return self.rows
-
-    # [2.10] export — create CSV, Excel, or PDF download
-    def export(self, kind):
-        log_event("PASSPORT_READER", "EXPORT_START", db=self.db, kind=kind)
-        rows = self._export_rows()
-        if not rows:
-            log_event("PASSPORT_READER", "EXPORT_SKIPPED_NO_ROWS", db=self.db,
-                      kind=kind)
+    # [2.9] verify_local_folder — list & sanity-check files before OCR
+    def verify_local_folder(self, e=None):
+        folder = str(self.local_folder_path.value or "").strip()
+        if not folder:
+            self.local_status.value = "Enter a folder path first."
+            self._local_status_update()
             return
-        # Keep generated artifacts on the same durable Railway volume as the
-        # database and source documents.
-        out = Path(self.db.data_dir) / "exports" / "passport_reader"
+        try:
+            files = discover_files_in_folder(folder)
+        except Exception as ex:
+            log_exception("PASSPORT_READER", "VERIFY_FOLDER_FAILED", ex, db=self.db)
+            self.local_status.value = f"Verify failed: {ex}"
+            self._local_status_update()
+            return
+        if not files:
+            self.local_status.value = (
+                f"No supported PDF/JPEG/PNG files found in {folder}")
+        else:
+            lines = [f"Verified {len(files)} file(s) in {folder}:"]
+            for p in files[:20]:
+                try:
+                    lines.append(f"  • {p.name} ({p.stat().st_size // 1024} KB)")
+                except OSError:
+                    lines.append(f"  • {p.name} (unreadable)")
+            if len(files) > 20:
+                lines.append(f"  … and {len(files) - 20} more")
+            self.local_status.value = "\n".join(lines)
+        self._local_status_update()
+        log_event("PASSPORT_READER", "VERIFY_LOCAL_FOLDER", db=self.db,
+                  folder=folder, file_count=len(files))
+
+    # [2.9a] scan_local_folder — read every file in the folder at once
+    def scan_local_folder(self, e=None):
+        if self._local_scan_running:
+            self.local_status.value = "A folder read is already running. Please wait."
+            self._local_status_update()
+            return
+        folder = str(self.local_folder_path.value or "").strip()
+        if not folder:
+            self.local_status.value = "Enter a folder path first."
+            self._local_status_update()
+            return
+        self._local_scan_running = True
+        self.local_status.value = f"Reading all files in {folder} …"
+        self._local_status_update()
+        log_event("PASSPORT_READER", "LOCAL_SCAN_START", db=self.db,
+                  folder=folder)
+        try:
+            self.page.run_task(self._local_scan_background, folder)
+        except Exception as ex:
+            self._local_scan_running = False
+            log_exception("PASSPORT_READER", "LOCAL_SCAN_QUEUE_FAILED",
+                          ex, db=self.db)
+            self.local_status.value = f"Folder scan could not start: {ex}"
+            self._local_status_update()
+
+    async def _local_scan_background(self, folder):
+        try:
+            rows, worker_error = await asyncio.to_thread(
+                _scan_folder_isolated, folder)
+            if worker_error:
+                rows = [{
+                    "traveler_id": f"local:{Path(folder).name}",
+                    "traveler_name": f"Local: {Path(folder).name}",
+                    "source_file": folder, "status": "ERROR",
+                    "review_required": True, "review_reason": worker_error,
+                }]
+            self.local_rows = rows
+            self._render_rows(self.local_rows, self.local_table)
+            statuses = [r.get("status") for r in rows]
+            valid = sum(1 for s in statuses if s in ("MRZ_OK", "VALIDATED"))
+            review = sum(1 for s in statuses if s == "REVIEW")
+            errors = sum(1 for s in statuses if s == "ERROR")
+            no_scan = sum(1 for s in statuses if s == "NO SCAN")
+            self.local_status.value = (
+                f"Read {len(rows)} file set(s): {valid} MRZ-validated, "
+                f"{review} review, {errors} errors, {no_scan} no-scan. "
+                "Download CSV/Excel/PDF to share these results.")
+            self._local_status_update()
+            log_event("PASSPORT_READER", "LOCAL_SCAN_SUCCESS", db=self.db,
+                      folder=folder, row_count=len(rows),
+                      validated=valid, review=review, errors=errors)
+        except Exception as ex:
+            traceback.print_exc()
+            log_exception("PASSPORT_READER", "LOCAL_SCAN_FAILED", ex, db=self.db)
+            self.local_status.value = f"Folder scan failed: {ex}"
+            self._local_status_update()
+        finally:
+            self._local_scan_running = False
+
+    # [2.9b] clear helpers
+    def _clear_reader(self, e=None):
+        self.rows = []
+        self.table.controls.clear()
+        try:
+            self.table.update()
+        except Exception:
+            pass
+        self.status.value = "Results cleared."
+        self._status_update()
+
+    def _clear_local(self, e=None):
+        self.local_rows = []
+        self.local_table.controls.clear()
+        try:
+            self.local_table.update()
+        except Exception:
+            pass
+        self.local_status.value = "Local folder results cleared."
+        self._local_status_update()
+
+    # [2.10] export — CSV/Excel/PDF for traveler OR local-folder rows
+    def _export_fields(self):
+        return ["traveler_id", "traveler_name", "passport_no", "surname",
+                "given_names", "nationality", "date_of_birth", "sex",
+                "passport_expiry", "issuing_country", "pages_read",
+                "front_status", "back_status",
+                "page_1_status", "last_page_status",
+                "status", "mrz_valid", "review_required", "review_reason",
+                "source_file", "source_files",
+                "front_page_ocr", "back_page_ocr",
+                "page_1_ocr", "page_2_ocr", "last_page_ocr", "page_ocr"]
+
+    def export(self, kind, local=False):
+        log_event("PASSPORT_READER", "EXPORT_START", db=self.db,
+                  kind=kind, local=local)
+        rows = self.local_rows if local else self.rows
+        if not rows:
+            log_event("PASSPORT_READER", "EXPORT_SKIPPED_NO_ROWS",
+                      db=self.db, kind=kind, local=local)
+            (self.local_status if local else self.status).value = \
+                "Nothing to export — run a scan first."
+            (self._local_status_update if local else self._status_update)()
+            return
+        out = Path(self.db.data_dir) / "exports" / (
+            "passport_reader_local" if local else "passport_reader")
         out.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fields = ["traveler_id", "traveler_name", "passport_no", "surname", "given_names", "nationality", "date_of_birth", "sex", "passport_expiry", "issuing_country", "pages_read", "page_1_status", "last_page_status", "status", "mrz_valid", "review_required", "review_reason", "source_file", "source_files", "page_1_ocr", "page_2_ocr", "last_page_ocr", "page_ocr"]
-        path = out / f"passport_reader_{stamp}.{kind}"
+        prefix = "passport_reader_local" if local else "passport_reader"
+        path = out / f"{prefix}_{stamp}.{kind}"
+        fields = self._export_fields()
         try:
             if kind == "csv":
                 with path.open("w", newline="", encoding="utf-8-sig") as f:
-                    writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
-                    writer.writeheader(); writer.writerows(rows)
+                    writer = csv.DictWriter(f, fieldnames=fields,
+                                            extrasaction="ignore")
+                    writer.writeheader()
+                    writer.writerows(rows)
             elif kind == "xlsx":
                 from openpyxl import Workbook
                 from openpyxl.styles import Font, PatternFill, Alignment
-                wb = Workbook(); ws = wb.active; ws.title = "Passport Reader"
+                wb = Workbook()
+                ws = wb.active
+                ws.title = "Passport Reader"
                 ws.append(fields)
-                for c in ws[1]: c.font = Font(bold=True, color="FFFFFF"); c.fill = PatternFill("solid", fgColor="1E3A8A"); c.alignment = Alignment(wrap_text=True)
-                for row in rows: ws.append([row.get(k, "") for k in fields])
+                for c in ws[1]:
+                    c.font = Font(bold=True, color="FFFFFF")
+                    c.fill = PatternFill("solid", fgColor="1E3A8A")
+                    c.alignment = Alignment(wrap_text=True)
+                for row in rows:
+                    ws.append([row.get(k, "") for k in fields])
                 ws.freeze_panes = "A2"
                 for col in ws.columns:
-                    ws.column_dimensions[col[0].column_letter].width = min(42, max(14, max(len(str(x.value or "")) for x in col) + 2))
+                    ws.column_dimensions[col[0].column_letter].width = \
+                        min(42, max(14,
+                                    max(len(str(x.value or "")) for x in col) + 2))
                 wb.save(path)
             else:
-                from reportlab.lib import colors
-                from reportlab.lib.pagesizes import landscape, A4
-                from reportlab.lib.styles import getSampleStyleSheet
-                from reportlab.lib.units import mm
-                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-                styles = getSampleStyleSheet(); doc = SimpleDocTemplate(str(path), pagesize=landscape(A4), leftMargin=8*mm, rightMargin=8*mm, topMargin=8*mm, bottomMargin=8*mm)
-                visible = ["traveler_name", "passport_no", "surname", "given_names", "date_of_birth", "passport_expiry", "nationality", "pages_read", "page_1_status", "last_page_status", "status", "review_reason"]
-                labels = ["Traveler", "Passport No.", "Surname", "Given Name(s)", "Date of Birth", "Date of Expiry", "Nationality", "Pages read", "Page 1", "Page 2 / last", "Status", "Review"]
-                data = [[Paragraph(x, styles["BodyText"]) for x in labels]]
-                for r in rows: data.append([Paragraph(str(r.get(k, "") or ""), styles["BodyText"]) for k in visible])
-                table = Table(data, repeatRows=1, colWidths=[30*mm, 22*mm, 24*mm, 30*mm, 20*mm, 20*mm, 22*mm, 28*mm, 18*mm, 18*mm, 20*mm, 48*mm])
-                table.setStyle(TableStyle([("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1e3a8a")), ("TEXTCOLOR", (0,0), (-1,0), colors.white), ("GRID", (0,0), (-1,-1), .25, colors.grey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("FONTSIZE", (0,0), (-1,-1), 7), ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f8fafc")])]))
-                story = [Paragraph("Passport Reader — passport fields and page-by-page reading", styles["Title"]),
-                         Paragraph("English OCR only. Verify every value against the original passport scan before ticket or visa issuance.", styles["BodyText"]),
-                         Spacer(1, 4), table]
-                for row_index, r in enumerate(rows):
-                    story.append(PageBreak())
-                    traveler_title = xml_escape(str(r.get("traveler_name") or r.get("traveler_id") or "Unknown traveler"))
-                    story.append(Paragraph(f"{traveler_title} — Page 1", styles["Heading2"]))
-                    page1_fields = [
-                        ("Surname", r.get("surname")),
-                        ("Given Name(s)", r.get("given_names")),
-                        ("Passport No.", r.get("passport_no")),
-                        ("Nationality", r.get("nationality")),
-                        ("Date of Birth", r.get("date_of_birth")),
-                        ("Sex", r.get("sex")),
-                        ("Date of Expiry", r.get("passport_expiry")),
-                        ("Issuing Country", r.get("issuing_country")),
-                    ]
-                    story.append(Table([[Paragraph(xml_escape(str(k)), styles["BodyText"]),
-                                         Paragraph(xml_escape(str(v or "")), styles["BodyText"])]
-                                        for k, v in page1_fields], colWidths=[42*mm, 90*mm],
-                                        style=TableStyle([("GRID", (0,0), (-1,-1), .25, colors.grey),
-                                                          ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#e2e8f0")),
-                                                          ("VALIGN", (0,0), (-1,-1), "TOP")])) )
-                    story.append(Spacer(1, 8))
-                    page1 = str(r.get("page_1_ocr") or "").strip()
-                    page1 = "\n".join(line.strip() for line in page1.splitlines()
-                                        if line.strip() and not line.strip().startswith("[MRZ OCR]"))
-                    story.append(Paragraph("Page 1 — English OCR labels and printed text", styles["Heading3"]))
-                    story.append(Paragraph(xml_escape(page1 or "No Page 1 OCR text captured.").replace("\n", "<br/>"), styles["BodyText"]))
-                    story.append(Spacer(1, 8))
-                    story.append(Paragraph("Page 2 — passport-printed text", styles["Heading2"]))
-                    page2 = str(r.get("page_2_ocr") or r.get("last_page_ocr") or "").strip()
-                    page2 = "\n".join(line.strip() for line in page2.splitlines()
-                                        if line.strip() and not line.strip().startswith("[MRZ OCR]"))
-                    story.append(Paragraph(xml_escape(page2 or "No Page 2 OCR text captured.").replace("\n", "<br/>"), styles["BodyText"]))
-                doc.build(story)
-            url = send_file_to_user(self.page, str(path), f"Passport Reader {kind.upper()}")
+                self._export_pdf(rows, path)
+            url = send_file_to_user(
+                self.page, str(path),
+                f"Passport Reader {kind.upper()}"
+                + (" (Local Folder)" if local else ""))
             if url:
                 self.page.launch_url(url)
-            self.status.value = f"Exported {len(rows)} rows to {path.name}."
-            self._status_update()
+            msg = f"Exported {len(rows)} rows to {path.name}."
+            if local:
+                self.local_status.value = msg
+                self._local_status_update()
+            else:
+                self.status.value = msg
+                self._status_update()
             log_event("PASSPORT_READER", "EXPORT_SUCCESS", db=self.db,
-                      kind=kind, row_count=len(rows), path=str(path))
+                      kind=kind, local=local, row_count=len(rows),
+                      path=str(path))
         except Exception as ex:
             traceback.print_exc()
             log_exception("PASSPORT_READER", "EXPORT_FAILED", ex, db=self.db,
-                          kind=kind, path=str(path))
-            self.status.value = f"Export failed: {ex}"; self._status_update()
+                          kind=kind, local=local, path=str(path))
+            (self.local_status if local else self.status).value = \
+                f"Export failed: {ex}"
+            (self._local_status_update if local else self._status_update)()
+
+    # [2.10a] _export_pdf — dynamic columns, no blank pages, no MRZ noise
+    def _export_pdf(self, rows, path):
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import landscape, A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+            PageBreak,
+        )
+        styles = getSampleStyleSheet()
+        page_w, _ = landscape(A4)
+        usable = page_w - 16 * mm
+        doc = SimpleDocTemplate(str(path), pagesize=landscape(A4),
+                                leftMargin=8 * mm, rightMargin=8 * mm,
+                                topMargin=8 * mm, bottomMargin=8 * mm)
+        visible = ["traveler_name", "passport_no", "surname", "given_names",
+                   "date_of_birth", "passport_expiry", "nationality",
+                   "front_status", "back_status", "status", "review_reason"]
+        labels = ["Traveler", "Passport No.", "Surname", "Given Name(s)",
+                  "Date of Birth", "Date of Expiry", "Nationality",
+                  "Front", "Back", "Status", "Review"]
+        floors = {"traveler_name": 28, "passport_no": 20, "surname": 22,
+                  "given_names": 28, "date_of_birth": 20,
+                  "passport_expiry": 20, "nationality": 18,
+                  "front_status": 16, "back_status": 16,
+                  "status": 18, "review_reason": 40}
+        weights = []
+        for key in visible:
+            longest = max(
+                (len(str(r.get(key, "") or "")) for r in rows), default=1)
+            weights.append(max(longest, 4))
+        total = sum(weights)
+        col_widths = []
+        for i, key in enumerate(visible):
+            w = usable * weights[i] / total
+            floor = floors.get(key, 16) * mm
+            col_widths.append(max(w, floor))
+        s = sum(col_widths)
+        if s > usable:
+            col_widths = [w * usable / s for w in col_widths]
+
+        def _val(r, key):
+            if key == "status":
+                return _STATUS_PDF.get(str(r.get("status", "")),
+                                       str(r.get("status", "")))
+            if key == "front_status":
+                return r.get("front_status") or r.get("page_1_status") or ""
+            if key == "back_status":
+                return r.get("back_status") or r.get("last_page_status") or ""
+            return str(r.get(key, "") or "")
+
+        data = [[Paragraph(x, styles["BodyText"]) for x in labels]]
+        for r in rows:
+            data.append([Paragraph(_val(r, k), styles["BodyText"])
+                         for k in visible])
+        table = Table(data, repeatRows=1, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("WORDWRAP", (0, 0), (-1, -1), True),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+             [colors.white, colors.HexColor("#f8fafc")]),
+        ]))
+        story = [
+            Paragraph("Passport Reader — passport fields and page-by-page reading",
+                      styles["Title"]),
+            Paragraph(
+                "English OCR only. 'OK' means MRZ check digits and nationality "
+                "passed, not that names are correct. Verify every value against "
+                "the original passport scan before ticket or visa issuance.",
+                styles["BodyText"]),
+            Spacer(1, 4),
+            table,
+        ]
+        for r in rows:
+            front_raw = (r.get("front_page_ocr")
+                         or r.get("page_1_ocr") or "").strip()
+            back_raw = (r.get("back_page_ocr")
+                        or r.get("page_2_ocr")
+                        or r.get("last_page_ocr") or "").strip()
+            front = strip_mrz_text(front_raw)
+            back = strip_mrz_text(back_raw)
+            if not front and not back:
+                continue   # skip blank NO SCAN / ERROR detail pages
+            story.append(PageBreak())
+            title = xml_escape(
+                str(r.get("traveler_name") or r.get("traveler_id")
+                    or "Unknown traveler"))
+            story.append(Paragraph(f"{title} — Front", styles["Heading2"]))
+            page1_fields = [
+                ("Surname", r.get("surname")),
+                ("Given Name(s)", r.get("given_names")),
+                ("Passport No.", r.get("passport_no")),
+                ("Nationality", r.get("nationality")),
+                ("Date of Birth", r.get("date_of_birth")),
+                ("Sex", r.get("sex")),
+                ("Date of Expiry", r.get("passport_expiry")),
+                ("Issuing Country", r.get("issuing_country")),
+            ]
+            story.append(Table(
+                [[Paragraph(xml_escape(str(k)), styles["BodyText"]),
+                  Paragraph(xml_escape(str(v or "")), styles["BodyText"])]
+                 for k, v in page1_fields],
+                colWidths=[42 * mm, 90 * mm],
+                style=TableStyle([
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                    ("BACKGROUND", (0, 0), (0, -1),
+                     colors.HexColor("#e2e8f0")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ])))
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(
+                "Front — English OCR labels and printed text",
+                styles["Heading3"]))
+            story.append(Paragraph(
+                xml_escape(front or "No Front OCR text captured.").replace(
+                    "\n", "<br/>"), styles["BodyText"]))
+            if back:
+                story.append(Spacer(1, 8))
+                story.append(Paragraph("Back — printed text",
+                                       styles["Heading2"]))
+                story.append(Paragraph(
+                    xml_escape(back).replace("\n", "<br/>"),
+                    styles["BodyText"]))
+        doc.build(story)
