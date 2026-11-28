@@ -395,13 +395,13 @@ class PassportReaderTab:
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
     def _clean_ocr_noise(self, text):
-        """Remove leading/trailing garbage like 'aj', 'ea', 'rie', 'ie', 'AG', 'Cos:', 'uk'."""
+        """Remove leading/trailing garbage like 'aj', 'ea', 'rie', 'ie', 'AG', 'Cos:', 'uk', 'totes'."""
         if not text:
             return ""
         text = str(text).strip()
-        # Strip short noise words (1 to 3 chars) at the start or end
+        # Strip short noise words (1 to 4 chars) at the start or end
         text = re.sub(r"^[a-z]{1,3}\s+", "", text, flags=re.I)
-        text = re.sub(r"\s+[a-z]{1,3}[.:]?$", "", text, flags=re.I)
+        text = re.sub(r"\s+[a-z]{1,4}[.:]?$", "", text, flags=re.I)
         # Remove specific noise artifacts
         text = text.replace("Cos:", "").replace("eS", "").replace("uk", "")
         return text.strip()
@@ -418,7 +418,7 @@ class PassportReaderTab:
     def _extract_line_after(self, label, text):
         """Helper to find text on the same line or the line immediately below a label."""
         # Look for text on the same line after the label
-        m = re.search(rf"{label}[^\n]*?\s{1,}([A-Z][A-Z\s]+)", text, re.IGNORECASE)
+        m = re.search(rf"{label}[^\n]*?\s{{1,}}([A-Z][A-Z\s]+)", text, re.IGNORECASE)
         if m:
             return self._clean_ocr_noise(m.group(1))
         # Look for text on the next line
@@ -457,11 +457,20 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
+        # Fix: If passport_no looks like a name and surname looks like a passport, swap
+        if data["surname"] and re.match(r"^[A-Z]\d{7}", data["surname"]):
+            data["passport_no"] = data["surname"]
+            data["surname"] = data["given_names"]
+            data["given_names"] = ""
+            
         # Front extraction
         if front:
-            # Place of Birth
+            # Place of Birth (ignore garbage like 'tae')
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
-            if m: data["place_of_birth"] = self._clean_ocr_noise(m.group(1))
+            if m: 
+                pob = self._clean_ocr_noise(m.group(1))
+                if len(pob) > 5 and "tae" not in pob.lower():
+                    data["place_of_birth"] = pob
             
             # Place of Issue
             m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
@@ -473,13 +482,6 @@ class PassportReaderTab:
             
             expiry_m = re.search(r"(?:Date of Expiry|Expiry).*?(\d{2}[/-]\d{2}[/-]\d{4})", front, re.IGNORECASE | re.DOTALL)
             if expiry_m: data["expiry"] = expiry_m.group(1).replace("/", "-")
-
-            # If targeted date of issue failed, try finding all dates
-            if not data["date_of_issue"]:
-                dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
-                if len(dates) >= 2:
-                    data["date_of_issue"] = dates[0]
-                    if not expiry_m: data["expiry"] = dates[1].replace("/", "-")
 
         # Reconstruct MRZ if missing or broken by OCR
         if not data["mrz"] or "W584" not in data["mrz"]:
@@ -493,14 +495,12 @@ class PassportReaderTab:
 
         # Back extraction (Targeted Labels)
         if back:
-            # Targeted Father, Mother, Spouse
             data["father"] = self._extract_line_after(r"Name of Father", back)
             data["mother"] = self._extract_line_after(r"Name of Mother", back)
             data["spouse"] = self._extract_line_after(r"Name of Spouse", back)
 
-            # Address (starts with numbers, PIN, STREET, NAGAR, or ROAD)
+            # Address
             lines = [l.strip() for l in back.splitlines() if l.strip()]
-            lines = [re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', l).strip() for l in lines]
             addr_lines = []
             capturing = False
             for line in lines:
@@ -511,7 +511,9 @@ class PassportReaderTab:
                     break
                 if capturing:
                     addr_lines.append(line)
-            data["address"] = ", ".join(addr_lines)
+            
+            if addr_lines:
+                data["address"] = self._clean_ocr_noise(", ".join(addr_lines))
 
             # Old Passport & File No
             m = re.search(r"([A-Z]\d{7})\s+(\d{2}/\d{2}/\d{4})\s+([A-Z]+)", back)
