@@ -428,7 +428,7 @@ class PassportReaderTab:
         return ""
 
     def _get_all_fields(self, row):
-        """Extract every single field from front and back OCR using targeted regex."""
+        """Extract every single field from front and back OCR using targeted regex and smart fallbacks."""
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
         back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
@@ -465,23 +465,50 @@ class PassportReaderTab:
             
         # Front extraction
         if front:
-            # Place of Birth (ignore garbage like 'tae')
+            clean_front = re.sub(r'[^A-Za-z0-9\s,/\-]', ' ', front)
+            lines = [l.strip() for l in clean_front.splitlines() if l.strip()]
+
+            # 1. PLACE OF BIRTH
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: 
                 pob = self._clean_ocr_noise(m.group(1))
                 if len(pob) > 5 and "tae" not in pob.lower():
                     data["place_of_birth"] = pob
             
-            # Place of Issue
-            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
-            if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
+            if not data["place_of_birth"]:
+                for state in ["TAMIL NADU", "KERALA", "ANDHRA", "KARNATAKA", "MAHARASHTRA", "GUJARAT", "DELHI"]:
+                    for line in lines:
+                        if state in line.upper() and not "ISSUE" in line.upper():
+                            data["place_of_birth"] = self._clean_ocr_noise(line)
+                            break
+                    if data["place_of_birth"]: break
 
-            # Date of Issue & Expiry (targeted)
-            issue_m = re.search(r"(?:Date of Issue|Issue).*?(\d{2}[/-]\d{2}[/-]\d{4})", front, re.IGNORECASE | re.DOTALL)
-            if issue_m: data["date_of_issue"] = issue_m.group(1).replace("-", "/")
+            # 2. PLACE OF ISSUE
+            m = re.search(r"(?:Place of Issu|Place of Iss)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
+            if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
             
-            expiry_m = re.search(r"(?:Date of Expiry|Expiry).*?(\d{2}[/-]\d{2}[/-]\d{4})", front, re.IGNORECASE | re.DOTALL)
-            if expiry_m: data["expiry"] = expiry_m.group(1).replace("/", "-")
+            if not data["place_of_issue"]:
+                for city in ["CHENNAI", "MUMBAI", "DELHI", "KOLKATA", "COIMBATORE", "MADURAI", "HYDERABAD", "BANGALORE", "KOCHI"]:
+                    for line in lines:
+                        if city in line.upper() and not "BIRTH" in line.upper():
+                            data["place_of_issue"] = city
+                            break
+                    if data["place_of_issue"]: break
+
+            # 3. DATES (Issue vs Expiry)
+            dates = re.findall(r"\b(\d{2})[/-](\d{2})[/-](\d{4})\b", front)
+            parsed_dates = list(dict.fromkeys([f"{d}/{m}/{y}" for d, m, y in dates])) # Deduplicate
+            
+            if len(parsed_dates) >= 2:
+                try:
+                    sorted_dates = sorted(parsed_dates, key=lambda d: datetime.strptime(d, "%d/%m/%Y"))
+                    data["date_of_issue"] = sorted_dates[0]
+                    data["expiry"] = sorted_dates[-1].replace("/", "-")
+                except Exception:
+                    data["date_of_issue"] = parsed_dates[0]
+                    data["expiry"] = parsed_dates[1].replace("/", "-")
+            elif len(parsed_dates) == 1 and not data["expiry"]:
+                data["expiry"] = parsed_dates[0].replace("/", "-")
 
         # Reconstruct MRZ if missing or broken by OCR
         if not data["mrz"] or "W584" not in data["mrz"]:
