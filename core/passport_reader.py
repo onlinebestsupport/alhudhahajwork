@@ -261,10 +261,25 @@ def _ocr_pdf_pages(path: Path) -> list[tuple[str, str]]:
     return chunks
 
 
-# [1.14] _ocr_jpeg_pages — OCR all supplied image pages
-def _ocr_jpeg_pages(paths: list[Path]) -> list[tuple[str, str]]:
-    return [(f"image_{i + 1}", _ocr_image(path))
-            for i, path in enumerate(paths)]
+# [1.14] _ocr_mixed_files — OCR every PDF/JPEG/PNG in folder order
+def _ocr_mixed_files(paths: list[Path]) -> list[tuple[str, str]]:
+    """Return one sequential page record for every supported input file.
+
+    A folder may contain a PDF plus separate JPEG/PNG passport pages. Treating
+    only the first file as the source silently dropped those extra pages, so
+    all files are now read into one ordered page set.
+    """
+    chunks = []
+    page_index = 0
+    for source in paths:
+        if source.suffix.lower() == ".pdf":
+            source_chunks = _ocr_pdf_pages(source)
+        else:
+            source_chunks = [("image_1", _ocr_image(source))]
+        for _, text in source_chunks:
+            page_index += 1
+            chunks.append((f"page_{page_index}", text))
+    return chunks
 
 
 # [1.15] read_passport — build one review-first result row
@@ -272,7 +287,8 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
     row = {
         "traveler_id": _clean(traveler.get("id")),
         "traveler_name": " ".join(x for x in [_clean(traveler.get("first_name")), _clean(traveler.get("last_name"))] if x),
-        "source_file": str(path), "status": "ERROR", "review_required": True,
+        "source_file": str(path), "source_files": str(path),
+        "status": "ERROR", "review_required": True,
         "review_reason": "", "ocr_text": "", "mrz_valid": False,
         "pages_read": "", "page_1_status": "NOT READ",
         "last_page_status": "NOT READ", "page_1_ocr": "",
@@ -280,10 +296,9 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
         "page_ocr": "",
     }
     try:
-        if path.suffix.lower() == ".pdf":
-            page_texts = _ocr_pdf_pages(path)
-        else:
-            page_texts = _ocr_jpeg_pages(page_paths or [path])
+        sources = page_paths or [path]
+        page_texts = _ocr_mixed_files(sources)
+        row["source_files"] = "\n".join(str(source) for source in sources)
         text = "\n".join(text for _, text in page_texts)
         parsed = parse_mrz(text)
         row.update(parsed)
@@ -325,6 +340,8 @@ def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
             })
         else:
             found_count += 1
+            # The first path is retained as the primary source label, while
+            # every PDF/JPEG/PNG discovered in the folder is OCR'd together.
             rows.append(read_passport(traveler, files[0], files))
     log_event("PASSPORT_READER", "DISCOVERY_SUMMARY",
               traveler_count=len(travelers), found=found_count,
