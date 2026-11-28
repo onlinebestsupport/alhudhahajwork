@@ -36,6 +36,23 @@ _SUBTAB_ITEMS = [
     ("results", "📊 Results & Downloads"),
 ]
 
+_INDIAN_STATES = [
+    "TAMIL NADU", "KERALA", "KARNATAKA", "ANDHRA PRADESH", "TELANGANA",
+    "MAHARASHTRA", "GUJARAT", "RAJASTHAN", "PUNJAB", "HARYANA",
+    "UTTAR PRADESH", "WEST BENGAL", "ODISHA", "BIHAR", "MADHYA PRADESH",
+    "ASSAM", "GOA", "DELHI"
+]
+
+_INDIAN_CITIES = [
+    "CHENNAI", "MUMBAI", "KOLKATA", "BANGALORE", "BENGALURU", "HYDERABAD",
+    "AHMEDABAD", "PUNE", "SURAT", "JAIPUR", "LUCKNOW", "KANPUR", "NAGPUR",
+    "INDORE", "THANE", "BHOPAL", "VISAKHAPATNAM", "PATNA", "VADODARA",
+    "GHAZIABAD", "LUDHIANA", "AGRA", "NASHIK", "FARIDABAD", "MEERUT",
+    "RAJKOT", "VARANASI", "SRINAGAR", "AMRITSAR", "ALLAHABAD", "RANCHI",
+    "HOWRAH", "COIMBATORE", "JABALPUR", "GWALIOR", "VIJAYAWADA", "JODHPUR",
+    "MADURAI", "RAIPUR", "KOTA", "CHANDIGARH", "GUWAHATI", "SOLAPUR"
+]
+
 
 def _scan_worker(traveler, data_dir, result_queue):
     try:
@@ -399,11 +416,9 @@ class PassportReaderTab:
         if not text:
             return ""
         text = str(text).strip()
-        # Strip short noise words (1 to 4 chars) at the start or end
-        text = re.sub(r"^[a-z]{1,3}\s+", "", text, flags=re.I)
-        text = re.sub(r"\s+[a-z]{1,4}[.:]?$", "", text, flags=re.I)
-        # Remove specific noise artifacts
-        text = text.replace("Cos:", "").replace("eS", "").replace("uk", "")
+        text = re.sub(r"^[a-z]{1,4}\s+", "", text, flags=re.I)
+        text = re.sub(r"\s+[a-z]{1,5}[.:]?$", "", text, flags=re.I)
+        text = re.sub(r"\s+(?:totes|Cos:|eS|uk|rie|ie|AG|ea)$", "", text, flags=re.I)
         return text.strip()
 
     def _sanitize_name(self, name):
@@ -415,27 +430,26 @@ class PassportReaderTab:
             parts.pop()
         return " ".join(parts)
 
-    def _extract_line_after(self, label, text):
-        """Helper to find text on the same line or the line immediately below a label."""
-        # Look for text on the same line after the label
-        m = re.search(rf"{label}[^\n]*?\s{{1,}}([A-Z][A-Z\s]+)", text, re.IGNORECASE)
+    def _extract_back_field(self, label, text):
+        """Helper to find text on the next line or the same line after a label."""
+        m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]+)", text, re.IGNORECASE)
         if m:
             return self._clean_ocr_noise(m.group(1))
-        # Look for text on the next line
-        m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]+)", text, re.IGNORECASE)
+        m = re.search(rf"{label}[^A-Z\n]*([A-Z][A-Z\s]+)", text, re.IGNORECASE)
         if m:
             return self._clean_ocr_noise(m.group(1))
         return ""
 
     def _get_all_fields(self, row):
-        """Extract every single field from front and back OCR using targeted regex and smart fallbacks."""
+        """Extract every single field. Prioritizes MRZ for accuracy."""
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
         back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
+        # 1. Base Data (Prioritize MRZ values)
         data = {
             "traveler": row.get("traveler_name") or row.get("traveler_id"),
-            "type": "P",
-            "code": "IND" if "IND" in str(row.get("issuing_country", "")) else (row.get("issuing_country") or "IND"),
+            "type": row.get("document_code") or "P", 
+            "code": row.get("issuing_country") or "IND",
             "nationality": "INDIAN" if str(row.get("nationality", "")) == "IND" else (row.get("nationality") or "INDIAN"),
             "passport_no": row.get("passport_no") or "",
             "surname": self._sanitize_name(row.get("surname") or ""),
@@ -457,18 +471,8 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
-        # Fix: If passport_no looks like a name and surname looks like a passport, swap
-        if data["surname"] and re.match(r"^[A-Z]\d{7}", data["surname"]):
-            data["passport_no"] = data["surname"]
-            data["surname"] = data["given_names"]
-            data["given_names"] = ""
-            
-        # Front extraction
+        # 2. Front extraction (Fallback for MRZ and Find POB, POI, Date of Issue)
         if front:
-            clean_front = re.sub(r'[^A-Za-z0-9\s,/\-]', ' ', front)
-            lines = [l.strip() for l in clean_front.splitlines() if l.strip()]
-
-            # 1. PLACE OF BIRTH
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: 
                 pob = self._clean_ocr_noise(m.group(1))
@@ -476,41 +480,40 @@ class PassportReaderTab:
                     data["place_of_birth"] = pob
             
             if not data["place_of_birth"]:
-                for state in ["TAMIL NADU", "KERALA", "ANDHRA", "KARNATAKA", "MAHARASHTRA", "GUJARAT", "DELHI"]:
-                    for line in lines:
-                        if state in line.upper() and not "ISSUE" in line.upper():
-                            data["place_of_birth"] = self._clean_ocr_noise(line)
-                            break
-                    if data["place_of_birth"]: break
+                for state in _INDIAN_STATES:
+                    if state in front.upper() and not "ISSUE" in front.upper():
+                        data["place_of_birth"] = state
+                        break
 
-            # 2. PLACE OF ISSUE
             m = re.search(r"(?:Place of Issu|Place of Iss)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
             
             if not data["place_of_issue"]:
-                for city in ["CHENNAI", "MUMBAI", "DELHI", "KOLKATA", "COIMBATORE", "MADURAI", "HYDERABAD", "BANGALORE", "KOCHI"]:
-                    for line in lines:
-                        if city in line.upper() and not "BIRTH" in line.upper():
-                            data["place_of_issue"] = city
-                            break
-                    if data["place_of_issue"]: break
+                for city in _INDIAN_CITIES:
+                    if city in front.upper():
+                        data["place_of_issue"] = city
+                        break
 
-            # 3. DATES (Issue vs Expiry)
             dates = re.findall(r"\b(\d{2})[/-](\d{2})[/-](\d{4})\b", front)
-            parsed_dates = list(dict.fromkeys([f"{d}/{m}/{y}" for d, m, y in dates])) # Deduplicate
+            parsed_dates = list(dict.fromkeys([f"{d}/{m}/{y}" for d, m, y in dates])) 
             
             if len(parsed_dates) >= 2:
                 try:
                     sorted_dates = sorted(parsed_dates, key=lambda d: datetime.strptime(d, "%d/%m/%Y"))
                     data["date_of_issue"] = sorted_dates[0]
-                    data["expiry"] = sorted_dates[-1].replace("/", "-")
                 except Exception:
                     data["date_of_issue"] = parsed_dates[0]
-                    data["expiry"] = parsed_dates[1].replace("/", "-")
-            elif len(parsed_dates) == 1 and not data["expiry"]:
-                data["expiry"] = parsed_dates[0].replace("/", "-")
 
-        # Reconstruct MRZ if missing or broken by OCR
+        # Fallback Date of Issue
+        if not data["date_of_issue"] and data["expiry"]:
+            try:
+                exp_dt = datetime.strptime(data["expiry"], "%d-%m-%Y")
+                issue_dt = exp_dt.replace(year=exp_dt.year - 10)
+                data["date_of_issue"] = issue_dt.strftime("%d/%m/%Y")
+            except Exception:
+                pass
+
+        # Reconstruct MRZ if missing
         if not data["mrz"] or "W584" not in data["mrz"]:
             dob_parts = data["dob"].split("-") if data["dob"] else []
             dob_mrz = dob_parts[2][2:] + dob_parts[1] + dob_parts[0] if len(dob_parts) == 3 else "800101"
@@ -520,11 +523,11 @@ class PassportReaderTab:
             given_mrz = data["given_names"].replace(" ", "<")
             data["mrz"] = f"P<{data['code']}{surname_mrz}<<{given_mrz}<<<<<<<<<<<<<<<<<<{data['passport_no']}<0{data['code']}{dob_mrz}{data['sex']}{exp_mrz}..."
 
-        # Back extraction (Targeted Labels)
+        # 3. Back extraction (Targeted Labels)
         if back:
-            data["father"] = self._extract_line_after(r"Name of Father", back)
-            data["mother"] = self._extract_line_after(r"Name of Mother", back)
-            data["spouse"] = self._extract_line_after(r"Name of Spouse", back)
+            data["father"] = self._extract_back_field(r"Name of Father", back)
+            data["mother"] = self._extract_back_field(r"Name of Mother", back)
+            data["spouse"] = self._extract_back_field(r"Name of Spouse", back)
 
             # Address
             lines = [l.strip() for l in back.splitlines() if l.strip()]
@@ -714,7 +717,6 @@ class PassportReaderTab:
                              "folder(s) in the background…")
         self._status_update()
         
-        # Always switch to results so the user sees the progress
         self._set_subtab("results")
         
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
