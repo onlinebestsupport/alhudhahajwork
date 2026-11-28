@@ -238,31 +238,8 @@ def _enhance_image(image):
     return image.filter(ImageFilter.SHARPEN)
 
 
-def _ocr_page_image(image) -> str:
-    try:
-        import pytesseract
-    except ImportError as ex:
-        raise RuntimeError(
-            "OCR engine unavailable: install pytesseract and tesseract") from ex
-
-    # --- AUTO-ROTATE (OSD) ---
-    # If a scan is upside down or sideways, OCR fails. We ask Tesseract to detect
-    # the rotation and we physically rotate the image before reading.
-    try:
-        osd = pytesseract.image_to_osd(image)
-        match = re.search(r"Rotate: (\d+)", osd)
-        if match:
-            angle = int(match.group(1))
-            if angle == 90:
-                image = image.rotate(-90, expand=True)
-            elif angle == 180:
-                image = image.rotate(180, expand=True)
-            elif angle == 270:
-                image = image.rotate(-270, expand=True)
-    except Exception:
-        pass # If OSD fails (e.g., too little text), proceed as-is
-
-    enhanced = _enhance_image(image)
+def _run_ocr(img, pytesseract):
+    enhanced = _enhance_image(img)
     try:
         full_text = pytesseract.image_to_string(
             enhanced, lang="eng", config="--oem 3 --psm 6", timeout=90)
@@ -281,6 +258,56 @@ def _ocr_page_image(image) -> str:
         log_exception("PASSPORT_READER", "OCR_MRZ_FAILED", ex)
         mrz_text = ""
     return f"{full_text}\n\n[MRZ OCR]\n{mrz_text}"
+
+
+def _ocr_page_image(image) -> str:
+    try:
+        import pytesseract
+    except ImportError as ex:
+        raise RuntimeError(
+            "OCR engine unavailable: install pytesseract and tesseract") from ex
+
+    # 1. Try Tesseract OSD (Orientation and Script Detection)
+    try:
+        osd = pytesseract.image_to_osd(image)
+        match = re.search(r"Rotate: (\d+)", osd)
+        if match:
+            angle = int(match.group(1))
+            if angle == 90:
+                image = image.rotate(-90, expand=True)
+            elif angle == 180:
+                image = image.rotate(180, expand=True)
+            elif angle == 270:
+                image = image.rotate(-270, expand=True)
+    except Exception:
+        pass # If OSD fails (missing package), proceed to manual checks
+
+    text = _run_ocr(image, pytesseract)
+    
+    # If we found a valid MRZ line, the image was already upright!
+    if re.search(r"^[A-Z0-9<]{30,}$", text, re.MULTILINE):
+        return text
+
+    # 2. Fallback: Try 180 degrees (upside down)
+    rot180 = image.rotate(180, expand=True)
+    text_180 = _run_ocr(rot180, pytesseract)
+    if re.search(r"^[A-Z0-9<]{30,}$", text_180, re.MULTILINE):
+        return text_180
+
+    # 3. Fallback: Try 90 degrees
+    rot90 = image.rotate(-90, expand=True)
+    text_90 = _run_ocr(rot90, pytesseract)
+    if re.search(r"^[A-Z0-9<]{30,}$", text_90, re.MULTILINE):
+        return text_90
+
+    # 4. Fallback: Try 270 degrees
+    rot270 = image.rotate(-270, expand=True)
+    text_270 = _run_ocr(rot270, pytesseract)
+    if re.search(r"^[A-Z0-9<]{30,}$", text_270, re.MULTILINE):
+        return text_270
+
+    # If none worked, return the one with the most text
+    return max([text, text_180, text_90, text_270], key=len)
 
 
 def _ocr_image(path: Path) -> str:
