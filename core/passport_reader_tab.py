@@ -400,24 +400,59 @@ class PassportReaderTab:
         if not text:
             return "", "", "", ""
         
-        def _find(label):
-            # Match same line first
-            m = re.search(rf"{label}[^A-Z\n]*([A-Z][A-Z\s]{{2,}})", text, re.IGNORECASE)
-            if m: return m.group(1).strip()
-            # Match next line
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        father, mother, spouse, address = "", "", "", ""
+
+        # 1. Try explicit label search first
+        def _find_label(label):
+            # Look for the label, then capture the next line
             m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]{{2,}})", text, re.IGNORECASE)
-            if m: return m.group(1).strip()
+            if m: return re.sub(r"\s+[a-z]{1,2}$", "", m.group(1).strip())
+            # Look for the label, then capture on the same line
+            m = re.search(rf"{label}[^A-Z\n]*([A-Z][A-Z\s]{{3,}})", text, re.IGNORECASE)
+            if m: return re.sub(r"\s+[a-z]{1,2}$", "", m.group(1).strip())
             return ""
 
-        father = _find(r"Name of Father")
-        mother = _find(r"Name of Mother")
-        spouse = _find(r"Name of Spouse")
+        father = _find_label(r"Name of Father")
+        mother = _find_label(r"Name of Mother")
+        spouse = _find_label(r"Name of Spouse")
+
+        # 2. Find Address block (starts with number, Address, PIN, or STREET)
+        addr_start = -1
+        for i, line in enumerate(lines):
+            if (re.search(r"(?:Address|Add)", line, re.IGNORECASE) 
+                or re.search(r"^\d+[/A-Za-z]", line) 
+                or "PIN:" in line.upper() 
+                or "STREET" in line.upper()):
+                addr_start = i
+                break
         
-        address = ""
-        m = re.search(r"(?:Address)[^\n]*\n([\s\S]{10,150}?)(?=Old Passport|File No|$)", text, re.IGNORECASE)
-        if m:
-            address = " ".join(m.group(1).split())
+        if addr_start != -1:
+            addr_lines = []
+            for line in lines[addr_start:]:
+                if "Old Passport" in line or "File No" in line or re.match(r"^MA\d+", line):
+                    break
+                addr_lines.append(line)
+            address = " ".join(addr_lines).strip()
+
+        # 3. Fallback heuristic if labels are missing
+        if not father and not mother and addr_start > 2:
+            # Usually: Mother is line above address, Father is line above Mother
+            mother = lines[addr_start-1]
+            father = lines[addr_start-2]
             
+            # Clean up trailing OCR noise (like "ee", "os", "AG", "rie")
+            noise_regex = r"\s+(?:[a-z]{1,2}|AG|os|rie)$"
+            father = re.sub(noise_regex, "", father).strip()
+            mother = re.sub(noise_regex, "", mother).strip()
+
+            # If extracted father is actually the traveler's name (OCR misalignment)
+            # take the line above it.
+            traveler = str(row.get("traveler_name", "")).upper()
+            if traveler and (father.upper() in traveler or traveler in father.upper()):
+                if addr_start > 3:
+                    father = re.sub(noise_regex, "", lines[addr_start-3]).strip()
+
         return father, mother, spouse, address
 
     def _cell(self, value, width=130):
@@ -860,6 +895,7 @@ class PassportReaderTab:
         from reportlab.lib.units import mm
         from reportlab.platypus import (
             SimpleDocTemplate, LongTable, TableStyle, Paragraph, Spacer,
+            PageBreak,
         )
         styles = getSampleStyleSheet()
         page_w, _ = landscape(A4)
@@ -877,7 +913,7 @@ class PassportReaderTab:
                   "Father", "Mother", "Spouse", "Address", "Status"]
                   
         # Fixed weights to ensure headers don't break mid-word and text fits
-        weights = [10, 8, 8, 10, 8, 8, 6, 4, 10, 10, 8, 5, 5] 
+        weights = [10, 8, 8, 10, 8, 8, 6, 4, 10, 10, 8, 15, 5] 
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
 
@@ -927,7 +963,6 @@ class PassportReaderTab:
         ]
 
         # Keep the detailed pages for full OCR text review
-        from reportlab.platypus import PageBreak
         for r in rows:
             front_raw = (r.get("front_page_ocr")
                          or r.get("page_1_ocr") or "").strip()
