@@ -394,6 +394,14 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
+    def _sanitize_name(self, name):
+        """Remove OCR noise like ' K K 0 00' at the end of names."""
+        if not name:
+            return ""
+        # Remove isolated trailing characters/numbers (e.g., " K K 0 00")
+        name = re.sub(r"\s+(?:[A-Z0-9]\s*)+$", "", name)
+        return name.strip()
+
     def _get_all_fields(self, row):
         """Extract every single field from front and back OCR using structural heuristics."""
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
@@ -405,8 +413,8 @@ class PassportReaderTab:
             "code": row.get("issuing_country") or "IND",
             "nationality": "INDIAN" if row.get("nationality") == "IND" else row.get("nationality", ""),
             "passport_no": row.get("passport_no"),
-            "surname": row.get("surname"),
-            "given_names": row.get("given_names"),
+            "surname": self._sanitize_name(row.get("surname")),
+            "given_names": self._sanitize_name(row.get("given_names")),
             "dob": row.get("date_of_birth"),
             "sex": row.get("sex"),
             "place_of_birth": "",
@@ -475,11 +483,14 @@ class PassportReaderTab:
                 elif addr_start >= 1:
                     data["father"] = lines[addr_start - 1]
 
+                # Extract Old Passport and File No
                 for i in range(addr_start, len(lines)):
                     if re.search(r"^[A-Z]\d{7}", lines[i]):
                         old = lines[i]
                         if i+1 < len(lines) and re.search(r"\d{2}/\d{2}/\d{4}", lines[i+1]):
                             old += " " + lines[i+1]
+                            if i+2 < len(lines) and lines[i+2].isalpha():
+                                old += " " + lines[i+2]
                         data["old_passport"] = old
                     elif re.match(r"^[A-Z]{2}\d{10,}", lines[i]):
                         data["file_no"] = lines[i]
@@ -931,9 +942,9 @@ class PassportReaderTab:
             PageBreak,
         )
         styles = getSampleStyleSheet()
-        # Very small font to accommodate 22 columns on landscape A4
-        styleN = ParagraphStyle(name='Normal', fontSize=5, leading=6, wordWrap='CJK')
-        styleH = ParagraphStyle(name='Heading', fontSize=5, leading=6, fontName='Helvetica-Bold')
+        # Very small font, LTR word wrap to prevent ReportLab crashes
+        styleN = ParagraphStyle(name='Normal', fontSize=5, leading=6, wordWrap='LTR', splitLongWords=1)
+        styleH = ParagraphStyle(name='Heading', fontSize=5, leading=6, fontName='Helvetica-Bold', wordWrap='LTR')
         
         page_w, _ = landscape(A4)
         usable = page_w - 16 * mm
@@ -941,7 +952,6 @@ class PassportReaderTab:
                                 leftMargin=8 * mm, rightMargin=8 * mm,
                                 topMargin=8 * mm, bottomMargin=8 * mm)
         
-        # All 22 columns requested by the user
         col_defs = [
             ("Traveler", "traveler"),
             ("Type", "type"),
@@ -967,23 +977,25 @@ class PassportReaderTab:
             ("Status", "status")
         ]
                   
-        # Calculate dynamic widths based on max content length
-        weights = []
-        for label, key in col_defs:
-            max_len = len(label)
-            for r in rows:
-                d = self._get_all_fields(r)
-                val = str(d.get(key, ""))
-                max_len = max(max_len, min(len(val), 35)) # Cap to prevent MRZ hogging space
-            weights.append(max_len)
-            
+        # Fixed weights to ensure headers don't break mid-word and total width = usable
+        weights = [10, 4, 4, 6, 8, 8, 8, 8, 4, 12, 10, 8, 8, 12, 8, 10, 10, 10, 15, 10, 10, 6]
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
 
         data = []
         for r in rows:
             d = self._get_all_fields(r)
-            row_data = [Paragraph(xml_escape(str(d.get(k, "") or "")), styleN) for _, k in col_defs]
+            row_data = []
+            for label, key in col_defs:
+                val = str(d.get(key, "") or "")
+                # Sanitize non-printable characters and replace < in MRZ to prevent ReportLab crashes
+                val = "".join(c for c in val if c.isprintable() or c in "\n\t")
+                if key == "mrz":
+                    val = val.replace("<", "-")
+                
+                # Escape for XML/ReportLab
+                escaped_val = xml_escape(val).replace("\n", "<br/>")
+                row_data.append(Paragraph(escaped_val, styleN))
             data.append(row_data)
 
         header_row = [Paragraph(f"<b>{lbl}</b>", styleH) for lbl, _ in col_defs]
