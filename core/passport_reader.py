@@ -3,25 +3,10 @@
 OCR is assistive only. Every row carries validation/review status; results must
 be checked against the scan before ticket or visa use.
 """
-# ===============================================================================
-# SECTION 1 — PASSPORT READER ENGINE
-# ===============================================================================
-# Maintenance index
-#   1.1  Constants and normalization helpers
-#   1.2  Passport-file discovery
-#   1.3  ICAO/MRZ parsing and validation
-#   1.4  PDF/JPEG OCR and page handling
-#   1.5  Traveler scan orchestration
-#
-# Safety rule: OCR is assistive only. Never issue a ticket or visa without
-# comparing VALIDATED or REVIEW rows with the original passport scan.
-# ===============================================================================
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +19,33 @@ _EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _MRZ_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<"
 _WEIGHT = (7, 3, 1)
 
+# Common ISO 3166-1 alpha-3 codes. Extend as needed.
+_ISO3_CODES = {
+    "AFG","ALB","DZA","ASM","AND","AGO","AIA","ATA","ATG","ARG","ARM","ABW",
+    "AUS","AUT","AZE","BHS","BHR","BGD","BRB","BLR","BEL","BLZ","BEN","BMU",
+    "BTN","BOL","BES","BIH","BWA","BVT","BRA","IOT","BRN","BGR","BFA","BDI",
+    "CPV","KHM","CMR","CAN","CYM","CAF","TCD","CHL","CHN","CXR","CCK","COL",
+    "COM","COG","COD","COK","CRI","CIV","HRV","CUB","CUW","CYP","CZE","DNK",
+    "DJI","DMA","DOM","ECU","EGY","SLV","GNQ","ERI","EST","SWZ","ETH","FLK",
+    "FRO","FJI","FIN","FRA","GUF","PYF","ATF","GAB","GMB","GEO","DEU","GHA",
+    "GIB","GRC","GRL","GRD","GLP","GUM","GTM","GGY","GIN","GNB","GUY","HTI",
+    "HMD","VAT","HND","HKG","HUN","ISL","IND","IDN","IRN","IRQ","IRL","IMN",
+    "ISR","ITA","JAM","JPN","JEY","JOR","KAZ","KEN","KIR","PRK","KOR","KWT",
+    "KGZ","LAO","LVA","LBN","LSO","LBR","LBY","LIE","LTU","LUX","MAC","MDG",
+    "MWI","MYS","MDV","MLI","MLT","MHL","MTQ","MRT","MUS","MYT","MEX","FSM",
+    "MDA","MCO","MNG","MNE","MSR","MAR","MOZ","MMR","NAM","NRU","NPL","NLD",
+    "NCL","NZL","NIC","NER","NGA","NIU","NFK","MKD","MNP","NOR","OMN","PAK",
+    "PLW","PSE","PAN","PNG","PRY","PER","PHL","PCN","POL","PRT","PRI","QAT",
+    "REU","ROU","RUS","RWA","BLM","SHN","KNA","LCA","MAF","SPM","VCT","WSM",
+    "SMR","STP","SAU","SEN","SRB","SYC","SLE","SGP","SXM","SVK","SVN","SLB",
+    "SOM","ZAF","SGS","SSD","ESP","LKA","SDN","SUR","SJM","SWE","CHE","SYR",
+    "TWN","TJK","TZA","THA","TLS","TGO","TKL","TON","TTO","TUN","TUR","TKM",
+    "TCA","TUV","UGA","UKR","ARE","GBR","USA","UMI","URY","UZB","VUT","VEN",
+    "VNM","VGB","VIR","WLF","ESH","YEM","ZMB","ZWE",
+}
+
+_MRZ_LINE_RE = re.compile(r"^[A-Z0-9<]{30,}$")
+
 
 # [1.1] _clean — normalize persisted values
 def _clean(value):
@@ -45,11 +57,27 @@ def _folder_id(traveler_id):
     return _clean(traveler_id).replace("/", "_").replace("\\", "_")
 
 
-# [1.3] discover_passport_files — find PDF/JPEG scans
+# [1.2a] _fix_country — repair common OCR substitutions on 3-letter codes
+def _fix_country(code: str) -> str:
+    if not code:
+        return ""
+    table = str.maketrans({"0": "O", "1": "I", "5": "S", "8": "B",
+                           "2": "Z", "6": "G", "4": "A"})
+    return code.upper().replace("<", "").translate(table)[:3]
+
+
+# [1.2b] _clean_name — strip OCR noise from one MRZ name segment
+def _clean_name(segment: str) -> str:
+    if not segment:
+        return ""
+    seg = re.sub(r"<{1,}", "<<", segment)
+    seg = re.sub(r"([A-Z])\1{3,}", r"\1", seg)   # CEEEEEEE → CE
+    return seg.strip("<")
+
+
+# [1.3] discover_passport_files — find PDF/JPEG scans for a traveler
 def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
     base = Path(base_path or get_app_base_path()).resolve()
-    # HajDatabase.data_dir is the durable directory itself; otherwise callers
-    # may pass the application root. Prefer data/documents on Railway.
     if base.name == "data":
         docs = (base / "documents").resolve()
         legacy_docs = (base.parent / "documents").resolve()
@@ -57,9 +85,6 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
         docs = (base / "data" / "documents").resolve()
         legacy_docs = (base / "documents").resolve()
     found = []
-    # Both columns exist in the persisted CSV. Older records use
-    # passport_scan; newer document-management flows may use
-    # passport_scan_path. Resolve Windows separators without writing/migrating.
     stored_values = {
         _clean(traveler.get("passport_scan")),
         _clean(traveler.get("passport_scan_path")),
@@ -68,13 +93,11 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
         normalized = stored.replace("\\", "/")
         raw = Path(normalized)
         candidates = [raw] if raw.is_absolute() else [base / raw,
-                                                        base.parent / raw]
+                                                       base.parent / raw]
         for candidate in candidates:
             candidate = candidate.resolve()
             if candidate.is_file() and candidate.suffix.lower() in _EXTENSIONS:
                 found.append(candidate)
-
-    # Folder layout used by Data Admin: documents/<traveler-token>/passports.
     tokens = {_folder_id(traveler.get("id"))}
     file_reference = _clean(traveler.get("file_reference"))
     if file_reference:
@@ -85,14 +108,10 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
             if folder.is_dir():
                 found.extend(p for p in sorted(folder.rglob("*"))
                              if p.is_file() and p.suffix.lower() in _EXTENSIONS)
-            # Compatibility for an additional nesting level used by older
-            # imports; only exact token folder names are accepted.
             for p in documents_root.glob(f"**/{token}/passports/*"):
                 if p.is_file() and p.suffix.lower() in _EXTENSIONS:
                     found.append(p)
-    unique = []
-    seen = set()
-    seen_content = set()
+    unique, seen, seen_content = [], set(), set()
     for p in found:
         try:
             p = p.resolve()
@@ -103,9 +122,34 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
             pass
     log_event("PASSPORT_READER", "DISCOVERY_RESULT",
               traveler_id=_clean(traveler.get("id")),
-              base=str(base), documents=str(docs), legacy_documents=str(legacy_docs),
-              file_count=len(unique), files=[str(path) for path in unique])
+              base=str(base), documents=str(docs),
+              legacy_documents=str(legacy_docs),
+              file_count=len(unique),
+              files=[str(path) for path in unique])
     return unique
+
+
+# [1.3a] discover_files_in_folder — verify all supported files in one folder
+def discover_files_in_folder(folder_path) -> list[Path]:
+    """Return every readable PDF/JPEG/PNG directly or recursively in folder."""
+    folder = Path(_clean(folder_path)).expanduser()
+    if not folder.is_dir():
+        log_event("PASSPORT_READER", "LOCAL_FOLDER_MISSING",
+                  folder=str(folder))
+        return []
+    found = []
+    for p in sorted(folder.rglob("*")):
+        if not p.is_file() or p.suffix.lower() not in _EXTENSIONS:
+            continue
+        try:
+            p.resolve().stat()
+            found.append(p.resolve())
+        except OSError:
+            continue
+    log_event("PASSPORT_READER", "LOCAL_FOLDER_DISCOVERY",
+              folder=str(folder), file_count=len(found),
+              files=[str(p) for p in found])
+    return found
 
 
 # [1.4] _check_digit — calculate ICAO MRZ check digit
@@ -129,7 +173,6 @@ def _date(value: str) -> str:
     if not re.fullmatch(r"\d{6}", value or ""):
         return ""
     yy, mm, dd = int(value[:2]), value[2:4], value[4:]
-    # Passport MRZ years are interpreted relative to the current year window.
     year = 2000 + yy if yy <= (datetime.now().year % 100 + 20) else 1900 + yy
     try:
         return datetime(year, int(mm), int(dd)).strftime("%d-%m-%Y")
@@ -143,7 +186,7 @@ def _normalize_line(line):
     return line.replace(" ", "")
 
 
-# [1.8] parse_mrz — parse and validate passport MRZ
+# [1.8] parse_mrz — parse and validate passport MRZ with stricter checks
 def parse_mrz(text: str) -> dict:
     lines = [_normalize_line(x) for x in (text or "").splitlines()]
     lines = [x for x in lines if len(x) >= 30]
@@ -158,11 +201,13 @@ def parse_mrz(text: str) -> dict:
                 "review_reason": "MRZ not detected", "mrz_raw": ""}
     best = None
     for line1, line2 in reversed(candidates):
-        surname_given = line1[5:44].split("<<", 1)
-        surname = surname_given[0].replace("<", " ").strip()
-        given = (surname_given[1] if len(surname_given) > 1 else "").replace("<", " ").strip()
-        passport_no, passport_check = line2[0:9], line2[9]
-        nationality = line2[10:13].replace("<", "")
+        raw_names = line1[5:44].split("<<", 1)
+        surname = _clean_name(raw_names[0]).replace("<", " ").strip()
+        given = _clean_name(raw_names[1] if len(raw_names) > 1 else "").replace("<", " ").strip()
+        passport_no = line2[0:9].replace("<", "")
+        passport_check = line2[9]
+        nationality = _fix_country(line2[10:13])
+        issuing_country = _fix_country(line1[2:5])
         dob, dob_check = line2[13:19], line2[19]
         sex = line2[20].replace("<", "X")
         expiry, expiry_check = line2[21:27], line2[27]
@@ -171,20 +216,30 @@ def parse_mrz(text: str) -> dict:
             "passport_no": _valid_field(passport_no, passport_check),
             "dob": _valid_field(dob, dob_check),
             "expiry": _valid_field(expiry, expiry_check),
-            "composite": _valid_field(line2[:10] + line2[13:20] + line2[21:43], line2[43]),
+            "composite": _valid_field(
+                line2[:10] + line2[13:20] + line2[21:43], line2[43]),
+            "nationality": nationality in _ISO3_CODES,
+            "issuing_country": issuing_country in _ISO3_CODES,
+            "nat_eq_issuing": (nationality == issuing_country),
+            "names": bool(surname) and bool(given)
+                     and not re.search(r"([A-Z])\1{3,}", surname + given),
         }
         valid = all(checks.values())
         parsed = {
             "document_code": line1[:2].replace("<", ""),
-            "issuing_country": line1[2:5].replace("<", ""),
+            "issuing_country": issuing_country,
             "surname": surname, "given_names": given,
-            "passport_no": passport_no.replace("<", ""),
-            "nationality": nationality, "date_of_birth": _date(dob),
+            "passport_no": passport_no,
+            "nationality": nationality,
+            "date_of_birth": _date(dob),
             "sex": sex, "passport_expiry": _date(expiry),
             "personal_no": personal.replace("<", "").strip(),
-            "mrz_valid": valid, "mrz_checks": "; ".join(k for k, v in checks.items() if v),
+            "mrz_valid": valid,
+            "mrz_checks": "; ".join(k for k, v in checks.items() if v),
             "review_required": not valid,
-            "review_reason": "" if valid else "MRZ check digit failed; verify scan",
+            "review_reason": "" if valid else
+                "MRZ check failed: "
+                + ", ".join(k for k, v in checks.items() if not v),
             "mrz_raw": f"{line1}\n{line2}",
         }
         best = best or parsed
@@ -197,9 +252,7 @@ def parse_mrz(text: str) -> dict:
 def _enhance_image(image):
     image = ImageOps.exif_transpose(image).convert("L")
     image = ImageOps.autocontrast(image)
-    # 2x enlargement is sufficient for passport text and avoids the large
-    # 3x intermediate images that made Read All memory-heavy on Railway.
-    image = image.resize((image.width * 2, image.height * 2))
+    image = image.resize((int(image.width * 1.6), int(image.height * 1.6)))
     return image.filter(ImageFilter.SHARPEN)
 
 
@@ -208,19 +261,26 @@ def _ocr_page_image(image) -> str:
     try:
         import pytesseract
     except ImportError as ex:
-        raise RuntimeError("OCR engine unavailable: install pytesseract and tesseract") from ex
+        raise RuntimeError(
+            "OCR engine unavailable: install pytesseract and tesseract") from ex
     enhanced = _enhance_image(image)
-    full_text = pytesseract.image_to_string(enhanced, lang="eng",
-                                            config="--oem 3 --psm 6")
-    # The MRZ is normally at the bottom of the biographical page. A separate
-    # whitelist pass reduces I/1, O/0, and punctuation substitutions.
+    try:
+        full_text = pytesseract.image_to_string(
+            enhanced, lang="eng", config="--oem 3 --psm 6", timeout=90)
+    except Exception as ex:
+        log_exception("PASSPORT_READER", "OCR_FULL_FAILED", ex)
+        full_text = ""
     crop = enhanced.crop((0, int(enhanced.height * 0.70),
                           enhanced.width, enhanced.height))
-    mrz_text = pytesseract.image_to_string(
-        crop, lang="eng",
-        config=("--oem 3 --psm 6 "
-                "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"),
-    )
+    try:
+        mrz_text = pytesseract.image_to_string(
+            crop, lang="eng", timeout=90,
+            config=("--oem 3 --psm 6 "
+                    "-c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789<"),
+        )
+    except Exception as ex:
+        log_exception("PASSPORT_READER", "OCR_MRZ_FAILED", ex)
+        mrz_text = ""
     return f"{full_text}\n\n[MRZ OCR]\n{mrz_text}"
 
 
@@ -241,39 +301,35 @@ def _pdf_page_count(path: Path) -> int:
         return 1
 
 
-# [1.13] _ocr_pdf_pages — OCR every PDF page separately
+# [1.13] _ocr_pdf_pages — OCR every PDF page separately (memory-safe)
 def _ocr_pdf_pages(path: Path) -> list[tuple[str, str]]:
     try:
         from pdf2image import convert_from_path
-        import pytesseract
+        import pytesseract  # noqa: F401
     except ImportError as ex:
-        raise RuntimeError("PDF OCR dependencies unavailable: install pdf2image, pytesseract, tesseract") from ex
+        raise RuntimeError(
+            "PDF OCR dependencies unavailable: install pdf2image, pytesseract, tesseract") from ex
     count = _pdf_page_count(path)
-    # Read every page so a barcode/address page between the biographical and
-    # final page is never silently omitted.
-    page_numbers = list(range(1, count + 1))
     chunks = []
-    for page_number in page_numbers:
-        pages = convert_from_path(str(path), dpi=200,
+    for page_number in range(1, count + 1):
+        pages = convert_from_path(str(path), dpi=150,
                                   first_page=page_number,
-                                  last_page=page_number)
+                                  last_page=page_number, thread_count=1)
         if not pages:
             continue
         page = pages[0]
-        chunks.append((f"page_{page_number}", _ocr_page_image(page)))
+        try:
+            chunks.append((f"page_{page_number}", _ocr_page_image(page)))
+        finally:
+            page.close()
+            pages.clear()
+            del pages
     return chunks
 
 
 # [1.14] _ocr_mixed_files — OCR every PDF/JPEG/PNG in folder order
 def _ocr_mixed_files(paths: list[Path]) -> list[tuple[str, str]]:
-    """Return one sequential page record for every supported input file.
-
-    A folder may contain a PDF plus separate JPEG/PNG passport pages. Treating
-    only the first file as the source silently dropped those extra pages, so
-    all files are now read into one ordered page set.
-    """
-    chunks = []
-    page_index = 0
+    chunks, page_index = [], 0
     for source in paths:
         if source.suffix.lower() == ".pdf":
             source_chunks = _ocr_pdf_pages(source)
@@ -285,17 +341,45 @@ def _ocr_mixed_files(paths: list[Path]) -> list[tuple[str, str]]:
     return chunks
 
 
-# [1.15] read_passport — build one review-first result row
+# [1.15] _strip_mrz_text — remove MRZ-looking lines from OCR output
+def strip_mrz_text(text: str) -> str:
+    if not text:
+        return ""
+    out, skipping = [], False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("[MRZ OCR]"):
+            skipping = True
+            continue
+        if skipping:
+            if _MRZ_LINE_RE.match(s):
+                continue
+            skipping = False
+        if _MRZ_LINE_RE.match(s):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+# [1.16] read_passport — build one review-first result row (with front/back)
 def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
     row = {
         "traveler_id": _clean(traveler.get("id")),
-        "traveler_name": " ".join(x for x in [_clean(traveler.get("first_name")), _clean(traveler.get("last_name"))] if x),
+        "traveler_name": " ".join(
+            x for x in [_clean(traveler.get("first_name")),
+                        _clean(traveler.get("last_name"))] if x),
         "source_file": str(path), "source_files": str(path),
         "status": "ERROR", "review_required": True,
         "review_reason": "", "ocr_text": "", "mrz_valid": False,
-        "pages_read": "", "page_1_status": "NOT READ",
-        "last_page_status": "NOT READ", "page_1_ocr": "",
-        "last_page_ocr": "", "page_2_ocr": "",
+        "pages_read": "",
+        # Canonical front/back fields
+        "front_status": "NOT READ", "back_status": "NOT READ",
+        "front_page_ocr": "", "back_page_ocr": "",
+        # Legacy aliases retained for downstream consumers
+        "page_1_status": "NOT READ", "last_page_status": "NOT READ",
+        "page_1_ocr": "", "last_page_ocr": "", "page_2_ocr": "",
         "page_ocr": "",
     }
     try:
@@ -308,47 +392,91 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
         row["ocr_text"] = text[:12000]
         row["pages_read"] = ", ".join(label for label, _ in page_texts)
         if page_texts:
-            row["page_1_ocr"] = page_texts[0][1][:6000]
+            front = page_texts[0][1][:6000]
+            row["front_page_ocr"] = front
+            row["front_status"] = "READ"
+            row["page_1_ocr"] = front
             row["page_1_status"] = "READ"
-            row["last_page_ocr"] = page_texts[-1][1][:6000]
-            row["last_page_status"] = "READ"
             if len(page_texts) > 1:
-                row["page_2_ocr"] = page_texts[1][1][:6000]
+                back = page_texts[1][1][:6000]
+                row["back_page_ocr"] = back
+                row["back_status"] = "READ"
+                row["page_2_ocr"] = back
+                row["last_page_ocr"] = page_texts[-1][1][:6000]
+                row["last_page_status"] = "READ"
+            else:
+                row["back_status"] = "NOT READ"
             row["page_ocr"] = "\n\n".join(
                 f"--- {label.upper()} ---\n{text[:6000]}"
                 for label, text in page_texts
             )
-        row["status"] = "VALIDATED" if parsed.get("mrz_valid") else "REVIEW"
+        row["status"] = "MRZ_OK" if parsed.get("mrz_valid") else "REVIEW"
         if not parsed.get("mrz_valid"):
             row["review_required"] = True
         return row
     except Exception as ex:
         row["review_reason"] = str(ex)
-        log_exception("PASSPORT_READER", "read", ex, traveler_id=row["traveler_id"], file=path.name)
+        log_exception("PASSPORT_READER", "read", ex,
+                      traveler_id=row["traveler_id"], file=path.name)
         return row
 
 
-# [1.14] scan_travelers — scan every traveler without database writes
+# [1.17] scan_travelers — scan every traveler without database writes
 def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
-    rows = []
-    found_count = 0
-    missing_count = 0
+    rows, found_count, missing_count = [], 0, 0
     for traveler in travelers:
         files = discover_passport_files(traveler, data_dir)
         if not files:
             missing_count += 1
             rows.append({
                 "traveler_id": _clean(traveler.get("id")),
-                "traveler_name": " ".join(x for x in [_clean(traveler.get("first_name")), _clean(traveler.get("last_name"))] if x),
-                "source_file": "", "status": "NO SCAN", "review_required": True,
-                "review_reason": "Passport PDF/JPEG not found", "mrz_valid": False,
+                "traveler_name": " ".join(
+                    x for x in [_clean(traveler.get("first_name")),
+                                _clean(traveler.get("last_name"))] if x),
+                "source_file": "", "status": "NO SCAN",
+                "review_required": True,
+                "review_reason": "Passport PDF/JPEG not found",
+                "mrz_valid": False,
             })
         else:
             found_count += 1
-            # The first path is retained as the primary source label, while
-            # every PDF/JPEG/PNG discovered in the folder is OCR'd together.
             rows.append(read_passport(traveler, files[0], files))
     log_event("PASSPORT_READER", "DISCOVERY_SUMMARY",
               traveler_count=len(travelers), found=found_count,
               missing=missing_count, data_dir=str(data_dir or ""))
     return rows
+
+
+# [1.18] read_folder — OCR every supported file inside an arbitrary folder
+def read_folder(folder_path, file_paths=None) -> list[dict]:
+    """Read one arbitrary folder as one ordered passport-page set.
+
+    Not linked to a database traveler — used for the local system folder
+    reader (non-Haj passports). Returns one row containing all found pages,
+    or a single NO SCAN row when nothing was readable.
+    """
+    sources = file_paths if file_paths is not None else discover_files_in_folder(folder_path)
+    folder = Path(_clean(folder_path)).expanduser()
+    if not sources:
+        return [{
+            "traveler_id": f"local:{folder.name or 'folder'}",
+            "traveler_name": f"Local: {folder.name or 'folder'}",
+            "source_file": str(folder), "source_files": "",
+            "status": "NO SCAN", "review_required": True,
+            "review_reason": "No PDF/JPEG/PNG files found in folder",
+            "mrz_valid": False, "pages_read": "",
+            "front_status": "NOT READ", "back_status": "NOT READ",
+            "front_page_ocr": "", "back_page_ocr": "",
+            "page_1_status": "NOT READ", "last_page_status": "NOT READ",
+            "page_1_ocr": "", "last_page_ocr": "", "page_2_ocr": "",
+            "page_ocr": "",
+        }]
+    synthetic = {
+        "id": f"local:{folder.name or 'folder'}",
+        "first_name": "Local",
+        "last_name": folder.name or "folder",
+    }
+    row = read_passport(synthetic, sources[0], sources)
+    row["traveler_id"] = synthetic["id"]
+    row["traveler_name"] = f"Local: {folder.name or 'folder'}"
+    return [row]
