@@ -17,4 +17,8 @@ RUN python -m pip install --upgrade pip \
 
 COPY . /app
 
+# Fail during the image build, with the exact source file and line, rather
+# than allowing Railway to restart a container that cannot import the app.
+RUN python -m compileall -q core main.py
+
 CMD ["python", "main.py"]
