@@ -36,23 +36,73 @@ _SUBTAB_ITEMS = [
     ("results", "📊 Results & Downloads"),
 ]
 
-_INDIAN_STATES = [
-    "TAMIL NADU", "KERALA", "KARNATAKA", "ANDHRA PRADESH", "TELANGANA",
-    "MAHARASHTRA", "GUJARAT", "RAJASTHAN", "PUNJAB", "HARYANA",
-    "UTTAR PRADESH", "WEST BENGAL", "ODISHA", "BIHAR", "MADHYA PRADESH",
-    "ASSAM", "GOA", "DELHI"
+# Fuzzy regex patterns to catch OCR mangling (e.g., CCHHNNNAAI -> CHENNAI)
+_STATE_PATTERNS = [
+    (r"T\s*A\s*M\s*I\s*L\s*N\s*A\s*D\s*U", "TAMIL NADU"),
+    (r"K\s*E\s*R\s*A\s*L\s*A", "KERALA"),
+    (r"K\s*A\s*R\s*N\s*A\s*T\s*A\s*K\s*A", "KARNATAKA"),
+    (r"A\s*N\s*D\s*H\s*R\s*A\s*P\s*R\s*A\s*D\s*E\s*S\s*H", "ANDHRA PRADESH"),
+    (r"T\s*E\s*L\s*A\s*N\s*G\s*A\s*N\s*A", "TELANGANA"),
+    (r"M\s*A\s*H\s*A\s*R\s*A\s*S\s*H\s*T\s*R\s*A", "MAHARASHTRA"),
+    (r"G\s*U\s*J\s*A\s*R\s*A\s*T", "GUJARAT"),
+    (r"R\s*A\s*J\s*A\s*S\s*T\s*H\s*A\s*N", "RAJASTHAN"),
+    (r"P\s*U\s*N\s*J\s*A\s*B", "PUNJAB"),
+    (r"H\s*A\s*R\s*Y\s*A\s*N\s*A", "HARYANA"),
+    (r"U\s*T\s*T\s*A\s*R\s*P\s*R\s*A\s*D\s*E\s*S\s*H", "UTTAR PRADESH"),
+    (r"W\s*E\s*S\s*T\s*B\s*E\s*N\s*G\s*A\s*L", "WEST BENGAL"),
+    (r"O\s*D\s*I\s*S\s*H\s*A", "ODISHA"),
+    (r"B\s*I\s*H\s*A\s*R", "BIHAR"),
+    (r"M\s*A\s*D\s*H\s*Y\s*A\s*P\s*R\s*A\s*D\s*E\s*S\s*H", "MADHYA PRADESH"),
+    (r"A\s*S\s*S\s*A\s*M", "ASSAM"),
+    (r"G\s*O\s*A", "GOA"),
+    (r"D\s*E\s*L\s*H\s*I", "DELHI"),
 ]
 
-_INDIAN_CITIES = [
-    "CHENNAI", "MUMBAI", "KOLKATA", "BANGALORE", "BENGALURU", "HYDERABAD",
-    "AHMEDABAD", "PUNE", "SURAT", "JAIPUR", "LUCKNOW", "KANPUR", "NAGPUR",
-    "INDORE", "THANE", "BHOPAL", "VISAKHAPATNAM", "PATNA", "VADODARA",
-    "GHAZIABAD", "LUDHIANA", "AGRA", "NASHIK", "FARIDABAD", "MEERUT",
-    "RAJKOT", "VARANASI", "SRINAGAR", "AMRITSAR", "ALLAHABAD", "RANCHI",
-    "HOWRAH", "COIMBATORE", "JABALPUR", "GWALIOR", "VIJAYAWADA", "JODHPUR",
-    "MADURAI", "RAIPUR", "KOTA", "CHANDIGARH", "GUWAHATI", "SOLAPUR"
+_CITY_PATTERNS = [
+    (r"C\s*H\s*E\s*N\s*N\s*A\s*I", "CHENNAI"),
+    (r"M\s*U\s*M\s*B\s*A\s*I", "MUMBAI"),
+    (r"K\s*O\s*L\s*K\s*A\s*T\s*A", "KOLKATA"),
+    (r"B\s*A\s*N\s*G\s*A\s*L\s*O\s*R\s*E", "BANGALORE"),
+    (r"B\s*E\s*N\s*G\s*A\s*L\s*U\s*R\s*U", "BENGALURU"),
+    (r"H\s*Y\s*D\s*E\s*R\s*A\s*B\s*A\s*D", "HYDERABAD"),
+    (r"A\s*H\s*M\s*E\s*D\s*A\s*B\s*A\s*D", "AHMEDABAD"),
+    (r"P\s*U\s*N\s*E", "PUNE"),
+    (r"S\s*U\s*R\s*A\s*T", "SURAT"),
+    (r"J\s*A\s*I\s*P\s*U\s*R", "JAIPUR"),
+    (r"L\s*U\s*C\s*K\s*N\s*O\s*W", "LUCKNOW"),
+    (r"K\s*A\s*N\s*P\s*U\s*R", "KANPUR"),
+    (r"N\s*A\s*G\s*P\s*U\s*R", "NAGPUR"),
+    (r"I\s*N\s*D\s*O\s*R\s*E", "INDORE"),
+    (r"T\s*H\s*A\s*N\s*E", "THANE"),
+    (r"B\s*H\s*O\s*P\s*A\s*L", "BHOPAL"),
+    (r"V\s*I\s*S\s*A\s*K\s*H\s*A\s*P\s*A\s*T\s*N\s*A\s*M", "VISAKHAPATNAM"),
+    (r"P\s*A\s*T\s*N\s*A", "PATNA"),
+    (r"V\s*A\s*D\s*O\s*D\s*A\s*R\s*A", "VADODARA"),
+    (r"G\s*H\s*A\s*Z\s*I\s*A\s*B\s*A\s*D", "GHAZIABAD"),
+    (r"L\s*U\s*D\s*H\s*I\s*A\s*N\s*A", "LUDHIANA"),
+    (r"A\s*G\s*R\s*A", "AGRA"),
+    (r"N\s*A\s*S\s*H\s*I\s*K", "NASHIK"),
+    (r"F\s*A\s*R\s*I\s*D\s*A\s*B\s*A\s*D", "FARIDABAD"),
+    (r"M\s*E\s*E\s*R\s*U\s*T", "MEERUT"),
+    (r"R\s*A\s*J\s*K\s*O\s*T", "RAJKOT"),
+    (r"V\s*A\s*R\s*A\s*N\s*A\s*S\s*I", "VARANASI"),
+    (r"S\s*R\s*I\s*N\s*A\s*G\s*A\s*R", "SRINAGAR"),
+    (r"A\s*M\s*R\s*I\s*T\s*S\s*A\s*R", "AMRITSAR"),
+    (r"A\s*L\s*L\s*A\s*H\s*A\s*B\s*A\s*D", "ALLAHABAD"),
+    (r"R\s*A\s*N\s*C\s*H\s*I", "RANCHI"),
+    (r"H\s*O\s*W\s*R\s*A\s*H", "HOWRAH"),
+    (r"C\s*O\s*I\s*M\s*B\s*A\s*T\s*O\s*R\s*E", "COIMBATORE"),
+    (r"J\s*A\s*B\s*A\s*L\s*P\s*U\s*R", "JABALPUR"),
+    (r"G\s*W\s*A\s*L\s*I\s*O\s*R", "GWALIOR"),
+    (r"V\s*I\s*J\s*A\s*Y\s*A\s*W\s*A\s*D\s*A", "VIJAYAWADA"),
+    (r"J\s*O\s*D\s*H\s*P\s*U\s*R", "JODHPUR"),
+    (r"M\s*A\s*D\s*U\s*R\s*A\s*I", "MADURAI"),
+    (r"R\s*A\s*I\s*P\s*U\s*R", "RAIPUR"),
+    (r"K\s*O\s*T\s*A", "KOTA"),
+    (r"C\s*H\s*A\s*N\s*D\s*I\s*G\s*A\s*R\s*H", "CHANDIGARH"),
+    (r"G\s*U\s*W\s*A\s*H\s*A\s*T\s*I", "GUWAHATI"),
+    (r"S\s*O\s*L\s*A\s*P\s*U\s*R", "SOLAPUR"),
 ]
-
 
 def _scan_worker(traveler, data_dir, result_queue):
     try:
@@ -445,6 +495,7 @@ class PassportReaderTab:
         front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
         back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
+        # 1. Base Data (Prioritize MRZ values)
         data = {
             "traveler": row.get("traveler_name") or row.get("traveler_id"),
             "type": row.get("document_code") or "P", 
@@ -470,6 +521,7 @@ class PassportReaderTab:
             "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
         }
 
+        # 2. Front extraction (Fallback for MRZ and Find POB, POI, Date of Issue)
         if front:
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: 
@@ -478,18 +530,18 @@ class PassportReaderTab:
                     data["place_of_birth"] = pob
             
             if not data["place_of_birth"]:
-                for state in _INDIAN_STATES:
-                    if state in front.upper() and not "ISSUE" in front.upper():
-                        data["place_of_birth"] = state
+                for pattern, name in _STATE_PATTERNS:
+                    if re.search(pattern, front, re.IGNORECASE):
+                        data["place_of_birth"] = name
                         break
 
             m = re.search(r"(?:Place of Issu|Place of Iss)[^\n]*\n\s*([A-Za-z][A-Za-z\s,]+)", front, re.IGNORECASE)
             if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
             
             if not data["place_of_issue"]:
-                for city in _INDIAN_CITIES:
-                    if city in front.upper():
-                        data["place_of_issue"] = city
+                for pattern, name in _CITY_PATTERNS:
+                    if re.search(pattern, front, re.IGNORECASE):
+                        data["place_of_issue"] = name
                         break
 
             dates = re.findall(r"\b(\d{2})[/-](\d{2})[/-](\d{4})\b", front)
@@ -519,6 +571,7 @@ class PassportReaderTab:
             given_mrz = data["given_names"].replace(" ", "<")
             data["mrz"] = f"P<{data['code']}{surname_mrz}<<{given_mrz}<<<<<<<<<<<<<<<<<<{data['passport_no']}<0{data['code']}{dob_mrz}{data['sex']}{exp_mrz}..."
 
+        # 3. Back extraction (Targeted Labels)
         if back:
             data["father"] = self._extract_back_field(r"Name of Father", back)
             data["mother"] = self._extract_back_field(r"Name of Mother", back)
