@@ -395,64 +395,58 @@ class PassportReaderTab:
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
     def _extract_back_fields(self, row):
-        """Extract specific fields from the back page OCR text."""
+        """Extract specific fields from the back page OCR text based on structure."""
         text = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         if not text:
             return "", "", "", ""
         
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        # 1. Clean lines & remove OCR trailing noise (e.g., " ie", " AG", " os", " as,")
+        lines = []
+        for line in text.splitlines():
+            line = line.strip()
+            line = re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', line).strip()
+            if line:
+                lines.append(line)
+                
         father, mother, spouse, address = "", "", "", ""
-
-        # 1. Try explicit label search first
-        def _find_label(label):
-            # Look for the label, then capture the next line
-            m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]{{2,}})", text, re.IGNORECASE)
-            if m: return re.sub(r"\s+[a-z]{1,2}$", "", m.group(1).strip())
-            # Look for the label, then capture on the same line
-            m = re.search(rf"{label}[^A-Z\n]*([A-Z][A-Z\s]{{3,}})", text, re.IGNORECASE)
-            if m: return re.sub(r"\s+[a-z]{1,2}$", "", m.group(1).strip())
-            return ""
-
-        father = _find_label(r"Name of Father")
-        mother = _find_label(r"Name of Mother")
-        spouse = _find_label(r"Name of Spouse")
-
-        # 2. Find Address block (starts with number, Address, PIN, or STREET)
-        addr_start = -1
-        for i, line in enumerate(lines):
-            if (re.search(r"(?:Address|Add)", line, re.IGNORECASE) 
-                or re.search(r"^\d+[/A-Za-z]", line) 
-                or "PIN:" in line.upper() 
-                or "STREET" in line.upper()):
-                addr_start = i
-                break
         
-        if addr_start != -1:
+        # 2. Find the Address block start (usually has PIN, STREET, NAGAR, or starts with a number)
+        addr_start_idx = -1
+        for i, line in enumerate(lines):
+            if ("PIN:" in line.upper() or 
+                "STREET" in line.upper() or 
+                "NAGAR" in line.upper() or
+                "ROAD" in line.upper()):
+                addr_start_idx = i
+                break
+            if re.match(r"^\d+[/A-Za-z]", line) and any(c.isalpha() for c in line):
+                addr_start_idx = i
+                break
+
+        if addr_start_idx != -1:
+            # 3. Extract address block
             addr_lines = []
-            for line in lines[addr_start:]:
-                if "Old Passport" in line or "File No" in line or re.match(r"^MA\d+", line):
+            for line in lines[addr_start_idx:]:
+                if "Old Passport" in line or "File No" in line or re.match(r"^MA\d+", line) or re.match(r"^[A-Z]\d{7}", line):
                     break
                 addr_lines.append(line)
-            address = " ".join(addr_lines).strip()
-
-        # 3. Fallback heuristic if labels are missing
-        if not father and not mother and addr_start > 2:
-            # Usually: Mother is line above address, Father is line above Mother
-            mother = lines[addr_start-1]
-            father = lines[addr_start-2]
+            address = ", ".join(addr_lines)
             
-            # Clean up trailing OCR noise (like "ee", "os", "AG", "rie")
-            noise_regex = r"\s+(?:[a-z]{1,2}|AG|os|rie)$"
-            father = re.sub(noise_regex, "", father).strip()
-            mother = re.sub(noise_regex, "", mother).strip()
+            # 4. Backtrack for Father, Mother, Spouse based on standard layout
+            if addr_start_idx >= 3:
+                spouse = lines[addr_start_idx - 1]
+                mother = lines[addr_start_idx - 2]
+                father = lines[addr_start_idx - 3]
+            elif addr_start_idx >= 2:
+                mother = lines[addr_start_idx - 1]
+                father = lines[addr_start_idx - 2]
+            elif addr_start_idx >= 1:
+                father = lines[addr_start_idx - 1]
 
-            # If extracted father is actually the traveler's name (OCR misalignment)
-            # take the line above it.
-            traveler = str(row.get("traveler_name", "")).upper()
-            if traveler and (father.upper() in traveler or traveler in father.upper()):
-                if addr_start > 3:
-                    father = re.sub(noise_regex, "", lines[addr_start-3]).strip()
-
+        # Clean up names if they accidentally caught the passport number
+        if father and re.match(r"^[A-Z]\d{7}", father):
+            father = ""
+            
         return father, mother, spouse, address
 
     def _cell(self, value, width=130):
