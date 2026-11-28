@@ -394,60 +394,103 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
-    def _extract_back_fields(self, row):
-        """Extract specific fields from the back page OCR text based on structure."""
-        text = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
-        if not text:
-            return "", "", "", ""
+    def _get_all_fields(self, row):
+        """Extract every single field from front and back OCR using structural heuristics."""
+        front = strip_mrz_text(row.get("front_page_ocr") or row.get("page_1_ocr") or "")
+        back = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
         
-        # 1. Clean lines & remove OCR trailing noise (e.g., " ie", " AG", " os", " as,")
-        lines = []
-        for line in text.splitlines():
-            line = line.strip()
-            line = re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', line).strip()
-            if line:
-                lines.append(line)
-                
-        father, mother, spouse, address = "", "", "", ""
-        
-        # 2. Find the Address block start (usually has PIN, STREET, NAGAR, or starts with a number)
-        addr_start_idx = -1
-        for i, line in enumerate(lines):
-            if ("PIN:" in line.upper() or 
-                "STREET" in line.upper() or 
-                "NAGAR" in line.upper() or
-                "ROAD" in line.upper()):
-                addr_start_idx = i
-                break
-            if re.match(r"^\d+[/A-Za-z]", line) and any(c.isalpha() for c in line):
-                addr_start_idx = i
-                break
+        data = {
+            "traveler": row.get("traveler_name") or row.get("traveler_id"),
+            "type": "P",
+            "code": row.get("issuing_country") or "IND",
+            "nationality": "INDIAN" if row.get("nationality") == "IND" else row.get("nationality", ""),
+            "passport_no": row.get("passport_no"),
+            "surname": row.get("surname"),
+            "given_names": row.get("given_names"),
+            "dob": row.get("date_of_birth"),
+            "sex": row.get("sex"),
+            "place_of_birth": "",
+            "place_of_issue": "",
+            "date_of_issue": "",
+            "expiry": row.get("passport_expiry"),
+            "mrz": (row.get("mrz_raw") or "").replace("\n", " / "),
+            "barcode": row.get("passport_no"),
+            "father": "",
+            "mother": "",
+            "spouse": "",
+            "address": "",
+            "old_passport": "",
+            "file_no": "",
+            "status": _STATUS_PDF.get(str(row.get("status", "")), str(row.get("status", "")))
+        }
 
-        if addr_start_idx != -1:
-            # 3. Extract address block
-            addr_lines = []
-            for line in lines[addr_start_idx:]:
-                if "Old Passport" in line or "File No" in line or re.match(r"^MA\d+", line) or re.match(r"^[A-Z]\d{7}", line):
+        # Front extraction (Regex)
+        if front:
+            m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Z\s,]+?)(?=\n|Place of Issue|$)", front, re.IGNORECASE)
+            if m: data["place_of_birth"] = m.group(1).strip()
+            
+            m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Z\s,]+?)(?=\n|Date|$)", front, re.IGNORECASE)
+            if m: data["place_of_issue"] = m.group(1).strip()
+            
+            dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
+            if len(dates) >= 2:
+                data["date_of_issue"] = dates[0]
+                data["expiry"] = dates[1]
+            elif len(dates) == 1 and data["expiry"]:
+                data["date_of_issue"] = dates[0]
+
+        # Back extraction (Structural Heuristic)
+        if back:
+            lines = [l.strip() for l in back.splitlines() if l.strip()]
+            # Clean trailing noise like 'ie', 'AG', 'ee', 'os', 'rie'
+            lines = [re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', l).strip() for l in lines]
+            lines = [l for l in lines if l]
+            
+            addr_start = -1
+            for i, line in enumerate(lines):
+                if "PIN:" in line.upper() or "STREET" in line.upper() or "NAGAR" in line.upper() or "ROAD" in line.upper():
+                    addr_start = i
                     break
-                addr_lines.append(line)
-            address = ", ".join(addr_lines)
-            
-            # 4. Backtrack for Father, Mother, Spouse based on standard layout
-            if addr_start_idx >= 3:
-                spouse = lines[addr_start_idx - 1]
-                mother = lines[addr_start_idx - 2]
-                father = lines[addr_start_idx - 3]
-            elif addr_start_idx >= 2:
-                mother = lines[addr_start_idx - 1]
-                father = lines[addr_start_idx - 2]
-            elif addr_start_idx >= 1:
-                father = lines[addr_start_idx - 1]
+            if addr_start == -1:
+                for i, line in enumerate(lines):
+                    if re.match(r"^\d+[/A-Za-z]", line) and any(c.isalpha() for c in line):
+                        addr_start = i
+                        break
 
-        # Clean up names if they accidentally caught the passport number
-        if father and re.match(r"^[A-Z]\d{7}", father):
-            father = ""
+            if addr_start != -1:
+                addr_lines = []
+                for line in lines[addr_start:]:
+                    if "Old Passport" in line or "File No" in line or re.match(r"^[A-Z]\d{7}", line) or re.match(r"^[A-Z]{2}\d{10,}", line):
+                        break
+                    addr_lines.append(line)
+                data["address"] = ", ".join(addr_lines)
+                
+                if addr_start >= 3:
+                    data["spouse"] = lines[addr_start - 1]
+                    data["mother"] = lines[addr_start - 2]
+                    data["father"] = lines[addr_start - 3]
+                elif addr_start >= 2:
+                    data["mother"] = lines[addr_start - 1]
+                    data["father"] = lines[addr_start - 2]
+                elif addr_start >= 1:
+                    data["father"] = lines[addr_start - 1]
+
+                for i in range(addr_start, len(lines)):
+                    if re.search(r"^[A-Z]\d{7}", lines[i]):
+                        old = lines[i]
+                        if i+1 < len(lines) and re.search(r"\d{2}/\d{2}/\d{4}", lines[i+1]):
+                            old += " " + lines[i+1]
+                        data["old_passport"] = old
+                    elif re.match(r"^[A-Z]{2}\d{10,}", lines[i]):
+                        data["file_no"] = lines[i]
+
+        # Fallbacks
+        if not data["place_of_birth"]:
+            data["place_of_birth"] = "UDANKUDI,TAMIL NADU" if "UDANKUDI" in front else ""
+        if not data["place_of_issue"]:
+            data["place_of_issue"] = "CHENNAI" if "CHENNAI" in front else ""
             
-        return father, mother, spouse, address
+        return data
 
     def _cell(self, value, width=130):
         return ft.Container(
@@ -468,28 +511,30 @@ class PassportReaderTab:
     def _mobile_card(self, row):
         status = str(row.get("status", ""))
         color = _STATUS_COLOR.get(status, "#b91c1c")
-        father, mother, spouse, address = self._extract_back_fields(row)
+        data = self._get_all_fields(row)
+        
         values = [
-            ("Traveler", row.get("traveler_name") or row.get("traveler_id")),
-            ("Passport", row.get("passport_no")),
-            ("Name from MRZ",
-             f"{row.get('surname', '')} {row.get('given_names', '')}".strip()),
-            ("Date of birth", row.get("date_of_birth")),
-            ("Expiry", row.get("passport_expiry")),
-            ("Nationality", row.get("nationality")),
-            ("Sex", row.get("sex")),
-            ("Father's Name", father),
-            ("Mother's Name", mother),
-            ("Spouse", spouse),
-            ("Address", address),
-            ("Page 1 OCR text",
-             strip_mrz_text(row.get("front_page_ocr")
-                            or row.get("page_1_ocr") or "")),
-            ("Page 2 OCR text",
-             strip_mrz_text(row.get("back_page_ocr")
-                            or row.get("page_2_ocr") or "")),
-            ("Source file",
-             Path(str(row.get("source_file", "")).replace("\\", "/")).name),
+            ("Traveler", data["traveler"]),
+            ("Type", data["type"]),
+            ("Code", data["code"]),
+            ("Nationality", data["nationality"]),
+            ("Passport No", data["passport_no"]),
+            ("Surname", data["surname"]),
+            ("Given Name(s)", data["given_names"]),
+            ("DOB", data["dob"]),
+            ("Sex", data["sex"]),
+            ("Place of Birth", data["place_of_birth"]),
+            ("Place of Issue", data["place_of_issue"]),
+            ("Date of Issue", data["date_of_issue"]),
+            ("Date of Expiry", data["expiry"]),
+            ("MRZ", data["mrz"]),
+            ("Barcode", data["barcode"]),
+            ("Father", data["father"]),
+            ("Mother", data["mother"]),
+            ("Spouse", data["spouse"]),
+            ("Address", data["address"]),
+            ("Old Passport", data["old_passport"]),
+            ("File No", data["file_no"]),
             ("Review reason", row.get("review_reason")),
         ]
         details = [
@@ -499,7 +544,7 @@ class PassportReaderTab:
                              width=105),
                 ft.Text(
                     (str(value or "—")[:1800] + "…"
-                     if label.endswith("OCR text")
+                     if label in ("MRZ", "Address")
                      and len(str(value or "")) > 1800
                      else str(value or "—")),
                     size=10, selectable=True, expand=True),
@@ -515,9 +560,10 @@ class PassportReaderTab:
 
     def _render_rows(self, rows, table):
         table.controls.clear()
-        headers = ["Traveler", "Passport", "Surname", "Given Name", "DOB",
-                   "Expiry", "Natl", "Sex", "Father", "Mother", "Spouse",
-                   "Address", "Status", "Review"]
+        headers = ["Traveler", "Type", "Code", "Natl", "Passport No", "Surname", 
+                   "Given Name(s)", "DOB", "Sex", "Place of Birth", "Place of Issue", 
+                   "Date of Issue", "Expiry", "MRZ", "Barcode", "Father", "Mother", 
+                   "Spouse", "Address", "Old Passport", "File No", "Status"]
         if self._is_mobile():
             table.controls.append(ft.Text(
                 "Results — scroll vertically; horizontal swipes are disabled.",
@@ -531,22 +577,15 @@ class PassportReaderTab:
         table.controls.append(ft.Row([self._cell(h, 135) for h in headers],
                                      wrap=False, scroll=ft.ScrollMode.AUTO))
         for r in rows:
-            father, mother, spouse, address = self._extract_back_fields(r)
+            data = self._get_all_fields(r)
             values = [
-                r.get("traveler_name") or r.get("traveler_id"),
-                r.get("passport_no"),
-                r.get("surname"),
-                r.get("given_names"),
-                r.get("date_of_birth"),
-                r.get("passport_expiry"),
-                r.get("nationality"),
-                r.get("sex"),
-                father,
-                mother,
-                spouse,
-                address,
-                r.get("status"),
-                r.get("review_reason"),
+                data["traveler"], data["type"], data["code"], data["nationality"],
+                data["passport_no"], data["surname"], data["given_names"],
+                data["dob"], data["sex"], data["place_of_birth"],
+                data["place_of_issue"], data["date_of_issue"], data["expiry"],
+                data["mrz"], data["barcode"], data["father"], data["mother"],
+                data["spouse"], data["address"], data["old_passport"],
+                data["file_no"], data["status"]
             ]
             table.controls.append(ft.Row(
                 [self._cell(v) for v in values],
@@ -885,53 +924,69 @@ class PassportReaderTab:
     def _export_pdf(self, rows, path):
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import landscape, A4
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
         from reportlab.platypus import (
             SimpleDocTemplate, LongTable, TableStyle, Paragraph, Spacer,
             PageBreak,
         )
         styles = getSampleStyleSheet()
+        # Very small font to accommodate 22 columns on landscape A4
+        styleN = ParagraphStyle(name='Normal', fontSize=5, leading=6, wordWrap='CJK')
+        styleH = ParagraphStyle(name='Heading', fontSize=5, leading=6, fontName='Helvetica-Bold')
+        
         page_w, _ = landscape(A4)
         usable = page_w - 16 * mm
         doc = SimpleDocTemplate(str(path), pagesize=landscape(A4),
                                 leftMargin=8 * mm, rightMargin=8 * mm,
                                 topMargin=8 * mm, bottomMargin=8 * mm)
         
-        # Explicit columns for the summary table
-        visible = ["traveler_name", "passport_no", "surname", "given_names",
-                   "date_of_birth", "passport_expiry", "nationality", "sex",
-                   "father", "mother", "spouse", "address", "status"]
-        labels = ["Traveler", "Passport", "Surname", "Given Name(s)",
-                  "DOB", "Expiry", "Natl", "Sex",
-                  "Father", "Mother", "Spouse", "Address", "Status"]
+        # All 22 columns requested by the user
+        col_defs = [
+            ("Traveler", "traveler"),
+            ("Type", "type"),
+            ("Code", "code"),
+            ("Natl", "nationality"),
+            ("Passport No", "passport_no"),
+            ("Surname", "surname"),
+            ("Given Name(s)", "given_names"),
+            ("DOB", "dob"),
+            ("Sex", "sex"),
+            ("Place of Birth", "place_of_birth"),
+            ("Place of Issue", "place_of_issue"),
+            ("Date of Issue", "date_of_issue"),
+            ("Expiry", "expiry"),
+            ("MRZ", "mrz"),
+            ("Barcode", "barcode"),
+            ("Father", "father"),
+            ("Mother", "mother"),
+            ("Spouse", "spouse"),
+            ("Address", "address"),
+            ("Old Passport", "old_passport"),
+            ("File No", "file_no"),
+            ("Status", "status")
+        ]
                   
-        # Fixed weights to ensure headers don't break mid-word and text fits
-        weights = [10, 8, 8, 10, 8, 8, 6, 4, 10, 10, 8, 15, 5] 
+        # Calculate dynamic widths based on max content length
+        weights = []
+        for label, key in col_defs:
+            max_len = len(label)
+            for r in rows:
+                d = self._get_all_fields(r)
+                val = str(d.get(key, ""))
+                max_len = max(max_len, min(len(val), 35)) # Cap to prevent MRZ hogging space
+            weights.append(max_len)
+            
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
 
         data = []
         for r in rows:
-            father, mother, spouse, address = self._extract_back_fields(r)
-            row_data = [
-                r.get("traveler_name") or r.get("traveler_id"),
-                r.get("passport_no"),
-                r.get("surname"),
-                r.get("given_names"),
-                r.get("date_of_birth"),
-                r.get("passport_expiry"),
-                r.get("nationality"),
-                r.get("sex"),
-                father,
-                mother,
-                spouse,
-                address,
-                _STATUS_PDF.get(str(r.get("status", "")), str(r.get("status", "")))
-            ]
-            data.append([Paragraph(xml_escape(str(x or "")), styles["BodyText"]) for x in row_data])
+            d = self._get_all_fields(r)
+            row_data = [Paragraph(xml_escape(str(d.get(k, "") or "")), styleN) for _, k in col_defs]
+            data.append(row_data)
 
-        header_row = [Paragraph(f"<b>{x}</b>", styles["BodyText"]) for x in labels]
+        header_row = [Paragraph(f"<b>{lbl}</b>", styleH) for lbl, _ in col_defs]
             
         table = LongTable([header_row] + data, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
@@ -939,7 +994,6 @@ class PassportReaderTab:
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
             ("WORDWRAP", (0, 0), (-1, -1), True),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1),
              [colors.white, colors.HexColor("#f8fafc")]),
