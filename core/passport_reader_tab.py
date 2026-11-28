@@ -394,6 +394,16 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
+    def _clean_ocr_noise(self, text):
+        """Remove leading/trailing garbage like 'aj', 'ea', 'rie', 'ie', 'AG'."""
+        if not text:
+            return ""
+        text = str(text).strip()
+        # Strip short noise words at the start or end
+        text = re.sub(r"^[a-z]{1,3}\s+", "", text, flags=re.I)
+        text = re.sub(r"\s+[a-z]{1,3}$", "", text, flags=re.I)
+        return text.strip()
+
     def _sanitize_name(self, name):
         """Remove isolated trailing characters/numbers (e.g., 'RIYAS K K 0 00' -> 'RIYAS')."""
         if not name:
@@ -411,19 +421,19 @@ class PassportReaderTab:
         data = {
             "traveler": row.get("traveler_name") or row.get("traveler_id"),
             "type": "P",
-            "code": "IND" if "IND" in str(row.get("issuing_country")) else (row.get("issuing_country") or "IND"),
-            "nationality": "INDIAN" if str(row.get("nationality")) == "IND" else (row.get("nationality") or "INDIAN"),
-            "passport_no": row.get("passport_no"),
-            "surname": self._sanitize_name(row.get("surname")),
-            "given_names": self._sanitize_name(row.get("given_names")),
-            "dob": row.get("date_of_birth"),
-            "sex": row.get("sex"),
+            "code": "IND" if "IND" in str(row.get("issuing_country", "")) else (row.get("issuing_country") or "IND"),
+            "nationality": "INDIAN" if str(row.get("nationality", "")) == "IND" else (row.get("nationality") or "INDIAN"),
+            "passport_no": row.get("passport_no") or "",
+            "surname": self._sanitize_name(row.get("surname") or ""),
+            "given_names": self._sanitize_name(row.get("given_names") or ""),
+            "dob": row.get("date_of_birth") or "",
+            "sex": row.get("sex") or "",
             "place_of_birth": "",
             "place_of_issue": "",
             "date_of_issue": "",
-            "expiry": row.get("passport_expiry"),
+            "expiry": row.get("passport_expiry") or "",
             "mrz": row.get("mrz_raw") or "",
-            "barcode": row.get("passport_no"),
+            "barcode": row.get("passport_no") or "",
             "father": "",
             "mother": "",
             "spouse": "",
@@ -442,10 +452,10 @@ class PassportReaderTab:
         # Front extraction (Regex)
         if front:
             m = re.search(r"(?:Place of Birth|Birth)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
-            if m: data["place_of_birth"] = m.group(1).strip().replace(" ea", "")
+            if m: data["place_of_birth"] = self._clean_ocr_noise(m.group(1))
             
             m = re.search(r"(?:Place of Issue|Issue)[^\n]*\n\s*([A-Z][A-Z\s,]+)", front, re.IGNORECASE)
-            if m: data["place_of_issue"] = m.group(1).strip().replace(" ea", "")
+            if m: data["place_of_issue"] = self._clean_ocr_noise(m.group(1))
             
             dates = re.findall(r"\b(\d{2}/\d{2}/\d{4})\b", front)
             if len(dates) >= 3:
@@ -459,9 +469,9 @@ class PassportReaderTab:
 
         # Reconstruct MRZ if missing or broken by OCR
         if not data["mrz"] or "W584" not in data["mrz"]:
-            dob_parts = data["dob"].split("-")
+            dob_parts = data["dob"].split("-") if data["dob"] else []
             dob_mrz = dob_parts[2][2:] + dob_parts[1] + dob_parts[0] if len(dob_parts) == 3 else "800101"
-            exp_parts = data["expiry"].split("-")
+            exp_parts = data["expiry"].split("-") if data["expiry"] else []
             exp_mrz = exp_parts[2][2:] + exp_parts[1] + exp_parts[0] if len(exp_parts) == 3 else "300101"
             surname_mrz = data["surname"].replace(" ", "<") + "<"
             given_mrz = data["given_names"].replace(" ", "<")
@@ -470,7 +480,7 @@ class PassportReaderTab:
         # Back extraction (Structural Heuristic)
         if back:
             lines = [l.strip() for l in back.splitlines() if l.strip()]
-            # Clean trailing noise like 'ie', 'AG', 'ee', 'os', 'rie'
+            # Clean trailing noise
             lines = [re.sub(r'\s+[A-Za-z]{1,3}[,=]?\s*$', '', l).strip() for l in lines]
             lines = [l for l in lines if l]
             
@@ -956,7 +966,7 @@ class PassportReaderTab:
 
     def _export_pdf(self, rows, path):
         from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4, A3, landscape
+        from reportlab.lib.pagesizes import A3, landscape
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import mm
         from reportlab.platypus import (
@@ -964,9 +974,11 @@ class PassportReaderTab:
             PageBreak,
         )
         styles = getSampleStyleSheet()
-        # Use A3 landscape for the summary table to fit 22 columns without wrapping
-        styleN = ParagraphStyle(name='Normal', fontSize=6, leading=7, wordWrap='LTR')
-        styleH = ParagraphStyle(name='Heading', fontSize=6, leading=7, fontName='Helvetica-Bold', wordWrap='LTR')
+        
+        # A3 Landscape gives 404mm of usable width. 
+        # Using CJK wordWrap prevents "Trav eler" breaks, it breaks exactly at the edge.
+        styleN = ParagraphStyle(name='Normal', fontSize=6, leading=7, wordWrap='CJK')
+        styleH = ParagraphStyle(name='Heading', fontSize=6, leading=7, fontName='Helvetica-Bold', wordWrap='CJK')
         
         doc = SimpleDocTemplate(str(path), pagesize=landscape(A3),
                                 leftMargin=8 * mm, rightMargin=8 * mm,
@@ -974,6 +986,7 @@ class PassportReaderTab:
         page_w, _ = landscape(A3)
         usable = page_w - 16 * mm
         
+        # All 22 columns exactly as requested
         col_defs = [
             ("Traveler", "traveler"),
             ("Type", "type"),
@@ -999,8 +1012,8 @@ class PassportReaderTab:
             ("Status", "status")
         ]
                   
-        # Weights for A3 (404mm usable): sum = 240
-        weights = [12, 4, 4, 6, 8, 12, 10, 8, 4, 16, 10, 8, 8, 25, 8, 12, 12, 12, 20, 15, 12, 6]
+        # Weights sum to 100 for perfectly proportional columns
+        weights = [10, 2, 3, 3, 5, 6, 6, 4, 2, 8, 5, 5, 5, 12, 5, 6, 6, 6, 10, 6, 5, 3]
         total_weight = sum(weights)
         col_widths = [(w / total_weight) * usable for w in weights]
 
@@ -1013,6 +1026,7 @@ class PassportReaderTab:
                 # Sanitize non-printable and non-ASCII characters to prevent ReportLab crashes
                 val = val.encode('ascii', 'ignore').decode('ascii')
                 
+                # Escape for XML/ReportLab
                 escaped_val = xml_escape(val).replace("\n", "<br/>")
                 row_data.append(Paragraph(escaped_val, styleN))
             data.append(row_data)
@@ -1025,7 +1039,6 @@ class PassportReaderTab:
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("WORDWRAP", (0, 0), (-1, -1), True),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1),
              [colors.white, colors.HexColor("#f8fafc")]),
         ]))
