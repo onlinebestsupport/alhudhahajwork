@@ -41,6 +41,12 @@ _ISO3_CODES = {
 
 _MRZ_LINE_RE = re.compile(r"^[A-Z0-9<]{30,}$")
 
+# Keywords to check for correct rotation
+_KEYWORDS = [
+    "EMIGRATION", "FATHER", "MOTHER", "ADDRESS", "PIN", "REPUBLIC", 
+    "INDIA", "SURNAME", "BIRTH", "PASSPORT", "NATIONALITY", "GUARDIAN"
+]
+
 
 def _clean(value):
     return str(value or "").strip()
@@ -267,7 +273,7 @@ def _ocr_page_image(image) -> str:
         raise RuntimeError(
             "OCR engine unavailable: install pytesseract and tesseract") from ex
 
-    # 1. Try Tesseract OSD (Orientation and Script Detection)
+    # 1. Try Tesseract OSD
     try:
         osd = pytesseract.image_to_osd(image)
         match = re.search(r"Rotate: (\d+)", osd)
@@ -280,30 +286,28 @@ def _ocr_page_image(image) -> str:
             elif angle == 270:
                 image = image.rotate(-270, expand=True)
     except Exception:
-        pass # If OSD fails (missing package), proceed to manual checks
+        pass
 
+    # 2. Run OCR on the (hopefully corrected) image
     text = _run_ocr(image, pytesseract)
     
-    # If we found a valid MRZ line, the image was already upright!
-    if re.search(r"^[A-Z0-9<]{30,}$", text, re.MULTILINE):
+    # If we found English keywords (or a valid MRZ), it's upright!
+    if any(k in text.upper() for k in _KEYWORDS) or re.search(r"^[A-Z0-9<]{30,}$", text, re.MULTILINE):
         return text
 
-    # 2. Fallback: Try 180 degrees (upside down)
-    rot180 = image.rotate(180, expand=True)
-    text_180 = _run_ocr(rot180, pytesseract)
-    if re.search(r"^[A-Z0-9<]{30,}$", text_180, re.MULTILINE):
+    # 3. Fallback: Try 180 degrees (upside down)
+    text_180 = _run_ocr(image.rotate(180, expand=True), pytesseract)
+    if any(k in text_180.upper() for k in _KEYWORDS) or re.search(r"^[A-Z0-9<]{30,}$", text_180, re.MULTILINE):
         return text_180
 
-    # 3. Fallback: Try 90 degrees
-    rot90 = image.rotate(-90, expand=True)
-    text_90 = _run_ocr(rot90, pytesseract)
-    if re.search(r"^[A-Z0-9<]{30,}$", text_90, re.MULTILINE):
+    # 4. Fallback: Try 90 degrees
+    text_90 = _run_ocr(image.rotate(-90, expand=True), pytesseract)
+    if any(k in text_90.upper() for k in _KEYWORDS) or re.search(r"^[A-Z0-9<]{30,}$", text_90, re.MULTILINE):
         return text_90
 
-    # 4. Fallback: Try 270 degrees
-    rot270 = image.rotate(-270, expand=True)
-    text_270 = _run_ocr(rot270, pytesseract)
-    if re.search(r"^[A-Z0-9<]{30,}$", text_270, re.MULTILINE):
+    # 5. Fallback: Try 270 degrees
+    text_270 = _run_ocr(image.rotate(-270, expand=True), pytesseract)
+    if any(k in text_270.upper() for k in _KEYWORDS) or re.search(r"^[A-Z0-9<]{30,}$", text_270, re.MULTILINE):
         return text_270
 
     # If none worked, return the one with the most text
