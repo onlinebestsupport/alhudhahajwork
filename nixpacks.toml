@@ -9,9 +9,13 @@
 
 [phases.setup]
 nixPkgs = [
-    "python311",
-    "tesseract",
+    "...",
+    "tesseract4",
     "poppler_utils",
+]
+aptPkgs = [
+    "tesseract-ocr",
+    "poppler-utils",
 ]
 
 [phases.install]
