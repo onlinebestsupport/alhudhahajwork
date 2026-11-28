@@ -92,11 +92,13 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
                     found.append(p)
     unique = []
     seen = set()
+    seen_content = set()
     for p in found:
         try:
             p = p.resolve()
-            if p not in seen:
-                unique.append(p); seen.add(p)
+            identity = (p.name.lower(), p.stat().st_size)
+            if p not in seen and identity not in seen_content:
+                unique.append(p); seen.add(p); seen_content.add(identity)
         except OSError:
             pass
     log_event("PASSPORT_READER", "DISCOVERY_RESULT",
