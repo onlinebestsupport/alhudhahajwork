@@ -421,19 +421,14 @@ class PassportReaderTab:
             ("Date of birth", row.get("date_of_birth")),
             ("Expiry", row.get("passport_expiry")),
             ("Nationality", row.get("nationality")),
-            ("Pages read", row.get("pages_read")),
-            ("Front", row.get("front_status") or row.get("page_1_status")),
-            ("Back", row.get("back_status") or row.get("last_page_status")),
-            ("Source file",
-             Path(str(row.get("source_file", "")).replace("\\", "/")).name),
-            ("All source files",
-             row.get("source_files") or row.get("source_file")),
-            ("Front OCR text",
+            ("Page 1 OCR text",
              strip_mrz_text(row.get("front_page_ocr")
                             or row.get("page_1_ocr") or "")),
-            ("Back OCR text",
+            ("Page 2 OCR text",
              strip_mrz_text(row.get("back_page_ocr")
-                            or row.get("last_page_ocr") or "")),
+                            or row.get("page_2_ocr") or "")),
+            ("Source file",
+             Path(str(row.get("source_file", "")).replace("\\", "/")).name),
             ("Review reason", row.get("review_reason")),
         ]
         details = [
@@ -460,8 +455,8 @@ class PassportReaderTab:
     def _render_rows(self, rows, table):
         table.controls.clear()
         headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB",
-                   "Expiry", "Nationality", "Pages read", "Front", "Back",
-                   "File", "Status", "Review reason"]
+                   "Expiry", "Nationality", "Page 1 OCR", "Page 2 OCR",
+                   "Status", "Review reason"]
         if self._is_mobile():
             table.controls.append(ft.Text(
                 "Results — scroll vertically; horizontal swipes are disabled.",
@@ -482,10 +477,8 @@ class PassportReaderTab:
                 r.get("date_of_birth"),
                 r.get("passport_expiry"),
                 r.get("nationality"),
-                r.get("pages_read"),
-                r.get("front_status") or r.get("page_1_status"),
-                r.get("back_status") or r.get("last_page_status"),
-                Path(r.get("source_file", "")).name,
+                strip_mrz_text(r.get("front_page_ocr") or r.get("page_1_ocr") or "")[:300],
+                strip_mrz_text(r.get("back_page_ocr") or r.get("page_2_ocr") or "")[:300],
                 r.get("status"),
                 r.get("review_reason"),
             ]
@@ -556,8 +549,10 @@ class PassportReaderTab:
         self.status.value = (f"Reading {len(targets)} traveler passport "
                              "folder(s) in the background…")
         self._status_update()
-        if all_travelers:
-            self._set_subtab("results")
+        
+        # FIX: Always switch to results so the user sees the progress
+        self._set_subtab("results")
+        
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
                   selected_traveler=selected_id or "ALL",
                   traveler_count=len(targets))
@@ -615,8 +610,6 @@ class PassportReaderTab:
                 f"{no_file_count} folder(s) with no passport files. "
                 "No traveler CSV fields were changed.")
             self._render()
-            if len(targets) == 1:
-                self._set_subtab("reader")
             self._status_update()
             log_event("PASSPORT_READER", "SCAN_SUCCESS", db=self.db,
                       row_count=len(self.rows), validated=valid,
@@ -829,8 +822,7 @@ class PassportReaderTab:
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.lib.units import mm
         from reportlab.platypus import (
-            SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
-            PageBreak,
+            SimpleDocTemplate, LongTable, TableStyle, Paragraph, Spacer,
         )
         styles = getSampleStyleSheet()
         page_w, _ = landscape(A4)
@@ -838,47 +830,60 @@ class PassportReaderTab:
         doc = SimpleDocTemplate(str(path), pagesize=landscape(A4),
                                 leftMargin=8 * mm, rightMargin=8 * mm,
                                 topMargin=8 * mm, bottomMargin=8 * mm)
+        
         visible = ["traveler_name", "passport_no", "surname", "given_names",
                    "date_of_birth", "passport_expiry", "nationality",
-                   "front_status", "back_status", "status", "review_reason"]
+                   "front_page_ocr", "back_page_ocr", "status", "review_reason"]
         labels = ["Traveler", "Passport No.", "Surname", "Given Name(s)",
                   "Date of Birth", "Date of Expiry", "Nationality",
-                  "Front", "Back", "Status", "Review"]
+                  "Page 1 OCR (Front)", "Page 2 OCR (Back)", "Status", "Review"]
+        
         floors = {"traveler_name": 28, "passport_no": 20, "surname": 22,
                   "given_names": 28, "date_of_birth": 20,
                   "passport_expiry": 20, "nationality": 18,
-                  "front_status": 16, "back_status": 16,
-                  "status": 18, "review_reason": 40}
+                  "front_page_ocr": 45, "back_page_ocr": 45,
+                  "status": 20, "review_reason": 40}
+                  
         weights = []
         for key in visible:
-            longest = max(
-                (len(str(r.get(key, "") or "")) for r in rows), default=1)
-            weights.append(max(longest, 4))
+            if key in ("front_page_ocr", "back_page_ocr"):
+                longest = max((len(strip_mrz_text(str(r.get(key, "") or ""))) for r in rows), default=1)
+                weights.append(min(max(longest, 4), 200))
+            else:
+                longest = max((len(str(r.get(key, "") or "")) for r in rows), default=1)
+                weights.append(max(longest, 4))
+                
         total = sum(weights)
         col_widths = []
         for i, key in enumerate(visible):
             w = usable * weights[i] / total
             floor = floors.get(key, 16) * mm
             col_widths.append(max(w, floor))
+            
         s = sum(col_widths)
         if s > usable:
             col_widths = [w * usable / s for w in col_widths]
 
         def _val(r, key):
             if key == "status":
-                return _STATUS_PDF.get(str(r.get("status", "")),
-                                       str(r.get("status", "")))
-            if key == "front_status":
-                return r.get("front_status") or r.get("page_1_status") or ""
-            if key == "back_status":
-                return r.get("back_status") or r.get("last_page_status") or ""
+                return _STATUS_PDF.get(str(r.get("status", "")), str(r.get("status", "")))
+            if key == "front_page_ocr":
+                return strip_mrz_text(r.get("front_page_ocr") or r.get("page_1_ocr") or "")
+            if key == "back_page_ocr":
+                return strip_mrz_text(r.get("back_page_ocr") or r.get("page_2_ocr") or "")
             return str(r.get(key, "") or "")
 
-        data = [[Paragraph(x, styles["BodyText"]) for x in labels]]
+        data = [[Paragraph(f"<b>{x}</b>", styles["BodyText"]) for x in labels]]
         for r in rows:
-            data.append([Paragraph(_val(r, k), styles["BodyText"])
-                         for k in visible])
-        table = Table(data, repeatRows=1, colWidths=col_widths)
+            row_data = []
+            for k in visible:
+                val = _val(r, k)
+                # Escape HTML entities and replace newlines with <br/> for Paragraph
+                escaped_val = xml_escape(val).replace("\n", "<br/>")
+                row_data.append(Paragraph(escaped_val, styles["BodyText"]))
+            data.append(row_data)
+            
+        table = LongTable(data, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -889,65 +894,15 @@ class PassportReaderTab:
             ("ROWBACKGROUNDS", (0, 1), (-1, -1),
              [colors.white, colors.HexColor("#f8fafc")]),
         ]))
+        
         story = [
-            Paragraph("Passport Reader — passport fields and page-by-page "
-                      "reading", styles["Title"]),
+            Paragraph("Passport Reader — passport fields and page-by-page reading", styles["Title"]),
             Paragraph(
-                "English OCR only. 'OK' means MRZ check digits and nationality "
-                "passed, not that names are correct. Verify every value against "
-                "the original passport scan before ticket or visa issuance.",
+                "English OCR only. 'OK' means MRZ check digits and nationality passed, "
+                "not that names are correct. Verify every value against the original "
+                "passport scan before ticket or visa issuance.",
                 styles["BodyText"]),
             Spacer(1, 4),
             table,
         ]
-        for r in rows:
-            front_raw = (r.get("front_page_ocr")
-                         or r.get("page_1_ocr") or "").strip()
-            back_raw = (r.get("back_page_ocr")
-                        or r.get("page_2_ocr")
-                        or r.get("last_page_ocr") or "").strip()
-            front = strip_mrz_text(front_raw)
-            back = strip_mrz_text(back_raw)
-            if not front and not back:
-                continue
-            story.append(PageBreak())
-            title = xml_escape(
-                str(r.get("traveler_name") or r.get("traveler_id")
-                    or "Unknown traveler"))
-            story.append(Paragraph(f"{title} — Front", styles["Heading2"]))
-            page1_fields = [
-                ("Surname", r.get("surname")),
-                ("Given Name(s)", r.get("given_names")),
-                ("Passport No.", r.get("passport_no")),
-                ("Nationality", r.get("nationality")),
-                ("Date of Birth", r.get("date_of_birth")),
-                ("Sex", r.get("sex")),
-                ("Date of Expiry", r.get("passport_expiry")),
-                ("Issuing Country", r.get("issuing_country")),
-            ]
-            story.append(Table(
-                [[Paragraph(xml_escape(str(k)), styles["BodyText"]),
-                  Paragraph(xml_escape(str(v or "")), styles["BodyText"])]
-                 for k, v in page1_fields],
-                colWidths=[42 * mm, 90 * mm],
-                style=TableStyle([
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                    ("BACKGROUND", (0, 0), (0, -1),
-                     colors.HexColor("#e2e8f0")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ])))
-            story.append(Spacer(1, 8))
-            story.append(Paragraph(
-                "Front — English OCR labels and printed text",
-                styles["Heading3"]))
-            story.append(Paragraph(
-                xml_escape(front or "No Front OCR text captured.")
-                .replace("\n", "<br/>"), styles["BodyText"]))
-            if back:
-                story.append(Spacer(1, 8))
-                story.append(Paragraph("Back — printed text",
-                                       styles["Heading2"]))
-                story.append(Paragraph(
-                    xml_escape(back).replace("\n", "<br/>"),
-                    styles["BodyText"]))
         doc.build(story)
