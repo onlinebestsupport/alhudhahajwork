@@ -1,6 +1,4 @@
-=================================================================================
-# SECTION 7 (FLET 1.0.0 VERSION) — MAIN WINDOW (MOBILE-RESPONSIVE)
-# =================================================================================
+"""Section 7 — Flet admin shell and mobile-responsive main window."""
 # v2.5 — CRITICAL FIX: clock loop no longer calls page.update()
 #
 #   ROOT CAUSE:
