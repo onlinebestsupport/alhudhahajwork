@@ -394,6 +394,32 @@ class PassportReaderTab:
                          padding=6),
         ], spacing=8, scroll=ft.ScrollMode.AUTO)
 
+    def _extract_back_fields(self, row):
+        """Extract specific fields from the back page OCR text."""
+        text = strip_mrz_text(row.get("back_page_ocr") or row.get("page_2_ocr") or "")
+        if not text:
+            return "", "", "", ""
+        
+        def _find(label):
+            # Match same line first
+            m = re.search(rf"{label}[^A-Z\n]*([A-Z][A-Z\s]{{2,}})", text, re.IGNORECASE)
+            if m: return m.group(1).strip()
+            # Match next line
+            m = re.search(rf"{label}[^\n]*\n\s*([A-Z][A-Z\s]{{2,}})", text, re.IGNORECASE)
+            if m: return m.group(1).strip()
+            return ""
+
+        father = _find(r"Name of Father")
+        mother = _find(r"Name of Mother")
+        spouse = _find(r"Name of Spouse")
+        
+        address = ""
+        m = re.search(r"(?:Address)[^\n]*\n([\s\S]{10,150}?)(?=Old Passport|File No|$)", text, re.IGNORECASE)
+        if m:
+            address = " ".join(m.group(1).split())
+            
+        return father, mother, spouse, address
+
     def _cell(self, value, width=130):
         return ft.Container(
             content=ft.Text(str(value or ""), size=10, selectable=True,
@@ -413,6 +439,7 @@ class PassportReaderTab:
     def _mobile_card(self, row):
         status = str(row.get("status", ""))
         color = _STATUS_COLOR.get(status, "#b91c1c")
+        father, mother, spouse, address = self._extract_back_fields(row)
         values = [
             ("Traveler", row.get("traveler_name") or row.get("traveler_id")),
             ("Passport", row.get("passport_no")),
@@ -421,6 +448,11 @@ class PassportReaderTab:
             ("Date of birth", row.get("date_of_birth")),
             ("Expiry", row.get("passport_expiry")),
             ("Nationality", row.get("nationality")),
+            ("Sex", row.get("sex")),
+            ("Father's Name", father),
+            ("Mother's Name", mother),
+            ("Spouse", spouse),
+            ("Address", address),
             ("Page 1 OCR text",
              strip_mrz_text(row.get("front_page_ocr")
                             or row.get("page_1_ocr") or "")),
@@ -454,9 +486,9 @@ class PassportReaderTab:
 
     def _render_rows(self, rows, table):
         table.controls.clear()
-        headers = ["Traveler", "Passport no.", "Name from MRZ", "DOB",
-                   "Expiry", "Nationality", "Page 1 OCR", "Page 2 OCR",
-                   "Status", "Review reason"]
+        headers = ["Traveler", "Passport", "Surname", "Given Name", "DOB",
+                   "Expiry", "Natl", "Sex", "Father", "Mother", "Spouse",
+                   "Address", "Status", "Review"]
         if self._is_mobile():
             table.controls.append(ft.Text(
                 "Results — scroll vertically; horizontal swipes are disabled.",
@@ -470,15 +502,20 @@ class PassportReaderTab:
         table.controls.append(ft.Row([self._cell(h, 135) for h in headers],
                                      wrap=False, scroll=ft.ScrollMode.AUTO))
         for r in rows:
+            father, mother, spouse, address = self._extract_back_fields(r)
             values = [
                 r.get("traveler_name") or r.get("traveler_id"),
                 r.get("passport_no"),
-                f"{r.get('surname','')} {r.get('given_names','')}".strip(),
+                r.get("surname"),
+                r.get("given_names"),
                 r.get("date_of_birth"),
                 r.get("passport_expiry"),
                 r.get("nationality"),
-                strip_mrz_text(r.get("front_page_ocr") or r.get("page_1_ocr") or "")[:300],
-                strip_mrz_text(r.get("back_page_ocr") or r.get("page_2_ocr") or "")[:300],
+                r.get("sex"),
+                father,
+                mother,
+                spouse,
+                address,
                 r.get("status"),
                 r.get("review_reason"),
             ]
@@ -550,7 +587,7 @@ class PassportReaderTab:
                              "folder(s) in the background…")
         self._status_update()
         
-        # FIX: Always switch to results so the user sees the progress
+        # Always switch to results so the user sees the progress
         self._set_subtab("results")
         
         log_event("PASSPORT_READER", "SCAN_START", db=self.db,
@@ -831,59 +868,42 @@ class PassportReaderTab:
                                 leftMargin=8 * mm, rightMargin=8 * mm,
                                 topMargin=8 * mm, bottomMargin=8 * mm)
         
+        # Explicit columns for the summary table
         visible = ["traveler_name", "passport_no", "surname", "given_names",
-                   "date_of_birth", "passport_expiry", "nationality",
-                   "front_page_ocr", "back_page_ocr", "status", "review_reason"]
-        labels = ["Traveler", "Passport No.", "Surname", "Given Name(s)",
-                  "Date of Birth", "Date of Expiry", "Nationality",
-                  "Page 1 OCR (Front)", "Page 2 OCR (Back)", "Status", "Review"]
-        
-        floors = {"traveler_name": 28, "passport_no": 20, "surname": 22,
-                  "given_names": 28, "date_of_birth": 20,
-                  "passport_expiry": 20, "nationality": 18,
-                  "front_page_ocr": 45, "back_page_ocr": 45,
-                  "status": 20, "review_reason": 40}
+                   "date_of_birth", "passport_expiry", "nationality", "sex",
+                   "father", "mother", "spouse", "address", "status"]
+        labels = ["Traveler", "Passport", "Surname", "Given Name(s)",
+                  "DOB", "Expiry", "Natl", "Sex",
+                  "Father", "Mother", "Spouse", "Address", "Status"]
                   
-        weights = []
-        for key in visible:
-            if key in ("front_page_ocr", "back_page_ocr"):
-                longest = max((len(strip_mrz_text(str(r.get(key, "") or ""))) for r in rows), default=1)
-                weights.append(min(max(longest, 4), 200))
-            else:
-                longest = max((len(str(r.get(key, "") or "")) for r in rows), default=1)
-                weights.append(max(longest, 4))
-                
-        total = sum(weights)
-        col_widths = []
-        for i, key in enumerate(visible):
-            w = usable * weights[i] / total
-            floor = floors.get(key, 16) * mm
-            col_widths.append(max(w, floor))
-            
-        s = sum(col_widths)
-        if s > usable:
-            col_widths = [w * usable / s for w in col_widths]
+        # Fixed weights to ensure headers don't break mid-word and text fits
+        weights = [10, 8, 8, 10, 8, 8, 6, 4, 10, 10, 8, 5, 5] 
+        total_weight = sum(weights)
+        col_widths = [(w / total_weight) * usable for w in weights]
 
-        def _val(r, key):
-            if key == "status":
-                return _STATUS_PDF.get(str(r.get("status", "")), str(r.get("status", "")))
-            if key == "front_page_ocr":
-                return strip_mrz_text(r.get("front_page_ocr") or r.get("page_1_ocr") or "")
-            if key == "back_page_ocr":
-                return strip_mrz_text(r.get("back_page_ocr") or r.get("page_2_ocr") or "")
-            return str(r.get(key, "") or "")
-
-        data = [[Paragraph(f"<b>{x}</b>", styles["BodyText"]) for x in labels]]
+        data = []
         for r in rows:
-            row_data = []
-            for k in visible:
-                val = _val(r, k)
-                # Escape HTML entities and replace newlines with <br/> for Paragraph
-                escaped_val = xml_escape(val).replace("\n", "<br/>")
-                row_data.append(Paragraph(escaped_val, styles["BodyText"]))
-            data.append(row_data)
+            father, mother, spouse, address = self._extract_back_fields(r)
+            row_data = [
+                r.get("traveler_name") or r.get("traveler_id"),
+                r.get("passport_no"),
+                r.get("surname"),
+                r.get("given_names"),
+                r.get("date_of_birth"),
+                r.get("passport_expiry"),
+                r.get("nationality"),
+                r.get("sex"),
+                father,
+                mother,
+                spouse,
+                address,
+                _STATUS_PDF.get(str(r.get("status", "")), str(r.get("status", "")))
+            ]
+            data.append([Paragraph(xml_escape(str(x or "")), styles["BodyText"]) for x in row_data])
+
+        header_row = [Paragraph(f"<b>{x}</b>", styles["BodyText"]) for x in labels]
             
-        table = LongTable(data, repeatRows=1, colWidths=col_widths)
+        table = LongTable([header_row] + data, repeatRows=1, colWidths=col_widths)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -896,13 +916,41 @@ class PassportReaderTab:
         ]))
         
         story = [
-            Paragraph("Passport Reader — passport fields and page-by-page reading", styles["Title"]),
+            Paragraph("Passport Reader — Field Extraction Summary", styles["Title"]),
             Paragraph(
                 "English OCR only. 'OK' means MRZ check digits and nationality passed, "
-                "not that names are correct. Verify every value against the original "
-                "passport scan before ticket or visa issuance.",
+                "not that names are correct. Full OCR text is available on the detail "
+                "pages below. Verify every value against the original passport scan.",
                 styles["BodyText"]),
             Spacer(1, 4),
             table,
         ]
+
+        # Keep the detailed pages for full OCR text review
+        from reportlab.platypus import PageBreak
+        for r in rows:
+            front_raw = (r.get("front_page_ocr")
+                         or r.get("page_1_ocr") or "").strip()
+            back_raw = (r.get("back_page_ocr")
+                        or r.get("page_2_ocr")
+                        or r.get("last_page_ocr") or "").strip()
+            front = strip_mrz_text(front_raw)
+            back = strip_mrz_text(back_raw)
+            if not front and not back:
+                continue
+            story.append(PageBreak())
+            title = xml_escape(
+                str(r.get("traveler_name") or r.get("traveler_id")
+                    or "Unknown traveler"))
+            story.append(Paragraph(f"{title} — Full Text", styles["Heading2"]))
+            if front:
+                story.append(Paragraph("Page 1 OCR (Front)", styles["Heading3"]))
+                story.append(Paragraph(
+                    xml_escape(front).replace("\n", "<br/>"), styles["BodyText"]))
+                story.append(Spacer(1, 8))
+            if back:
+                story.append(Paragraph("Page 2 OCR (Back)", styles["Heading3"]))
+                story.append(Paragraph(
+                    xml_escape(back).replace("\n", "<br/>"), styles["BodyText"]))
+
         doc.build(story)
