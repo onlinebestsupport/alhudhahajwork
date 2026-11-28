@@ -1,8 +1,4 @@
-"""Passport scan discovery, OCR, MRZ parsing, and export-row preparation.
-
-OCR is assistive only. Every row carries validation/review status; results must
-be checked against the scan before ticket or visa use.
-"""
+"""Passport scan discovery, OCR, MRZ parsing, and export-row preparation."""
 from __future__ import annotations
 
 import re
@@ -19,7 +15,6 @@ _EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 _MRZ_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ<"
 _WEIGHT = (7, 3, 1)
 
-# Common ISO 3166-1 alpha-3 codes. Extend as needed.
 _ISO3_CODES = {
     "AFG","ALB","DZA","ASM","AND","AGO","AIA","ATA","ATG","ARG","ARM","ABW",
     "AUS","AUT","AZE","BHS","BHR","BGD","BRB","BLR","BEL","BLZ","BEN","BMU",
@@ -47,17 +42,14 @@ _ISO3_CODES = {
 _MRZ_LINE_RE = re.compile(r"^[A-Z0-9<]{30,}$")
 
 
-# [1.1] _clean — normalize persisted values
 def _clean(value):
     return str(value or "").strip()
 
 
-# [1.2] _folder_id — derive safe traveler folder token
 def _folder_id(traveler_id):
     return _clean(traveler_id).replace("/", "_").replace("\\", "_")
 
 
-# [1.2a] _fix_country — repair common OCR substitutions on 3-letter codes
 def _fix_country(code: str) -> str:
     if not code:
         return ""
@@ -66,16 +58,14 @@ def _fix_country(code: str) -> str:
     return code.upper().replace("<", "").translate(table)[:3]
 
 
-# [1.2b] _clean_name — strip OCR noise from one MRZ name segment
 def _clean_name(segment: str) -> str:
     if not segment:
         return ""
     seg = re.sub(r"<{1,}", "<<", segment)
-    seg = re.sub(r"([A-Z])\1{3,}", r"\1", seg)   # CEEEEEEE → CE
+    seg = re.sub(r"([A-Z])\1{3,}", r"\1", seg)
     return seg.strip("<")
 
 
-# [1.3] discover_passport_files — find PDF/JPEG scans for a traveler
 def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
     base = Path(base_path or get_app_base_path()).resolve()
     if base.name == "data":
@@ -129,9 +119,7 @@ def discover_passport_files(traveler: dict, base_path=None) -> list[Path]:
     return unique
 
 
-# [1.3a] discover_files_in_folder — verify all supported files in one folder
 def discover_files_in_folder(folder_path) -> list[Path]:
-    """Return every readable PDF/JPEG/PNG directly or recursively in folder."""
     folder = Path(_clean(folder_path)).expanduser()
     if not folder.is_dir():
         log_event("PASSPORT_READER", "LOCAL_FOLDER_MISSING",
@@ -152,7 +140,6 @@ def discover_files_in_folder(folder_path) -> list[Path]:
     return found
 
 
-# [1.4] _check_digit — calculate ICAO MRZ check digit
 def _check_digit(text: str) -> str:
     total = 0
     for i, ch in enumerate(text):
@@ -163,12 +150,10 @@ def _check_digit(text: str) -> str:
     return str(total % 10)
 
 
-# [1.5] _valid_field — validate one MRZ field
 def _valid_field(value: str, digit: str) -> bool:
     return bool(value) and digit.isdigit() and _check_digit(value) == digit
 
 
-# [1.6] _date — convert YYMMDD into display date
 def _date(value: str) -> str:
     if not re.fullmatch(r"\d{6}", value or ""):
         return ""
@@ -180,13 +165,11 @@ def _date(value: str) -> str:
         return ""
 
 
-# [1.7] _normalize_line — clean OCR text for MRZ parsing
 def _normalize_line(line):
     line = re.sub(r"[^A-Za-z0-9<]", "", line.upper())
     return line.replace(" ", "")
 
 
-# [1.8] parse_mrz — parse and validate passport MRZ with stricter checks
 def parse_mrz(text: str) -> dict:
     lines = [_normalize_line(x) for x in (text or "").splitlines()]
     lines = [x for x in lines if len(x) >= 30]
@@ -248,7 +231,6 @@ def parse_mrz(text: str) -> dict:
     return best
 
 
-# [1.9] _enhance_image — prepare a passport image for OCR
 def _enhance_image(image):
     image = ImageOps.exif_transpose(image).convert("L")
     image = ImageOps.autocontrast(image)
@@ -256,13 +238,30 @@ def _enhance_image(image):
     return image.filter(ImageFilter.SHARPEN)
 
 
-# [1.10] _ocr_page_image — OCR full page and a high-precision MRZ crop
 def _ocr_page_image(image) -> str:
     try:
         import pytesseract
     except ImportError as ex:
         raise RuntimeError(
             "OCR engine unavailable: install pytesseract and tesseract") from ex
+
+    # --- AUTO-ROTATE (OSD) ---
+    # If a scan is upside down or sideways, OCR fails. We ask Tesseract to detect
+    # the rotation and we physically rotate the image before reading.
+    try:
+        osd = pytesseract.image_to_osd(image)
+        match = re.search(r"Rotate: (\d+)", osd)
+        if match:
+            angle = int(match.group(1))
+            if angle == 90:
+                image = image.rotate(-90, expand=True)
+            elif angle == 180:
+                image = image.rotate(180, expand=True)
+            elif angle == 270:
+                image = image.rotate(-270, expand=True)
+    except Exception:
+        pass # If OSD fails (e.g., too little text), proceed as-is
+
     enhanced = _enhance_image(image)
     try:
         full_text = pytesseract.image_to_string(
@@ -270,7 +269,7 @@ def _ocr_page_image(image) -> str:
     except Exception as ex:
         log_exception("PASSPORT_READER", "OCR_FULL_FAILED", ex)
         full_text = ""
-    crop = enhanced.crop((0, int(enhanced.height * 0.70),
+    crop = enhanced.crop((0, int(enhanced.height * 0.60),
                           enhanced.width, enhanced.height))
     try:
         mrz_text = pytesseract.image_to_string(
@@ -284,13 +283,11 @@ def _ocr_page_image(image) -> str:
     return f"{full_text}\n\n[MRZ OCR]\n{mrz_text}"
 
 
-# [1.11] _ocr_image — OCR one JPEG/PNG scan
 def _ocr_image(path: Path) -> str:
     with Image.open(path) as image:
         return _ocr_page_image(image)
 
 
-# [1.12] _pdf_page_count — count PDF pages safely
 def _pdf_page_count(path: Path) -> int:
     try:
         result = subprocess.run(["pdfinfo", str(path)], capture_output=True,
@@ -301,11 +298,10 @@ def _pdf_page_count(path: Path) -> int:
         return 1
 
 
-# [1.13] _ocr_pdf_pages — OCR every PDF page separately (memory-safe)
 def _ocr_pdf_pages(path: Path) -> list[tuple[str, str]]:
     try:
         from pdf2image import convert_from_path
-        import pytesseract  # noqa: F401
+        import pytesseract
     except ImportError as ex:
         raise RuntimeError(
             "PDF OCR dependencies unavailable: install pdf2image, pytesseract, tesseract") from ex
@@ -327,7 +323,6 @@ def _ocr_pdf_pages(path: Path) -> list[tuple[str, str]]:
     return chunks
 
 
-# [1.14] _ocr_mixed_files — OCR every PDF/JPEG/PNG in folder order
 def _ocr_mixed_files(paths: list[Path]) -> list[tuple[str, str]]:
     chunks, page_index = [], 0
     for source in paths:
@@ -341,7 +336,6 @@ def _ocr_mixed_files(paths: list[Path]) -> list[tuple[str, str]]:
     return chunks
 
 
-# [1.15] _strip_mrz_text — remove MRZ-looking lines from OCR output
 def strip_mrz_text(text: str) -> str:
     if not text:
         return ""
@@ -363,7 +357,6 @@ def strip_mrz_text(text: str) -> str:
     return "\n".join(out)
 
 
-# [1.16] read_passport — build one review-first result row (with front/back)
 def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
     row = {
         "traveler_id": _clean(traveler.get("id")),
@@ -374,10 +367,8 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
         "status": "ERROR", "review_required": True,
         "review_reason": "", "ocr_text": "", "mrz_valid": False,
         "pages_read": "",
-        # Canonical front/back fields
         "front_status": "NOT READ", "back_status": "NOT READ",
         "front_page_ocr": "", "back_page_ocr": "",
-        # Legacy aliases retained for downstream consumers
         "page_1_status": "NOT READ", "last_page_status": "NOT READ",
         "page_1_ocr": "", "last_page_ocr": "", "page_2_ocr": "",
         "page_ocr": "",
@@ -421,7 +412,6 @@ def read_passport(traveler: dict, path: Path, page_paths=None) -> dict:
         return row
 
 
-# [1.17] scan_travelers — scan every traveler without database writes
 def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
     rows, found_count, missing_count = [], 0, 0
     for traveler in travelers:
@@ -447,14 +437,7 @@ def scan_travelers(travelers: list[dict], data_dir=None) -> list[dict]:
     return rows
 
 
-# [1.18] read_folder — OCR every supported file inside an arbitrary folder
 def read_folder(folder_path, file_paths=None) -> list[dict]:
-    """Read one arbitrary folder as one ordered passport-page set.
-
-    Not linked to a database traveler — used for the local system folder
-    reader (non-Haj passports). Returns one row containing all found pages,
-    or a single NO SCAN row when nothing was readable.
-    """
     sources = file_paths if file_paths is not None else discover_files_in_folder(folder_path)
     folder = Path(_clean(folder_path)).expanduser()
     if not sources:
