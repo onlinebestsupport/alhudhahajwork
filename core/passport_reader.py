@@ -197,7 +197,9 @@ def parse_mrz(text: str) -> dict:
 def _enhance_image(image):
     image = ImageOps.exif_transpose(image).convert("L")
     image = ImageOps.autocontrast(image)
-    image = image.resize((image.width * 3, image.height * 3))
+    # 2x enlargement is sufficient for passport text and avoids the large
+    # 3x intermediate images that made Read All memory-heavy on Railway.
+    image = image.resize((image.width * 2, image.height * 2))
     return image.filter(ImageFilter.SHARPEN)
 
 
@@ -251,7 +253,7 @@ def _ocr_pdf_pages(path: Path) -> list[tuple[str, str]]:
     page_numbers = list(range(1, count + 1))
     chunks = []
     for page_number in page_numbers:
-        pages = convert_from_path(str(path), dpi=300,
+        pages = convert_from_path(str(path), dpi=200,
                                   first_page=page_number,
                                   last_page=page_number)
         if not pages:
